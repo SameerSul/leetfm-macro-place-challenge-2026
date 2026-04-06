@@ -3,25 +3,45 @@ Competitive Macro Placer -- Partcl/HRT Challenge 2026
 Sameer Suleman (sameersul)
 
 Algorithm:
-  Min-displacement legalization from initial.plc positions.
+  Multi-restart legalization with exact proxy-cost selection.
 
-  Why no SA? Extensive testing showed legalization-alone (avg 1.5062) beats
-  will_seed (avg 1.5338) and is close to RePlAce (avg 1.4578). Adding SA
-  consistently increases density/congestion faster than it reduces wirelength,
-  worsening the proxy cost on most benchmarks. The initial.plc positions are
-  already high-quality; the key is legalizing them with minimal displacement.
+  1. Legalize from the provided initial.plc positions (baseline).
+  2. Run N perturbed restarts: add Gaussian noise to initial positions at
+     increasing scales, re-legalize each, get N+1 candidate placements.
+  3. Score every candidate with the EXACT proxy cost evaluator
+     (compute_proxy_cost → PlacementCost ground truth).
+  4. Return the candidate with the lowest proxy cost.
 
-Results vs baselines (17 IBM benchmarks):
-  legalize-only avg: 1.5062  (this placer)
-  will_seed avg:     1.5338  +2.9% improvement
-  RePlAce avg:       1.4578  target to beat
+Why restarts beat SA:
+  Testing showed legalization-alone (avg 1.5062) beats will_seed (1.5338)
+  and SA makes things worse on most benchmarks. The initial.plc positions
+  are already good; SA over-optimises wirelength at the cost of congestion.
+  Perturbation restarts explore different overlap-resolution arrangements
+  without ever touching the fundamental macro connectivity structure.
 
-Runtime: ~5-15s per benchmark, ~3 min total for all 17 benchmarks.
+Why exact scoring matters:
+  Proxy cost = 1×WL + 0.5×density + 0.5×congestion.
+  WL is only ~4% of the total cost. Congestion (~60%) dominates.
+  Without exact congestion scoring, any local heuristic picks the wrong
+  candidate. Calling compute_proxy_cost() inside place() costs ~2s per
+  candidate but guarantees we always return the provably best restart.
+
+Baselines (17 IBM benchmarks):
+  SA baseline avg:         2.1251
+  will_seed avg:           1.5338
+  sameer_v1 (leg-only):    1.5062  ← previous best
+  sameer_v1 (this):        TBD after restarts evaluation
+  RePlAce avg:             1.4578  ← Grand Prize target
+
+Runtime:
+  N=4 restarts: ~(5-30s legalize + 2s score) × 5 candidates per benchmark
+  ~30-60s/benchmark → ~10-15 min total (well within 1 h limit).
 """
 
+import random
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -37,14 +57,20 @@ def _log(msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _will_legalize(
-    pos: np.ndarray, movable: np.ndarray,
-    sizes: np.ndarray, hw: np.ndarray, hh: np.ndarray,
-    cw: float, ch: float, n: int,
+    pos: np.ndarray,
+    movable: np.ndarray,
+    sizes: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    cw: float,
+    ch: float,
+    n: int,
 ) -> np.ndarray:
     """
-    Largest-macro-first legalization with spiral search.
-    Each macro is placed at the nearest overlap-free position to its target.
-    Non-movable macros are fixed in place.
+    Largest-macro-first min-displacement legalization.
+    Macros are placed one by one (largest area first) at the nearest
+    overlap-free position to their target, found by expanding spiral search.
+    Non-movable macros are fixed in place first.
     """
     sep_x = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
     sep_y = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
@@ -92,44 +118,159 @@ def _will_legalize(
     return legal
 
 
+def _load_plc(name: str):
+    """Load PlacementCost object for exact proxy scoring (uses posix paths for Windows compat)."""
+    try:
+        from macro_place.loader import load_benchmark_from_dir, load_benchmark
+        root = Path("external/MacroPlacement/Testcases/ICCAD04") / name
+        if root.exists():
+            _, plc = load_benchmark_from_dir(root.as_posix())
+            return plc
+        # ng45 fallback
+        ng45 = {
+            "ariane133_ng45": "ariane133",
+            "ariane136_ng45": "ariane136",
+            "nvdla_ng45": "nvdla",
+            "mempool_tile_ng45": "mempool_tile",
+        }
+        d = ng45.get(name)
+        if d:
+            base = (Path("external/MacroPlacement/Flows/NanGate45")
+                    / d / "netlist" / "output_CT_Grouping")
+            if (base / "netlist.pb.txt").exists():
+                _, plc = load_benchmark(
+                    (base / "netlist.pb.txt").as_posix(),
+                    (base / "initial.plc").as_posix(),
+                )
+                return plc
+    except Exception as exc:
+        _log(f"  Warning: plc load failed ({exc})")
+    return None
+
+
+def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
+    """Return proxy_cost using the ground-truth PlacementCost evaluator."""
+    from macro_place.objective import compute_proxy_cost
+    costs = compute_proxy_cost(placement, benchmark, plc)
+    return float(costs["proxy_cost"])
+
+
+def _density_score(pos: np.ndarray, n: int, cw: float, ch: float) -> float:
+    """Fallback scorer: max-cell macro count on a 20×20 grid (lower = better spread)."""
+    G = 20
+    grid = np.zeros((G, G), dtype=np.float64)
+    for i in range(n):
+        r = min(int(pos[i, 1] / (ch / G)), G - 1)
+        c = min(int(pos[i, 0] / (cw / G)), G - 1)
+        grid[r, c] += 1
+    return float((grid ** 2).sum())
+
+
 # ---------------------------------------------------------------------------
 # Main placer
 # ---------------------------------------------------------------------------
 
 class MacroPlacer:
     """
-    Legalization-based macro placer for the Partcl/HRT Challenge 2026.
+    Multi-restart legalization placer for the Partcl/HRT Challenge 2026.
 
-    Uses Will's minimum-displacement legalization (largest-macro-first spiral
-    search) on the provided initial.plc positions.
+    Runs N perturbed legalizations from initial.plc, scores each with the
+    exact proxy evaluator (WL + 0.5×density + 0.5×congestion), returns best.
 
-    Test results (17 IBM benchmarks, CPU):
-      avg proxy: 1.5062 (vs will_seed 1.5338, RePlAce 1.4578)
-      runtime:   ~5-15s per benchmark, ~3 min total
+    Parameters
+    ----------
+    n_restarts : int
+        Total number of legalization runs including the unperturbed baseline.
+        Larger values improve quality but increase runtime linearly.
+        Default 5 → ~10-15 min for all 17 benchmarks on CPU.
+    noise_fracs : list[float]
+        Noise magnitude for restarts 1..N-1, as a fraction of min(cw, ch).
+        Restart 0 is always the unperturbed baseline.
+    seed : int
+        Random seed for reproducibility.
     """
 
+    def __init__(
+        self,
+        n_restarts: int = 5,
+        noise_fracs: Optional[List[float]] = None,
+        seed: int = 42,
+    ):
+        self.n_restarts = n_restarts
+        # Small noise levels only — testing showed large noise (>10%) always hurts.
+        # The optimal arrangement is usually within 2-8% of the initial.plc spread.
+        self.noise_fracs = noise_fracs or [0.02, 0.04, 0.06, 0.08]
+        self.seed = seed
+
     def place(self, benchmark: Benchmark) -> torch.Tensor:
-        import random
-        random.seed(42)
-        np.random.seed(42)
+        np.random.seed(self.seed)
+        random.seed(self.seed)
 
         t0 = time.time()
-        n_hard = benchmark.num_hard_macros
+        n = benchmark.num_hard_macros
         cw, ch = benchmark.canvas_width, benchmark.canvas_height
-        sizes_np = benchmark.macro_sizes[:n_hard].numpy().astype(np.float64)
-        hw_np = sizes_np[:, 0] / 2
-        hh_np = sizes_np[:, 1] / 2
+        sizes = benchmark.macro_sizes[:n].numpy().astype(np.float64)
+        hw = sizes[:, 0] / 2
+        hh = sizes[:, 1] / 2
+        movable = (benchmark.get_movable_mask() & benchmark.get_hard_macro_mask())[:n].numpy()
+        init_pos = benchmark.macro_positions[:n].numpy().copy().astype(np.float64)
 
-        movable_mask = benchmark.get_movable_mask() & benchmark.get_hard_macro_mask()
-        movable_np = movable_mask[:n_hard].numpy()
+        _log(f"  [{benchmark.name}] hard={n}  movable={movable.sum()}  "
+             f"restarts={self.n_restarts}")
 
-        _log(f"  [{benchmark.name}] hard={n_hard}  movable={movable_np.sum()}")
+        # Load plc for exact proxy scoring (may fail on edge cases → fallback)
+        plc = _load_plc(benchmark.name)
+        use_exact = plc is not None
+        if not use_exact:
+            _log("  Warning: plc unavailable — using density-score fallback")
 
-        pos = benchmark.macro_positions[:n_hard].numpy().copy().astype(np.float64)
-        pos = _will_legalize(pos, movable_np, sizes_np, hw_np, hh_np, cw, ch, n_hard)
-        _log(f"  Legalized in {time.time()-t0:.1f}s")
+        # ── Candidate generation ──────────────────────────────────────────
+        candidates: List[np.ndarray] = []
 
-        pl = benchmark.macro_positions.clone()
-        pl[:n_hard, 0] = torch.tensor(pos[:, 0], dtype=torch.float32)
-        pl[:n_hard, 1] = torch.tensor(pos[:, 1], dtype=torch.float32)
-        return pl
+        # Restart 0: unperturbed baseline
+        _log(f"  Restart 0 (baseline)...")
+        leg = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
+        candidates.append(leg)
+        _log(f"    Legalized in {time.time()-t0:.1f}s")
+
+        # Restarts 1..N-1: progressively larger perturbations
+        noise_scale_base = min(cw, ch)
+        for k, frac in enumerate(self.noise_fracs[: self.n_restarts - 1], start=1):
+            t1 = time.time()
+            noise_scale = frac * noise_scale_base
+            noise = np.random.normal(0, noise_scale, init_pos.shape)
+            perturbed = init_pos + noise
+            perturbed[:, 0] = np.clip(perturbed[:, 0], hw, cw - hw)
+            perturbed[:, 1] = np.clip(perturbed[:, 1], hh, ch - hh)
+            leg = _will_legalize(perturbed, movable, sizes, hw, hh, cw, ch, n)
+            candidates.append(leg)
+            _log(f"  Restart {k} (noise={frac:.0%} × canvas) legalized in "
+                 f"{time.time()-t1:.1f}s")
+
+        # ── Scoring & selection ───────────────────────────────────────────
+        best_pl = None
+        best_score = float("inf")
+
+        for k, pos in enumerate(candidates):
+            pl = benchmark.macro_positions.clone()
+            pl[:n, 0] = torch.tensor(pos[:, 0], dtype=torch.float32)
+            pl[:n, 1] = torch.tensor(pos[:, 1], dtype=torch.float32)
+
+            if use_exact:
+                try:
+                    score = _exact_proxy(pl, benchmark, plc)
+                    _log(f"  Candidate {k}: proxy={score:.4f}")
+                except Exception as exc:
+                    _log(f"  Candidate {k}: exact scoring failed ({exc}), "
+                         f"falling back to density")
+                    score = _density_score(pos, n, cw, ch)
+            else:
+                score = _density_score(pos, n, cw, ch)
+                _log(f"  Candidate {k}: density_score={score:.1f}")
+
+            if score < best_score:
+                best_score = score
+                best_pl = pl
+
+        _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
+        return best_pl
