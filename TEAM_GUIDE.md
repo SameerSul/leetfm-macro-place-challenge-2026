@@ -16,8 +16,10 @@
 8. [Our Algorithm (sameer_v1)](#8-our-algorithm)
 9. [How to Develop and Contribute as a Team](#9-team-development-workflow)
 10. [How to Submit](#10-how-to-submit)
-11. [Ideas for Improvement](#11-ideas-for-improvement)
-12. [Glossary](#12-glossary)
+11. [Team Roles and Responsibilities](#11-team-roles)
+12. [Related Research: Papers and Code](#12-related-research)
+13. [Ideas for Improvement](#13-ideas-for-improvement)
+14. [Glossary](#14-glossary)
 
 ---
 
@@ -524,7 +526,227 @@ Include:
 
 ---
 
-## 11. Ideas for Improvement
+## 11. Team Roles
+
+Three roles split by expertise. Each person has a clear onboarding path, owns a piece of the codebase, and has concrete next steps tied to the competition target (beat RePlAce avg 1.4578).
+
+---
+
+### Role A — Algorithm Lead (Sameer)
+
+**Owns:** `submissions/sameer_v1/placer.py` · competition timeline · final submission
+
+**Why this role:** You built the project from scratch, understand every file, and have already beaten will_seed. You drive the main submission loop.
+
+#### Week 1 Onboarding Checklist
+- [ ] Re-read `submissions/sameer_v1/placer.py` top-to-bottom — especially `_will_legalize()` and the restart loop
+- [ ] Run `python -m macro_place.evaluate submissions/sameer_v1/placer.py --all` and record the full 17-benchmark avg
+- [ ] Read `macro_place/objective.py` (`compute_proxy_cost`) — understand exactly how WL, density, congestion are computed from positions
+- [ ] Read `macro_place/evaluate.py` (`evaluate_benchmark`) — the full harness pipeline
+- [ ] Read `external/MacroPlacement/CodeElements/Plc_client/plc_client_os.py` — the PlacementCost evaluator used by `compute_proxy_cost`
+
+#### Immediate Next Steps (see §13 for full list)
+1. **Run the full 17-benchmark eval** with the new restart placer → get baseline avg
+2. **Tune noise levels**: try finer noise grid (0.01, 0.02, 0.03, 0.04, 0.05) — ibm01 improved at 4%, maybe 2-3% is even better for others
+3. **Increase restarts for fast benchmarks**: benchmarks that legalize in <5s can afford 10-15 restarts in the same runtime budget — add per-benchmark adaptive restart count
+4. **Implement congestion-aware perturbation**: instead of uniform Gaussian noise, push macros away from high-congestion zones found in the baseline legalization
+
+#### Files You Own
+```
+submissions/sameer_v1/placer.py     ← main submission
+submissions/_test_legonly.py        ← test harness
+TEAM_GUIDE.md                       ← this document
+```
+
+---
+
+### Role B — ML Research Lead
+
+**Owns:** `submissions/ml_placer/` (create this) · literature review · learning-based approach
+
+**Why this role:** The gap from our current avg (≈1.49) to RePlAce (1.4578) is small with perturbation heuristics alone. Closing it and going below likely needs a learned model. This role brings machine learning to the placement problem.
+
+#### Week 1 Onboarding Checklist
+- [ ] Read §12 (Related Research) in this document — understand all 10 papers at a high level
+- [ ] Run the existing placer on ibm01: `python -m macro_place.evaluate submissions/sameer_v1/placer.py -b ibm01`
+- [ ] Read `macro_place/benchmark.py` — understand the `Benchmark` dataclass fields
+- [ ] Understand the netlist format: open `external/MacroPlacement/Testcases/ICCAD04/ibm01/netlist.pb.txt` in a text editor — look at the node, net, and pin structure
+- [ ] Clone and browse **WireMask-BBO** (`github.com/lamda-bbo/WireMask-BBO`) — the most practically competitive ML method
+
+#### Immediate Next Steps
+1. **Reproduce WireMask-BBO on ibm01**: WireMask uses a greedy wire-density heuristic as the evaluator inside a black-box optimizer. Try applying their evaluator to our benchmarks — it may directly give better placements
+2. **Build a GNN feature extractor**: represent the ibm01 netlist as a graph (macros = nodes, nets = edges weighted by `1/(k-1)`). Use PyTorch Geometric (`torch_geometric`) to build a simple GCN. Output per-node embeddings. These embeddings are the foundation of any learned placement policy
+3. **Read ChiPFormer** (`arxiv.org/abs/2306.14744`) carefully — their offline dataset approach doesn't require per-circuit RL training. We already HAVE a dataset: 17 benchmarks × 5 restarts × proxy scores. That's a small supervised dataset for imitation learning
+4. **Explore Circuit Training's gridding** (`github.com/google-research/circuit_training`) — the soft-macro grouping step that converts millions of standard cells into ~500 clusters. Understand if this preprocessing improves our netlist representation
+
+#### Files You Will Create
+```
+submissions/ml_placer/
+    __init__.py
+    placer.py          ← MacroPlacer class using a learned model
+    gnn_model.py       ← GNN architecture
+    train.py           ← training script
+    data/              ← training data (placements + proxy scores)
+```
+
+---
+
+### Role C — Infrastructure and Experiments Lead
+
+**Owns:** `scripts/` · experiment tracking · DREAMPlace integration · evaluation pipeline
+
+**Why this role:** As the team runs dozens of experiments (tuning noise, trying new algorithms, comparing methods), someone needs to make sure results are logged, reproducible, and comparable. This role also investigates the GPU path (DREAMPlace) which could unlock 30× speedup.
+
+#### Week 1 Onboarding Checklist
+- [ ] Run `python scripts/compare_placers.py submissions/sameer_v1/placer.py submissions/_test_legonly.py` — understand the comparison output format
+- [ ] Read `scripts/compare_placers.py` end-to-end
+- [ ] Read `macro_place/evaluate.py` `main()` function — understand all CLI flags
+- [ ] Set up a results log: create `results/runs.csv` with columns: `date, placer, benchmark, proxy, wl, density, congestion, runtime, notes`
+- [ ] Browse **DREAMPlace** (`github.com/limbo018/DREAMPlace`) — understand its input format and how it compares to our benchmark format
+
+#### Immediate Next Steps
+1. **Automated experiment logging**: modify `scripts/compare_placers.py` to append results to `results/runs.csv` automatically. Every run of any placer should log to this file with a timestamp and git commit hash
+2. **DREAMPlace compatibility check**: DREAMPlace takes LEF/DEF or Bookshelf format. Our benchmarks are in `.pb.txt` format. Write a converter: `scripts/pb_to_bookshelf.py` that converts ibm01 netlist to Bookshelf format so DREAMPlace can process it. This unlocks GPU-accelerated global placement as an initial position generator
+3. **Perturbation noise sweep**: write `scripts/noise_sweep.py` that runs `sameer_v1` with noise_fracs=`[0.01, 0.02, ..., 0.10]` on ibm01 and plots proxy cost vs noise level. Identify the optimal noise range per benchmark
+4. **Per-benchmark adaptive restarts**: ibm10 takes 60s to legalize (too slow for 15 restarts). ibm07 takes 2s (fast, can afford 20+). Write a time-budget wrapper that decides how many restarts to run per benchmark given a per-benchmark time cap of `3600/17 ≈ 210s`
+
+#### Files You Own
+```
+scripts/compare_placers.py     ← comparison harness (already exists)
+scripts/noise_sweep.py         ← create this
+scripts/pb_to_bookshelf.py     ← create this (DREAMPlace bridge)
+results/runs.csv               ← create this (experiment log)
+```
+
+---
+
+### Shared Responsibilities (All Three)
+
+| Task | Who Leads | Deadline |
+|------|-----------|----------|
+| Beat will_seed avg (1.5338) | Sameer (A) | Done ✅ |
+| Full 17-benchmark avg with restarts | Sameer (A) | This week |
+| Literature deep-dive on WireMask-BBO | ML Lead (B) | Week 1 |
+| Noise sweep script | Infra (C) | Week 1 |
+| DREAMPlace format bridge | Infra (C) | Week 2 |
+| GNN feature extractor prototype | ML Lead (B) | Week 2 |
+| Beat RePlAce avg (1.4578) | All | Week 3 |
+| Final submission via Google Form | Sameer (A) | May 21, 2026 |
+
+---
+
+## 12. Related Research: Papers and Code
+
+This field exploded after Google's 2021 Nature paper. Every significant paper below includes its core idea, key result, and GitHub link — organized by approach type. **Bolded rows** are highest priority to read and implement first.
+
+---
+
+### The Essential Starting Point: TILOS MacroPlacement
+
+**GitHub:** https://github.com/TILOS-AI-Institute/MacroPlacement
+
+Before reading any other paper, understand this. The TILOS group (UCSD) published a landmark reproducibility study showing Google's Circuit Training results **could not be reproduced** from its open-source release, and that standard SA baselines match or beat CT on most benchmarks. They also:
+- Released the IBM ICCAD04 and Ariane/MemPool/NVDLA benchmarks with proper enablements — the same benchmark set our competition uses
+- Implemented all of CT's missing components (soft-macro clustering, gridding)
+- Provide a full open-source evaluation flow
+
+---
+
+### Approach 1: Reinforcement Learning
+
+#### Google Circuit Training (Nature 2021)
+- **Paper:** "A graph placement methodology for fast chip design" — Mirhoseini et al. (Google Brain)
+- **GitHub:** https://github.com/google-research/circuit_training
+- **Core idea:** GNN policy places macros one-at-a-time on a grid canvas, trained with PPO. A preprocessing step clusters standard cells with macros using force-directed "gridding." Used in production for Google TPU-v5.
+- **Key result:** Claims to match human expert placements; TILOS showed SA is competitive with far less compute.
+- **Reusable for us:** Netlist→graph representation, soft-macro clustering code, proxy cost formulation (same as ours).
+
+#### MaskPlace (NeurIPS 2022)
+- **Paper:** "MaskPlace: Fast Chip Placement via Reinforced Visual Representation Learning" — Lai et al.
+- **arXiv:** https://arxiv.org/abs/2211.13382 · **GitHub:** https://github.com/laiyao1/maskplace
+- **Core idea:** Canvas as a pixel mask rather than a grid. Dense rewards every step (vs CT's sparse end-of-episode reward) → faster, more stable training.
+- **Key result:** 60-90% HPWL reduction over CT baselines on Ariane.
+- **Reusable:** Clean codebase; pixel-canvas state representation and dense reward formulation.
+
+#### **ChiPFormer (ICML 2023) — Most Relevant for ML Role**
+- **Paper:** "ChiPFormer: Transferable Chip Placement via Offline Decision Transformer" — Lai et al.
+- **arXiv:** https://arxiv.org/abs/2306.14744 · **GitHub:** https://github.com/laiyao1/chipformer
+- **Core idea:** Trains once on a dataset of expert placements (500 per circuit), then transfers to new circuits via few-shot fine-tuning. Decision Transformer instead of per-circuit RL → placement in minutes not hours.
+- **Key result:** Outperforms CT and MaskPlace on HPWL across 12 circuits. Includes a released dataset of 12 circuits × 500 expert placements.
+- **Reusable for us:** We can generate our own dataset: run N restarts per benchmark, record (netlist features, placement, proxy score) tuples, train a supervised model. Skips RL entirely.
+
+#### MaskRegulate (NeurIPS 2024)
+- **Paper:** "RL Policy as Macro Regulator Rather than Macro Placer" — LAMDA Group (Nanjing U.)
+- **GitHub:** https://github.com/lamda-bbo/macro-regulator
+- **Core idea:** RL iteratively adjusts an existing placement (doesn't place from scratch). "Regularity" metric used as both input feature and reward signal.
+- **Key result:** -17% routing wirelength and -73% congestion overflow vs MaskPlace.
+- **Reusable:** Start from our legalized placement, use RL to improve it — much simpler than full RL placement.
+
+---
+
+### Approach 2: Black-Box Optimization
+
+#### **WireMask-BBO (NeurIPS 2023) — Most Actionable Right Now**
+- **Paper:** "Macro Placement by Wire-Mask-Guided Black-Box Optimization" — LAMDA Group
+- **arXiv:** https://arxiv.org/abs/2306.16844 · **GitHub:** https://github.com/lamda-bbo/WireMask-BBO
+- **Core idea:** A wire-density heatmap guides a greedy evaluator that rapidly scores any candidate placement. Any black-box optimizer (Bayesian, evolutionary, random) wraps this evaluator. No ML training required.
+- **Key result:** Up to 50% HPWL improvement over CT using far less compute.
+- **Reusable:** Instead of random Gaussian perturbations, use the wire-density heatmap to guide WHERE to perturb macros — toward low-density zones. Direct upgrade to our current restart strategy.
+
+---
+
+### Approach 3: Analytical Placement (GPU)
+
+#### RePlAce (IEEE TCAD 2019)
+- **Paper:** "RePlAce: Advancing Solution Quality and Routability Validation in Global Placement"
+- **GitHub:** https://github.com/The-OpenROAD-Project/RePlAce (also `gpl` inside OpenROAD)
+- **Core idea:** Nonlinear analytical placement using Nesterov's method. Minimizes WL + electrostatic density penalty. The standard global placement engine in OpenROAD.
+- **Key result:** ~10-15% routability improvement over ePlace. **This is the competition's 1.4578 baseline.**
+- **Reusable:** Understanding its density model is essential — this is what we need to beat.
+
+#### **DREAMPlace (DAC 2019 / TCAD 2020 / v4.0) — GPU Infrastructure**
+- **Paper:** "DREAMPlace: Deep Learning Toolkit-Enabled GPU Acceleration for Modern VLSI Placement" — Lin et al. (UT Austin / NVIDIA)
+- **GitHub:** https://github.com/limbo018/DREAMPlace
+- **Core idea:** Analytical placement as neural network training — WL + density are the loss function, PyTorch autograd computes gradients. Custom CUDA kernels for HPWL and electrostatic density.
+- **Key result:** 30× speedup over CPU RePlAce on a V100 GPU.
+- **Reusable:** If we bridge our `.pb.txt` format to DREAMPlace's Bookshelf input, we get GPU-accelerated global placement positions that are far better than `initial.plc` as starting points.
+
+#### GiFt (ICCAD 2024)
+- **Paper:** "The Power of Graph Signal Processing for Chip Placement Acceleration"
+- **arXiv:** https://arxiv.org/abs/2502.17632
+- **Core idea:** Graph spectral analysis of the netlist gives initial placement coordinates in <1s on GPU. Used as DREAMPlace warm-start: -33% iterations, -46% total runtime.
+- **Reusable:** If we integrate DREAMPlace, use GiFt as the initialization instead of random.
+
+---
+
+### Approach 4: Generative Models
+
+#### Chip Placement with Diffusion Models (ICML 2025)
+- **Paper:** "Chip Placement with Diffusion Models" — Lee, Nguyen, Elzeiny et al. (UC Berkeley)
+- **arXiv:** https://arxiv.org/abs/2407.12282 · **GitHub:** https://github.com/vint-1/chipdiffusion
+- **Core idea:** Diffusion denoiser conditioned on the circuit netlist places ALL macros simultaneously (not sequentially like RL). Guided sampling at inference optimizes quality. Pre-trains on large synthetic datasets → zero-shot generalization to unseen circuits.
+- **Key result:** Competitive with RL baselines on HPWL and congestion, with zero per-circuit training.
+- **Reusable:** Synthetic dataset generation algorithm; the most architecturally novel approach.
+
+---
+
+### Full Summary Table
+
+| Paper | Year | Venue | Type | GitHub | Key Advantage |
+|-------|------|-------|------|--------|---------------|
+| TILOS Benchmarks | 2022+ | Open | Eval framework | [link](https://github.com/TILOS-AI-Institute/MacroPlacement) | Same benchmarks; reproducible baselines |
+| Circuit Training | 2021 | Nature | RL (GNN) | [link](https://github.com/google-research/circuit_training) | Production-proven; controversial reproducibility |
+| MaskPlace | 2022 | NeurIPS | RL (pixel) | [link](https://github.com/laiyao1/maskplace) | Dense rewards; clean code |
+| **WireMask-BBO** | **2023** | **NeurIPS** | **BBO** | **[link](https://github.com/lamda-bbo/WireMask-BBO)** | **No training; wire-density guided perturbation** |
+| **ChiPFormer** | **2023** | **ICML** | **Offline RL** | **[link](https://github.com/laiyao1/chipformer)** | **Minutes not hours; transferable across chips** |
+| MaskRegulate | 2024 | NeurIPS | RL (regulator) | [link](https://github.com/lamda-bbo/macro-regulator) | Adjusts existing placement; -73% congestion |
+| Chip+Diffusion | 2025 | ICML | Diffusion | [link](https://github.com/vint-1/chipdiffusion) | Zero-shot; parallel placement |
+| **DREAMPlace** | **2019+** | **DAC/TCAD** | **Analytical (GPU)** | **[link](https://github.com/limbo018/DREAMPlace)** | **30× speedup; extensible PyTorch framework** |
+| RePlAce | 2019 | TCAD | Analytical | [link](https://github.com/The-OpenROAD-Project/RePlAce) | The 1.4578 baseline to beat |
+
+---
+
+## 13. Ideas for Improvement
 
 ### Understanding the Numbers First
 
@@ -581,7 +803,7 @@ Current avg (sameer_v1): 1.5062
 
 ---
 
-## 12. Glossary
+## 14. Glossary
 
 | Term | Definition |
 |------|------------|
