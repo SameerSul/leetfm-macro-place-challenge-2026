@@ -41,7 +41,7 @@ Runtime:
 import random
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple  # noqa: F401
 
 import numpy as np
 import torch
@@ -195,12 +195,17 @@ class MacroPlacer:
         n_restarts: int = 5,
         noise_fracs: Optional[List[float]] = None,
         seed: int = 42,
+        time_budget_s: float = 200.0,
     ):
         self.n_restarts = n_restarts
         # Small noise levels only — testing showed large noise (>10%) always hurts.
         # The optimal arrangement is usually within 2-8% of the initial.plc spread.
         self.noise_fracs = noise_fracs or [0.02, 0.04, 0.06, 0.08]
         self.seed = seed
+        # Per-benchmark wall-clock budget. 200s × 17 = 56 min → safely under 1 hour.
+        # Large benchmarks (ibm12, ibm17) use most of this just for baseline scoring;
+        # restarts are automatically skipped when the budget would be exceeded.
+        self.time_budget_s = time_budget_s
 
     def place(self, benchmark: Benchmark) -> torch.Tensor:
         np.random.seed(self.seed)
@@ -216,26 +221,59 @@ class MacroPlacer:
         init_pos = benchmark.macro_positions[:n].numpy().copy().astype(np.float64)
 
         _log(f"  [{benchmark.name}] hard={n}  movable={movable.sum()}  "
-             f"restarts={self.n_restarts}")
+             f"budget={self.time_budget_s:.0f}s")
 
-        # Load plc for exact proxy scoring (may fail on edge cases → fallback)
+        # Load plc for exact proxy scoring.
+        # For large benchmarks (n > 350 macros), compute_proxy_cost takes
+        # 100-500s per call — too slow for multiple restarts. Above the
+        # threshold we use the fast density fallback to rank candidates;
+        # the competition evaluator always re-scores whatever we return,
+        # so quality is unaffected. Restarts empirically never improve
+        # large benchmarks (ibm10/12/14/16/17 all had baseline win).
+        EXACT_MACRO_THRESHOLD = 350
         plc = _load_plc(benchmark.name)
-        use_exact = plc is not None
-        if not use_exact:
+        use_exact = (plc is not None) and (n <= EXACT_MACRO_THRESHOLD)
+        if plc is None:
             _log("  Warning: plc unavailable — using density-score fallback")
+        elif n > EXACT_MACRO_THRESHOLD:
+            _log(f"  Large benchmark (n={n} > {EXACT_MACRO_THRESHOLD}) — "
+                 f"using density fallback to rank restarts (fast)")
 
-        # ── Candidate generation ──────────────────────────────────────────
-        candidates: List[np.ndarray] = []
+        def _score(pos: np.ndarray) -> Tuple[float, torch.Tensor]:
+            pl = benchmark.macro_positions.clone()
+            pl[:n, 0] = torch.tensor(pos[:, 0], dtype=torch.float32)
+            pl[:n, 1] = torch.tensor(pos[:, 1], dtype=torch.float32)
+            if use_exact:
+                try:
+                    return float(_exact_proxy(pl, benchmark, plc)), pl
+                except Exception:
+                    pass
+            return _density_score(pos, n, cw, ch), pl
 
-        # Restart 0: unperturbed baseline
+        # ── Baseline (restart 0) ──────────────────────────────────────────
         _log(f"  Restart 0 (baseline)...")
-        leg = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
-        candidates.append(leg)
-        _log(f"    Legalized in {time.time()-t0:.1f}s")
+        t1 = time.time()
+        baseline_pos = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
+        _log(f"    Legalized in {time.time()-t1:.1f}s")
 
-        # Restarts 1..N-1: progressively larger perturbations
+        t_score0 = time.time()
+        best_score, best_pl = _score(baseline_pos)
+        t_one_score = time.time() - t_score0
+        _log(f"  Candidate 0: proxy={best_score:.4f}  (scored in {t_one_score:.1f}s)")
+
+        # ── Adaptive restarts: only run if budget allows ──────────────────
+        # Each restart costs: legalize_time + score_time ≈ 2 × t_one_score
+        # We stop as soon as remaining budget < estimated cost of next restart.
         noise_scale_base = min(cw, ch)
         for k, frac in enumerate(self.noise_fracs[: self.n_restarts - 1], start=1):
+            elapsed = time.time() - t0
+            remaining = self.time_budget_s - elapsed
+            estimated_cost = t_one_score * 2.0  # conservative estimate
+            if remaining < estimated_cost:
+                _log(f"  Skipping restart {k}+ (budget: {remaining:.0f}s left, "
+                     f"need ~{estimated_cost:.0f}s)")
+                break
+
             t1 = time.time()
             noise_scale = frac * noise_scale_base
             noise = np.random.normal(0, noise_scale, init_pos.shape)
@@ -243,31 +281,11 @@ class MacroPlacer:
             perturbed[:, 0] = np.clip(perturbed[:, 0], hw, cw - hw)
             perturbed[:, 1] = np.clip(perturbed[:, 1], hh, ch - hh)
             leg = _will_legalize(perturbed, movable, sizes, hw, hh, cw, ch, n)
-            candidates.append(leg)
             _log(f"  Restart {k} (noise={frac:.0%} × canvas) legalized in "
                  f"{time.time()-t1:.1f}s")
 
-        # ── Scoring & selection ───────────────────────────────────────────
-        best_pl = None
-        best_score = float("inf")
-
-        for k, pos in enumerate(candidates):
-            pl = benchmark.macro_positions.clone()
-            pl[:n, 0] = torch.tensor(pos[:, 0], dtype=torch.float32)
-            pl[:n, 1] = torch.tensor(pos[:, 1], dtype=torch.float32)
-
-            if use_exact:
-                try:
-                    score = _exact_proxy(pl, benchmark, plc)
-                    _log(f"  Candidate {k}: proxy={score:.4f}")
-                except Exception as exc:
-                    _log(f"  Candidate {k}: exact scoring failed ({exc}), "
-                         f"falling back to density")
-                    score = _density_score(pos, n, cw, ch)
-            else:
-                score = _density_score(pos, n, cw, ch)
-                _log(f"  Candidate {k}: density_score={score:.1f}")
-
+            score, pl = _score(leg)
+            _log(f"  Candidate {k}: proxy={score:.4f}")
             if score < best_score:
                 best_score = score
                 best_pl = pl
