@@ -1,4 +1,4 @@
-# Research Papers — Code Analysis and Implementation Notes
+# Research Papers: Code Analysis and Implementation Notes
 
 > Tracks what we extracted from each paper's code, how it works, and what we implemented.
 > Updated: 2026-04-08
@@ -57,7 +57,7 @@ For each net N connected to macro i:
   delta_HPWL += weight_N * (new_x + new_y - current_HPWL_N)
 ```
 
-This is fast because it's just arithmetic over bounding boxes — no expensive routing.
+This is fast because it uses simple bounding box math with no expensive routing involved.
 
 #### The Black-Box Optimizer
 
@@ -66,10 +66,10 @@ The BBO (TuRBO / Bayesian / EA) optimizes the **initial coordinate hints** passe
 class placement_eval:
     def __call__(self, x):  # x = flat [x0, y0, x1, y1, ..., xN, yN] array
         return greedy_placer(init_coords=x)  # greedy placer returns HPWL
-# TuRBO minimizes HPWL over x ∈ [0, grid_num]^(2N)
+# TuRBO minimizes HPWL over x in [0, grid_num]^(2N)
 ```
 
-The BBO never touches macro positions directly — it only controls where the greedy placer *starts from*, and the greedy placer resolves overlaps by choosing the minimum-cost grid cell.
+The BBO never touches macro positions directly. It only controls where the greedy placer starts from, and the greedy placer resolves overlaps by picking the minimum-cost grid cell.
 
 ---
 
@@ -91,11 +91,11 @@ def _compute_wire_pull(pos, benchmark, n):
     return pull
 ```
 
-Then `_wire_pull_perturb()` displaces `init_pos` in the pull direction (clamped to `frac × canvas`) before re-legalizing.
+Then `_wire_pull_perturb()` moves `init_pos` in the pull direction (capped at `frac × canvas size`) before re-legalizing.
 
-**When this helps:** When WL is a significant cost component and macros are spread too far from their connected partners. Most useful for small benchmarks (ibm01-ibm05).
+**When this helps:** When wirelength is a meaningful cost and macros are sitting too far from their connected partners. Most useful for small benchmarks (ibm01-ibm05).
 
-**Limitation:** Our proxy cost is dominated by CONGESTION not WL (congestion ≈ 2.0, WL ≈ 0.06). Wire-pull may increase congestion by clustering. The adaptive restart budget handles this: if wire-pull produces a worse proxy, the original baseline wins.
+**Limitation:** Our proxy cost is dominated by congestion, not wirelength (congestion is about 2.0, wirelength is about 0.06). Wire-pull can increase congestion by clustering macros together. The time budget handles this safely: if wire-pull produces a worse proxy score, the original baseline result wins.
 
 ---
 
@@ -110,7 +110,7 @@ Then `_wire_pull_perturb()` displaces `init_pos` in the pull direction (clamped 
 
 ### How It Works
 
-MaskRegulate's key observation: RL placement policies (like Circuit Training) are brittle because they **place from scratch** — a tiny mistake early causes cascading errors. Instead, they train an RL agent that **adjusts an existing layout** (from DREAMPlace global placement).
+MaskRegulate's key observation: RL placement policies (like Circuit Training) are brittle because they place from scratch. A single bad decision early on causes cascading errors in every placement after it. Instead, MaskRegulate trains an RL agent that **adjusts an existing layout** (one already computed by DREAMPlace global placement).
 
 #### The Regularity Mask (`get_regular_mask()`)
 
@@ -195,9 +195,9 @@ def _density_gradient_perturb(init_pos, leg_pos, ...):
         perturbed[i] = init_pos[i] + magnitude * normalize(grad[cell])
 ```
 
-**When this helps:** When macros are clustered (high congestion in specific zones). After re-legalization, macros should be more evenly spread → lower congestion → lower proxy.
+**When this helps:** When macros are clustered in certain zones, causing high congestion there. After re-legalizing from the pushed starting positions, macros should be more evenly spread across the canvas, which reduces congestion and lowers the proxy score.
 
-**Why no RL:** MaskRegulate trains for hours on each benchmark. Our directed perturbation captures the same geometric intuition in <0.1s with no training.
+**Why no RL:** MaskRegulate trains for hours per benchmark. Our directed perturbation captures the same geometric idea in under 0.1 seconds with no training required.
 
 ---
 
@@ -212,7 +212,7 @@ def _density_gradient_perturb(init_pos, leg_pos, ...):
 
 ### How It Works
 
-ChiPFormer's key insight: RL placement (CT, MaskPlace) requires thousands of episodes *per circuit* to train. This is impractical for new circuits. ChiPFormer trains **once** on a dataset of existing placements and then **transfers** to new circuits zero-shot.
+ChiPFormer's key insight: RL placement methods (like Circuit Training and MaskPlace) require thousands of training episodes per circuit. That is impractical when you have a new circuit you have never seen before. ChiPFormer trains **once** on a dataset of existing placements and then **transfers** to new circuits without any retraining (zero-shot).
 
 #### Architecture: Offline Decision Transformer
 
@@ -223,11 +223,11 @@ Input sequence per timestep:
   [R_t, s_t, a_t]  = [return-to-go, state-image, action]
 
 Where:
-  R_t = sum of future rewards (return conditioning)
-  s_t = 3-channel 84×84 image (canvas + wire_mask + position_mask)
+  R_t = sum of future rewards (tells the model how good a result to aim for)
+  s_t = 3-channel 84x84 image (canvas + wire_mask + position_mask)
   a_t = integer grid cell index (where to place the next macro)
 
-At inference: set R_t = high desired return → model generates high-quality actions
+At inference: set R_t to a high value and the model generates high-quality actions.
 ```
 
 The DT backbone is a 6-layer causal GPT (128 embedding dim) with a critical addition: **circuit graph embeddings** as a global conditioning token.
@@ -235,18 +235,18 @@ The DT backbone is a 6-layer causal GPT (128 embedding dim) with a critical addi
 #### Circuit Graph Embeddings (VGAE)
 
 ```python
-# graph_model.py — Variational Graph Autoencoder
+# graph_model.py: Variational Graph Autoencoder
 class VGAE(nn.Module):
     def encode(self, X):
         hidden = GraphConv(X)           # Aggregate neighbor features
         z = gaussian(mean(hidden), std(hidden))  # Reparameterization trick
         return z                        # Per-node embeddings [num_macros, hidden]
 
-# graph_eval.py — Average over all nodes to get circuit token
-z_emb_avg = z.mean(axis=0)  # [hidden] — one vector per circuit
+# graph_eval.py: Average over all nodes to get one vector per circuit
+z_emb_avg = z.mean(axis=0)  # Shape: [hidden], one summary vector per circuit
 ```
 
-This circuit embedding captures the *topology* of the netlist (how macros connect) in a single vector. The DT conditions all its predictions on this vector, enabling transfer to unseen circuits.
+This circuit embedding captures the *topology* of the netlist (how macros are connected to each other) as a single compact vector. The Decision Transformer uses this vector to condition all of its placement decisions, which is what allows it to transfer to circuits it has never seen before.
 
 #### Dataset Generation
 
@@ -259,12 +259,12 @@ ChiPFormer requires a dataset of (state, action, reward) trajectories:
 class StateActionReturnDataset(Dataset):
     # Loads pre-collected trajectories from .pkl files
     # Each trajectory: sequence of (canvas_img, wire_img, mask_img, action, reward)
-    # Return-to-go: R_t = sum(rewards[t:]) — how good did the rest of the episode go?
+    # Return-to-go: R_t = sum(rewards[t:]), measuring how good the rest of the episode was
 ```
 
 ---
 
-### What We Can Adapt (Role B — ML Lead)
+### What We Can Adapt (Role B: ML Lead)
 
 We're NOT implementing the full DT (requires GPU training + dataset collection). But we can:
 
@@ -341,7 +341,7 @@ python -m macro_place.evaluate submissions/sameer_v1/placer.py --all
 ## Next Research Priorities
 
 1. **Test directed restarts**: Run full 17-benchmark eval, compare to 1.49 average.
-2. **Noise sweep on ibm01**: Try density-grad at frac=0.02, 0.04, 0.06, 0.08 — find optimal.
+2. **Noise sweep on ibm01**: Try density-grad at frac=0.02, 0.04, 0.06, 0.08 to find the best value.
 3. **ChiPFormer VGAE**: Implement circuit embeddings to predict per-benchmark optimal parameters.
 4. **MaskRegulate regularity metric**: Add the size-weighted centering component (not just occupancy density).
 5. **DREAMPlace bridge**: Convert `.pb.txt` → Bookshelf for GPU-accelerated global placement.
