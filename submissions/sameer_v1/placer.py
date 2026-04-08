@@ -31,7 +31,7 @@ Why restarts beat SA:
 
 Proxy cost breakdown (why congestion is the target):
   Proxy = 1×WL + 0.5×density + 0.5×congestion
-  WL ≈ 0.06 (tiny), congestion ≈ 2.0 (dominant — 30× larger).
+  WL ≈ 0.06 (tiny), congestion ≈ 2.0 (dominant, about 30× larger).
   All directed perturbations target congestion, not WL.
 
 Baselines:
@@ -179,24 +179,24 @@ def _density_score(pos: np.ndarray, n: int, cw: float, ch: float) -> float:
 
 def _compute_wire_pull(pos: np.ndarray, benchmark: Benchmark, n: int) -> np.ndarray:
     """
-    Wire-pull vector field — adapted from WireMask-BBO (Gu et al., NeurIPS 2023).
+    Wire-pull vector field, adapted from WireMask-BBO (Gu et al., NeurIPS 2023).
 
     WireMask-BBO's greedy evaluator places each macro at the grid cell that
     minimises the HPWL increase over all its connected nets (the 'wire mask').
-    We approximate this as a continuous pull: for each macro i, sum the
-    displacement vectors from i to the centroid of each net it belongs to,
-    weighted by net weight. The result is the direction that most reduces
+    We approximate this as a continuous pull vector: for each macro i, we sum
+    the displacement vectors from i toward the centroid of each net it belongs
+    to, weighted by net weight. The result is the direction that most reduces
     total HPWL if macro i moves there.
 
-    Only hard macros (indices < n) are used as net participants — ports are
-    not perturbed, so omitting them makes the pull slightly conservative but
-    keeps the code benchmark-agnostic.
+    Only hard macros (indices < n) are used as net participants. Ports are not
+    perturbed, so omitting them makes the pull slightly conservative but keeps
+    the code compatible across all benchmarks.
 
     Returns
     -------
     pull : np.ndarray [n, 2]
         Unnormalized pull displacement per hard macro.
-        Magnitude encodes how 'important' the move is; used in _wire_pull_perturb.
+        Larger magnitude means the move matters more. Used in _wire_pull_perturb.
     """
     pull = np.zeros((n, 2), dtype=np.float64)
 
@@ -209,7 +209,7 @@ def _compute_wire_pull(pos: np.ndarray, benchmark: Benchmark, n: int) -> np.ndar
             continue
 
         net_pos = pos[hard_nodes]           # [k, 2]
-        centroid = net_pos.mean(axis=0)     # [2] — HPWL midpoint approximation
+        centroid = net_pos.mean(axis=0)     # [2], HPWL midpoint approximation
 
         for nd in hard_nodes:
             pull[nd] += weight * (centroid - pos[nd])
@@ -233,17 +233,17 @@ def _wire_pull_perturb(
     Wire-pull directed perturbation (WireMask-BBO inspired).
 
     Computes per-macro wire-pull vectors from the baseline legalization,
-    then applies them (clamped to `frac × min(canvas)`) to init_pos.
-    Re-legalizing from these perturbed positions tends to produce placements
-    where connected macros are closer, reducing HPWL at the cost of slight
-    density increase.  In practice this is useful when WL dominates over
-    density (small benchmarks with dense netlists).
+    then applies them (capped at `frac × min(canvas)`) to init_pos.
+    Re-legalizing from these shifted positions tends to produce placements
+    where connected macros are closer together, which reduces HPWL at the
+    cost of a slight density increase. Most useful for small benchmarks with
+    dense netlists where wirelength is a meaningful fraction of the proxy score.
 
     Parameters
     ----------
-    init_pos : initial.plc positions (unlegalized) — we perturb these.
-    leg_pos  : baseline legalized positions — used only to compute pull vectors.
-    frac     : displacement cap as fraction of min(cw, ch).
+    init_pos : initial.plc positions (before legalization). These get perturbed.
+    leg_pos  : baseline legalized positions. Used only to compute pull vectors.
+    frac     : displacement cap as a fraction of min(cw, ch).
     """
     magnitude = frac * min(cw, ch)
     pull = _compute_wire_pull(leg_pos, benchmark, n)
@@ -268,15 +268,15 @@ def _wire_pull_perturb(
 
 def _congestion_heatmap(pos: np.ndarray, n: int, cw: float, ch: float, G: int = 20) -> np.ndarray:
     """
-    Macro occupancy density grid — basis of MaskRegulate's regularity mask.
+    Macro occupancy density grid, used as the basis for MaskRegulate's regularity mask.
 
-    MaskRegulate (Chen et al., NeurIPS 2024) defines a 'regularity' metric
-    that penalises macros placed far from a balanced/centered distribution.
-    Their get_regular_mask() returns per-cell regularity cost, guiding the RL
-    policy away from overcrowded zones.
+    MaskRegulate (Chen et al., NeurIPS 2024) defines a regularity metric
+    that penalizes macros placed far from a balanced, spread-out distribution.
+    Their get_regular_mask() returns a per-cell cost that guides the RL policy
+    away from overcrowded zones.
 
-    We build the same signal without RL: a G×G grid where each cell stores
-    the number of macro centers inside it.  High cell counts = congestion risk.
+    We build the same signal without any RL: a G×G grid where each cell stores
+    the number of macro centers inside it. High cell counts signal congestion risk.
 
     Returns
     -------
@@ -321,27 +321,25 @@ def _density_gradient_perturb(
     """
     Congestion-aware directed perturbation (MaskRegulate regularity inspired).
 
-    MaskRegulate's get_regular_mask() penalises each candidate cell by how
-    overcrowded it is relative to the chip mean.  Their RL policy learns to
-    avoid those cells.  We replicate this WITHOUT RL:
+    MaskRegulate's get_regular_mask() penalizes each candidate cell based on
+    how overcrowded it is compared to the chip average. Their RL policy learns
+    to avoid crowded cells. We replicate this idea without RL, using 5 steps:
 
-      1. Build G×G macro occupancy grid from the baseline legalization.
-      2. Apply 3 passes of box blur to smooth out quantization artifacts.
-      3. Compute the negative density gradient (finite differences) —
-         the direction pointing from each cell toward its lowest-density
-         neighbor.
-      4. For each movable hard macro, look up its cell's gradient and
-         apply a displacement of `frac × min(cw,ch)` in that direction
-         to init_pos.
-      5. Re-legalizing from these displaced positions tends to spread macros
-         more evenly, reducing both density and congestion components.
+      1. Build a G×G macro occupancy grid from the baseline legalization.
+      2. Apply 3 passes of box blur to smooth out sharp grid-cell boundaries.
+      3. Compute the negative density gradient using finite differences.
+         This points from each cell toward its nearest lower-density neighbor.
+      4. For each movable hard macro, look up its cell's gradient direction
+         and shift init_pos by `frac × min(cw, ch)` in that direction.
+      5. Re-legalizing from these shifted positions spreads macros more evenly,
+         which reduces both the density and congestion components of proxy cost.
 
     Parameters
     ----------
-    init_pos : initial.plc positions — we perturb these for re-legalization.
-    leg_pos  : baseline legalized positions — used only to build the heatmap.
-    frac     : displacement magnitude as fraction of min(cw, ch).
-    G        : grid resolution (default 20 × 20).
+    init_pos : initial.plc positions. These get shifted for re-legalization.
+    leg_pos  : baseline legalized positions. Used only to build the heatmap.
+    frac     : shift magnitude as a fraction of min(cw, ch).
+    G        : grid resolution (default 20 x 20).
     """
     magnitude = frac * min(cw, ch)
     cell_w = cw / G
@@ -390,10 +388,10 @@ class MacroPlacer:
     Multi-restart legalization placer with directed perturbations.
 
     Restart schedule (subject to adaptive time budget):
-      0  Baseline          — unperturbed initial.plc legalization
-      1  Density-grad      — MaskRegulate regularity: push from crowded zones
-      2  Wire-pull         — WireMask-BBO: pull toward net centroids
-      3+ Random Gaussian   — stochastic restarts (original strategy)
+      0  Baseline        - legalize directly from initial.plc, no perturbation
+      1  Density-grad    - MaskRegulate: push macros out of crowded zones
+      2  Wire-pull       - WireMask-BBO: pull macros toward their net centroids
+      3+ Random Gaussian - small random perturbations (original strategy)
 
     Parameters
     ----------
@@ -440,9 +438,9 @@ class MacroPlacer:
         plc = _load_plc(benchmark.name)
         use_exact = (plc is not None) and (n <= EXACT_MACRO_THRESHOLD)
         if plc is None:
-            _log("  Warning: plc unavailable — using density-score fallback")
+            _log("  Warning: plc unavailable, using density-score fallback")
         elif n > EXACT_MACRO_THRESHOLD:
-            _log(f"  Large benchmark (n={n} > {EXACT_MACRO_THRESHOLD}) — "
+            _log(f"  Large benchmark (n={n} > {EXACT_MACRO_THRESHOLD}), "
                  f"using density fallback to rank restarts (fast)")
 
         def _score(pos: np.ndarray) -> Tuple[float, torch.Tensor]:
@@ -456,7 +454,7 @@ class MacroPlacer:
                     pass
             return _density_score(pos, n, cw, ch), pl
 
-        # ── Restart 0: Baseline ───────────────────────────────────────────
+        # -- Restart 0: Baseline ----------------------------------------------
         _log(f"  Restart 0 (baseline)...")
         t1 = time.time()
         baseline_pos = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
@@ -490,7 +488,7 @@ class MacroPlacer:
                 return True  # improvement found
             return True  # no improvement but keep going
 
-        # ── Restart 1: Density-gradient (MaskRegulate) ───────────────────
+        # -- Restart 1: Density-gradient (MaskRegulate) ----------------------
         density_perturbed = _density_gradient_perturb(
             init_pos, baseline_pos, movable, n, cw, ch, hw, hh, frac=0.04
         )
@@ -498,7 +496,7 @@ class MacroPlacer:
             _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
             return best_pl
 
-        # ── Restart 2: Wire-pull (WireMask-BBO) ──────────────────────────
+        # -- Restart 2: Wire-pull (WireMask-BBO) -----------------------------
         wire_perturbed = _wire_pull_perturb(
             init_pos, baseline_pos, benchmark, movable, n, cw, ch, hw, hh, frac=0.06
         )
@@ -506,7 +504,7 @@ class MacroPlacer:
             _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
             return best_pl
 
-        # ── Restarts 3+: Random Gaussian ─────────────────────────────────
+        # -- Restarts 3+: Random Gaussian -------------------------------------
         noise_scale_base = min(cw, ch)
         for k, frac in enumerate(self.noise_fracs[: self.n_restarts - 3], start=3):
             noise = np.random.normal(0, frac * noise_scale_base, init_pos.shape)
