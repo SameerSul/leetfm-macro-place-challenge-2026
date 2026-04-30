@@ -68,19 +68,21 @@ def _will_legalize(
     ch: float,
     n: int,
     deadline: float = None,
+    order: list = None,
 ) -> np.ndarray:
     """
-    Largest-macro-first min-displacement legalization.
-    Macros are placed one by one (largest area first) at the nearest
-    overlap-free position to their target, found by expanding spiral search.
-    Non-movable macros are fixed in place first.
+    Min-displacement legalization with configurable macro placement order.
+    Macros are placed one by one at the nearest overlap-free position to their
+    target, found by expanding spiral search. Non-movable macros are fixed first.
 
-    deadline: optional wall-clock time.time() value. If exceeded while placing,
-    remaining unplaced macros keep their pos[] value (may overlap; caller discards).
+    order: list of macro indices defining placement sequence. Default (None)
+    uses largest-area-first. Different orders explore different legal arrangements.
+    deadline: optional wall-clock time.time() value; remaining macros keep pos[].
     """
     sep_x = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
     sep_y = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
-    order = sorted(range(n), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
+    if order is None:
+        order = sorted(range(n), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
     placed = np.zeros(n, dtype=bool)
     legal = pos.copy()
     for idx in order:
@@ -662,18 +664,22 @@ class MacroPlacer:
         rng_cong = np.random.RandomState(self.seed + 1)
         cong_pos = baseline_pos
         cong_improved = False
-        for cong_iter in range(4):
+        cong_frac = 0.04
+        for cong_iter in range(12):
             if cong_iter > 0:
                 remaining = self.time_budget_s - (time.time() - t0)
-                if remaining < 3.0 * t_one_score * 1.3:
+                # Larger factor for full-frac iters (reserve for Phase 2 + noise).
+                # Smaller factor for adaptive halved-frac retries (only 1 eval needed).
+                budget_factor = 3.0 if cong_frac >= 0.04 else 1.5
+                if remaining < budget_factor * t_one_score * 1.3:
                     break
             cong_perturbed = _routing_congestion_perturb(
                 cong_pos, plc, benchmark, n, cw, ch, hw, hh, movable,
-                frac=0.04, rng=rng_cong,
+                frac=cong_frac, rng=rng_cong,
             )
             score_before = best_score
-            if not _try_restart(f"cong-grad iter={cong_iter + 1}", cong_perturbed,
-                                 k=1 + directed_ran):
+            if not _try_restart(f"cong-grad iter={cong_iter + 1} f={cong_frac:.2f}",
+                                 cong_perturbed, k=1 + directed_ran):
                 _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
                 return best_pl
             directed_ran += 1
@@ -682,6 +688,11 @@ class MacroPlacer:
                     [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
                 )
                 cong_improved = True
+                cong_frac = 0.04  # reset frac on success
+            elif cong_improved and cong_frac > 0.01:
+                # At least one prior improvement: try a gentler step before giving up.
+                # Only when cong_improved=True — ibm08/ibm01 (fail at iter=1) break immediately.
+                cong_frac *= 0.5
             else:
                 break  # plc's map is stale, stop iterating
 
