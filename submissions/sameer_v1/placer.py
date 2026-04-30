@@ -67,12 +67,16 @@ def _will_legalize(
     cw: float,
     ch: float,
     n: int,
+    deadline: float = None,
 ) -> np.ndarray:
     """
     Largest-macro-first min-displacement legalization.
     Macros are placed one by one (largest area first) at the nearest
     overlap-free position to their target, found by expanding spiral search.
     Non-movable macros are fixed in place first.
+
+    deadline: optional wall-clock time.time() value. If exceeded while placing,
+    remaining unplaced macros keep their pos[] value (may overlap; caller discards).
     """
     sep_x = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
     sep_y = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
@@ -80,6 +84,8 @@ def _will_legalize(
     placed = np.zeros(n, dtype=bool)
     legal = pos.copy()
     for idx in order:
+        if deadline is not None and time.time() > deadline:
+            break
         if not movable[idx]:
             placed[idx] = True
             continue
@@ -614,8 +620,11 @@ class MacroPlacer:
                 return False  # signal: stop further restarts
 
             t1 = time.time()
-            leg = _will_legalize(perturbed_init, movable, sizes, hw, hh, cw, ch, n)
-            _log(f"  Restart {k} ({label}) legalized in {time.time()-t1:.1f}s")
+            leg_deadline = t1 + 60.0  # cap spiral search; timed-out macros keep pos value
+            leg = _will_legalize(perturbed_init, movable, sizes, hw, hh, cw, ch, n,
+                                 deadline=leg_deadline)
+            t_leg = time.time() - t1
+            _log(f"  Restart {k} ({label}) legalized in {t_leg:.1f}s")
 
             score, pl = _score(leg)
             _log(f"  Candidate {k}: proxy={score:.4f}")
