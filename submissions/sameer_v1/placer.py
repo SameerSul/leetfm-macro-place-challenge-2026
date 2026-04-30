@@ -689,9 +689,11 @@ class MacroPlacer:
                 )
                 cong_improved = True
                 cong_frac = 0.04  # reset frac on success
-            elif cong_improved and cong_frac > 0.01:
-                # At least one prior improvement: try a gentler step before giving up.
-                # Only when cong_improved=True — ibm08/ibm01 (fail at iter=1) break immediately.
+            elif cong_improved and cong_frac > 0.01 and cong_iter >= 2:
+                # At least 2 prior iterations: try a gentler step before giving up.
+                # Guard cong_iter>=2 prevents firing after only 1 success (ibm02 pattern):
+                # ibm02 fails at cong_iter=1 → stale plc state critical for Phase 2 wide=8%.
+                # ibm03/ibm06 fail at cong_iter=2+ → stale plc less critical, adaptive helps.
                 cong_frac *= 0.5
             else:
                 break  # plc's map is stale, stop iterating
