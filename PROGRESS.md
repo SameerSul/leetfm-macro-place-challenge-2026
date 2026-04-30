@@ -93,10 +93,14 @@ v6 = current best (clean eval 2026-04-30). Improvements shown vs v4 clean baseli
 | ibm17 | 760 | 51x44=2244 | 1.7437 | **1.7437** | 1.6446 | -6.0% | n>400; exact too slow; gap=0.099 |
 | ibm18 | 285 | 55x39=2145 | 1.7941 | **1.7941** | 1.7722 | -1.2% | grid>2000; exact takes ~220s confirmed |
 
-**v6 clean avg (estimated, ibm10-18 unchanged):**
-Sum of 9 exact benchmarks (v6): 1.1854+1.6203+1.3854+1.3882+1.6838+1.4924+1.5251+1.1304+1.2354 = 12.6464
-Sum of 8 non-exact (v1 unchanged): 1.4037+1.6507+1.4011+1.6033+1.6061+1.5323+1.7437+1.7941 = 12.7350
-Total: 25.3814, **AVG = 1.4930** (vs RePlAce 1.4578 = 2.4% above target; vs v1 1.5062 = -8.8% improvement)
+**v6 clean avg (CONFIRMED, clean eval 2026-04-30):**
+Sum: 1.1854+1.6203+1.3854+1.3882+1.6838+1.4924+1.5251+1.1304+1.4037+1.2354+1.6507+1.4011+1.6033+1.6061+1.5323+1.7437+1.7941 = 25.3814
+**AVG = 1.4930** vs RePlAce 1.4578 (+2.4% gap remaining) vs v1 1.5062 (-8.8% improvement)
+
+v6 improvements vs v1 legalization-only:
+  ibm02: -0.060 (cong-grad), ibm03: -0.025 (cong-grad beats 2% noise), ibm04: -0.022 (cong-grad)
+  ibm06: -0.036 (cong-grad), ibm07: -0.003 (1% noise), ibm08: -0.033 (6% noise)
+  ibm09: -0.006 (cong-grad), ibm01: 0 (low cong, noise wins same), ibm11: 0 (baseline wins same)
 
 Non-exact benchmarks (n>400 or grid>2000) return pure baseline; no restarts possible.
 ibm10, ibm12 already beat RePlAce at legalization-only.
