@@ -730,6 +730,28 @@ class MacroPlacer:
                 if best_score >= score_before:
                     break  # stop wide steps if this one didn't improve
 
+        # Phase 3: cong-grad from best known position using current (stale) plc.
+        # After Phase 2 failed wide steps, plc holds the cong map from a placement
+        # that was WORSE than our best. Moving from the BEST position away from the
+        # high-congestion regions of this stale map may explore a different local
+        # minimum. Only runs when cong-grad improved at least once (cong_improved)
+        # so we know the gradient signal is useful for this benchmark.
+        if cong_improved:
+            remaining = self.time_budget_s - (time.time() - t0)
+            if remaining >= t_one_score * 1.3:
+                best_pos_now = np.stack(
+                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
+                )
+                phase3_perturbed = _routing_congestion_perturb(
+                    best_pos_now, plc, benchmark, n, cw, ch, hw, hh, movable,
+                    frac=0.04, rng=rng_cong,
+                )
+                if not _try_restart("cong-grad phase3", phase3_perturbed,
+                                     k=1 + directed_ran):
+                    _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
+                    return best_pl
+                directed_ran += 1
+
         # -- Restarts 1+: Random Gaussian -------------------------------------
         noise_scale_base = min(cw, ch)
         for k, frac in enumerate(
