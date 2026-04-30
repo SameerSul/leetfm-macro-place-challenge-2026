@@ -546,9 +546,11 @@ class MacroPlacer:
         #   n > EXACT_MACRO_THRESHOLD: scoring too slow without exception
         #   grid_cells > EXACT_GRID_CELL_LIMIT: routing grid makes scoring slow regardless of n
         #     ibm18: 55x39=2145 cells → ~220s; ibm08: 38x34=1292 cells → ~39s
-        # Threshold 400 includes ibm11 (n=373, 76s/score, gets 1 restart in 200s budget).
-        # ibm13 (n=424, 101s/score) exceeds SLOW_SCORE_THRESHOLD and returns baseline anyway.
-        EXACT_MACRO_THRESHOLD = 400
+        # Threshold 340 excludes ibm11 (n=373): under CPU load ibm11 baseline scores in 263s
+        # (over budget), stalling the full eval. ibm11 returns baseline either way (no restart
+        # has ever improved it), so excluding it just makes it faster and deterministic.
+        # ibm08 (n=301) and all smaller benchmarks stay included.
+        EXACT_MACRO_THRESHOLD = 340
         EXACT_GRID_CELL_LIMIT = 2000  # ibm15 (2166) and ibm18 (2145) score in 160-220s; excluded
         grid_cells = benchmark.grid_rows * benchmark.grid_cols
         plc = _load_plc(benchmark.name)
@@ -593,7 +595,7 @@ class MacroPlacer:
         # WORSE proxy scores (higher congestion). Full-eval evidence: density fallback hurt
         # ibm10-17 by avg +0.14 per benchmark vs v1 baseline-only (1.6595 vs 1.5220 est.).
         # For any benchmark that cannot use exact scoring, just return the baseline.
-        # This covers: (a) large-grid (ibm18: 55x39=2145 cells), (b) large-n (n>350).
+        # This covers: (a) large-grid (ibm18: 55x39=2145 cells), (b) large-n (n>340).
         if not use_exact:
             _log(f"  Cannot use exact scoring: returning baseline only "
                  f"(density fallback anti-correlated with proxy)")
@@ -609,12 +611,13 @@ class MacroPlacer:
             return best_pl
 
         def _try_restart(label: str, perturbed_init: np.ndarray, k: int) -> bool:
-            """Legalize + score one candidate. Returns True if best score updated."""
+            """Legalize + score one candidate. Returns False if budget exhausted."""
             nonlocal best_score, best_pl
             elapsed = time.time() - t0
             remaining = self.time_budget_s - elapsed
-            # t_one_score is pure scoring time. Legalization adds 1-10s on top.
-            # Factor 1.3 covers score + typical legalize without over-reserving budget.
+            # t_one_score is the baseline scoring time. Factor 1.3 covers score + legalize.
+            # We use the baseline measurement (not a running max) to avoid over-conserving
+            # when individual scorings are slightly slower than baseline (load jitter).
             estimated_cost = t_one_score * 1.3
             if remaining < estimated_cost:
                 _log(f"  Skipping restart {k}+ (budget: {remaining:.0f}s left, "
@@ -633,8 +636,14 @@ class MacroPlacer:
             if score < best_score:
                 best_score = score
                 best_pl = pl
-                return True  # improvement found
-            return True  # no improvement but keep going
+
+            # Safety: if scoring overran the budget, stop immediately rather than
+            # launching another restart that would push total time even further over.
+            if time.time() - t0 > self.time_budget_s:
+                _log(f"  Over budget after scoring ({time.time()-t0:.0f}s); stopping")
+                return False
+
+            return True
 
         # -- Restart 1: Density-gradient (MaskRegulate) ----------------------
         # Only for small benchmarks (n <= 100): density-grad helped ibm01 (54 macros)
