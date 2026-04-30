@@ -547,7 +547,7 @@ class MacroPlacer:
         # Threshold 400 includes ibm11 (n=373, 76s/score, gets 1 restart in 200s budget).
         # ibm13 (n=424, 101s/score) exceeds SLOW_SCORE_THRESHOLD and returns baseline anyway.
         EXACT_MACRO_THRESHOLD = 400
-        EXACT_GRID_CELL_LIMIT = 2000
+        EXACT_GRID_CELL_LIMIT = 2000  # ibm15 (2166) and ibm18 (2145) score in 160-220s; excluded
         grid_cells = benchmark.grid_rows * benchmark.grid_cols
         plc = _load_plc(benchmark.name)
         use_exact = (
@@ -649,20 +649,64 @@ class MacroPlacer:
                 return best_pl
             directed_ran = 1
 
-        # -- Routing-congestion-gradient restart (v6) -------------------------
-        # After scoring baseline with exact proxy, plc has the routing congestion
-        # map computed. Use it to move macros in high-congestion cells toward
-        # lower-congestion neighbors. Uses separate rng (rng_cong) so the main
-        # np.random state is unchanged and subsequent noise draws are identical to
-        # before this restart was added.
+        # -- Routing-congestion-gradient descent (v8, iterative + wide) --------
+        # Phase 1: iterative gradient descent at frac=0.04.
+        #   After each improving step, extract the new position from best_pl
+        #   and use it (with plc's now-updated congestion map) as the starting
+        #   point for the next step. Stops when a step fails to improve or
+        #   budget can't fit 3 noise restarts.
+        # Phase 2: wide step at frac=0.08 from baseline_pos using current plc.
+        #   Only runs if phase 1 improved at least once (otherwise cong-grad
+        #   is not useful for this benchmark). Uses rng_cong so main random
+        #   state is unchanged and subsequent noise draws are identical to v5.
         rng_cong = np.random.RandomState(self.seed + 1)
-        cong_perturbed = _routing_congestion_perturb(
-            baseline_pos, plc, benchmark, n, cw, ch, hw, hh, movable, frac=0.04, rng=rng_cong
-        )
-        if not _try_restart("congestion-grad frac=4%", cong_perturbed, k=1 + directed_ran):
-            _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
-            return best_pl
-        directed_ran += 1
+        cong_pos = baseline_pos
+        cong_improved = False
+        for cong_iter in range(4):
+            if cong_iter > 0:
+                remaining = self.time_budget_s - (time.time() - t0)
+                if remaining < 3.0 * t_one_score * 1.3:
+                    break
+            cong_perturbed = _routing_congestion_perturb(
+                cong_pos, plc, benchmark, n, cw, ch, hw, hh, movable,
+                frac=0.04, rng=rng_cong,
+            )
+            score_before = best_score
+            if not _try_restart(f"cong-grad iter={cong_iter + 1}", cong_perturbed,
+                                 k=1 + directed_ran):
+                _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
+                return best_pl
+            directed_ran += 1
+            if best_score < score_before:
+                cong_pos = np.stack(
+                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
+                )
+                cong_improved = True
+            else:
+                break  # plc's map is stale, stop iterating
+
+        # Phase 2: wide steps from baseline using evolved plc congestion state.
+        # Loop over [0.08, 0.12]; stop when a step fails to improve or budget
+        # runs out. Each step uses the gradient from the current plc state
+        # (which encodes where prior iterations struggled), applied with a
+        # larger displacement from the original baseline spread.
+        if cong_improved:
+            for wide_frac in [0.08, 0.12]:
+                remaining = self.time_budget_s - (time.time() - t0)
+                if remaining < t_one_score * 1.3:
+                    break
+                cong_wide = _routing_congestion_perturb(
+                    baseline_pos, plc, benchmark, n, cw, ch, hw, hh, movable,
+                    frac=wide_frac, rng=rng_cong,
+                )
+                score_before = best_score
+                if not _try_restart(f"cong-grad wide={wide_frac:.0%}", cong_wide,
+                                     k=1 + directed_ran):
+                    _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
+                    return best_pl
+                directed_ran += 1
+                if best_score >= score_before:
+                    break  # stop wide steps if this one didn't improve
 
         # -- Restarts 1+: Random Gaussian -------------------------------------
         noise_scale_base = min(cw, ch)
