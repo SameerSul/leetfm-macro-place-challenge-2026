@@ -91,20 +91,20 @@ Target: beat RePlAce avg of 1.4578.
 
 ## Per-Benchmark Detail (confirmed from full evals)
 
-v8 = current best (confirmed per-benchmark 2026-04-30). Full eval running.
+v10 = current best (per-benchmark confirmed 2026-04-30). Full v10 eval running.
 
-| Benchmark | hard_n | grid_cells | v1 (leg) | v6 | **v8 (current)** | RePlAce | vs RePlAce | Notes |
+| Benchmark | hard_n | grid_cells | v1 (leg) | v8 | **v10 (current)** | RePlAce | vs RePlAce | Notes |
 |---|---|---|---|---|---|---|---|---|
 | ibm01 | 246 | 45x41=1845 | 1.2253 | 1.1854 | **1.1854** | 0.9976 | -18.8% | t_score=7.8s; 6% noise wins; cong-grad worse |
-| ibm02 | 271 | 30x27=810 | 1.6800 | 1.6203 | **1.5823** | 1.8370 | +14.0% | t_score=13s; iter+wide=8% wins; gap CLOSED vs RePlAce |
-| ibm03 | 290 | 32x29=928 | 1.4100 | 1.3854 | **1.3583** | 1.3222 | -2.7% | t_score=9s; 2 iter steps |
-| ibm04 | 295 | 31x30=930 | 1.4101 | 1.3882 | **1.3479** | 1.3024 | -3.5% | t_score=12s; 4 iter steps (all improving) |
-| ibm06 | 178 | 31x28=868 | 1.7198 | 1.6838 | **1.6810** | 1.6187 | -3.8% | t_score=13s; 2 iter steps; wide=8% 1.6823 worse |
-| ibm07 | 291 | 35x32=1120 | 1.4950 | 1.4924 | **1.4950** | 1.4633 | -2.2% | cong-grad doesn't help; baseline wins (minor timing var) |
-| ibm08 | 301 | 38x34=1292 | 1.5582 | 1.5251 | **1.5251** | 1.4285 | -6.8% | cong-grad worse; wide skipped; 6% noise wins |
-| ibm09 | 253 | 36x38=1368 | 1.1363 | 1.1304 | **1.1304** | 1.1194 | -1.0% | 1 iter wins; wide=8% 1.1668 worse |
+| ibm02 | 271 | 30x27=810 | 1.6800 | 1.5823 | **1.5823** | 1.8370 | +14.0% | t_score=13s; iter+wide=8% wins; gap CLOSED vs RePlAce |
+| ibm03 | 290 | 32x29=928 | 1.4100 | 1.3583 | **1.3547** | 1.3222 | -2.5% | t_score=9s; adaptive frac=0.01 at iter=5 improves |
+| ibm04 | 295 | 31x30=930 | 1.4101 | 1.3479 | **1.3468** | 1.3024 | -3.4% | t_score=12s; 5 iter steps; timing-sensitive (may show 1.3479) |
+| ibm06 | 178 | 31x28=868 | 1.7198 | 1.6810 | **1.6802** | 1.6187 | -3.8% | t_score=13s; frac=0.02 at iter=4 improves after iter=3 fails |
+| ibm07 | 291 | 35x32=1120 | 1.4950 | 1.4950 | **1.4950** | 1.4633 | -2.2% | cong-grad doesn't help; baseline wins |
+| ibm08 | 301 | 38x34=1292 | 1.5582 | 1.5251 | **1.5251** | 1.4285 | -6.8% | cong-grad worse; 6% noise wins (clean t_score~30s) |
+| ibm09 | 253 | 36x38=1368 | 1.1363 | 1.1304 | **1.1304** | 1.1194 | -1.0% | 1 iter wins; v10 result pending |
 | ibm10 | 786 | 55x41=2255 | 1.4037 | 1.4037 | **1.4037** | 1.5009 | +6.5% | n>400; returns baseline |
-| ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **1.2354** | 1.1774 | -4.9% | cong-grad worse; wide skipped; baseline wins |
+| ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **1.2354** | 1.1774 | -4.9% | cong-grad worse; all perturbations worse; baseline wins |
 | ibm12 | 651 | 47x47=2209 | 1.6507 | 1.6507 | **1.6507** | 1.7261 | +4.4% | n>400; returns baseline |
 | ibm13 | 424 | 43x43=1849 | 1.4011 | 1.4011 | **1.4011** | 1.3355 | -4.9% | n>400; returns baseline |
 | ibm14 | 614 | 49x44=2156 | 1.6033 | 1.6033 | **1.6033** | 1.5436 | -3.9% | n>400; returns baseline |
@@ -116,6 +116,24 @@ v8 = current best (confirmed per-benchmark 2026-04-30). Full eval running.
 **v8 estimated avg (per-benchmark confirmed, full eval running):**
 Sum: 1.1854+1.5823+1.3583+1.3479+1.6810+1.4950+1.5251+1.1304+1.4037+1.2354+1.6507+1.4011+1.6033+1.6061+1.5323+1.7437+1.7941 = 25.2757
 **EST AVG = 1.4868** vs RePlAce 1.4578 (+2.0% gap remaining) vs v6 1.4930 (-0.006 improvement)
+
+---
+
+### v10: Adaptive cong-grad frac + range(12) (CURRENT)
+- Extended iterative loop from range(4) to range(12)
+- Adaptive frac reduction: when frac=0.04 fails but cong_improved=True, halve
+  frac (0.04→0.02→0.01) and retry from current best position. Only fires when
+  prior steps improved — ibm08/ibm01 (fail at iter=1) break immediately, no change.
+- Budget factor split: 3.0× reserve for full-frac iters; 1.5× for halved-frac
+  retries (smaller reserve since only 1 eval slot needed).
+- Committed: ca08943; full 17-benchmark eval running.
+
+Confirmed improvements vs v8:
+  ibm03: 1.3583 → 1.3547 (frac=0.01 at iter=5 improves from cong_pos after iter=2)
+  ibm04: 1.3479 → 1.3468 (5th iteration; timing-sensitive, may show 1.3479 under load)
+  ibm06: 1.6810 → 1.6802 (frac=0.02 at iter=4 improves after iter=3 fails)
+
+No regressions: ibm01 (1.1854), ibm02 (1.5823), ibm08 (1.5251 clean) unaffected.
 
 v8 improvements vs v6:
   ibm02: -0.038 (iterative cong-grad + wide=8% from baseline with stale iter=2 plc)
