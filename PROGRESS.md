@@ -91,15 +91,15 @@ Target: beat RePlAce avg of 1.4578.
 
 ## Per-Benchmark Detail (confirmed from full evals)
 
-v11 = current best (per-benchmark confirmed 2026-04-30). Full v10b eval: avg=1.4877.
+v11 = current best. Full v11 eval confirmed 2026-05-01: avg=**1.4882**.
 
 | Benchmark | hard_n | grid_cells | v1 (leg) | v8 | **v11 (current)** | RePlAce | vs RePlAce | Notes |
 |---|---|---|---|---|---|---|---|---|
 | ibm01 | 246 | 45x41=1845 | 1.2253 | 1.1854 | **1.1854** | 0.9976 | -18.8% | t_score=7.8s; 6% noise wins; cong-grad worse |
 | ibm02 | 271 | 30x27=810 | 1.6800 | 1.5823 | **1.5823** | 1.8370 | +14.0% | t_score=13s; iter+wide=8% wins; stale-plc trick; gap CLOSED |
 | ibm03 | 290 | 32x29=928 | 1.4100 | 1.3583 | **1.3547** | 1.3222 | -2.5% | t_score=9s; adaptive frac=0.01 at iter=5 improves |
-| ibm04 | 295 | 31x30=930 | 1.4101 | 1.3479 | **1.3390** | 1.3024 | -2.8% | t_score=15s; 6 iter steps (timing-sensitive; may show 1.3468) |
-| ibm06 | 178 | 31x28=868 | 1.7198 | 1.6810 | **1.6797** | 1.6187 | -3.8% | t_score=13s; frac=0.02 at iter=4 (full eval) |
+| ibm04 | 295 | 31x30=930 | 1.4101 | 1.3479 | **1.3479** | 1.3024 | -3.5% | t_score=15-38s; 4-6 iter steps; best-ever=1.3390 (v10b, t_score=15s) |
+| ibm06 | 178 | 31x28=868 | 1.7198 | 1.6810 | **1.6802** | 1.6187 | -3.8% | t_score=13s; cong-grad 3-4 iters wins |
 | ibm07 | 291 | 35x32=1120 | 1.4950 | 1.4950 | **1.4950** | 1.4633 | -2.2% | cong-grad doesn't help; noise doesn't help; baseline wins |
 | ibm08 | 301 | 38x34=1292 | 1.5582 | 1.5251 | **1.5251** | 1.4285 | -6.8% | cong-grad worse; 6% noise wins (clean); 1.5539 under load |
 | ibm09 | 253 | 36x38=1368 | 1.1363 | 1.1304 | **1.1304** | 1.1194 | -1.0% | 1 cong-grad iter wins |
@@ -113,12 +113,13 @@ v11 = current best (per-benchmark confirmed 2026-04-30). Full v10b eval: avg=1.4
 | ibm17 | 760 | 51x44=2244 | 1.7437 | 1.7437 | **1.7437** | 1.6446 | -6.0% | n>340; returns baseline |
 | ibm18 | 285 | 55x39=2145 | 1.7941 | 1.7941 | **1.7941** | 1.7722 | -1.2% | grid>2000; returns baseline |
 
-**v10b full eval avg (2026-04-30):** 1.4877 (ibm04=1.3390 new best; ibm08=1.5539 under load)
-**v11 clean estimate:** 1.4860 (ibm04=1.3390, ibm08=1.5251 clean)
+**v11 full eval avg (2026-05-01): 1.4882** (ibm04=1.3479 under load; ibm08=1.5539 under load)
+**Best-ever clean estimate:** ~1.4860 (ibm04=1.3390, ibm08=1.5251 clean; both timing-sensitive)
+**Gap to RePlAce:** 1.4882 - 1.4578 = 0.030 (2.1%)
 
 ---
 
-### v11: Budget safety + EXACT_MACRO_THRESHOLD 400→340 (CURRENT)
+### v11: Budget safety + EXACT_MACRO_THRESHOLD 400→340 + Phase 3 (CURRENT)
 
 **Problem found in v10b full eval**: ibm11 (n=373) baseline scored in **263.6s** under CPU load
 (8+ prior benchmarks running had heated up the CPU). The SLOW_SCORE_THRESHOLD=100s check DID
@@ -128,16 +129,20 @@ No improvement was possible anyway (all perturbations worse for ibm11), so this 
 **Fix 1**: EXACT_MACRO_THRESHOLD: 400 → 340. ibm11 (n=373 > 340) now returns baseline without
 exact scoring — same result but in <5s. ibm08 (n=301 ≤ 340) still included.
 
-**Fix 2**: `t_one_score` now adaptive running max inside `_try_restart`. If CPU slows mid-benchmark,
-future budget checks use the updated (worse) scoring time as reference, preventing more over-budget runs.
-
-**Fix 3**: Post-scoring budget check in `_try_restart`. If `time.time()-t0 > time_budget_s` after
+**Fix 2**: Post-scoring budget check in `_try_restart`. If `time.time()-t0 > time_budget_s` after
 any scoring call, return False immediately (stop further restarts). Limits overrun to ≤1 scoring
 cycle beyond budget instead of full loop continuation.
 
-**New best from v10b full eval**: ibm04=**1.3390** (6 cong-grad iterations at t_score=15s).
-Previously best was 1.3468 (5 iters at t_score=12s). Timing-sensitive — full eval conditions gave
-one extra iteration. ibm06=**1.6797** (slightly better than 1.6802 from isolated test).
+**NOTE**: Adaptive `t_one_score` (running max inside _try_restart) was implemented and then
+REVERTED. It caused ibm04 regression: baseline=19.9s updated to 22s → budget check blocked
+iter=5, giving 1.3479 instead of 1.3468. Static baseline measurement kept throughout.
+
+**Phase 3 (experimental)**: After Phase 2 wide steps, if cong_improved and budget ≥ 1.3×t_score,
+run one more cong-grad from best_pl using the current (stale) plc map. Phase 3 never fired in
+v11 full eval — budget checks too conservative for all benchmarks.
+
+**v11 full eval avg: 1.4882** (2026-05-01). ibm04=1.3479 (load-limited to 4 iters vs 6 in v10b).
+ibm08=1.5539 (6% noise skipped — scoring took 38s, only 14s left after 4 restarts).
 
 ### v10: Adaptive cong-grad frac + range(12)
 - Extended iterative loop from range(4) to range(12)
