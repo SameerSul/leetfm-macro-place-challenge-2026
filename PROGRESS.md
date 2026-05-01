@@ -91,33 +91,50 @@ Target: beat RePlAce avg of 1.4578.
 
 ## Per-Benchmark Detail (confirmed from full evals)
 
-v11 = current best. Full v11 eval confirmed 2026-05-01: avg=**1.4882**.
+v12 = current best. Full v12 eval confirmed 2026-05-01: avg=**1.4877**.
 
-| Benchmark | hard_n | grid_cells | v1 (leg) | v8 | **v11 (current)** | RePlAce | vs RePlAce | Notes |
+| Benchmark | hard_n | grid_cells | v1 (leg) | v8 | **v12 (current)** | RePlAce | vs RePlAce | Notes |
 |---|---|---|---|---|---|---|---|---|
 | ibm01 | 246 | 45x41=1845 | 1.2253 | 1.1854 | **1.1854** | 0.9976 | -18.8% | t_score=7.8s; 6% noise wins; cong-grad worse |
-| ibm02 | 271 | 30x27=810 | 1.6800 | 1.5823 | **1.5823** | 1.8370 | +14.0% | t_score=13s; iter+wide=8% wins; stale-plc trick; gap CLOSED |
-| ibm03 | 290 | 32x29=928 | 1.4100 | 1.3583 | **1.3547** | 1.3222 | -2.5% | t_score=9s; adaptive frac=0.01 at iter=5 improves |
-| ibm04 | 295 | 31x30=930 | 1.4101 | 1.3479 | **1.3479** | 1.3024 | -3.5% | t_score=15-38s; 4-6 iter steps; best-ever=1.3390 (v10b, t_score=15s) |
-| ibm06 | 178 | 31x28=868 | 1.7198 | 1.6810 | **1.6802** | 1.6187 | -3.8% | t_score=13s; cong-grad 3-4 iters wins |
+| ibm02 | 271 | 30x27=810 | 1.6800 | 1.5823 | **1.5823** | 1.8370 | +14.0% | t_score=13-16s; iter+wide=8% wins; stale-plc trick; gap CLOSED |
+| ibm03 | 290 | 32x29=928 | 1.4100 | 1.3583 | **1.3547** | 1.3222 | -2.5% | t_score=9-12s; adaptive frac=0.01 at iter=7-8 wins |
+| ibm04 | 295 | 31x30=930 | 1.4101 | 1.3479 | **1.3390** | 1.3024 | -2.8% | t_score=16s clean; 6 cong-grad iters → new best-ever in full eval |
+| ibm06 | 178 | 31x28=868 | 1.7198 | 1.6810 | **1.6797** | 1.6187 | -3.8% | t_score=19s; 3-4 iters + Phase 3 gives 1.6797 |
 | ibm07 | 291 | 35x32=1120 | 1.4950 | 1.4950 | **1.4950** | 1.4633 | -2.2% | cong-grad doesn't help; noise doesn't help; baseline wins |
 | ibm08 | 301 | 38x34=1292 | 1.5582 | 1.5251 | **1.5251** | 1.4285 | -6.8% | cong-grad worse; 6% noise wins (clean); 1.5539 under load |
 | ibm09 | 253 | 36x38=1368 | 1.1363 | 1.1304 | **1.1304** | 1.1194 | -1.0% | 1 cong-grad iter wins |
-| ibm10 | 786 | 55x41=2255 | 1.4037 | 1.4037 | **1.4037** | 1.5009 | +6.5% | n>340; returns baseline |
-| ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **1.2354** | 1.1774 | -4.9% | n>340; returns baseline fast (v11: was 266s under load!) |
-| ibm12 | 651 | 47x47=2209 | 1.6507 | 1.6507 | **1.6507** | 1.7261 | +4.4% | n>340; returns baseline |
-| ibm13 | 424 | 43x43=1849 | 1.4011 | 1.4011 | **1.4011** | 1.3355 | -4.9% | n>340; returns baseline |
-| ibm14 | 614 | 49x44=2156 | 1.6033 | 1.6033 | **1.6033** | 1.5436 | -3.9% | n>340; returns baseline |
+| ibm10 | 786 | 55x41=2255 | 1.4037 | 1.4037 | **1.4037** | 1.5009 | +6.5% | n>430; returns baseline |
+| ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **1.2354** | 1.1774 | -4.9% | n≤430 (v13: exact scoring); clean t_score~81s; SLOW_SCORE guard |
+| ibm12 | 651 | 47x47=2209 | 1.6507 | 1.6507 | **1.6507** | 1.7261 | +4.4% | n>430; returns baseline |
+| ibm13 | 424 | 43x43=1849 | 1.4011 | 1.4011 | **1.4011** | 1.3355 | -4.9% | n≤430 (v13: exact scoring); clean t_score unknown |
+| ibm14 | 614 | 49x44=2156 | 1.6033 | 1.6033 | **1.6033** | 1.5436 | -3.9% | n>430; returns baseline |
 | ibm15 | 393 | 57x38=2166 | 1.6061 | 1.6061 | **1.6061** | 1.5159 | -5.9% | grid>2000; returns baseline |
-| ibm16 | 458 | 45x48=2160 | 1.5323 | 1.5323 | **1.5323** | 1.4780 | -3.7% | n>340; returns baseline |
-| ibm17 | 760 | 51x44=2244 | 1.7437 | 1.7437 | **1.7437** | 1.6446 | -6.0% | n>340; returns baseline |
+| ibm16 | 458 | 45x48=2160 | 1.5323 | 1.5323 | **1.5323** | 1.4780 | -3.7% | n>430 AND grid>2000; returns baseline |
+| ibm17 | 760 | 51x44=2244 | 1.7437 | 1.7437 | **1.7437** | 1.6446 | -6.0% | n>430; returns baseline |
 | ibm18 | 285 | 55x39=2145 | 1.7941 | 1.7941 | **1.7941** | 1.7722 | -1.2% | grid>2000; returns baseline |
 
-**v11 full eval avg (2026-05-01): 1.4882** (ibm04=1.3479 under load; ibm08=1.5539 under load)
-**Best-ever clean estimate:** ~1.4860 (ibm04=1.3390, ibm08=1.5251 clean; both timing-sensitive)
-**Gap to RePlAce:** 1.4882 - 1.4578 = 0.030 (2.1%)
+**v12 full eval avg (2026-05-01): 1.4877** (ibm08=1.5539 under load; ibm04=1.3390 best-ever in full eval!)
+**Best-ever clean estimate:** ~1.4860 (ibm04=1.3390 confirmed, ibm08=1.5251 clean)
+**Gap to RePlAce:** 1.4877 - 1.4578 = 0.030 (2.0%)
 
 ---
+
+### v12: Phase 3 + clean eval confirms ibm04 best-ever (CURRENT)
+
+**Full eval 2026-05-01: avg=1.4877** (improved from v11 1.4882)
+
+Key result: clean t_score for ibm04 = **16.4s** (vs 38s under load in v11). This allowed 6 cong-grad
+iterations → **ibm04=1.3390**, first time best-ever has appeared in a FULL eval (not just isolated test).
+
+**Phase 3 confirmed**: ibm06 improved 1.6802 → **1.6797** via Phase 3 (cong-grad from best_pl using
+stale plc map). Phase 3 also fired for ibm02/ibm03/ibm04 but didn't improve (best already found by
+Phase 1 in those cases).
+
+**ibm08**: 1.5582 → 1.5539 (slight improvement under load; still worse than clean 1.5251).
+
+**Code change**: EXACT_MACRO_THRESHOLD raised **340 → 430** for v13. This will include ibm11 (n=373)
+and ibm13 (n=424) in exact scoring. SLOW_SCORE_THRESHOLD=100s guards against load overrun.
+ibm11 clean scoring ~81s → gets 1 cong-grad restart. ibm13 scoring time unknown (isolation test pending).
 
 ### v11: Budget safety + EXACT_MACRO_THRESHOLD 400→340 + Phase 3 (CURRENT)
 
