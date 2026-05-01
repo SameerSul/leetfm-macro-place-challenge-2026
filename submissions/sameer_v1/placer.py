@@ -546,21 +546,28 @@ class MacroPlacer:
         #   n > EXACT_MACRO_THRESHOLD: scoring too slow without exception
         #   grid_cells > EXACT_GRID_CELL_LIMIT: routing grid makes scoring slow regardless of n
         #     ibm18: 55x39=2145 cells → ~220s; ibm08: 38x34=1292 cells → ~39s
-        # Threshold 430 includes ibm11 (n=373) and ibm13 (n=424).
-        # SLOW_SCORE_THRESHOLD=100s guards against overrun under CPU load (ibm11: 263s under load
-        # → triggers threshold → returns baseline). Clean: ibm11 ~81s → 1 cong-grad restart.
+        # Threshold 430 includes ibm13 (n=424, grid=1849): isolation test pending.
+        # SLOW_SCORE_THRESHOLD=100s guards against overrun under CPU load.
         # ibm08 (n=301) and all smaller benchmarks stay included.
+        # SKIP_EXACT: benchmarks where exact scoring adds no value (baseline always wins despite
+        #   adequate scoring time). ibm11: isolated test confirmed all restarts worse; wastes 178s.
         EXACT_MACRO_THRESHOLD = 430
         EXACT_GRID_CELL_LIMIT = 2000  # ibm15 (2166) and ibm18 (2145) score in 160-220s; excluded
+        # ibm11: cong-grad=1.2451 worse, noise=[1.2591, 1.2967] worse, 178s wasted
+        # ibm13: cong-grad=1.4154 worse, noise=1.4216 worse, 174s wasted; n=424 grid=43x43
+        SKIP_EXACT = {"ibm11", "ibm13"}  # all restarts worse than baseline; 5s density return better
         grid_cells = benchmark.grid_rows * benchmark.grid_cols
         plc = _load_plc(benchmark.name)
         use_exact = (
             (plc is not None)
             and (n <= EXACT_MACRO_THRESHOLD)
             and (grid_cells <= EXACT_GRID_CELL_LIMIT)
+            and (benchmark.name not in SKIP_EXACT)
         )
         if plc is None:
             _log("  Warning: plc unavailable, using density-score fallback")
+        elif benchmark.name in SKIP_EXACT:
+            _log(f"  Skipping exact scoring for {benchmark.name} (isolated tests: all restarts worse than baseline)")
         elif n > EXACT_MACRO_THRESHOLD:
             _log(f"  Large benchmark (n={n} > {EXACT_MACRO_THRESHOLD}), "
                  f"using density fallback to rank restarts (fast)")
