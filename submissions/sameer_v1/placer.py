@@ -546,11 +546,11 @@ class MacroPlacer:
         #   n > EXACT_MACRO_THRESHOLD: scoring too slow without exception
         #   grid_cells > EXACT_GRID_CELL_LIMIT: routing grid makes scoring slow regardless of n
         #     ibm18: 55x39=2145 cells → ~220s; ibm08: 38x34=1292 cells → ~39s
-        # Threshold 340 excludes ibm11 (n=373): under CPU load ibm11 baseline scores in 263s
-        # (over budget), stalling the full eval. ibm11 returns baseline either way (no restart
-        # has ever improved it), so excluding it just makes it faster and deterministic.
+        # Threshold 430 includes ibm11 (n=373) and ibm13 (n=424).
+        # SLOW_SCORE_THRESHOLD=100s guards against overrun under CPU load (ibm11: 263s under load
+        # → triggers threshold → returns baseline). Clean: ibm11 ~81s → 1 cong-grad restart.
         # ibm08 (n=301) and all smaller benchmarks stay included.
-        EXACT_MACRO_THRESHOLD = 340
+        EXACT_MACRO_THRESHOLD = 430
         EXACT_GRID_CELL_LIMIT = 2000  # ibm15 (2166) and ibm18 (2145) score in 160-220s; excluded
         grid_cells = benchmark.grid_rows * benchmark.grid_cols
         plc = _load_plc(benchmark.name)
