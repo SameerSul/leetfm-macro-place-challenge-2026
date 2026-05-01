@@ -677,11 +677,26 @@ class MacroPlacer:
         #   Only runs if phase 1 improved at least once (otherwise cong-grad
         #   is not useful for this benchmark). Uses rng_cong so main random
         #   state is unchanged and subsequent noise draws are identical to v5.
+        # Pre-check: skip cong-grad entirely when budget is too tight.
+        #   Threshold: need budget for cong-grad + at least 3 noise restarts.
+        #   Motivation: for slow benchmarks (ibm08, t_score≈39s under load),
+        #   1 useless cong-grad restart blocks the winning 6% noise frac,
+        #   degrading 1.5251 → 1.5539. Skipping cong-grad restores the full
+        #   noise sequence. Fast benchmarks (ibm02/03/04/06) have ample budget
+        #   and are unaffected. Threshold 4.0 keeps ibm08-clean's cong-grad
+        #   running (168s > 4×32×1.3=166s) but drops it under load (161s < 4×39×1.3=203s).
         rng_cong = np.random.RandomState(self.seed + 1)
         cong_pos = baseline_pos
         cong_improved = False
         cong_frac = 0.04
         for cong_iter in range(12):
+            if cong_iter == 0:
+                _pre_rem = self.time_budget_s - (time.time() - t0)
+                _cong_min = 4.0 * t_one_score * 1.3
+                if _pre_rem < _cong_min:
+                    _log(f"  Cong-grad skipped: budget {_pre_rem:.0f}s < {_cong_min:.0f}s "
+                         f"(preserving noise slots)")
+                    break
             if cong_iter > 0:
                 remaining = self.time_budget_s - (time.time() - t0)
                 # Larger factor for full-frac iters (reserve for Phase 2 + noise).
