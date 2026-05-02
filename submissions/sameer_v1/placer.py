@@ -47,6 +47,17 @@ v15 change: exploit full 1-hour competition budget (was self-limited to 200s).
     ibm15 (~164s/score): ~18 restarts (grid limit raised to 2200)
     ibm18 (~220s/score): ~14 restarts (grid limit raised to 2200)
   noise_fracs extended to 395 entries (10× cycling of 0.06-dominant pattern).
+
+v16 change: Phase 4 macro-swap exploration (TILOS SA Assessment, TCAD 2024).
+  After noise loop, if budget remains, explore best_pl neighbourhood using
+  macro-swap moves: exchange positions of 1-3 random macro pairs and re-legalize.
+  Uses rng_swap (RandomState(seed+2)) — completely separate from main rng state;
+  noise draws for ibm01/ibm08 winning fracs are unchanged.
+  Impact:
+    ibm01 (~6s/score): noise loop takes ~300×6=1800s → ~250s left → ~35 swap iterations
+    ibm09 (~20s/score): noise loop takes ~150×20=3000s → ~300s left → ~7 swap iterations
+    ibm08 (~47s/score): noise loop exhausts budget → Phase 4 gets 0 iterations (expected)
+  Swap schedule: 1-swap (pure), 2-swap (pure), 1-swap+noise (1%), cycling through 960 entries.
 """
 
 import random
@@ -391,6 +402,63 @@ def _density_gradient_perturb(
         norm = np.sqrt(dx ** 2 + dy ** 2) + 1e-10
         perturbed[i, 0] = np.clip(init_pos[i, 0] + magnitude * dx / norm, hw[i], cw - hw[i])
         perturbed[i, 1] = np.clip(init_pos[i, 1] + magnitude * dy / norm, hh[i], ch - hh[i])
+
+    return perturbed
+
+
+def _macro_swap_perturb(
+    pos: np.ndarray,
+    movable: np.ndarray,
+    n: int,
+    rng: "np.random.RandomState",
+    n_swaps: int = 1,
+    noise_frac: float = 0.0,
+    cw: float = 1.0,
+    ch: float = 1.0,
+    hw: np.ndarray = None,
+    hh: np.ndarray = None,
+) -> np.ndarray:
+    """
+    Swap positions of n_swaps random pairs of movable macros, then optionally
+    add tiny Gaussian noise. Returns new init-style position array.
+
+    Swap move (from TILOS SA Assessment, TCAD 2024):
+      Exchange positions of two macros. When applied to the best-known legalized
+      placement and re-legalized, explores the space of macro orderings without
+      the full randomness of Gaussian noise restarts. A swap is the cheapest
+      meaningful structural change in a floorplan — it keeps the overall density
+      distribution but re-assigns which macro occupies which region.
+
+    Use cases:
+      - After noise restarts have converged to a local minimum: swap pairs of
+        macros to escape the current topology.
+      - After finding a new best placement: try nearby swap variants to refine.
+
+    Parameters
+    ----------
+    pos       : legalized or init positions [n, 2]
+    movable   : boolean mask of movable macros
+    n_swaps   : number of random swaps to apply (default 1)
+    noise_frac: additional Gaussian noise fraction applied after swap (0 = pure swap)
+    """
+    movable_idx = [i for i in range(n) if movable[i]]
+    if len(movable_idx) < 2:
+        return pos.copy()
+
+    perturbed = pos.copy()
+    for _ in range(n_swaps):
+        if len(movable_idx) < 2:
+            break
+        pair = rng.choice(len(movable_idx), 2, replace=False)
+        i, j = movable_idx[pair[0]], movable_idx[pair[1]]
+        perturbed[i], perturbed[j] = pos[j].copy(), pos[i].copy()
+
+    if noise_frac > 0 and hw is not None:
+        scale = noise_frac * min(cw, ch)
+        noise = rng.normal(0, scale, perturbed.shape)
+        lo = np.stack([hw, hh], axis=1)
+        hi = np.stack([cw - hw, ch - hh], axis=1)
+        perturbed = np.clip(perturbed + noise, lo, hi)
 
     return perturbed
 
@@ -801,9 +869,11 @@ class MacroPlacer:
 
         # -- Restarts 1+: Random Gaussian -------------------------------------
         noise_scale_base = min(cw, ch)
+        last_noise_k = 1 + directed_ran
         for k, frac in enumerate(
             self.noise_fracs[: self.n_restarts - 1 - directed_ran], start=1 + directed_ran
         ):
+            last_noise_k = k
             noise = np.random.normal(0, frac * noise_scale_base, init_pos.shape)
             perturbed = np.clip(
                 init_pos + noise,
@@ -812,6 +882,50 @@ class MacroPlacer:
             )
             if not _try_restart(f"random noise={frac:.0%}", perturbed, k=k):
                 break
+
+        # -- Phase 4: Macro-swap exploration from best position ---------------
+        # After the main noise loop, if budget remains, explore the neighbourhood
+        # of the best-found placement using macro swap moves (TILOS SA, TCAD 2024).
+        #
+        # Motivation: Gaussian noise always perturbs from init_pos (global search).
+        # Phase 4 perturbs from best_pl (local exploitation of the best discovered
+        # local minimum). Swapping pairs of macros explores different topology
+        # arrangements that noise cannot reach — particularly effective when the
+        # best result significantly improves on the baseline (deeper local minimum).
+        #
+        # Uses rng_swap (RandomState(seed+2)) so the main rng state is unchanged
+        # and any future runs are reproducible without affecting prior noise draws.
+        #
+        # Swap schedule: cycles through 1-swap and 2-swap+tiny-noise variants.
+        # For fast benchmarks (ibm01: ~7s/score), this runs ~170 extra iterations
+        # after the 300-restart noise loop. For slow benchmarks (ibm08: ~43s/score),
+        # the noise loop already exhausts the budget and Phase 4 gets 0 iterations.
+        rng_swap = np.random.RandomState(self.seed + 2)
+        swap_schedule = (
+            # (n_swaps, noise_frac): diversify swap sizes and tiny perturbations
+            [(1, 0.0)] * 5 + [(2, 0.0)] * 3 + [(1, 0.005)] * 4
+            + [(3, 0.0)] * 2 + [(1, 0.01)] * 4 + [(2, 0.005)] * 3
+            + [(1, 0.0)] * 5 + [(2, 0.01)] * 3 + [(1, 0.02)] * 3
+        ) * 20  # 960 entries — budget is the real limit
+        phase4_k = last_noise_k + 1
+        for phase4_i, (n_sw, nf) in enumerate(swap_schedule):
+            remaining = self.time_budget_s - (time.time() - t0)
+            if remaining < t_one_score * 1.3:
+                break
+            # Extract current best legalized position as swap base
+            best_pos_now = np.stack(
+                [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
+            )
+            swapped = _macro_swap_perturb(
+                best_pos_now, movable, n, rng_swap,
+                n_swaps=n_sw, noise_frac=nf,
+                cw=cw, ch=ch, hw=hw, hh=hh,
+            )
+            label = f"swap{n_sw}{'+ noise' if nf > 0 else ''} phase4/{phase4_i+1}"
+            if not _try_restart(label, swapped, k=phase4_k + phase4_i):
+                break
+        if phase4_i > 0:
+            _log(f"  Phase 4 ran {phase4_i} swap iterations")
 
         _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
         return best_pl
