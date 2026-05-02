@@ -58,8 +58,21 @@ v16 change: Phase 4 macro-swap exploration (TILOS SA Assessment, TCAD 2024).
     ibm09 (~20s/score): noise loop takes ~150×20=3000s → ~300s left → ~7 swap iterations
     ibm08 (~47s/score): noise loop exhausts budget → Phase 4 gets 0 iterations (expected)
   Swap schedule: 1-swap (pure), 2-swap (pure), 1-swap+noise (1%), cycling through 960 entries.
+
+v17 change: Parallel scoring workers for noise-restart phase.
+  MacroPlacer(n_workers=N) spawns N worker processes, each with its own PlacementCost
+  instance. Legalization stays serial in main process (no plc dependency).
+  Workers run compute_proxy_cost in parallel, overlapping with next legalization.
+  Effective throughput = min(1/t_leg, N/t_score) per second.
+  For ibm08 (t_leg≈5s, t_score≈43s): N=4 → 0.093/s → 261 restarts vs 58 serial.
+  For ibm01 (t_leg≈5s, t_score≈9s): N=4 → 0.20/s → 561 restarts vs 199 serial.
+  Default n_workers=0: auto-detect = min(8, cpu_count//2).
+  n_workers=1: serial mode (same as v16; use for debugging or memory-constrained envs).
+  Cong-grad phases (1-3) and Phase 4 swaps remain serial (need main plc state).
 """
 
+import multiprocessing as mp
+import os
 import random
 import time
 from pathlib import Path
@@ -72,6 +85,48 @@ from macro_place.benchmark import Benchmark
 
 def _log(msg: str) -> None:
     print(msg, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Parallel scoring worker (module-level so it's picklable by multiprocessing)
+# ---------------------------------------------------------------------------
+
+# Per-worker state: set once by _parallel_worker_init, reused across calls.
+_worker_plc = None
+_worker_bm = None
+
+
+def _parallel_worker_init(benchmark_dir: str) -> None:
+    """
+    Initializer for each worker process in the parallel restart pool.
+    Loads the benchmark and PlacementCost object once per worker process,
+    avoiding repeated file I/O for every restart.
+    """
+    global _worker_plc, _worker_bm
+    from macro_place.loader import load_benchmark_from_dir
+    _worker_bm, _worker_plc = load_benchmark_from_dir(benchmark_dir)
+
+
+def _parallel_score_worker(args) -> float:
+    """
+    Score a legalized placement in a worker process.
+    Uses the per-process _worker_plc and _worker_bm loaded by _parallel_worker_init.
+    Returns proxy_cost (float). Returns 1e9 on error.
+    """
+    global _worker_plc, _worker_bm
+    try:
+        leg_flat, n = args
+        import torch  # noqa - re-import for worker process
+        from macro_place.objective import compute_proxy_cost  # noqa
+
+        leg = np.array(leg_flat, dtype=np.float64).reshape(-1, 2)
+        pl = _worker_bm.macro_positions.clone()
+        pl[:n, 0] = torch.tensor(leg[:, 0], dtype=torch.float32)
+        pl[:n, 1] = torch.tensor(leg[:, 1], dtype=torch.float32)
+        costs = compute_proxy_cost(pl, _worker_bm, _worker_plc)
+        return float(costs["proxy_cost"])
+    except Exception:
+        return 1e9
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +629,22 @@ class MacroPlacer:
         noise_fracs: Optional[List[float]] = None,
         seed: int = 42,
         time_budget_s: float = 3300.0,
+        n_workers: int = 0,
     ):
+        """
+        n_workers: number of parallel scoring workers.
+          0 (default) = auto-detect: min(4, cpu_count//2), max 8.
+          1 = fully serial (same behaviour as v16 and earlier).
+          N > 1 = N parallel workers each with own PlacementCost instance.
+
+        Parallel scoring speedup (purely for the noise-restart loop):
+          - Legalization runs serially in main process (fast: ~5s).
+          - Completed legalizations are submitted to workers for scoring.
+          - Workers run compute_proxy_cost in parallel (slow: 9-220s).
+          - Effective throughput ~= min(legalisation_rate, N×score_rate).
+          For ibm08 (score=43s/each): 4 workers → ~4x more restarts.
+          For ibm01 (score=9s/each): 4 workers → ~3x more restarts.
+        """
         self.n_restarts = n_restarts
         # Budget check in _try_restart terminates the loop early; n_restarts is an upper cap.
         # First 35 entries are "core" — RNG draw positions preserved so all v14 wins are
@@ -613,6 +683,12 @@ class MacroPlacer:
         ]
         self.seed = seed
         self.time_budget_s = time_budget_s
+        # Resolve n_workers: 0=auto, 1=serial, N>1=parallel
+        if n_workers == 0:
+            n_cpu = os.cpu_count() or 1
+            self.n_workers = max(1, min(8, n_cpu // 2))
+        else:
+            self.n_workers = max(1, int(n_workers))
 
     def place(self, benchmark: Benchmark) -> torch.Tensor:
         np.random.seed(self.seed)
@@ -704,6 +780,48 @@ class MacroPlacer:
             _log(f"  Exact score slow ({t_one_score:.0f}s); returning baseline")
             _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
             return best_pl
+
+        # -- Parallel scoring pool setup -----------------------------------
+        # For use_exact benchmarks: spawn N workers, each with its own plc.
+        # Workers only do scoring (compute_proxy_cost). Legalization stays
+        # in the main process (no plc dependency, just numpy math).
+        #
+        # Speedup (noise-restart phase only):
+        #   effective_rate = min(1/t_leg, n_workers/t_score)
+        # For ibm08 (t_leg≈5s, t_score≈43s):
+        #   n_workers=4 → min(0.20, 0.093) = 0.093/s → 261 restarts/3300s×85%
+        #   vs serial:  1/48 = 0.021/s → 58 restarts/3300s×85%
+        #   Gain: ~4.5× more restarts (ibm08: 56 → ~250).
+        # For ibm01 (t_leg≈5s, t_score≈9s):
+        #   n_workers=4 → min(0.20, 0.44) = 0.20/s → 561 restarts
+        #   vs serial: 1/14 = 0.071/s → 199 restarts
+        #   Gain: ~2.8× more restarts.
+        #
+        # Workers are only used for noise restarts.
+        # Cong-grad phases (1-3) and Phase 4 swaps use _try_restart (serial)
+        # because they need the main-process plc congestion map.
+        _pool = None
+        _use_parallel = use_exact and self.n_workers > 1
+        if _use_parallel:
+            # Construct benchmark_dir for worker initialization
+            _bench_root = Path("external/MacroPlacement/Testcases/ICCAD04") / benchmark.name
+            if _bench_root.exists():
+                _bdir_str = _bench_root.as_posix()
+                try:
+                    ctx = mp.get_context("spawn")
+                    _pool = ctx.Pool(
+                        processes=self.n_workers,
+                        initializer=_parallel_worker_init,
+                        initargs=(_bdir_str,),
+                    )
+                    _log(f"  Parallel pool: {self.n_workers} workers (benchmark={benchmark.name})")
+                except Exception as e:
+                    _log(f"  Parallel pool failed ({e}); falling back to serial")
+                    _pool = None
+                    _use_parallel = False
+            else:
+                _log(f"  Parallel pool: benchmark_dir not found, falling back to serial")
+                _use_parallel = False
 
         def _try_restart(label: str, perturbed_init: np.ndarray, k: int) -> bool:
             """Legalize + score one candidate. Returns False if budget exhausted."""
@@ -877,28 +995,120 @@ class MacroPlacer:
         PHASE4_RESERVE_S = self.time_budget_s * 0.15
         noise_scale_base = min(cw, ch)
         last_noise_k = 1 + directed_ran
-        for k, frac in enumerate(
-            self.noise_fracs[: self.n_restarts - 1 - directed_ran], start=1 + directed_ran
-        ):
-            last_noise_k = k
-            # Stop noise loop early to reserve time for Phase 4 swap exploration.
-            # Normal budget check (via _try_restart) would use full budget and
-            # leave no room for swaps. This pre-check carves out the Phase 4 window.
-            elapsed = time.time() - t0
-            noise_remaining = self.time_budget_s - elapsed - PHASE4_RESERVE_S
-            if noise_remaining < t_one_score * 1.3:
-                _log(f"  Noise loop done: switching to Phase 4 swaps "
-                     f"({PHASE4_RESERVE_S:.0f}s reserved, "
-                     f"{self.time_budget_s - elapsed:.0f}s left total)")
-                break
-            noise = np.random.normal(0, frac * noise_scale_base, init_pos.shape)
-            perturbed = np.clip(
-                init_pos + noise,
-                np.stack([hw, hh], axis=1),
-                np.stack([cw - hw, ch - hh], axis=1),
+
+        if _use_parallel and _pool is not None:
+            # ── Parallel noise restarts ────────────────────────────────────
+            # Strategy: main process legalizes candidates serially, immediately
+            # submitting each legalization to the worker pool for scoring.
+            # Workers run compute_proxy_cost in parallel; main thread overlaps
+            # legalization of the NEXT candidate with scoring of the current.
+            #
+            # We maintain an in-flight queue of (AsyncResult, leg_pos, k, label).
+            # When the queue is full (n_workers items in flight), we wait for
+            # the oldest result before adding more.
+            from multiprocessing.pool import AsyncResult
+
+            in_flight: list = []  # list of (AsyncResult, leg_pos, k, label)
+            noise_fracs_iter = enumerate(
+                self.noise_fracs[: self.n_restarts - 1 - directed_ran],
+                start=1 + directed_ran
             )
-            if not _try_restart(f"random noise={frac:.0%}", perturbed, k=k):
-                break
+
+            def _flush_result(async_res: "AsyncResult", leg_pos: np.ndarray,
+                              k_r: int, label_r: str) -> bool:
+                """Wait for one async scoring result, update best. Returns False if over budget."""
+                nonlocal best_score, best_pl, last_noise_k
+                try:
+                    score = async_res.get(timeout=t_one_score * 5.0)
+                except Exception:
+                    score = 1e9
+                _log(f"  Candidate {k_r} ({label_r}): proxy={score:.4f}")
+                if score < best_score:
+                    best_score = score
+                    pl2 = benchmark.macro_positions.clone()
+                    pl2[:n, 0] = torch.tensor(leg_pos[:, 0], dtype=torch.float32)
+                    pl2[:n, 1] = torch.tensor(leg_pos[:, 1], dtype=torch.float32)
+                    best_pl = pl2
+                    _log(f"    ** New best {score:.4f} at restart {k_r} **")
+                last_noise_k = k_r
+                if time.time() - t0 > self.time_budget_s:
+                    return False
+                return True
+
+            stop_submitting = False
+            for k, frac in noise_fracs_iter:
+                # Budget pre-check (for submission)
+                elapsed = time.time() - t0
+                noise_remaining = self.time_budget_s - elapsed - PHASE4_RESERVE_S
+                if noise_remaining < t_one_score * 1.3:
+                    _log(f"  Noise loop done: switching to Phase 4 swaps "
+                         f"({PHASE4_RESERVE_S:.0f}s reserved, "
+                         f"{self.time_budget_s - elapsed:.0f}s left total)")
+                    stop_submitting = True
+                    break
+
+                # Flush oldest in-flight result when queue is full
+                if len(in_flight) >= self.n_workers:
+                    oldest_res, oldest_leg, oldest_k, oldest_lbl = in_flight.pop(0)
+                    if not _flush_result(oldest_res, oldest_leg, oldest_k, oldest_lbl):
+                        stop_submitting = True
+                        break
+
+                # Legalize in main process (fast, no plc)
+                noise = np.random.normal(0, frac * noise_scale_base, init_pos.shape)
+                perturbed = np.clip(
+                    init_pos + noise,
+                    np.stack([hw, hh], axis=1),
+                    np.stack([cw - hw, ch - hh], axis=1),
+                )
+                t_leg0 = time.time()
+                leg_deadline = t_leg0 + 60.0
+                leg = _will_legalize(perturbed, movable, sizes, hw, hh, cw, ch, n,
+                                     deadline=leg_deadline)
+                t_leg = time.time() - t_leg0
+                label_k = f"random noise={frac:.0%}"
+                _log(f"  Restart {k} ({label_k}) legalized in {t_leg:.1f}s")
+
+                # Submit scoring to worker pool (async)
+                args_for_worker = (leg.flatten().tolist(), n)
+                async_r = _pool.apply_async(_parallel_score_worker, (args_for_worker,))
+                in_flight.append((async_r, leg.copy(), k, label_k))
+
+            # Flush all remaining in-flight results
+            while in_flight:
+                oldest_res, oldest_leg, oldest_k, oldest_lbl = in_flight.pop(0)
+                _flush_result(oldest_res, oldest_leg, oldest_k, oldest_lbl)
+
+            # Clean up pool after noise restarts
+            try:
+                _pool.terminate()
+                _pool.join()
+            except Exception:
+                pass
+
+        else:
+            # ── Serial noise restarts (original v16 code) ─────────────────
+            for k, frac in enumerate(
+                self.noise_fracs[: self.n_restarts - 1 - directed_ran],
+                start=1 + directed_ran
+            ):
+                last_noise_k = k
+                # Stop noise loop early to reserve time for Phase 4 swap exploration.
+                elapsed = time.time() - t0
+                noise_remaining = self.time_budget_s - elapsed - PHASE4_RESERVE_S
+                if noise_remaining < t_one_score * 1.3:
+                    _log(f"  Noise loop done: switching to Phase 4 swaps "
+                         f"({PHASE4_RESERVE_S:.0f}s reserved, "
+                         f"{self.time_budget_s - elapsed:.0f}s left total)")
+                    break
+                noise = np.random.normal(0, frac * noise_scale_base, init_pos.shape)
+                perturbed = np.clip(
+                    init_pos + noise,
+                    np.stack([hw, hh], axis=1),
+                    np.stack([cw - hw, ch - hh], axis=1),
+                )
+                if not _try_restart(f"random noise={frac:.0%}", perturbed, k=k):
+                    break
 
         # -- Phase 4: Macro-swap exploration from best position ---------------
         # After the main noise loop, if budget remains, explore the neighbourhood
