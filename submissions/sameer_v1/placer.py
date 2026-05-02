@@ -868,12 +868,29 @@ class MacroPlacer:
                 directed_ran += 1
 
         # -- Restarts 1+: Random Gaussian -------------------------------------
+        # Reserve 15% of budget for Phase 4 swap exploration.
+        # Without this reserve, the noise loop always exhausts the budget before
+        # Phase 4 can run (395 fracs × t_score > time_budget_s for all benchmarks).
+        # With the reserve: noise loop stops ~15% early → Phase 4 gets:
+        #   ibm01 (~9s/score): ~53 swap iters   ibm08 (~43s/score): ~11 swap iters
+        #   ibm09 (~20s/score): ~25 swap iters  ibm11 (~81s/score): ~6 swap iters
+        PHASE4_RESERVE_S = self.time_budget_s * 0.15
         noise_scale_base = min(cw, ch)
         last_noise_k = 1 + directed_ran
         for k, frac in enumerate(
             self.noise_fracs[: self.n_restarts - 1 - directed_ran], start=1 + directed_ran
         ):
             last_noise_k = k
+            # Stop noise loop early to reserve time for Phase 4 swap exploration.
+            # Normal budget check (via _try_restart) would use full budget and
+            # leave no room for swaps. This pre-check carves out the Phase 4 window.
+            elapsed = time.time() - t0
+            noise_remaining = self.time_budget_s - elapsed - PHASE4_RESERVE_S
+            if noise_remaining < t_one_score * 1.3:
+                _log(f"  Noise loop done: switching to Phase 4 swaps "
+                     f"({PHASE4_RESERVE_S:.0f}s reserved, "
+                     f"{self.time_budget_s - elapsed:.0f}s left total)")
+                break
             noise = np.random.normal(0, frac * noise_scale_base, init_pos.shape)
             perturbed = np.clip(
                 init_pos + noise,
@@ -908,6 +925,7 @@ class MacroPlacer:
             + [(1, 0.0)] * 5 + [(2, 0.01)] * 3 + [(1, 0.02)] * 3
         ) * 20  # 960 entries — budget is the real limit
         phase4_k = last_noise_k + 1
+        phase4_ran = 0
         for phase4_i, (n_sw, nf) in enumerate(swap_schedule):
             remaining = self.time_budget_s - (time.time() - t0)
             if remaining < t_one_score * 1.3:
@@ -924,8 +942,9 @@ class MacroPlacer:
             label = f"swap{n_sw}{'+ noise' if nf > 0 else ''} phase4/{phase4_i+1}"
             if not _try_restart(label, swapped, k=phase4_k + phase4_i):
                 break
-        if phase4_i > 0:
-            _log(f"  Phase 4 ran {phase4_i} swap iterations")
+            phase4_ran += 1
+        if phase4_ran > 0:
+            _log(f"  Phase 4 ran {phase4_ran} swap iterations")
 
         _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
         return best_pl
