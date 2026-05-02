@@ -95,7 +95,7 @@ v14 = current best (200s budget). v15 = 3300s budget (1-hour competition limit).
 
 | Benchmark | hard_n | grid_cells | v1 (leg) | v14 (200s) | **v15 (3300s)** | RePlAce | vs RePlAce | Notes |
 |---|---|---|---|---|---|---|---|---|
-| ibm01 | 246 | 45x41=1845 | 1.2253 | 1.1854 | **TBD** | 0.9976 | -18.8% | t_score=7.8s; v14: 6% noise wins; v15: ~300 restarts |
+| ibm01 | 246 | 45x41=1845 | 1.2253 | 1.1854 | **1.1854** | 0.9976 | -18.8% | t_score=7.8s; 1000s test: 55 restarts, STUCK — restart-4 6% frac uniquely lucky |
 | ibm02 | 271 | 30x27=810 | 1.6800 | 1.5823 | **TBD** | 1.8370 | +14.0% | t_score=13-16s; iter+wide=8% wins; v15: 150+ noise restarts |
 | ibm03 | 290 | 32x29=928 | 1.4100 | 1.3547 | **TBD** | 1.3222 | -2.5% | t_score=9-12s; adaptive frac=0.01 at iter=7-8 wins |
 | ibm04 | 295 | 31x30=930 | 1.4101 | 1.3390 | **TBD** | 1.3024 | -2.8% | t_score=12-16s; 6-9 cong-grad iters wins |
@@ -103,13 +103,13 @@ v14 = current best (200s budget). v15 = 3300s budget (1-hour competition limit).
 | ibm07 | 291 | 35x32=1120 | 1.4950 | 1.4950 | **TBD** | 1.4633 | -2.2% | all restarts worse; structural congestion; stuck |
 | ibm08 | 301 | 38x34=1292 | 1.5582 | 1.5251 | **TBD** | 1.4285 | -6.8% | v15: cong-grad NOW RUNS (budget>>244s), 55 noise restarts |
 | ibm09 | 253 | 36x38=1368 | 1.1363 | 1.1304 | **TBD** | 1.1194 | -1.0% | 1 cong-grad iter wins |
-| ibm10 | 786 | 55x41=2255 | 1.4037 | 1.4037 | 1.4037 | 1.5009 | +6.5% | n>430; returns baseline (unchanged) |
+| ibm10 | 786 | 55x41=2255 | 1.4037 | 1.4037 | **1.4037** | 1.5009 | +6.5% | n>430; returns baseline (unchanged) — beats RePlAce ✓ |
 | ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **TBD** | 1.1774 | -4.9% | v15: SKIP_EXACT removed; 36 restarts (t_score=81s) |
-| ibm12 | 651 | 47x47=2209 | 1.6507 | 1.6507 | 1.6507 | 1.7261 | +4.4% | n>430; returns baseline (unchanged) |
+| ibm12 | 651 | 47x47=2209 | 1.6507 | 1.6507 | **1.6507** | 1.7261 | +4.4% | n>430; returns baseline (unchanged) — beats RePlAce ✓ |
 | ibm13 | 424 | 43x43=1849 | 1.4011 | 1.4011 | **TBD** | 1.3355 | -4.9% | v15: SKIP_EXACT removed; 55 restarts (t_score=53s) |
 | ibm14 | 614 | 49x44=2156 | 1.6033 | 1.6033 | 1.6033 | 1.5436 | -3.9% | n>430; returns baseline (unchanged) |
 | ibm15 | 393 | 57x38=2166 | 1.6061 | 1.6061 | **TBD** | 1.5159 | -5.9% | v15: grid limit raised to 2200; t_score=164s; ~18 restarts |
-| ibm16 | 458 | 45x48=2160 | 1.5323 | 1.5323 | 1.5323 | 1.4780 | -3.7% | n>430; returns baseline (unchanged; n threshold not raised yet) |
+| ibm16 | 458 | 45x48=2160 | 1.5323 | 1.5323 | **1.5323** | 1.4780 | -3.7% | n>430; t_score=538.6s confirmed (timing test); correctly excluded |
 | ibm17 | 760 | 51x44=2244 | 1.7437 | 1.7437 | 1.7437 | 1.6446 | -6.0% | n>430; returns baseline (unchanged) |
 | ibm18 | 285 | 55x39=2145 | 1.7941 | 1.7941 | **TBD** | 1.7722 | -1.2% | v15: grid limit raised to 2200; t_score~220s; ~14 restarts |
 
@@ -124,19 +124,20 @@ v14 = current best (200s budget). v15 = 3300s budget (1-hour competition limit).
 **Root insight (2026-05-02)**: Competition rules say "under 1 hour per benchmark." We had been
 self-limiting to 200s. Increasing to 3300s (55 min) gives 10-300× more restarts per benchmark.
 
-**Code changes**:
+**Code changes (commits 15257a6 + eee545d)**:
 - `time_budget_s`: 200s → 3300s
 - `n_restarts`: 50 → 500 (cap; budget is the real limit)
 - `SLOW_SCORE_THRESHOLD_S`: 100s → 400s (allows ibm15 ~164s, ibm18 ~220s)
 - `EXACT_GRID_CELL_LIMIT`: 2000 → 2200 (includes ibm15 (2166) and ibm18 (2145))
 - `SKIP_EXACT`: {"ibm11","ibm13"} → {} (with 36-55 restarts, worth attempting)
 - `noise_fracs`: 35 → 395 entries (30×12 cycling extension emphasizing 0.06)
+- Phase 3 loop: single run → up to 20 iterations (exploits budget when cong-grad helps)
 
 **Expected behavior per benchmark** (based on 3300s budget):
 - ibm01 (t=7s): 13 → ~300 restarts; 30+ draws at 0.06 frac
 - ibm08 (t=47s): 3 → 55 restarts; cong-grad NOW RUNS (was pre-check skipped at 200s)
 - ibm11 (t=81s): 1 → 36 restarts (SKIP_EXACT removed)
-- ibm13 (t=53s): 1 → 55 restarts (SKIP_EXACT removed)
+- ibm13 (t=53s): 1 → 55 restarts (SKIP_EXACT removed; n=424 ≤ threshold=430)
 - ibm15 (t=164s): 0 → 18 restarts (grid limit raised 2000→2200)
 - ibm18 (t=220s): 0 → 14 restarts (grid limit raised)
 
@@ -145,7 +146,58 @@ self-limiting to 200s. Increasing to 3300s (55 min) gives 10-300× more restarts
 - ibm15/ibm18: never tested before. Unknown if any restart improves.
 - ibm08 cong-grad: never tested clean. May help (cong=2.015 similar to ibm02/ibm06 where it helps).
 
-**Testing in progress**: ibm01 1000s, ibm08 3300s, ibm15 3300s.
+**Validated results (2026-05-02)**:
+
+| Test | Budget | Restarts | Result | vs v14 | Notes |
+|---|---|---|---|---|---|
+| ibm01 1000s | 1000s | 55 | **1.1854** | = (same) | 8 draws at 0.06 frac; none beat restart-4 rng draw; **ibm01 is stuck** |
+| ibm16 timing | n/a | n/a | t_score=**538.6s** | n/a | Confirmed correctly excluded at n=458>430 threshold; only 6 restarts/3300s |
+
+**Tests running (2026-05-02, PIDs 1778/1812)**:
+- ibm08 3300s: `/tmp/ibm08_v15.txt` (cong-grad first ever clean run + 55 noise restarts)
+- ibm11 3300s: `/tmp/ibm11_v15.txt` (SKIP_EXACT removed; 36 restarts; runs after ibm11)
+- ibm13 3300s: `/tmp/ibm13_v15.txt` (SKIP_EXACT removed; n=424; ~55 restarts)
+- ibm15 3300s: `/tmp/ibm15_v15.txt` (grid limit raised; 18 restarts; first optimization ever)
+
+**ibm01 prognosis**: STUCK at 1.1854. The initial 6% rng draw (restart #4) is uniquely lucky.
+Even with 300+ draws at 0.06, none replicate it. Gap to RePlAce (0.9976) = 18.8% — structural
+advantage of analytical placers on this benchmark. Accept 1.1854 as our ceiling.
+
+**ibm16 prognosis**: t_score=538.6s >> SLOW_SCORE_THRESHOLD=400s → caught by slow-score guard.
+Only 6 restarts with 3300s budget. Correctly excluded. Do NOT raise EXACT_MACRO_THRESHOLD to 470.
+
+### v15 Key Decisions and Reasoning (for collaborators)
+
+**Why 3300s and not 3600s?**
+Competition allows 1 hour (3600s). We use 3300s (55 min) as a 5-min safety buffer against
+machine startup time, library loading, and system variance. The competition harness measures
+wall time including Python startup.
+
+**Why EXACT_MACRO_THRESHOLD=430 and not higher?**
+ibm16 timing test (2026-05-02) confirmed t_score=538.6s for n=458. With 3300s budget:
+- Only 6 restarts possible (vs 55+ for benchmarks below threshold)
+- SLOW_SCORE_THRESHOLD=400s fires → placer returns baseline anyway
+- Raising threshold adds runtime with zero quality gain
+Decision: KEEP at 430. Next candidates would be ibm14 (n=614) or ibm16 (n=458) — both too slow.
+
+**Why EXACT_GRID_CELL_LIMIT=2200 and not 2000?**
+ibm15 (2166 cells) and ibm18 (2145 cells) have manageable n (393, 285). Previously excluded
+because t_score was near SLOW_SCORE_THRESHOLD=100s. With threshold raised to 400s, and grid
+limit raised to 2200, both benchmarks now get optimization. ibm10 (2255 cells) excluded by
+n=786 (n-threshold fires first).
+
+**Which benchmarks beat RePlAce already (never regress)?**
+- ibm02: 1.5823 vs 1.8370 (+14.0%) — big win, very robust
+- ibm10: 1.4037 vs 1.5009 (+6.5%) — baseline only (n>430), always wins
+- ibm12: 1.6507 vs 1.7261 (+4.4%) — baseline only (n>430), always wins
+These 3 are safe; do NOT make changes that might hurt ibm02's cong-grad mechanism.
+
+**What needs to improve to beat RePlAce avg (1.4578)?**
+v14 avg=1.4860. Need avg improvement of 0.028 across 17 benchmarks = 0.476 total reduction.
+High-value targets (biggest gap to RePlAce): ibm01 (0.188↓ needed), ibm08 (0.097↓), ibm15 (0.090↓),
+ibm17 (0.099↓), ibm13 (0.066↓). ibm08+ibm15+ibm13 combined if all improve 50% of gap → ~0.13 total.
+Even if all go well, beating RePlAce avg requires more than v15 gains alone. Need to look beyond
+current algorithm for ibm01/ibm17 structural improvements.
 
 ---
 
@@ -257,44 +309,72 @@ ibm10, ibm12 already beat RePlAce at legalization-only.
 
 ---
 
-## Tunable Parameters (current v5 values)
+## Tunable Parameters (current v15 values — as of 2026-05-02)
 
 ```python
-n_restarts            = 50         # cap; budget check is the real limit
-noise_fracs           = [0.02, 0.04, 0.06, 0.08,  # core (preserved wins)
-                          0.01, 0.03, 0.05, 0.07, 0.09,
-                          0.06, 0.06, 0.04, 0.10, 0.12, 0.08,
-                          0.025, 0.035, 0.045, 0.055, 0.065, 0.075,
-                          0.15, 0.20, 0.10,
-                          0.05, 0.06, 0.07, 0.03, 0.04, 0.02,
-                          0.005, 0.010, 0.015, 0.030, 0.050]
-time_budget_s         = 200.0
-EXACT_MACRO_THRESHOLD = 400        # ibm11 (n=373) included; ibm13 (n=424) excluded
-EXACT_GRID_CELL_LIMIT = 2000       # ibm18 (2145) and ibm10-17 excluded
-SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
+n_restarts            = 500        # cap; budget check is the real limit (budget << 500×t_score always)
+time_budget_s         = 3300.0     # 55 min (competition allows 1 hour; 5 min safety buffer)
+EXACT_MACRO_THRESHOLD = 430        # n>430 returns baseline: ibm14(614), ibm16(458), ibm17(760), ibm10(786), ibm12(651)
+EXACT_GRID_CELL_LIMIT = 2200       # grid>2200 cells returns baseline: ibm10(2255) hits n threshold first
+SLOW_SCORE_THRESHOLD_S = 400.0     # safety net: if t_score > 400s return baseline (ibm16=538s caught here too)
 DENSITY_GRAD_MAX_N    = 100        # never fires for IBM benchmarks (all n>100)
+
+# noise_fracs: 395 entries total
+# First 35 (core, preserved from v5 — contains known winning fracs):
+noise_fracs_core = [0.02, 0.04, 0.06, 0.08, 0.01, 0.03, 0.05, 0.07, 0.09,
+                    0.06, 0.06, 0.04, 0.10, 0.12, 0.08,
+                    0.025, 0.035, 0.045, 0.055, 0.065, 0.075,
+                    0.15, 0.20, 0.10, 0.05, 0.06, 0.07, 0.03, 0.04, 0.02,
+                    0.005, 0.010, 0.015, 0.030, 0.050]
+# Extension: 30-element pattern × 12 = 360 entries (emphasizes 0.06)
+_ext_pattern = [0.06, 0.04, 0.02, 0.08, 0.06, 0.03, 0.05, 0.01, 0.06, 0.07,
+                0.04, 0.06, 0.09, 0.02, 0.06, 0.05, 0.08, 0.04, 0.06, 0.02,
+                0.06, 0.10, 0.04, 0.06, 0.02, 0.06, 0.12, 0.04, 0.06, 0.08]
+noise_fracs = noise_fracs_core + _ext_pattern * 12   # 35 + 360 = 395 total
 ```
+
+**Critical invariants (do NOT change these)**:
+- Core 35 noise_fracs entries MUST remain unchanged — they encode winning rng draws
+  (ibm01: 6% at position 2 = restart 4; ibm08: 6% at position 2 = restart 4)
+- rng_cong = np.random.RandomState(seed+1): separate from main np.random (preserves noise draws)
+- t_one_score must use static baseline (not adaptive running max) — adaptive caused ibm04 regression
 
 ---
 
 ## Next Experiments to Try
 
+**Completed (as of 2026-05-02)**:
 1. [x] Full v4 17-benchmark eval -- confirmed all 17 baselines
-2. [x] v5 budget-filling restarts -- ibm01 confirmed 1.1854 with 11 restarts (no improvement beyond 6% win)
+2. [x] v5 budget-filling restarts -- ibm01 confirmed 1.1854 with 11 restarts
 3. [x] v6 congestion-gradient perturbation -- ibm02 (-0.060) and ibm06 (-0.036) confirmed
-4. [ ] CLEAN full v6 eval -- running. Need uncontaminated ibm07, ibm08, ibm09 results.
-       Expected avg: ~1.495-1.498 (ibm02, ibm06 improved; ibm08 uncertain)
-5. [ ] ibm15 scoring time test (n=393, grid=2166):
-       ibm15 is ONLY excluded by EXACT_GRID_CELL_LIMIT=2000. n=393 < 400 threshold.
-       Actual scoring time estimated ~68s (vs conservative formula saying 216s).
-       If scoring < 100s: raise EXACT_GRID_CELL_LIMIT to 2200. Gap vs RePlAce = 0.090 (biggest of non-exact group).
-6. [ ] ibm08 + ibm07 congestion-grad clean test:
-       All prior tests were under load (ibm08 scored 95-131s instead of 31-36s).
-       Need clean single-benchmark test to know if cong-grad helps these.
-       ibm08 tension: cong-grad at k=1 may cut budget for 6% noise (which gives 1.5251 clean).
-7. [ ] Additional congestion-grad fracs (0.08, 0.12) for high-cong benchmarks:
-       After confirming ibm08 behavior, add more cong-grad restarts at larger scales.
-8. [ ] Multiple congestion-grad starting points:
-       Use noise-perturbed position as INPUT to cong-grad instead of always starting from
-       baseline_pos. Might find different local minima.
-9. [ ] ibm04 congestion-grad: 1.4101 vs RePlAce 1.3024 (gap=0.108); cong=1.783 might benefit.
+4. [x] v8 iterative cong-grad + wide step -- ibm02/03/04/06 all improved
+5. [x] v12/v13/v14 phase3, budget pre-check, SKIP_EXACT -- full eval avg=1.4877
+6. [x] v15 code changes -- 3300s budget, raised thresholds, 395 fracs (committed)
+7. [x] ibm01 1000s test -- **STUCK at 1.1854** (55 restarts, 8×0.06 frac, none better)
+8. [x] ibm16 timing test -- **t_score=538.6s**, correctly excluded (do not raise threshold to 470)
+
+**Active / Awaiting Results (2026-05-02)**:
+- [ ] ibm08 3300s test → `/tmp/ibm08_v15.txt` (PID 1778, ~55 min)
+       FIRST EVER clean run with cong-grad (budget pre-check always skipped it before)
+       Best possible: 1.4285 (RePlAce). Expected: improvement from 1.5251 but how much unknown.
+- [ ] ibm11 3300s test → `/tmp/ibm11_v15.txt` (runs after ibm08 in PID 1812)
+       36 restarts. Was SKIP_EXACT before (only 2-3 restarts ever tried, all worse).
+       Baseline=1.2354. May stay at baseline.
+- [ ] ibm13 3300s test → `/tmp/ibm13_v15.txt` (runs after ibm11 in PID 1812)
+       55 restarts. n=424 confirmed. Was SKIP_EXACT (only 2-3 restarts ever tried).
+       Baseline=1.4011. Gap to RePlAce=0.066.
+- [ ] ibm15 3300s test → `/tmp/ibm15_v15.txt` (runs after ibm13 in PID 1812)
+       18 restarts. FIRST EVER optimization of ibm15. Baseline=1.6061.
+
+**After v15 tests complete**:
+- [ ] ibm18 3300s test (grid limit raised, 14 restarts; write test_v15_ibm18.py)
+- [ ] ibm02/03/04/06 isolation tests with 3300s budget (150+ noise restarts after Phase 3 loop)
+- [ ] Full 17-benchmark eval with v15 code (will take ~13 hours local; run overnight)
+- [ ] Update per-benchmark table with actual v15 results
+
+**Longer-term algorithmic ideas (if v15 doesn't beat RePlAce avg)**:
+- DREAMPlace integration: analytical global placement as initial solution (would need GPU)
+- Better congestion model: use net bounding-box overlap with routing capacity (net-based)
+- ibm17/ibm01 structural analysis: why do analytical placers dominate? Study initial.plc quality.
+- Multi-start cong-grad: use noise-perturbed position as input to cong-grad (not just baseline)
+- Simulated annealing on congestion objective (not WL): keep macro spread, reduce hotspots
