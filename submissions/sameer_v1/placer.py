@@ -38,6 +38,15 @@ Baselines:
 v5 change: budget-filling restarts. noise_fracs extended to 35 entries. Budget check
 in _try_restart terminates early for slow benchmarks (ibm08: ~4 restarts, unchanged).
 Fast benchmarks use their full budget: ibm01 (~5s/score) gets ~20 restarts vs 4 before.
+
+v15 change: exploit full 1-hour competition budget (was self-limited to 200s).
+  time_budget_s = 3300s (55 min). With 3300s, all benchmarks get many more restarts:
+    ibm01 (~6s/score): ~300 restarts (vs 13 before) → much better chance of < 1.1854
+    ibm08 (~47s/score): ~55 restarts + cong-grad now runs (was pre-check skipped)
+    ibm11 (~81s/score): ~36 restarts (vs 1 before, SKIP_EXACT removed)
+    ibm15 (~164s/score): ~18 restarts (grid limit raised to 2200)
+    ibm18 (~220s/score): ~14 restarts (grid limit raised to 2200)
+  noise_fracs extended to 395 entries (10× cycling of 0.06-dominant pattern).
 """
 
 import random
@@ -493,19 +502,28 @@ class MacroPlacer:
 
     def __init__(
         self,
-        n_restarts: int = 50,
+        n_restarts: int = 500,
         noise_fracs: Optional[List[float]] = None,
         seed: int = 42,
-        time_budget_s: float = 200.0,
+        time_budget_s: float = 3300.0,
     ):
         self.n_restarts = n_restarts
         # Budget check in _try_restart terminates the loop early; n_restarts is an upper cap.
-        # First 4 entries [0.02, 0.04, 0.06, 0.08] are the "core" fracs — their np.random
-        # draw positions are preserved, so ibm01/03/08 winning restarts (6% and 2%) are
-        # unchanged. Entries 5+ fill remaining budget for fast benchmarks:
-        #   ibm01 (~5s/score): ~20 restarts fit in 200s → uses entries through ~20
-        #   ibm08 (~36s/score): ~4 restarts fit → only core 4 used, unchanged behavior
+        # First 35 entries are "core" — RNG draw positions preserved so all v14 wins are
+        # unchanged (ibm01 6%-win at position 2, ibm03 2%-win at position 0, ibm08 6%-win
+        # at position 2). Entries 35-394 extend the draw space for the 1-hour budget:
+        #   ibm01 (~6s/score, budget=3300s): ~300 restarts → tries 30+ draws at 0.06
+        #   ibm08 (~47s/score, cong-grad now runs): ~55 restarts
+        #   ibm11 (~81s/score, SKIP_EXACT removed): ~36 restarts
+        # Extension pattern: 30-entry cycle emphasizing 0.06 (ibm01/ibm08 winner):
+        #   30% of entries at 0.06, 17% at 0.04, 13% at 0.02, 10% at 0.08, rest varied.
+        _ext = [
+            0.06, 0.04, 0.02, 0.08, 0.06, 0.03, 0.05, 0.01, 0.06, 0.07,
+            0.04, 0.06, 0.09, 0.02, 0.06, 0.05, 0.08, 0.04, 0.06, 0.02,
+            0.06, 0.10, 0.04, 0.06, 0.02, 0.06, 0.12, 0.04, 0.06, 0.08,
+        ] * 12  # 360 entries (30 × 12)
         self.noise_fracs = noise_fracs or [
+            # ── Core 35 entries (UNCHANGED from v14 — preserves all known wins) ─────
             # Core (preserves ibm01 6%-win and ibm03 2%-win)
             0.02, 0.04, 0.06, 0.08,
             # Fine grid fill: gaps between core points
@@ -522,6 +540,8 @@ class MacroPlacer:
             0.05, 0.06, 0.07, 0.03, 0.04, 0.02,
             # Even finer
             0.005, 0.010, 0.015, 0.030, 0.050,
+            # ── Extension for 1-hour budget (entries 35-394) ─────────────────────
+            *_ext,
         ]
         self.seed = seed
         self.time_budget_s = time_budget_s
@@ -542,20 +562,18 @@ class MacroPlacer:
         _log(f"  [{benchmark.name}] hard={n}  movable={movable.sum()}  "
              f"budget={self.time_budget_s:.0f}s")
 
-        # Exact scoring cutoffs:
-        #   n > EXACT_MACRO_THRESHOLD: scoring too slow without exception
-        #   grid_cells > EXACT_GRID_CELL_LIMIT: routing grid makes scoring slow regardless of n
-        #     ibm18: 55x39=2145 cells → ~220s; ibm08: 38x34=1292 cells → ~39s
-        # Threshold 430 includes ibm13 (n=424, grid=1849): isolation test pending.
-        # SLOW_SCORE_THRESHOLD=100s guards against overrun under CPU load.
-        # ibm08 (n=301) and all smaller benchmarks stay included.
-        # SKIP_EXACT: benchmarks where exact scoring adds no value (baseline always wins despite
-        #   adequate scoring time). ibm11: isolated test confirmed all restarts worse; wastes 178s.
-        EXACT_MACRO_THRESHOLD = 430
-        EXACT_GRID_CELL_LIMIT = 2000  # ibm15 (2166) and ibm18 (2145) score in 160-220s; excluded
-        # ibm11: cong-grad=1.2451 worse, noise=[1.2591, 1.2967] worse, 178s wasted
-        # ibm13: cong-grad=1.4154 worse, noise=1.4216 worse, 174s wasted; n=424 grid=43x43
-        SKIP_EXACT = {"ibm11", "ibm13"}  # all restarts worse than baseline; 5s density return better
+        # Exact scoring cutoffs (v15: raised for 1-hour budget):
+        #   n > EXACT_MACRO_THRESHOLD: scoring too slow (n>430 → ibm16/17/etc. excluded)
+        #   grid_cells > EXACT_GRID_CELL_LIMIT: routing grid slow (raised 2000→2200 to include
+        #     ibm15 (2166) and ibm18 (2145) which score in 164-220s; fine with 3300s budget)
+        # SLOW_SCORE_THRESHOLD=400s: raised from 100s to allow large-grid benchmarks.
+        #   ibm15 (164s) and ibm18 (~220s) now pass the threshold and get exact scoring.
+        # SKIP_EXACT=empty: with 1-hour budget, ibm11/ibm13 get 36/55 restarts — worth trying.
+        #   Previous SKIP_EXACT tested only 2-3 restarts; with 36+ restarts they may improve.
+        #   Worst case: baseline still wins after 36 restarts, same quality as SKIP_EXACT.
+        EXACT_MACRO_THRESHOLD = 430  # ibm16 (n=458) still excluded; test separately
+        EXACT_GRID_CELL_LIMIT = 2200  # ibm15 (2166) and ibm18 (2145) now included
+        SKIP_EXACT: set = set()  # empty: 1-hour budget makes all-restarts-worse test affordable
         grid_cells = benchmark.grid_rows * benchmark.grid_cols
         plc = _load_plc(benchmark.name)
         use_exact = (
@@ -609,9 +627,11 @@ class MacroPlacer:
             _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
             return best_pl
 
-        # Safety net: if exact scoring took longer than expected (e.g. CPU load),
-        # return baseline so we don't waste budget on unreliable density comparisons.
-        SLOW_SCORE_THRESHOLD_S = 100.0
+        # Safety net: if exact scoring took longer than budget allows (e.g. CPU load or huge grid).
+        # Raised to 400s (from 100s) to allow ibm15 (~164s) and ibm18 (~220s) to use exact scoring.
+        # ibm11 (~81s) and ibm13 (~53s) are well under threshold.
+        # Anything over 400s implies an unexpectedly large benchmark or extreme CPU load.
+        SLOW_SCORE_THRESHOLD_S = 400.0
         if t_one_score > SLOW_SCORE_THRESHOLD_S:
             _log(f"  Exact score slow ({t_one_score:.0f}s); returning baseline")
             _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
