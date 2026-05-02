@@ -91,35 +91,65 @@ Target: beat RePlAce avg of 1.4578.
 
 ## Per-Benchmark Detail (confirmed from full evals)
 
-v14 = current best. v13 eval confirmed 2026-05-01 (SKIP_EXACT change). v14 eval pending.
+v14 = current best (200s budget). v15 = 3300s budget (1-hour competition limit). Testing in progress.
 
-| Benchmark | hard_n | grid_cells | v1 (leg) | v8 | **v14 (current)** | RePlAce | vs RePlAce | Notes |
+| Benchmark | hard_n | grid_cells | v1 (leg) | v14 (200s) | **v15 (3300s)** | RePlAce | vs RePlAce | Notes |
 |---|---|---|---|---|---|---|---|---|
-| ibm01 | 246 | 45x41=1845 | 1.2253 | 1.1854 | **1.1854** | 0.9976 | -18.8% | t_score=7.8s; 6% noise wins; cong-grad worse |
-| ibm02 | 271 | 30x27=810 | 1.6800 | 1.5823 | **1.5823** | 1.8370 | +14.0% | t_score=13-16s; iter+wide=8% wins; stale-plc trick; gap CLOSED |
-| ibm03 | 290 | 32x29=928 | 1.4100 | 1.3583 | **1.3547** | 1.3222 | -2.5% | t_score=9-12s; adaptive frac=0.01 at iter=7-8 wins |
-| ibm04 | 295 | 31x30=930 | 1.4101 | 1.3479 | **1.3390** | 1.3024 | -2.8% | t_score=12-16s; 6-9 cong-grad iters wins |
-| ibm06 | 178 | 31x28=868 | 1.7198 | 1.6810 | **1.6797** | 1.6187 | -3.8% | t_score=19-20s; 7 cong-grad iters at adaptive frac=0.01 wins |
-| ibm07 | 291 | 35x32=1120 | 1.4950 | 1.4950 | **1.4950** | 1.4633 | -2.2% | all restarts worse; structural congestion; stuck |
-| ibm08 | 301 | 38x34=1292 | 1.5582 | 1.5251 | **1.5251** | 1.4285 | -6.8% | v14 budget pre-check: cong-grad skipped→6% noise always runs→1.5251 |
-| ibm09 | 253 | 36x38=1368 | 1.1363 | 1.1304 | **1.1304** | 1.1194 | -1.0% | 1 cong-grad iter wins |
-| ibm10 | 786 | 55x41=2255 | 1.4037 | 1.4037 | **1.4037** | 1.5009 | +6.5% | n>430; returns baseline |
-| ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **1.2354** | 1.1774 | -4.9% | SKIP_EXACT: all restarts worse (clean t_score=81s); returns in 5s |
-| ibm12 | 651 | 47x47=2209 | 1.6507 | 1.6507 | **1.6507** | 1.7261 | +4.4% | n>430; returns baseline |
-| ibm13 | 424 | 43x43=1849 | 1.4011 | 1.4011 | **1.4011** | 1.3355 | -4.9% | SKIP_EXACT: all restarts worse (clean t_score=53s); returns in 5s |
-| ibm14 | 614 | 49x44=2156 | 1.6033 | 1.6033 | **1.6033** | 1.5436 | -3.9% | n>430; returns baseline |
-| ibm15 | 393 | 57x38=2166 | 1.6061 | 1.6061 | **1.6061** | 1.5159 | -5.9% | grid>2000; returns baseline |
-| ibm16 | 458 | 45x48=2160 | 1.5323 | 1.5323 | **1.5323** | 1.4780 | -3.7% | n>430 AND grid>2000; returns baseline |
-| ibm17 | 760 | 51x44=2244 | 1.7437 | 1.7437 | **1.7437** | 1.6446 | -6.0% | n>430; returns baseline |
-| ibm18 | 285 | 55x39=2145 | 1.7941 | 1.7941 | **1.7941** | 1.7722 | -1.2% | grid>2000; returns baseline |
+| ibm01 | 246 | 45x41=1845 | 1.2253 | 1.1854 | **TBD** | 0.9976 | -18.8% | t_score=7.8s; v14: 6% noise wins; v15: ~300 restarts |
+| ibm02 | 271 | 30x27=810 | 1.6800 | 1.5823 | **TBD** | 1.8370 | +14.0% | t_score=13-16s; iter+wide=8% wins; v15: 150+ noise restarts |
+| ibm03 | 290 | 32x29=928 | 1.4100 | 1.3547 | **TBD** | 1.3222 | -2.5% | t_score=9-12s; adaptive frac=0.01 at iter=7-8 wins |
+| ibm04 | 295 | 31x30=930 | 1.4101 | 1.3390 | **TBD** | 1.3024 | -2.8% | t_score=12-16s; 6-9 cong-grad iters wins |
+| ibm06 | 178 | 31x28=868 | 1.7198 | 1.6797 | **TBD** | 1.6187 | -3.8% | t_score=19-20s; 7 cong-grad iters at adaptive frac=0.01 wins |
+| ibm07 | 291 | 35x32=1120 | 1.4950 | 1.4950 | **TBD** | 1.4633 | -2.2% | all restarts worse; structural congestion; stuck |
+| ibm08 | 301 | 38x34=1292 | 1.5582 | 1.5251 | **TBD** | 1.4285 | -6.8% | v15: cong-grad NOW RUNS (budget>>244s), 55 noise restarts |
+| ibm09 | 253 | 36x38=1368 | 1.1363 | 1.1304 | **TBD** | 1.1194 | -1.0% | 1 cong-grad iter wins |
+| ibm10 | 786 | 55x41=2255 | 1.4037 | 1.4037 | 1.4037 | 1.5009 | +6.5% | n>430; returns baseline (unchanged) |
+| ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **TBD** | 1.1774 | -4.9% | v15: SKIP_EXACT removed; 36 restarts (t_score=81s) |
+| ibm12 | 651 | 47x47=2209 | 1.6507 | 1.6507 | 1.6507 | 1.7261 | +4.4% | n>430; returns baseline (unchanged) |
+| ibm13 | 424 | 43x43=1849 | 1.4011 | 1.4011 | **TBD** | 1.3355 | -4.9% | v15: SKIP_EXACT removed; 55 restarts (t_score=53s) |
+| ibm14 | 614 | 49x44=2156 | 1.6033 | 1.6033 | 1.6033 | 1.5436 | -3.9% | n>430; returns baseline (unchanged) |
+| ibm15 | 393 | 57x38=2166 | 1.6061 | 1.6061 | **TBD** | 1.5159 | -5.9% | v15: grid limit raised to 2200; t_score=164s; ~18 restarts |
+| ibm16 | 458 | 45x48=2160 | 1.5323 | 1.5323 | 1.5323 | 1.4780 | -3.7% | n>430; returns baseline (unchanged; n threshold not raised yet) |
+| ibm17 | 760 | 51x44=2244 | 1.7437 | 1.7437 | 1.7437 | 1.6446 | -6.0% | n>430; returns baseline (unchanged) |
+| ibm18 | 285 | 55x39=2145 | 1.7941 | 1.7941 | **TBD** | 1.7722 | -1.2% | v15: grid limit raised to 2200; t_score~220s; ~14 restarts |
 
-**v14 expected avg: ~1.4860** (ibm08 fixed: 1.5539→1.5251; all others same as v12)
-**Gap to RePlAce:** ~1.4860 - 1.4578 = 0.028 (1.9%)
-**v13 eval avg (2026-05-01): same as v12 ~1.4877** (confirms SKIP_EXACT: ibm11/13 return baseline in 5s, same quality)
+**v14 clean avg: ~1.4860** (ibm08=1.5251 on cool machine; v14 full eval under load=1.4877)
+**v14 gap to RePlAce:** ~0.028 (1.9%)
+**v15 goal: exploit full 1-hour budget** → ibm01/08/11/13/15/18 all get many more restarts
 
 ---
 
-### v14: Budget pre-check for cong-grad — ibm08 load sensitivity fixed (CURRENT)
+### v15: Exploit full 1-hour competition budget (CURRENT — testing in progress)
+
+**Root insight (2026-05-02)**: Competition rules say "under 1 hour per benchmark." We had been
+self-limiting to 200s. Increasing to 3300s (55 min) gives 10-300× more restarts per benchmark.
+
+**Code changes**:
+- `time_budget_s`: 200s → 3300s
+- `n_restarts`: 50 → 500 (cap; budget is the real limit)
+- `SLOW_SCORE_THRESHOLD_S`: 100s → 400s (allows ibm15 ~164s, ibm18 ~220s)
+- `EXACT_GRID_CELL_LIMIT`: 2000 → 2200 (includes ibm15 (2166) and ibm18 (2145))
+- `SKIP_EXACT`: {"ibm11","ibm13"} → {} (with 36-55 restarts, worth attempting)
+- `noise_fracs`: 35 → 395 entries (30×12 cycling extension emphasizing 0.06)
+
+**Expected behavior per benchmark** (based on 3300s budget):
+- ibm01 (t=7s): 13 → ~300 restarts; 30+ draws at 0.06 frac
+- ibm08 (t=47s): 3 → 55 restarts; cong-grad NOW RUNS (was pre-check skipped at 200s)
+- ibm11 (t=81s): 1 → 36 restarts (SKIP_EXACT removed)
+- ibm13 (t=53s): 1 → 55 restarts (SKIP_EXACT removed)
+- ibm15 (t=164s): 0 → 18 restarts (grid limit raised 2000→2200)
+- ibm18 (t=220s): 0 → 14 restarts (grid limit raised)
+
+**Key risks**:
+- ibm11/ibm13: tested only 2-3 restarts before (all worse). With 36-55 restarts, may still all be worse.
+- ibm15/ibm18: never tested before. Unknown if any restart improves.
+- ibm08 cong-grad: never tested clean. May help (cong=2.015 similar to ibm02/ibm06 where it helps).
+
+**Testing in progress**: ibm01 1000s, ibm08 3300s, ibm15 3300s.
+
+---
+
+### v14: Budget pre-check for cong-grad — ibm08 load sensitivity fixed
 
 **Code change (2026-05-01)**: Add pre-check before cong-grad loop. If remaining budget
 < 4.0 × t_one_score × 1.3, skip cong-grad entirely (preserving noise restart slots).
