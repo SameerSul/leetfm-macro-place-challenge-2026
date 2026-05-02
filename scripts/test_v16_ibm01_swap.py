@@ -29,9 +29,10 @@ print(f"  n={benchmark.num_hard_macros}, grid={benchmark.grid_rows}x{benchmark.g
 
 from submissions.sameer_v1.placer import MacroPlacer
 
-# Use 2200s budget: enough for ~300 noise restarts (~1800s) + ~400s for Phase 4 swaps
-placer = MacroPlacer(time_budget_s=2200.0)
-print(f"  budget={placer.time_budget_s:.0f}s (noise ~1800s + swap ~400s)", flush=True)
+# Use full 3300s budget: noise phase runs ~301 restarts (85% = 2805s) then
+# Phase 4 swap runs ~53 iterations (15% = 495s remaining).
+placer = MacroPlacer()
+print(f"  budget={placer.time_budget_s:.0f}s (noise ~85% + swap ~15%)", flush=True)
 print("[ibm01 v16-swap] Running placer.place()...", flush=True)
 
 t0 = time.time()
