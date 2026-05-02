@@ -392,29 +392,49 @@ noise_fracs = noise_fracs_core + _ext_pattern * 12   # 35 + 360 = 395 total
 10. [x] ibm11 3300s test -- **1.2332** (delta=-0.0022 vs v14; cong-grad fails; 55 restarts)
 11. [x] v16 Phase 4 macro-swap -- implemented; ibm01: **1.1850** (tiny gain via swap phase4/26)
 12. [x] Literature survey -- 9 papers; RUDY/SA/WireMask sweep as next actionable ideas
+13. [x] v17 parallel scoring workers -- N workers × PlacementCost in parallel; 2.8-4.5× more restarts
 
 **Confirmed Results (2026-05-02/03)**:
 - [x] ibm08 3300s → **1.5093** (was 1.5251; cong-grad fails, best=restart44 1% noise; 56 restarts)
 - [x] ibm11 3300s → **1.2332** (was 1.2354; cong-grad fails, best=restart33 1% noise; 55 restarts)
 - [x] ibm01 v16 swap → **1.1850** (was 1.1854; Phase4 swap restart193; 66 swap iters; tiny gain)
 
-**Active / Awaiting Results (2026-05-03, PID 769)**:
-- [ ] ibm13 3300s → `/tmp/ibm13_v15.txt` (~55 min; n=424; ~33 noise + swap restarts)
-       Was SKIP_EXACT, only 2-3 restarts tried before. Baseline=1.4011. Gap=0.066 vs RePlAce.
-- [ ] ibm15 3300s → `/tmp/ibm15_v15.txt` (~55 min after ibm13; FIRST EVER optimization)
-       Baseline=1.6061. t_score=164s. ~15 noise + ~3 swap restarts.
-- [ ] ibm18 3300s → `/tmp/ibm18_v15.txt` (~55 min after ibm15; FIRST EVER optimization)
-       Baseline=1.7941. t_score~220s. ~11 noise + ~2 swap restarts.
+**Active / Awaiting Results (2026-05-03)**:
+- [ ] ibm13 3300s → `/tmp/ibm13_v15.txt` (v16 serial; ETA 03:54; baseline=1.4011; t_score=58.9s)
+- [ ] ibm15 3300s → `/tmp/ibm15_v15.txt` (v16 serial; ETA 04:49; FIRST EVER optimization; baseline=1.6061)
+- [ ] ibm18 3300s → `/tmp/ibm18_v15.txt` (v16 serial; ETA 05:44; FIRST EVER optimization; baseline=1.7941)
+- [ ] ibm01 v17 parallel (500s) → `/tmp/ibm01_v17_parallel.txt` (validation: serial vs parallel)
 
-**After v15 tests complete**:
-- [ ] ibm18 3300s test (grid limit raised, 14 restarts; write test_v15_ibm18.py)
-- [ ] ibm02/03/04/06 isolation tests with 3300s budget (150+ noise restarts after Phase 3 loop)
-- [ ] Full 17-benchmark eval with v15 code (will take ~13 hours local; run overnight)
-- [ ] Update per-benchmark table with actual v15 results
+**Ready to run after ibm13/15/18 completes (~05:44)**:
+- [ ] ibm02/03/04/06/07/09 batch → `bash scripts/run_batch_v16_remaining.sh`
+  (uses v17 parallel scoring by default; ~5.5h total; 6×3300s)
+  ibm02: ~150+→600+ restarts; ibm03: ~220+→880+; ibm04/06/09: ~110+→440+
 
-**Longer-term algorithmic ideas (if v15 doesn't beat RePlAce avg)**:
+### v17: Parallel Scoring Workers (2026-05-03)
+
+**Key insight**: PlacementCost is pure Python → multiple independent instances possible.
+Workers run compute_proxy_cost in parallel; legalization stays serial in main process.
+Effective throughput = min(1/t_leg, n_workers/t_score) per second.
+
+**Expected speedup** (n_workers=4 vs serial, 3300s budget):
+- ibm08 (t_leg≈5s, t_score≈43s): 58→261 restarts (4.5×)
+- ibm11 (t_leg≈5s, t_score≈81s): 34→138 restarts (4.1×)
+- ibm13 (t_leg≈5s, t_score≈59s): 56→201 restarts (3.6×)
+- ibm01 (t_leg≈5s, t_score≈9s):  199→561 restarts (2.8×)
+- ibm15 (t_leg≈5s, t_score≈164s): 15→61 restarts (4.1×)
+
+**Competition machine** (96-core EPYC): default n_workers=min(8, 96//2)=8 → ~6-8× speedup.
+**Core 35 noise_fracs invariant preserved**: noise draws identical between serial and parallel
+(np.random is seeded and called in main process only; workers do scoring only).
+
+**Implementation**: `MacroPlacer(n_workers=N)` where N=0=auto-detect (default).
+- Workers initialized with own PlacementCost via `_parallel_worker_init(benchmark_dir)`.
+- In-flight queue: main process legalizes, submits to pool, flushes when queue full.
+- Pool terminated after noise loop; Phase 4 swaps run serially (plc state dependency).
+
+**Longer-term algorithmic ideas**:
 - DREAMPlace integration: analytical global placement as initial solution (would need GPU)
-- Better congestion model: use net bounding-box overlap with routing capacity (net-based)
-- ibm17/ibm01 structural analysis: why do analytical placers dominate? Study initial.plc quality.
-- Multi-start cong-grad: use noise-perturbed position as input to cong-grad (not just baseline)
-- Simulated annealing on congestion objective (not WL): keep macro spread, reduce hotspots
+- RUDY demand map: O(N_nets) fast congestion proxy → pre-filter thousands of candidates
+- ibm17/ibm01 structural analysis: why do analytical placers dominate?
+- Congestion-targeted SA: SA on congestion objective only (not WL), keep macro spread
+- Legalization order diversity: try different macro placement orders (connectivity-first, random)
