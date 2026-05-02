@@ -95,16 +95,16 @@ v14 = current best (200s budget). v15 = 3300s budget (1-hour competition limit).
 
 | Benchmark | hard_n | grid_cells | v1 (leg) | v14 (200s) | **v15 (3300s)** | RePlAce | vs RePlAce | Notes |
 |---|---|---|---|---|---|---|---|---|
-| ibm01 | 246 | 45x41=1845 | 1.2253 | 1.1854 | **1.1854** | 0.9976 | -18.8% | t_score=7.8s; 1000s test: 55 restarts, STUCK — restart-4 6% frac uniquely lucky |
+| ibm01 | 246 | 45x41=1845 | 1.2253 | 1.1854 | **1.1850** | 0.9976 | -18.8% | v16 Phase4 swap: restart193 wins; tiny improvement; effective ceiling ~1.185 |
 | ibm02 | 271 | 30x27=810 | 1.6800 | 1.5823 | **TBD** | 1.8370 | +14.0% | t_score=13-16s; iter+wide=8% wins; v15: 150+ noise restarts |
 | ibm03 | 290 | 32x29=928 | 1.4100 | 1.3547 | **TBD** | 1.3222 | -2.5% | t_score=9-12s; adaptive frac=0.01 at iter=7-8 wins |
 | ibm04 | 295 | 31x30=930 | 1.4101 | 1.3390 | **TBD** | 1.3024 | -2.8% | t_score=12-16s; 6-9 cong-grad iters wins |
 | ibm06 | 178 | 31x28=868 | 1.7198 | 1.6797 | **TBD** | 1.6187 | -3.8% | t_score=19-20s; 7 cong-grad iters at adaptive frac=0.01 wins |
 | ibm07 | 291 | 35x32=1120 | 1.4950 | 1.4950 | **TBD** | 1.4633 | -2.2% | all restarts worse; structural congestion; stuck |
-| ibm08 | 301 | 38x34=1292 | 1.5582 | 1.5251 | **TBD** | 1.4285 | -6.8% | v15: cong-grad NOW RUNS (budget>>244s), 55 noise restarts |
+| ibm08 | 301 | 38x34=1292 | 1.5582 | 1.5251 | **1.5093** | 1.4285 | -5.6% | cong-grad FAILS (1.5908); best=restart44 (1% noise); 56 restarts |
 | ibm09 | 253 | 36x38=1368 | 1.1363 | 1.1304 | **TBD** | 1.1194 | -1.0% | 1 cong-grad iter wins |
 | ibm10 | 786 | 55x41=2255 | 1.4037 | 1.4037 | **1.4037** | 1.5009 | +6.5% | n>430; returns baseline (unchanged) — beats RePlAce ✓ |
-| ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **TBD** | 1.1774 | -4.9% | v15: SKIP_EXACT removed; 36 restarts (t_score=81s) |
+| ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **1.2332** | 1.1774 | -4.6% | best=restart33 (1% noise); 55 restarts; cong-grad fails |
 | ibm12 | 651 | 47x47=2209 | 1.6507 | 1.6507 | **1.6507** | 1.7261 | +4.4% | n>430; returns baseline (unchanged) — beats RePlAce ✓ |
 | ibm13 | 424 | 43x43=1849 | 1.4011 | 1.4011 | **TBD** | 1.3355 | -4.9% | v15: SKIP_EXACT removed; 55 restarts (t_score=53s) |
 | ibm14 | 614 | 49x44=2156 | 1.6033 | 1.6033 | 1.6033 | 1.5436 | -3.9% | n>430; returns baseline (unchanged) |
@@ -150,18 +150,54 @@ self-limiting to 200s. Increasing to 3300s (55 min) gives 10-300× more restarts
 
 | Test | Budget | Restarts | Result | vs v14 | Notes |
 |---|---|---|---|---|---|
-| ibm01 1000s | 1000s | 55 | **1.1854** | = (same) | 8 draws at 0.06 frac; none beat restart-4 rng draw; **ibm01 is stuck** |
-| ibm16 timing | n/a | n/a | t_score=**538.6s** | n/a | Confirmed correctly excluded at n=458>430 threshold; only 6 restarts/3300s |
+| ibm01 1000s | 1000s | 55 | **1.1854** | = (same) | 8 draws at 0.06 frac; none beat restart-4 rng draw; **ibm01 stuck** |
+| ibm16 timing | n/a | n/a | t_score=**538.6s** | n/a | Correctly excluded; only 6 restarts/3300s |
+| ibm08 3300s | 3300s | 56 | **1.5093** | -0.0158 | cong-grad FAILS; best=restart44 (1% noise); wl=0.070 den=0.884 cong=1.995 |
+| ibm11 3300s | 3300s | 55 | **1.2332** | -0.0022 | cong-grad fails; best=restart33 (1% noise); wl=0.055 den=0.904 cong=1.453 |
+| ibm01 v16 swap | 3300s | 233 | **1.1850** | -0.0004 | Phase 4 fired: 66 swap iters; best=restart193 (swap1 phase4/26) |
 
-**Tests running (2026-05-02, PIDs 1778/1812)**:
-- ibm08 3300s: `/tmp/ibm08_v15.txt` (cong-grad first ever clean run + 55 noise restarts)
-- ibm11 3300s: `/tmp/ibm11_v15.txt` (SKIP_EXACT removed; 36 restarts; runs after ibm11)
-- ibm13 3300s: `/tmp/ibm13_v15.txt` (SKIP_EXACT removed; n=424; ~55 restarts)
-- ibm15 3300s: `/tmp/ibm15_v15.txt` (grid limit raised; 18 restarts; first optimization ever)
+**Tests running (2026-05-03, PID 769)**:
+- ibm13 3300s: `/tmp/ibm13_v15.txt` (n=424; ~33 noise + ~6 swap restarts)
+- ibm15 3300s: `/tmp/ibm15_v15.txt` (grid=2166; ~15 noise + ~3 swap; first optimization ever)
+- ibm18 3300s: `/tmp/ibm18_v15.txt` (grid=2145; ~11 noise + ~2 swap; first optimization ever)
 
-**ibm01 prognosis**: STUCK at 1.1854. The initial 6% rng draw (restart #4) is uniquely lucky.
-Even with 300+ draws at 0.06, none replicate it. Gap to RePlAce (0.9976) = 18.8% — structural
-advantage of analytical placers on this benchmark. Accept 1.1854 as our ceiling.
+### v16: Phase 4 Macro-Swap Exploration (2026-05-03)
+
+**New function `_macro_swap_perturb`** (TILOS SA Assessment, TCAD 2024): exchange positions
+of 1-3 random macro pairs from `best_pl`, re-legalize, score. Explores macro assignment
+topology that Gaussian noise restarts cannot — swap moves the "which macro goes where"
+question without adding noise to ALL macros at once.
+
+**Budget time-split**: 85% for noise restarts, 15% reserved for Phase 4 swaps (PHASE4_RESERVE_S).
+Without this split, noise loop always exhausts budget before Phase 4 can run (395 fracs × t_score > budget for all benchmarks).
+
+**Per-benchmark Phase 4 allocation** (3300s budget):
+- ibm01 (~9s/score): ~301 noise restarts + ~53 swap iterations
+- ibm08 (~43s/score): ~64 noise restarts + ~11 swap iterations
+- ibm09 (~20s/score): ~141 noise restarts + ~25 swap iterations
+- ibm11 (~81s/score): ~33 noise restarts + ~6 swap iterations
+
+**ibm01 v16 result** (2026-05-02, 3300s):
+- Noise loop: 169 restarts, best=1.1854 at restart 4 (6% frac) — SAME as v15
+- Phase 4: 66 swap iterations, best=**1.1850** at restart 193 (swap1 phase4/26)
+- Net improvement: 1.1854 → 1.1850 (delta=0.0004) — tiny but REAL
+- This is the first improvement on ibm01 beyond 1.1854. Swap topology exploration works.
+
+**ibm08 v15 key insight** (cong-grad fails for ibm08 too):
+- iter=1 f=0.04 → 1.5908 (WORSE than 1.5582 baseline) → cong_improved=False
+- Falls through to noise restarts. Best: restart44 (1% noise) = 1.5093
+- v14: best was restart4 (6% noise) = 1.5251. v15 with 56 restarts found better via 1% frac.
+
+**ibm11 key insight** (first improvement despite SKIP_EXACT history):
+- 3 restarts tried in v13 (all worse). 55 restarts in v15 found 1.2332 at restart33 (1% noise).
+- Lesson: more restarts find improvements on "stuck" benchmarks. Low fracs (1%) win here.
+
+**Use rng_swap = RandomState(seed+2)**: completely separate from rng_cong (seed+1) and main rng.
+Core 35 noise_fracs winning draws (ibm01/ibm08 6% wins) are unaffected by Phase 4.
+
+**ibm01 prognosis**: Best found = 1.1850 (v16 Phase 4 swap, restart193). Very close to 1.1854
+but technically a new best. Gap to RePlAce (0.9976) = 18.7% — structural advantage of analytical
+placers. The 1.1854/1.1850 range appears to be our effective ceiling without a different algorithm.
 
 **ibm16 prognosis**: t_score=538.6s >> SLOW_SCORE_THRESHOLD=400s → caught by slow-score guard.
 Only 6 restarts with 3300s budget. Correctly excluded. Do NOT raise EXACT_MACRO_THRESHOLD to 470.
@@ -343,7 +379,7 @@ noise_fracs = noise_fracs_core + _ext_pattern * 12   # 35 + 360 = 395 total
 
 ## Next Experiments to Try
 
-**Completed (as of 2026-05-02)**:
+**Completed (as of 2026-05-03)**:
 1. [x] Full v4 17-benchmark eval -- confirmed all 17 baselines
 2. [x] v5 budget-filling restarts -- ibm01 confirmed 1.1854 with 11 restarts
 3. [x] v6 congestion-gradient perturbation -- ibm02 (-0.060) and ibm06 (-0.036) confirmed
@@ -352,19 +388,23 @@ noise_fracs = noise_fracs_core + _ext_pattern * 12   # 35 + 360 = 395 total
 6. [x] v15 code changes -- 3300s budget, raised thresholds, 395 fracs (committed)
 7. [x] ibm01 1000s test -- **STUCK at 1.1854** (55 restarts, 8×0.06 frac, none better)
 8. [x] ibm16 timing test -- **t_score=538.6s**, correctly excluded (do not raise threshold to 470)
+9. [x] ibm08 3300s test -- **1.5093** (delta=-0.0158 vs v14; cong-grad fails; 56 restarts)
+10. [x] ibm11 3300s test -- **1.2332** (delta=-0.0022 vs v14; cong-grad fails; 55 restarts)
+11. [x] v16 Phase 4 macro-swap -- implemented; ibm01: **1.1850** (tiny gain via swap phase4/26)
+12. [x] Literature survey -- 9 papers; RUDY/SA/WireMask sweep as next actionable ideas
 
-**Active / Awaiting Results (2026-05-02)**:
-- [ ] ibm08 3300s test → `/tmp/ibm08_v15.txt` (PID 1778, ~55 min)
-       FIRST EVER clean run with cong-grad (budget pre-check always skipped it before)
-       Best possible: 1.4285 (RePlAce). Expected: improvement from 1.5251 but how much unknown.
-- [ ] ibm11 3300s test → `/tmp/ibm11_v15.txt` (runs after ibm08 in PID 1812)
-       36 restarts. Was SKIP_EXACT before (only 2-3 restarts ever tried, all worse).
-       Baseline=1.2354. May stay at baseline.
-- [ ] ibm13 3300s test → `/tmp/ibm13_v15.txt` (runs after ibm11 in PID 1812)
-       55 restarts. n=424 confirmed. Was SKIP_EXACT (only 2-3 restarts ever tried).
-       Baseline=1.4011. Gap to RePlAce=0.066.
-- [ ] ibm15 3300s test → `/tmp/ibm15_v15.txt` (runs after ibm13 in PID 1812)
-       18 restarts. FIRST EVER optimization of ibm15. Baseline=1.6061.
+**Confirmed Results (2026-05-02/03)**:
+- [x] ibm08 3300s → **1.5093** (was 1.5251; cong-grad fails, best=restart44 1% noise; 56 restarts)
+- [x] ibm11 3300s → **1.2332** (was 1.2354; cong-grad fails, best=restart33 1% noise; 55 restarts)
+- [x] ibm01 v16 swap → **1.1850** (was 1.1854; Phase4 swap restart193; 66 swap iters; tiny gain)
+
+**Active / Awaiting Results (2026-05-03, PID 769)**:
+- [ ] ibm13 3300s → `/tmp/ibm13_v15.txt` (~55 min; n=424; ~33 noise + swap restarts)
+       Was SKIP_EXACT, only 2-3 restarts tried before. Baseline=1.4011. Gap=0.066 vs RePlAce.
+- [ ] ibm15 3300s → `/tmp/ibm15_v15.txt` (~55 min after ibm13; FIRST EVER optimization)
+       Baseline=1.6061. t_score=164s. ~15 noise + ~3 swap restarts.
+- [ ] ibm18 3300s → `/tmp/ibm18_v15.txt` (~55 min after ibm15; FIRST EVER optimization)
+       Baseline=1.7941. t_score~220s. ~11 noise + ~2 swap restarts.
 
 **After v15 tests complete**:
 - [ ] ibm18 3300s test (grid limit raised, 14 restarts; write test_v15_ibm18.py)
