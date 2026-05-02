@@ -772,15 +772,20 @@ class MacroPlacer:
                 if best_score >= score_before:
                     break  # stop wide steps if this one didn't improve
 
-        # Phase 3: cong-grad from best known position using current (stale) plc.
+        # Phase 3: iterative cong-grad from best known position using current (stale) plc.
         # After Phase 2 failed wide steps, plc holds the cong map from a placement
         # that was WORSE than our best. Moving from the BEST position away from the
-        # high-congestion regions of this stale map may explore a different local
-        # minimum. Only runs when cong-grad improved at least once (cong_improved)
-        # so we know the gradient signal is useful for this benchmark.
+        # high-congestion regions of this stale map explores different local minima.
+        # Only runs when cong-grad improved at least once (cong_improved).
+        # v15: Runs up to 20 times (loop), each using the next rng_cong draw.
+        #   With 3300s budget, up to 20 Phase 3 iterations run before noise restarts.
+        #   For ibm06 (t=20s): 20 × 26s = 520s before 100 noise restarts.
+        #   With 200s budget: usually 0-1 Phase 3 runs (budget exhausted by noise fracs).
         if cong_improved:
-            remaining = self.time_budget_s - (time.time() - t0)
-            if remaining >= t_one_score * 1.3:
+            for phase3_i in range(20):
+                remaining = self.time_budget_s - (time.time() - t0)
+                if remaining < t_one_score * 1.3:
+                    break
                 best_pos_now = np.stack(
                     [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
                 )
@@ -788,7 +793,7 @@ class MacroPlacer:
                     best_pos_now, plc, benchmark, n, cw, ch, hw, hh, movable,
                     frac=0.04, rng=rng_cong,
                 )
-                if not _try_restart("cong-grad phase3", phase3_perturbed,
+                if not _try_restart(f"cong-grad phase3/{phase3_i+1}", phase3_perturbed,
                                      k=1 + directed_ran):
                     _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
                     return best_pl
