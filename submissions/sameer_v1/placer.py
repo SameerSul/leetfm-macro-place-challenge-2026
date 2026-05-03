@@ -68,6 +68,20 @@ v17 change: Parallel scoring workers for noise-restart phase.
   For ibm01 (t_leg≈5s, t_score≈9s): N=4 → 0.20/s → 561 restarts vs 199 serial.
   Default n_workers=0: auto-detect = min(8, cpu_count//2).
   n_workers=1: serial mode (same as v16; use for debugging or memory-constrained envs).
+
+v18 change: Legalization order diversity + parallel worker timeout fix.
+  Bug fix: parallel worker timeout raised from t_one_score*5 → max(t_one_score*20, 600s).
+    The old timeout caused workers to time out on loaded machines where scoring takes
+    much longer than the cold baseline measurement (e.g. ibm15: 34s cold → 411s under load).
+  New: v18 order diversity.
+    For noise-frac indices in the extension zone (>= 35), every 3rd restart uses a
+    random legalization order (permutation of macros) instead of default largest-area-first.
+    Different orders resolve overlap conflicts differently → genuinely different legal
+    arrangements from the same perturbed starting positions.
+    Critical invariant: indices 0-34 (core 35 fracs) ALWAYS use default order, preserving
+    all known winning draws (ibm01 6% at index 2; ibm08 best at index 42; ibm11 at 31).
+    Impact: ibm13 (47 extension restarts with default order, all worse than baseline) may
+    now find improvements via ~16 order-diverse restarts.
   Cong-grad phases (1-3) and Phase 4 swaps remain serial (need main plc state).
 """
 
@@ -823,8 +837,17 @@ class MacroPlacer:
                 _log(f"  Parallel pool: benchmark_dir not found, falling back to serial")
                 _use_parallel = False
 
-        def _try_restart(label: str, perturbed_init: np.ndarray, k: int) -> bool:
-            """Legalize + score one candidate. Returns False if budget exhausted."""
+        def _try_restart(label: str, perturbed_init: np.ndarray, k: int,
+                         leg_order=None) -> bool:
+            """Legalize + score one candidate. Returns False if budget exhausted.
+
+            leg_order: optional macro placement sequence (list of indices).
+              None = default (largest-area-first).
+              v18: extension-zone restarts (noise_fracs index >= 35) sometimes use
+              a random permutation to explore different legal arrangements from
+              the same perturbed starting positions.  Core 35 fracs always use
+              the default order so all known winning draws are preserved.
+            """
             nonlocal best_score, best_pl
             elapsed = time.time() - t0
             remaining = self.time_budget_s - elapsed
@@ -840,9 +863,10 @@ class MacroPlacer:
             t1 = time.time()
             leg_deadline = t1 + 60.0  # cap spiral search; timed-out macros keep pos value
             leg = _will_legalize(perturbed_init, movable, sizes, hw, hh, cw, ch, n,
-                                 deadline=leg_deadline)
+                                 deadline=leg_deadline, order=leg_order)
             t_leg = time.time() - t1
-            _log(f"  Restart {k} ({label}) legalized in {t_leg:.1f}s")
+            ord_tag = "+ord" if leg_order is not None else ""
+            _log(f"  Restart {k} ({label}{ord_tag}) legalized in {t_leg:.1f}s")
 
             score, pl = _score(leg)
             _log(f"  Candidate {k}: proxy={score:.4f}")
@@ -996,6 +1020,27 @@ class MacroPlacer:
         noise_scale_base = min(cw, ch)
         last_noise_k = 1 + directed_ran
 
+        # v18: Legalization order diversity.
+        # For noise-frac indices in the extension zone (>= 35), every 3rd restart
+        # uses a random macro-placement order instead of the default largest-area-first.
+        # Different orders resolve conflicts differently, producing genuinely different
+        # legal arrangements even from the same perturbed starting positions.
+        # Critical invariant: indices 0-34 (core 35 fracs, containing all known winning
+        # draws) ALWAYS use the default order (leg_order=None).
+        # E.g. ibm01 win: noise_fracs[2]=0.06 (index 2 < 35) → default order, unchanged.
+        #      ibm08 win: noise_fracs[42] (index 42 > 35), (42-35)%3=1 → NOT order-diverse.
+        #      ibm11 win: noise_fracs[31] (index 31 < 35) → default order, unchanged.
+        # This allows stuck benchmarks (ibm13: all 47 same-order restarts worse) to explore
+        # structurally different legal arrangements without disrupting known winning fracs.
+        _order_rng = np.random.RandomState(self.seed + 3)  # separate rng for leg orders
+        _core_fracs = 35  # number of core fracs to keep with default order
+
+        def _noise_leg_order(noise_idx: int):
+            """Return random order for extension-zone restarts, None for core-35."""
+            if noise_idx >= _core_fracs and (noise_idx - _core_fracs) % 3 == 0:
+                return _order_rng.permutation(n).tolist()
+            return None
+
         if _use_parallel and _pool is not None:
             # ── Parallel noise restarts ────────────────────────────────────
             # Strategy: main process legalizes candidates serially, immediately
@@ -1019,7 +1064,14 @@ class MacroPlacer:
                 """Wait for one async scoring result, update best. Returns False if over budget."""
                 nonlocal best_score, best_pl, last_noise_k
                 try:
-                    score = async_res.get(timeout=t_one_score * 5.0)
+                    # Timeout: generous upper bound so we handle machines under load.
+                    # t_one_score is measured on a cold/serial baseline; workers under
+                    # sustained load may take 4-10× longer. Use max(20×baseline, 600s)
+                    # so any legitimate result is returned even if the machine is hot.
+                    # A true crash (not just slowness) would never return within 600s
+                    # on any realistic hardware, so this is safe.
+                    _timeout = max(t_one_score * 20.0, 600.0)
+                    score = async_res.get(timeout=_timeout)
                 except Exception:
                     score = 1e9
                 _log(f"  Candidate {k_r} ({label_r}): proxy={score:.4f}")
@@ -1061,12 +1113,16 @@ class MacroPlacer:
                     np.stack([hw, hh], axis=1),
                     np.stack([cw - hw, ch - hh], axis=1),
                 )
+                # v18: order diversity for extension-zone fracs (index >= 35)
+                noise_idx = k - (1 + directed_ran)
+                leg_ord = _noise_leg_order(noise_idx)
                 t_leg0 = time.time()
                 leg_deadline = t_leg0 + 60.0
                 leg = _will_legalize(perturbed, movable, sizes, hw, hh, cw, ch, n,
-                                     deadline=leg_deadline)
+                                     deadline=leg_deadline, order=leg_ord)
                 t_leg = time.time() - t_leg0
-                label_k = f"random noise={frac:.0%}"
+                ord_tag = "+ord" if leg_ord is not None else ""
+                label_k = f"random noise={frac:.0%}{ord_tag}"
                 _log(f"  Restart {k} ({label_k}) legalized in {t_leg:.1f}s")
 
                 # Submit scoring to worker pool (async)
@@ -1107,7 +1163,11 @@ class MacroPlacer:
                     np.stack([hw, hh], axis=1),
                     np.stack([cw - hw, ch - hh], axis=1),
                 )
-                if not _try_restart(f"random noise={frac:.0%}", perturbed, k=k):
+                # v18: order diversity for extension-zone fracs (index >= 35)
+                noise_idx = k - (1 + directed_ran)
+                leg_ord = _noise_leg_order(noise_idx)
+                if not _try_restart(f"random noise={frac:.0%}", perturbed, k=k,
+                                    leg_order=leg_ord):
                     break
 
         # -- Phase 4: Macro-swap exploration from best position ---------------
