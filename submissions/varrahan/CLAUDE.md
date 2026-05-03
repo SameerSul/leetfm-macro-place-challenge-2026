@@ -40,15 +40,13 @@ If `uv` is not on PATH, fall back to `pip install -e .` and replace `uv run` wit
 
 ## File modification scope
 
-**IMPORTANT — Claude may only write to:**
-- `CLAUDE.md` (this file)
-- `submissions/varrahan/**` (the active submission slot, currently `submissions/varrahan/v1/`)
+**IMPORTANT — Claude may write only inside `submissions/varrahan/**`.** This includes this `CLAUDE.md` (now at `submissions/varrahan/CLAUDE.md`), the active placer at `submissions/varrahan/v1/placer.py`, and any new files Claude creates under `submissions/varrahan/`.
 
-Every other file in the repository is **read-only** for Claude. This includes — but is not limited to — `macro_place/`, `external/`, `submissions/sameer_v1/`, `submissions/will_seed/`, `submissions/examples/`, `scripts/`, `test/`, `pyproject.toml`, `README.md`, `SETUP.md`, `PAPERS_NOTES.md`, `PROGRESS.md`, `TEAM_GUIDE.md`. Read freely; do not edit, create, move, or delete.
+**Every file outside `submissions/varrahan/` is read-only.** Claude may freely read any file in the repository — `macro_place/`, `external/`, other `submissions/*` siblings (`sameer_v1/`, `will_seed/`, `examples/`, `differential_placer.py`, `_test_legonly.py`), `scripts/`, `test/`, `benchmarks/`, `pyproject.toml`, `README.md`, `SETUP.md`, `PAPERS_NOTES.md`, `PROGRESS.md`, `TEAM_GUIDE.md`, `LICENSE.md`, etc. — but must not edit, create, move, or delete any of them.
 
 If a task seems to require modifying a read-only file (e.g. fixing a bug in `macro_place/`, adding a script under `scripts/`, correcting an error in `PAPERS_NOTES.md`), stop and surface the proposed change to the user instead of editing. They will lift the restriction explicitly when appropriate.
 
-This rule is documented here so Claude follows it. For hard enforcement, mirror it as a deny rule in `.claude/settings.local.json` (`Write(...)` and `Edit(...)` patterns excluding the two writable paths).
+This rule is documented here so Claude follows it. For hard enforcement, mirror it as a deny rule in `.claude/settings.local.json` (`Write(...)` and `Edit(...)` patterns matching anything outside `submissions/varrahan/`).
 
 ## Submission contract (don't break these)
 
