@@ -106,12 +106,12 @@ v14 = current best (200s budget). v15 = 3300s budget (1-hour competition limit).
 | ibm10 | 786 | 55x41=2255 | 1.4037 | 1.4037 | **1.4037** | 1.5009 | +6.5% | n>430; returns baseline (unchanged) — beats RePlAce ✓ |
 | ibm11 | 373 | 39x45=1755 | 1.2354 | 1.2354 | **1.2332** | 1.1774 | -4.6% | best=restart33 (1% noise); 55 restarts; cong-grad fails |
 | ibm12 | 651 | 47x47=2209 | 1.6507 | 1.6507 | **1.6507** | 1.7261 | +4.4% | n>430; returns baseline (unchanged) — beats RePlAce ✓ |
-| ibm13 | 424 | 43x43=1849 | 1.4011 | 1.4011 | **TBD** | 1.3355 | -4.9% | v15: SKIP_EXACT removed; 55 restarts (t_score=53s) |
+| ibm13 | 424 | 43x43=1849 | 1.4011 | 1.4011 | **1.4011** | 1.3355 | -4.9% | stuck: all restarts worse; cong-grad fails; ~47 restarts tried; v18 order diversity may help |
 | ibm14 | 614 | 49x44=2156 | 1.6033 | 1.6033 | 1.6033 | 1.5436 | -3.9% | n>430; returns baseline (unchanged) |
-| ibm15 | 393 | 57x38=2166 | 1.6061 | 1.6061 | **TBD** | 1.5159 | -5.9% | v15: grid limit raised to 2200; t_score=164s; ~18 restarts |
+| ibm15 | 393 | 57x38=2166 | 1.6061 | 1.6061 | **TBD** | 1.5159 | -5.9% | v18 serial running; t_score=34-164s (dev machine variable); ~68 restarts possible if fast |
 | ibm16 | 458 | 45x48=2160 | 1.5323 | 1.5323 | **1.5323** | 1.4780 | -3.7% | n>430; t_score=538.6s confirmed (timing test); correctly excluded |
 | ibm17 | 760 | 51x44=2244 | 1.7437 | 1.7437 | 1.7437 | 1.6446 | -6.0% | n>430; returns baseline (unchanged) |
-| ibm18 | 285 | 55x39=2145 | 1.7941 | 1.7941 | **TBD** | 1.7722 | -1.2% | v15: grid limit raised to 2200; t_score~220s; ~14 restarts |
+| ibm18 | 285 | 55x39=2145 | 1.7941 | 1.7941 | **1.7941** | 1.7722 | -1.2% | dev machine slow (481s > 400s threshold); baseline only; EPYC will score in ~220s |
 
 **v14 clean avg: ~1.4860** (ibm08=1.5251 on cool machine; v14 full eval under load=1.4877)
 **v14 gap to RePlAce:** ~0.028 (1.9%)
@@ -156,10 +156,12 @@ self-limiting to 200s. Increasing to 3300s (55 min) gives 10-300× more restarts
 | ibm11 3300s | 3300s | 55 | **1.2332** | -0.0022 | cong-grad fails; best=restart33 (1% noise); wl=0.055 den=0.904 cong=1.453 |
 | ibm01 v16 swap | 3300s | 233 | **1.1850** | -0.0004 | Phase 4 fired: 66 swap iters; best=restart193 (swap1 phase4/26) |
 
-**Tests running (2026-05-03, PID 769)**:
-- ibm13 3300s: `/tmp/ibm13_v15.txt` (n=424; ~33 noise + ~6 swap restarts)
-- ibm15 3300s: `/tmp/ibm15_v15.txt` (grid=2166; ~15 noise + ~3 swap; first optimization ever)
-- ibm18 3300s: `/tmp/ibm18_v15.txt` (grid=2145; ~11 noise + ~2 swap; first optimization ever)
+**Tests running (2026-05-03)**:
+- ibm15 v18 serial (n_workers=1): `/tmp/ibm15_v18.txt` (first ever optimization; ~68 restarts if t_score≈34s)
+- ibm18: COMPLETED baseline-only (t_score=481s > 400s on dev machine); EPYC will score in ~220s
+
+**Completed (2026-05-03)**:
+- ibm13: **1.4011** (confirmed stuck; all restarts worse; t_score=59s; 38+ restarts tried)
 
 ### v16: Phase 4 Macro-Swap Exploration (2026-05-03)
 
@@ -400,15 +402,20 @@ noise_fracs = noise_fracs_core + _ext_pattern * 12   # 35 + 360 = 395 total
 - [x] ibm01 v16 swap → **1.1850** (was 1.1854; Phase4 swap restart193; 66 swap iters; tiny gain)
 
 **Active / Awaiting Results (2026-05-03)**:
-- [ ] ibm13 3300s → `/tmp/ibm13_v15.txt` (v16 serial; ETA 03:54; baseline=1.4011; t_score=58.9s)
-- [ ] ibm15 3300s → `/tmp/ibm15_v15.txt` (v16 serial; ETA 04:49; FIRST EVER optimization; baseline=1.6061)
-- [ ] ibm18 3300s → `/tmp/ibm18_v15.txt` (v16 serial; ETA 05:44; FIRST EVER optimization; baseline=1.7941)
-- [ ] ibm01 v17 parallel (500s) → `/tmp/ibm01_v17_parallel.txt` (validation: serial vs parallel)
+- [ ] ibm15 v18 serial → `/tmp/ibm15_v18.txt` (n_workers=1; t_score~34s if machine cold; ~68 restarts)
+- [ ] ibm13 v18 → need to rerun (v18 order diversity: ~16 order-diverse restarts out of 47 extension)
+- [ ] ibm01 v17 parallel (500s) → `/tmp/ibm01_v17_parallel.txt` (validation: serial vs parallel, pending clean machine run)
 
-**Ready to run after ibm13/15/18 completes (~05:44)**:
+**Confirmed Done (2026-05-03)**:
+- [x] ibm13 → **1.4011** (stuck; confirmed with v17; all 38 restarts worse than baseline)
+- [x] ibm18 → **1.7941** (baseline only on dev machine; t_score=481s > 400s threshold; expect optimization on EPYC at ~220s)
+
+**Ready to run**:
 - [ ] ibm02/03/04/06/07/09 batch → `bash scripts/run_batch_v16_remaining.sh`
-  (uses v17 parallel scoring by default; ~5.5h total; 6×3300s)
+  (v17+v18 parallel scoring by default; ~5.5h total; 6×3300s)
   ibm02: ~150+→600+ restarts; ibm03: ~220+→880+; ibm04/06/09: ~110+→440+
+- [ ] ibm18 v18 serial on EPYC (or after ibm15 finishes on dev machine)
+- [ ] ibm13 v18 serial → test if order diversity helps (n=424, 47 extension restarts × 1/3 = ~16 order-diverse)
 
 ### v17: Parallel Scoring Workers (2026-05-03)
 
@@ -432,9 +439,37 @@ Effective throughput = min(1/t_leg, n_workers/t_score) per second.
 - In-flight queue: main process legalizes, submits to pool, flushes when queue full.
 - Pool terminated after noise loop; Phase 4 swaps run serially (plc state dependency).
 
+### v18: Legalization Order Diversity + Parallel Worker Timeout Fix (2026-05-03)
+
+**Bug fix**: Parallel worker timeout raised from `t_one_score × 5` → `max(t_one_score × 20, 600s)`.
+Root cause of prior bug: workers timed out on machines under sustained load (ibm15: 34s cold
+baseline → 411s hot workers → 5×34=170s timeout → all workers return 1e9).
+New timeout is safe even if machine was loaded during baseline measurement.
+
+**New: Legalization order diversity**.
+`_will_legalize` already supported an `order` parameter (largest-area-first by default).
+v18 wires this into the noise loop for extension-zone fracs (index ≥ 35):
+- Every 3rd restart uses `_order_rng.permutation(n)` (random macro placement sequence).
+- Core 35 fracs (indices 0-34, containing all known winning draws) ALWAYS use default order.
+- `_order_rng = RandomState(seed+3)`: separate from main, rng_cong, rng_swap.
+- np.random (main rng) is unaffected; noise draws at all positions are identical to v17.
+
+**Why this helps stuck benchmarks (ibm13)**:
+ibm13: all 47 extension restarts with default (largest-area-first) order gave baseline or worse.
+v18 gives ~16 order-diverse restarts out of the 47 extension restarts. If the default order
+creates a systematic bias toward bad macro conflict resolutions, a random order avoids it.
+The same noise frac is used but macros resolve their overlaps in a different sequence → different
+legal arrangement → different proxy score.
+
+**Safety analysis**:
+- ibm01 best: restart 4 (6% frac) → noise_fracs[2], index 2 < 35 → core → unchanged ✓
+- ibm08 best: restart44 (1% frac) → noise_fracs[42], (42-35)%3=7%3=1 → NOT order-diverse ✓
+- ibm11 best: restart33 (1% frac) → noise_fracs[31], index 31 < 35 → core → unchanged ✓
+- v18 adds ~1/3 of extension restarts as order-diverse (never touching known wins) ✓
+
 **Longer-term algorithmic ideas**:
 - DREAMPlace integration: analytical global placement as initial solution (would need GPU)
 - RUDY demand map: O(N_nets) fast congestion proxy → pre-filter thousands of candidates
 - ibm17/ibm01 structural analysis: why do analytical placers dominate?
 - Congestion-targeted SA: SA on congestion objective only (not WL), keep macro spread
-- Legalization order diversity: try different macro placement orders (connectivity-first, random)
+- Connectivity-aware legalization order: place macros with more connections first (paper K)
