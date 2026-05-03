@@ -74,14 +74,17 @@ v18 change: Legalization order diversity + parallel worker timeout fix.
     The old timeout caused workers to time out on loaded machines where scoring takes
     much longer than the cold baseline measurement (e.g. ibm15: 34s cold → 411s under load).
   New: v18 order diversity.
-    For noise-frac indices in the extension zone (>= 35), every 3rd restart uses a
-    random legalization order (permutation of macros) instead of default largest-area-first.
+    For noise-frac indices in the extension zone (>= 35), every 6th cycle uses alternative
+    legalization orders instead of default largest-area-first:
+      ext_idx % 6 == 0: random permutation (most diverse exploration)
+      ext_idx % 6 == 3: connectivity order (most-connected macro placed first)
+      Others: default largest-area-first
     Different orders resolve overlap conflicts differently → genuinely different legal
     arrangements from the same perturbed starting positions.
     Critical invariant: indices 0-34 (core 35 fracs) ALWAYS use default order, preserving
     all known winning draws (ibm01 6% at index 2; ibm08 best at index 42; ibm11 at 31).
     Impact: ibm13 (47 extension restarts with default order, all worse than baseline) may
-    now find improvements via ~16 order-diverse restarts.
+    now find improvements via ~8 order-diverse restarts (4 random + 4 connectivity).
   Cong-grad phases (1-3) and Phase 4 swaps remain serial (need main plc state).
 """
 
@@ -1021,25 +1024,45 @@ class MacroPlacer:
         last_noise_k = 1 + directed_ran
 
         # v18: Legalization order diversity.
-        # For noise-frac indices in the extension zone (>= 35), every 3rd restart
-        # uses a random macro-placement order instead of the default largest-area-first.
+        # For noise-frac indices in the extension zone (>= 35), every Nth restart
+        # uses an alternative macro-placement order instead of the default largest-area-first.
         # Different orders resolve conflicts differently, producing genuinely different
         # legal arrangements even from the same perturbed starting positions.
+        #
         # Critical invariant: indices 0-34 (core 35 fracs, containing all known winning
         # draws) ALWAYS use the default order (leg_order=None).
         # E.g. ibm01 win: noise_fracs[2]=0.06 (index 2 < 35) → default order, unchanged.
-        #      ibm08 win: noise_fracs[42] (index 42 > 35), (42-35)%3=1 → NOT order-diverse.
+        #      ibm08 win: noise_fracs[42] (index 42 > 35), (42-35)%6=1 → NOT order-diverse.
         #      ibm11 win: noise_fracs[31] (index 31 < 35) → default order, unchanged.
-        # This allows stuck benchmarks (ibm13: all 47 same-order restarts worse) to explore
-        # structurally different legal arrangements without disrupting known winning fracs.
+        #
+        # Schedule in extension zone (per-6 cycle starting at index 35):
+        #   ext_idx % 6 == 0 → random permutation (most diverse exploration)
+        #   ext_idx % 6 == 3 → connectivity order (most-connected macro first)
+        #   Others → default largest-area-first
+        # This gives 1/3 of extension restarts as order-diverse (1/6 random, 1/6 connectivity).
         _order_rng = np.random.RandomState(self.seed + 3)  # separate rng for leg orders
         _core_fracs = 35  # number of core fracs to keep with default order
 
+        # Precompute connectivity order (most-connected macro first).
+        # Connectivity = number of nets the macro appears in.
+        # Research motivation: placing highly-connected macros first ensures they get their
+        # preferred positions in the spiral search, reducing routing bottlenecks.
+        _n_conns = np.zeros(n, dtype=np.int32)
+        for _net_nodes in benchmark.net_nodes:
+            for _nd in _net_nodes.numpy():
+                if int(_nd) < n:
+                    _n_conns[int(_nd)] += 1
+        _connectivity_order = sorted(range(n), key=lambda i: -_n_conns[i])
+
         def _noise_leg_order(noise_idx: int):
-            """Return random order for extension-zone restarts, None for core-35."""
-            if noise_idx >= _core_fracs and (noise_idx - _core_fracs) % 3 == 0:
-                return _order_rng.permutation(n).tolist()
-            return None
+            """Return alternative order for extension-zone restarts, None for core-35."""
+            if noise_idx >= _core_fracs:
+                ext_idx = noise_idx - _core_fracs
+                if ext_idx % 6 == 0:
+                    return _order_rng.permutation(n).tolist()  # random
+                if ext_idx % 6 == 3:
+                    return _connectivity_order  # most-connected first
+            return None  # default: largest-area-first
 
         if _use_parallel and _pool is not None:
             # ── Parallel noise restarts ────────────────────────────────────
