@@ -677,6 +677,18 @@ class MacroPlacer:
             0.04, 0.06, 0.09, 0.02, 0.06, 0.05, 0.08, 0.04, 0.06, 0.02,
             0.06, 0.10, 0.04, 0.06, 0.02, 0.06, 0.12, 0.04, 0.06, 0.08,
         ] * 12  # 360 entries (30 × 12)
+        # Large-frac extension (indices 395-429): tried only by fast benchmarks on EPYC
+        # (ibm01 ~9s/score, n_workers=8 → ~561 restarts → reaches index 395+).
+        # Large perturbations (25-50%) produce genuinely different macro arrangements —
+        # the legalization finds a different basin than small-noise restarts.
+        # WL impact of 50% noise: small (WL ≈ 0.06, congestion dominates at 1.3-2.5).
+        # For slow benchmarks (ibm08 56 restarts, ibm13 47 restarts): never reached.
+        _large = [
+            0.25, 0.30, 0.20, 0.40, 0.25, 0.30, 0.50, 0.25, 0.15, 0.35,
+            0.25, 0.30, 0.40, 0.20, 0.25, 0.50, 0.30, 0.25, 0.15, 0.20,
+            0.25, 0.30, 0.35, 0.25, 0.40, 0.20, 0.50, 0.25, 0.30, 0.15,
+            0.25, 0.35, 0.30, 0.20, 0.25,
+        ]  # 35 entries (indices 395-429)
         self.noise_fracs = noise_fracs or [
             # ── Core 35 entries (UNCHANGED from v14 — preserves all known wins) ─────
             # Core (preserves ibm01 6%-win and ibm03 2%-win)
@@ -697,6 +709,8 @@ class MacroPlacer:
             0.005, 0.010, 0.015, 0.030, 0.050,
             # ── Extension for 1-hour budget (entries 35-394) ─────────────────────
             *_ext,
+            # ── Large-frac block (entries 395-429) ───────────────────────────────
+            *_large,
         ]
         self.seed = seed
         self.time_budget_s = time_budget_s
