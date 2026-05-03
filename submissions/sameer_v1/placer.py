@@ -88,6 +88,7 @@ v18 change: Legalization order diversity + parallel worker timeout fix.
   Cong-grad phases (1-3) and Phase 4 swaps remain serial (need main plc state).
 """
 
+import itertools
 import multiprocessing as mp
 import os
 import random
@@ -642,7 +643,7 @@ class MacroPlacer:
 
     def __init__(
         self,
-        n_restarts: int = 500,
+        n_restarts: int = 5000,
         noise_fracs: Optional[List[float]] = None,
         seed: int = 42,
         time_budget_s: float = 3300.0,
@@ -1068,10 +1069,17 @@ class MacroPlacer:
                     _n_conns[int(_nd)] += 1
         _connectivity_order = sorted(range(n), key=lambda i: -_n_conns[i])
 
+        _nfracs = len(self.noise_fracs)  # for cycling modular arithmetic
+
         def _noise_leg_order(noise_idx: int):
-            """Return alternative order for extension-zone restarts, None for core-35."""
-            if noise_idx >= _core_fracs:
-                ext_idx = noise_idx - _core_fracs
+            """Return alternative order for extension-zone restarts, None for core-35.
+            noise_idx counts absolute restarts (may exceed _nfracs on cycling benchmarks).
+            We modulo by _nfracs so cycling benchmarks repeat the same order-diversity
+            pattern on every cycle through the noise_fracs list.
+            """
+            cycle_idx = noise_idx % _nfracs  # position within current frac cycle
+            if cycle_idx >= _core_fracs:
+                ext_idx = cycle_idx - _core_fracs
                 if ext_idx % 6 == 0:
                     return _order_rng.permutation(n).tolist()  # random
                 if ext_idx % 6 == 3:
@@ -1091,8 +1099,14 @@ class MacroPlacer:
             from multiprocessing.pool import AsyncResult
 
             in_flight: list = []  # list of (AsyncResult, leg_pos, k, label)
+            # v19: cycle through noise_fracs so fast EPYC benchmarks use full budget.
+            # noise_fracs has 430 entries; ibm01 on EPYC (8 workers) can do ~2800 restarts.
+            # Without cycling, the loop would stop after 430 iterations leaving budget unused.
             noise_fracs_iter = enumerate(
-                self.noise_fracs[: self.n_restarts - 1 - directed_ran],
+                itertools.islice(
+                    itertools.cycle(self.noise_fracs),
+                    self.n_restarts - 1 - directed_ran,
+                ),
                 start=1 + directed_ran
             )
 
@@ -1181,8 +1195,12 @@ class MacroPlacer:
 
         else:
             # ── Serial noise restarts (original v16 code) ─────────────────
+            # v19: cycle through noise_fracs (budget is the real cap, not frac-list length)
             for k, frac in enumerate(
-                self.noise_fracs[: self.n_restarts - 1 - directed_ran],
+                itertools.islice(
+                    itertools.cycle(self.noise_fracs),
+                    self.n_restarts - 1 - directed_ran,
+                ),
                 start=1 + directed_ran
             ):
                 last_noise_k = k
