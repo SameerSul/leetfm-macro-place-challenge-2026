@@ -201,9 +201,9 @@ def surrogate_components(
 
     all_pos = _all_node_pos(pos, benchmark, n)
     
-    wl_raw = _hpwl(all_pos, benchmark, n)
+    wl_raw = _hpwl(all_pos, benchmark)
     md_raw = _macro_density_sos(all_pos, n, cw, ch, G)
-    wc_raw = _wire_congestion(all_pos, benchmark, n, cw, ch, G)
+    wc_raw = _wire_congestion(all_pos, benchmark, cw, ch, G)
 
     return {
         "wl": wl_raw / max(total_w * perim, 1e-9),
