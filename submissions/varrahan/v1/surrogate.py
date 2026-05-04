@@ -24,9 +24,13 @@ macros spread out, net bboxes grow, cover more cells, and overlap more --
 which raises the score and correctly penalizes the over-spreading that hurt
 the actual proxy on ibm10-18.
 
-Each component is normalized so the proxy formula's weights apply directly;
-absolute scale is uncalibrated and only meaningful for ranking within one
-benchmark.
+Caching
+-------
+Per-benchmark constants (numpy net arrays, pre-filtered indices, pre-allocated
+position buffer) are cached on the benchmark instance via a single attribute
+`_surrogate_cache`. This avoids the unsafe `id(benchmark)` global-dict pattern
+(Python reuses memory addresses after GC) and ties the cache lifetime to the
+benchmark itself.
 
 Usage in placer.py
 ------------------
@@ -37,55 +41,82 @@ Usage in placer.py
 import numpy as np
 from macro_place.benchmark import Benchmark
 
-_BENCHMARK_CACHE = {}
 
-def _get_cached_nets(benchmark: Benchmark):
-    """
-    Dynamically caches NumPy conversions on the benchmark instance.
-    """
-    b_id = id(benchmark)
-    
-    if b_id not in _BENCHMARK_CACHE:
-        # Perform translation
-        net_nodes_np = [nodes.numpy() for nodes in benchmark.net_nodes]
-        net_weights_np = benchmark.net_weights.numpy()
-        _BENCHMARK_CACHE[b_id] = (net_nodes_np, net_weights_np)
-        
-    # Return the translated arrays from our dictionary
-    return _BENCHMARK_CACHE[b_id]
+_CACHE_ATTR = "_surrogate_cache"
 
-def _all_node_pos(pos: np.ndarray, benchmark: Benchmark, n: int) -> np.ndarray:
-    """Concatenate macro positions (hard from `pos`, soft from benchmark) and
-    port positions into one array indexable by net node indices.
+
+def _get_cache(benchmark: Benchmark) -> dict:
+    """Build (once) and return per-benchmark caches.
+
+    Cached fields:
+      all_pos_buffer : [n_total, 2] float64 array. Soft-macro and port positions
+        are pre-filled; the hard-macro slice is overwritten per call.
+      n_hard, n_total: ints (num hard macros, num macros + num ports)
+      nets    : list of pre-filtered index arrays (only nodes < n_total kept,
+                only nets with >= 2 such nodes retained)
+      weights : np.ndarray parallel to `nets`
+      total_w_raw : float, sum of all original net weights (for normalization;
+                    uses ALL nets, not just the filtered ones, so the
+                    normalization scale does not jump when many nets get
+                    filtered out)
+      n_nets_total, n_nets_filtered: ints, for diagnostics
     """
+    cache = getattr(benchmark, _CACHE_ATTR, None)
+    if cache is not None:
+        return cache
+
+    n_hard = benchmark.num_hard_macros
     macros = benchmark.macro_positions.numpy().astype(np.float64).copy()
-    macros[:n] = pos[:n]
     if benchmark.port_positions.numel() > 0:
         ports = benchmark.port_positions.numpy().astype(np.float64)
-        return np.concatenate([macros, ports], axis=0)
-    return macros
+        all_pos_buffer = np.concatenate([macros, ports], axis=0)
+    else:
+        all_pos_buffer = macros
+    n_total = all_pos_buffer.shape[0]
 
-
-def _hpwl(pos: np.ndarray, benchmark: Benchmark) -> float:
-    """Weighted half-perimeter wirelength over all nets.
-
-    Includes hard macros, soft macros, and ports as net endpoints -- omitting
-    any of them would let the score ignore real wire span growth, which is the
-    failure mode of the old macro-only density fallback.
-    """
-    n_total = pos.shape[0]
-    total = 0.0
-    net_nodes_np, net_weights_np = _get_cached_nets(benchmark)
-    
-    for net_idx, nodes_np in enumerate(net_nodes_np):
-        # Drop any out-of-range indices
-        nodes_np = nodes_np[nodes_np < n_total]
-        if len(nodes_np) < 2:
+    nets = []
+    weights = []
+    for nodes_t, w in zip(benchmark.net_nodes, benchmark.net_weights):
+        nodes_np = nodes_t.numpy()
+        valid = nodes_np[nodes_np < n_total]
+        if len(valid) < 2:
             continue
-        net_pos = pos[nodes_np]
+        nets.append(valid)
+        weights.append(float(w))
+
+    cache = {
+        "all_pos_buffer": all_pos_buffer,
+        "n_hard": n_hard,
+        "n_total": n_total,
+        "nets": nets,
+        "weights": np.asarray(weights, dtype=np.float64),
+        "total_w_raw": float(benchmark.net_weights.sum().item()),
+        "n_nets_total": len(benchmark.net_nodes),
+        "n_nets_filtered": len(nets),
+    }
+    setattr(benchmark, _CACHE_ATTR, cache)
+    return cache
+
+
+def _fill_pos(pos: np.ndarray, cache: dict) -> np.ndarray:
+    """Overwrite the hard-macro slice of the cached buffer with `pos[:n_hard]`.
+    Returns the buffer (mutated). Not thread-safe; fine for sequential ranking.
+    """
+    buf = cache["all_pos_buffer"]
+    n = cache["n_hard"]
+    buf[:n] = pos[:n]
+    return buf
+
+
+def _hpwl(all_pos: np.ndarray, cache: dict) -> float:
+    """Weighted half-perimeter wirelength over pre-filtered nets."""
+    total = 0.0
+    weights = cache["weights"]
+    for i, valid in enumerate(cache["nets"]):
+        net_pos = all_pos[valid]
         x_span = float(net_pos[:, 0].max() - net_pos[:, 0].min())
         y_span = float(net_pos[:, 1].max() - net_pos[:, 1].min())
-        total += float(net_weights_np[net_idx]) * (x_span + y_span)
+        total += float(weights[i]) * (x_span + y_span)
     return total
 
 
@@ -98,19 +129,15 @@ def _macro_density_sos(pos: np.ndarray, n: int, cw: float, ch: float, G: int = 2
     """
     cw_g = cw / G
     ch_g = ch / G
-    
-    # Vectorized calculation of row and column indice
     c = np.clip((pos[:n, 0] / cw_g).astype(int), 0, G - 1)
     r = np.clip((pos[:n, 1] / ch_g).astype(int), 0, G - 1)
-    
     grid = np.zeros((G, G), dtype=np.float64)
     np.add.at(grid, (r, c), 1.0)
-    
     return float((grid ** 2).sum())
 
 
 def _wire_congestion(
-    pos: np.ndarray, benchmark: Benchmark, cw: float, ch: float, G: int = 20
+    all_pos: np.ndarray, cache: dict, cw: float, ch: float, G: int = 20
 ) -> float:
     """Routing-demand proxy: rasterize each net's bbox onto a G x G grid with
     uniform density (net_weight / bbox_area_cells). Sum-of-squares of the grid
@@ -123,25 +150,17 @@ def _wire_congestion(
     grid = np.zeros((G, G), dtype=np.float64)
     cw_g = cw / G
     ch_g = ch / G
-    n_total = pos.shape[0]
+    weights = cache["weights"]
 
-    net_nodes_np, net_weights_np = _get_cached_nets(benchmark)
-
-    for net_idx, nodes_np in enumerate(net_nodes_np):
-        nodes_np = nodes_np[nodes_np < n_total]
-        if len(nodes_np) < 2:
-            continue
-        weight = float(net_weights_np[net_idx])
-        net_pos = pos[nodes_np]
-        
+    for i, valid in enumerate(cache["nets"]):
+        net_pos = all_pos[valid]
         c_lo = max(0, min(G - 1, int(net_pos[:, 0].min() / cw_g)))
         c_hi = max(0, min(G - 1, int(net_pos[:, 0].max() / cw_g)))
         r_lo = max(0, min(G - 1, int(net_pos[:, 1].min() / ch_g)))
         r_hi = max(0, min(G - 1, int(net_pos[:, 1].max() / ch_g)))
-        
         n_cells = (c_hi - c_lo + 1) * (r_hi - r_lo + 1)
-        grid[r_lo:r_hi + 1, c_lo:c_hi + 1] += weight / n_cells
-        
+        grid[r_lo:r_hi + 1, c_lo:c_hi + 1] += float(weights[i]) / n_cells
+
     return float((grid ** 2).sum())
 
 
@@ -169,14 +188,15 @@ def surrogate_score(
     the real proxy and should never be compared across benchmarks -- only used
     to rank candidate placements within a single benchmark.
     """
-    perim = 2.0 * (cw + ch)
-    total_w = float(benchmark.net_weights.sum().item())
+    cache = _get_cache(benchmark)
+    all_pos = _fill_pos(pos, cache)
 
-    all_pos = _all_node_pos(pos, benchmark, n)
-    
-    wl_raw = _hpwl(all_pos, benchmark)
+    perim = 2.0 * (cw + ch)
+    total_w = cache["total_w_raw"]
+
+    wl_raw = _hpwl(all_pos, cache)
     md_raw = _macro_density_sos(all_pos, n, cw, ch, G)
-    wc_raw = _wire_congestion(all_pos, benchmark, cw, ch, G)
+    wc_raw = _wire_congestion(all_pos, cache, cw, ch, G)
 
     wl = wl_raw / max(total_w * perim, 1e-9)
     md = md_raw / max(n * n / (G * G), 1e-9)
@@ -194,24 +214,30 @@ def surrogate_components(
     G: int = 20,
 ) -> dict:
     """Same as surrogate_score but returns the three normalized components
-    separately. Useful for diagnostics when tuning.
+    separately (and the raw values). Useful for diagnostics when tuning.
     """
-    perim = 2.0 * (cw + ch)
-    total_w = float(benchmark.net_weights.sum().item())
+    cache = _get_cache(benchmark)
+    all_pos = _fill_pos(pos, cache)
 
-    all_pos = _all_node_pos(pos, benchmark, n)
-    
-    wl_raw = _hpwl(all_pos, benchmark)
+    perim = 2.0 * (cw + ch)
+    total_w = cache["total_w_raw"]
+
+    wl_raw = _hpwl(all_pos, cache)
     md_raw = _macro_density_sos(all_pos, n, cw, ch, G)
-    wc_raw = _wire_congestion(all_pos, benchmark, cw, ch, G)
+    wc_raw = _wire_congestion(all_pos, cache, cw, ch, G)
+
+    wl = wl_raw / max(total_w * perim, 1e-9)
+    md = md_raw / max(n * n / (G * G), 1e-9)
+    wc = wc_raw / max((total_w / G) ** 2, 1e-9)
 
     return {
-        "wl": wl_raw / max(total_w * perim, 1e-9),
-        "density": md_raw / max(n * n / (G * G), 1e-9),
-        "congestion": wc_raw / max((total_w / G) ** 2, 1e-9),
-        "score": (
-            wl_raw / max(total_w * perim, 1e-9)
-            + 0.5 * md_raw / max(n * n / (G * G), 1e-9)
-            + 0.5 * wc_raw / max((total_w / G) ** 2, 1e-9)
-        ),
+        "wl": wl,
+        "density": md,
+        "congestion": wc,
+        "wl_raw": wl_raw,
+        "density_raw": md_raw,
+        "congestion_raw": wc_raw,
+        "score": 1.0 * wl + 0.5 * md + 0.5 * wc,
+        "n_nets_total": cache["n_nets_total"],
+        "n_nets_filtered": cache["n_nets_filtered"],
     }
