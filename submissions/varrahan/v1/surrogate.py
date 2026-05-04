@@ -66,7 +66,7 @@ def _all_node_pos(pos: np.ndarray, benchmark: Benchmark, n: int) -> np.ndarray:
     return macros
 
 
-def _hpwl(pos: np.ndarray, benchmark: Benchmark, n: int) -> float:
+def _hpwl(pos: np.ndarray, benchmark: Benchmark) -> float:
     """Weighted half-perimeter wirelength over all nets.
 
     Includes hard macros, soft macros, and ports as net endpoints -- omitting
@@ -110,7 +110,7 @@ def _macro_density_sos(pos: np.ndarray, n: int, cw: float, ch: float, G: int = 2
 
 
 def _wire_congestion(
-    pos: np.ndarray, benchmark: Benchmark, n: int, cw: float, ch: float, G: int = 20
+    pos: np.ndarray, benchmark: Benchmark, cw: float, ch: float, G: int = 20
 ) -> float:
     """Routing-demand proxy: rasterize each net's bbox onto a G x G grid with
     uniform density (net_weight / bbox_area_cells). Sum-of-squares of the grid
@@ -174,9 +174,9 @@ def surrogate_score(
 
     all_pos = _all_node_pos(pos, benchmark, n)
     
-    wl_raw = _hpwl(all_pos, benchmark, n)
+    wl_raw = _hpwl(all_pos, benchmark)
     md_raw = _macro_density_sos(all_pos, n, cw, ch, G)
-    wc_raw = _wire_congestion(all_pos, benchmark, n, cw, ch, G)
+    wc_raw = _wire_congestion(all_pos, benchmark, cw, ch, G)
 
     wl = wl_raw / max(total_w * perim, 1e-9)
     md = md_raw / max(n * n / (G * G), 1e-9)
