@@ -542,16 +542,16 @@ class MacroPlacer:
         _log(f"  [{benchmark.name}] hard={n}  movable={movable.sum()}  "
              f"budget={self.time_budget_s:.0f}s")
 
-        # Exact scoring cutoffs:
-        #   n > EXACT_MACRO_THRESHOLD: scoring too slow without exception
-        #   grid_cells > EXACT_GRID_CELL_LIMIT: routing grid makes scoring slow regardless of n
-        #     ibm18: 55x39=2145 cells → ~220s; ibm08: 38x34=1292 cells → ~39s
-        # Threshold 340 excludes ibm11 (n=373): under CPU load ibm11 baseline scores in 263s
-        # (over budget), stalling the full eval. ibm11 returns baseline either way (no restart
-        # has ever improved it), so excluding it just makes it faster and deterministic.
-        # ibm08 (n=301) and all smaller benchmarks stay included.
-        EXACT_MACRO_THRESHOLD = 340
-        EXACT_GRID_CELL_LIMIT = 2000  # ibm15 (2166) and ibm18 (2145) score in 160-220s; excluded
+        # Exact scoring cutoffs (re-measured 2026-05-08, clean CPU):
+        #   ibm11 (n=373, grid=1755): 17s   — was estimated 75-263s under load
+        #   ibm15 (n=393, grid=2166): 43s   — was estimated 160s (PROGRESS.md note 5)
+        #   ibm18 (n=285, grid=2145): 62s   — was estimated 220s
+        #   ibm13 (n=424): excluded by n threshold; ibm10/12/14/16/17 by both.
+        # SLOW_SCORE_THRESHOLD_S=100s + post-scoring budget guard catch any regression
+        # under load (e.g. if ibm11 jumps back to 263s, baseline is returned after one
+        # scoring call instead of attempting restarts).
+        EXACT_MACRO_THRESHOLD = 400  # includes ibm11 (n=373), ibm15 (n=393); excludes ibm13 (n=424)
+        EXACT_GRID_CELL_LIMIT = 2200  # includes ibm15 (2166), ibm18 (2145); excludes ibm12 (2209)
         grid_cells = benchmark.grid_rows * benchmark.grid_cols
         plc = _load_plc(benchmark.name)
         use_exact = (
