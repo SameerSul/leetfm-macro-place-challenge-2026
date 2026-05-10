@@ -610,11 +610,22 @@ class MacroPlacer:
             _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
             return best_pl
 
-        def _try_restart(label: str, perturbed_init: np.ndarray, k: int) -> bool:
+        # Directed restarts (cong-grad Phase 1/2/3) can use up to BUDGET_OVERRUN_S
+        # extra seconds beyond time_budget_s. Reasoning: a single transient scoring
+        # spike on Phase 1 iter=0 (~200s vs typical ~7s on ibm04) was killing the
+        # entire placer pipeline, blocking Phase 2/3 where the productive ibm04 win
+        # lives (1.3316). With 60s overrun, ibm04 recovers Phase 3 even after a spike.
+        # Noise restarts stay strict (allow_overrun=False default) — they're
+        # exploratory and shouldn't push us over budget on dead-end benchmarks.
+        BUDGET_OVERRUN_S = 60.0
+
+        def _try_restart(label: str, perturbed_init: np.ndarray, k: int,
+                         allow_overrun: bool = False) -> bool:
             """Legalize + score one candidate. Returns False if budget exhausted."""
             nonlocal best_score, best_pl
             elapsed = time.time() - t0
-            remaining = self.time_budget_s - elapsed
+            cap = self.time_budget_s + (BUDGET_OVERRUN_S if allow_overrun else 0.0)
+            remaining = cap - elapsed
             # t_one_score is the baseline scoring time. Factor 1.3 covers score + legalize.
             # We use the baseline measurement (not a running max) to avoid over-conserving
             # when individual scorings are slightly slower than baseline (load jitter).
@@ -637,10 +648,10 @@ class MacroPlacer:
                 best_score = score
                 best_pl = pl
 
-            # Safety: if scoring overran the budget, stop immediately rather than
-            # launching another restart that would push total time even further over.
-            if time.time() - t0 > self.time_budget_s:
-                _log(f"  Over budget after scoring ({time.time()-t0:.0f}s); stopping")
+            # Safety: if scoring overran the (possibly relaxed) cap, stop immediately
+            # rather than launching another restart that would push time further over.
+            if time.time() - t0 > cap:
+                _log(f"  Over budget after scoring ({time.time()-t0:.0f}s, cap={cap:.0f}s); stopping")
                 return False
 
             return True
@@ -676,7 +687,9 @@ class MacroPlacer:
         cong_frac = 0.04
         for cong_iter in range(12):
             if cong_iter > 0:
-                remaining = self.time_budget_s - (time.time() - t0)
+                # Use relaxed cap (matches _try_restart's allow_overrun=True path)
+                # so a transient spike on iter=0 doesn't block the whole loop.
+                remaining = (self.time_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
                 # Larger factor for full-frac iters (reserve for Phase 2 + noise).
                 # Smaller factor for adaptive halved-frac retries (only 1 eval needed).
                 budget_factor = 3.0 if cong_frac >= 0.04 else 1.5
@@ -688,9 +701,9 @@ class MacroPlacer:
             )
             score_before = best_score
             if not _try_restart(f"cong-grad iter={cong_iter + 1} f={cong_frac:.2f}",
-                                 cong_perturbed, k=1 + directed_ran):
-                _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
-                return best_pl
+                                 cong_perturbed, k=1 + directed_ran,
+                                 allow_overrun=True):
+                break  # don't kill Phase 2/3 — they have their own budget checks
             directed_ran += 1
             if best_score < score_before:
                 cong_pos = np.stack(
@@ -714,7 +727,8 @@ class MacroPlacer:
         # larger displacement from the original baseline spread.
         if cong_improved:
             for wide_frac in [0.08, 0.12]:
-                remaining = self.time_budget_s - (time.time() - t0)
+                # Use relaxed cap so Phase 2 still fires after a Phase 1 spike.
+                remaining = (self.time_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
                 if remaining < t_one_score * 1.3:
                     break
                 cong_wide = _routing_congestion_perturb(
@@ -723,9 +737,8 @@ class MacroPlacer:
                 )
                 score_before = best_score
                 if not _try_restart(f"cong-grad wide={wide_frac:.0%}", cong_wide,
-                                     k=1 + directed_ran):
-                    _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
-                    return best_pl
+                                     k=1 + directed_ran, allow_overrun=True):
+                    break  # don't kill Phase 3 — it has its own check
                 directed_ran += 1
                 if best_score >= score_before:
                     break  # stop wide steps if this one didn't improve
@@ -737,7 +750,9 @@ class MacroPlacer:
         # minimum. Only runs when cong-grad improved at least once (cong_improved)
         # so we know the gradient signal is useful for this benchmark.
         if cong_improved:
-            remaining = self.time_budget_s - (time.time() - t0)
+            # Use relaxed cap so Phase 3 fires after a Phase 1 spike — this is
+            # where ibm04's 1.3316 win lives.
+            remaining = (self.time_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
             if remaining >= t_one_score * 1.3:
                 best_pos_now = np.stack(
                     [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
@@ -746,11 +761,11 @@ class MacroPlacer:
                     best_pos_now, plc, benchmark, n, cw, ch, hw, hh, movable,
                     frac=0.04, rng=rng_cong,
                 )
-                if not _try_restart("cong-grad phase3", phase3_perturbed,
-                                     k=1 + directed_ran):
-                    _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
-                    return best_pl
-                directed_ran += 1
+                if _try_restart("cong-grad phase3", phase3_perturbed,
+                                 k=1 + directed_ran, allow_overrun=True):
+                    directed_ran += 1
+                # On Phase 3 failure, fall through to noise loop (which will
+                # likely also skip on its own strict pre-check)
 
         # -- Restarts 1+: Random Gaussian -------------------------------------
         noise_scale_base = min(cw, ch)

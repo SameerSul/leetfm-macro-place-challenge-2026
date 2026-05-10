@@ -2,34 +2,41 @@
 surrogate.py
 ============
 
-Fast surrogate scorer for benchmarks where exact PlacementCost evaluation is
+Fast surrogate ranker for benchmarks where exact PlacementCost evaluation is
 too slow for multi-restart selection (n > 340 or grid_cells > 2000 in placer.py).
 
-Background
-----------
-The default fallback in placer.py for these benchmarks is to return the baseline
-legalization unmodified, because the previous `_density_score` (sum-of-squares
-macro occupancy) was empirically anti-correlated with proxy cost: it rewards
-spread placements, but spread placements have longer wires and higher routing
-congestion, which dominates the real proxy (PROGRESS.md v2/v3 regression --
-density-selected ibm11 result was 11.5% WORSE than baseline).
+Status (after calibration)
+--------------------------
+The DEFAULT surrogate is now WL-only -- weighted half-perimeter wirelength
+over the netlist, normalized by total_net_weight * canvas_perimeter.
 
-This surrogate combines three components that mirror the proxy formula:
+Calibration test (`_calibration_test.py`) on 10 legalized restarts each from
+ibm01 and ibm10 measured Spearman rank correlation between candidate variants
+and the real proxy_cost:
 
-    proxy = 1.0 * wirelength + 0.5 * density + 0.5 * congestion
+    | variant            | ibm01   | ibm10   |
+    | WL only            | +0.479  | +0.539  |  <-- default
+    | WL + 0.5*C         | +0.661  | +0.079  |
+    | WL + 0.5*D + 0.5*C | -0.515  | +0.055  |
 
-The wire-density term is the key addition over the old fallback. Each net's
-bounding box is rasterized onto a grid (uniform per-cell weight), so when
-macros spread out, net bboxes grow, cover more cells, and overlap more --
-which raises the score and correctly penalizes the over-spreading that hurt
-the actual proxy on ibm10-18.
+WL-only is the only weighting that stays positive on both small and large
+benchmarks. The composite formulas were dropped because:
+
+  1. Macro-density SoS is anti-correlated with real density on ibm01
+     (-0.71). Penalizing spread is the wrong sign on benchmarks where
+     real density is dominated by stdcell mass, not macro distribution.
+
+  2. Wire-bbox congestion (`weight/n_cells` per-net) makes each net
+     contribute a constant grid sum -- only concentration varies, while
+     bbox area does not. On ibm10 sur_c is 3.34-3.40 (range 0.06) and
+     selects the WORST real placement (k=5: 1.7045 vs baseline 1.4037).
 
 Caching
 -------
 Per-benchmark constants (numpy net arrays, pre-filtered indices, pre-allocated
 position buffer) are cached on the benchmark instance via a single attribute
-`_surrogate_cache`. This avoids the unsafe `id(benchmark)` global-dict pattern
-(Python reuses memory addresses after GC) and ties the cache lifetime to the
+`_surrogate_cache`. Avoids the unsafe `id(benchmark)` global-dict pattern --
+Python reuses memory addresses after GC -- and ties cache lifetime to the
 benchmark itself.
 
 Net topology source
@@ -39,13 +46,14 @@ The shared `macro_place/loader.py` leaves `benchmark.net_nodes = []` and
 topology is never extracted. We can't modify the loader (hackathon rule:
 read-only outside the submission), so when `surrogate_score` is called with
 the `plc` object, we extract net topology from `plc.nets` ourselves and
-populate the cache. Without `plc`, the surrogate degenerates to macro-density
-only and `surrogate_usable()` returns False.
+populate the cache. Without `plc`, no nets are available and
+`surrogate_usable()` returns False -- caller should fall back to baseline.
 
 Usage in placer.py
 ------------------
-    from submissions.varrahan.v1.surrogate import surrogate_score
-    score = surrogate_score(legalized_pos, benchmark, n, cw, ch, plc=plc)
+    from submissions.varrahan.v1.surrogate import surrogate_score, surrogate_usable
+    if surrogate_usable(benchmark, plc=plc):
+        score = surrogate_score(legalized_pos, benchmark, n, cw, ch, plc=plc)
 """
 
 import numpy as np
@@ -229,11 +237,10 @@ def _wire_congestion(
 
 
 def surrogate_usable(benchmark: Benchmark, plc=None) -> bool:
-    """Returns True iff this benchmark has the net topology needed for the WL
-    and congestion components to be meaningful. When False, `surrogate_score`
-    degenerates to macro-density-only -- which is the original anti-correlated
-    fallback that placer.py deliberately avoids. Caller should fall back to
-    returning the baseline placement instead of using the surrogate.
+    """Returns True iff this benchmark has net topology available -- required
+    for the WL ranker. When False, `surrogate_score` would only have access to
+    the macro-density term (anti-correlated with proxy on ibm01), so caller
+    should fall back to returning the baseline placement instead.
 
     Pass `plc` so we can extract nets from `plc.nets` when the shared loader
     has left `benchmark.net_nodes` empty (which is currently always the case).
@@ -249,22 +256,38 @@ def surrogate_score(
     ch: float,
     plc=None,
     G: int = 20,
+    w_wl: float = 1.0,
+    w_density: float = 0.0,
+    w_congestion: float = 0.0,
 ) -> float:
-    """Composite proxy-cost surrogate: 1*WL + 0.5*density + 0.5*congestion.
+    """Surrogate ranker. Default is WL-only based on calibration evidence:
+
+        | variant            | Spearman vs real proxy on ibm01 | on ibm10 |
+        | WL only            |             +0.479               | +0.539   |
+        | WL + 0.5*C         |             +0.661               | +0.079   |
+        | WL + 0.5*D + 0.5*C |             -0.515               | +0.055   |
+
+    WL-only is the only weighting that stays positive on both small (ibm01)
+    and large (ibm10) benchmarks. The density-SoS term is anti-correlated on
+    ibm01; the wire-congestion term degenerates on large benchmarks because
+    its per-net `weight/n_cells` normalization makes each net contribute a
+    constant grid sum -- only concentration jitters, while bbox area does
+    not -- and the resulting near-constant term drowns out the WL signal.
+
+    Pass non-default weights for diagnostic comparisons; for actual restart
+    selection use the default.
 
     Each component is normalized by a placement-independent quantity so the
-    proxy formula's weights are meaningful and the result is O(1):
+    weights are meaningful and the result is O(1):
 
       - WL:  divide by total_net_weight * canvas_perimeter
              -> unitless "average normalized net span"
-      - density: divide by n^2 / G^2 (= mean grid value squared, summed)
-             -> 1.0 when macros are perfectly uniform across the grid
+      - density: divide by n^2 / G^2  (1.0 when macros are perfectly uniform)
       - congestion: divide by (total_net_weight / G)^2
-             -> O(1) regardless of net count
 
-    Lower is better, like proxy_cost. Absolute value is NOT calibrated against
-    the real proxy and should never be compared across benchmarks -- only used
-    to rank candidate placements within a single benchmark.
+    Lower is better. Absolute value is NOT calibrated against real proxy and
+    must never be compared across benchmarks -- only used to rank candidate
+    placements within one benchmark.
     """
     cache = _get_cache(benchmark, plc)
     all_pos = _fill_pos(pos, cache)
@@ -272,15 +295,15 @@ def surrogate_score(
     perim = 2.0 * (cw + ch)
     total_w = cache["total_w_raw"]
 
-    wl_raw = _hpwl(all_pos, cache)
-    md_raw = _macro_density_sos(all_pos, n, cw, ch, G)
-    wc_raw = _wire_congestion(all_pos, cache, cw, ch, G)
+    wl_raw = _hpwl(all_pos, cache) if w_wl != 0.0 else 0.0
+    wc_raw = _wire_congestion(all_pos, cache, cw, ch, G) if w_congestion != 0.0 else 0.0
+    md_raw = _macro_density_sos(all_pos, n, cw, ch, G) if w_density != 0.0 else 0.0
 
     wl = wl_raw / max(total_w * perim, 1e-9)
-    md = md_raw / max(n * n / (G * G), 1e-9)
     wc = wc_raw / max((total_w / G) ** 2, 1e-9)
+    md = md_raw / max(n * n / (G * G), 1e-9)
 
-    return 1.0 * wl + 0.5 * md + 0.5 * wc
+    return w_wl * wl + w_density * md + w_congestion * wc
 
 
 def surrogate_components(
@@ -316,7 +339,8 @@ def surrogate_components(
         "wl_raw": wl_raw,
         "density_raw": md_raw,
         "congestion_raw": wc_raw,
-        "score": 1.0 * wl + 0.5 * md + 0.5 * wc,
+        "score_default": wl,
+        "score_legacy": 1.0 * wl + 0.5 * md + 0.5 * wc,
         "n_nets_total": cache["n_nets_total"],
         "n_nets_filtered": cache["n_nets_filtered"],
     }
