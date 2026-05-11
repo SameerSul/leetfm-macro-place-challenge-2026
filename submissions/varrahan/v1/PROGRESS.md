@@ -303,6 +303,24 @@ baseline; no restarts possible. ibm10, ibm12 already beat RePlAce at legalizatio
   cong-grad call sites from `return best_pl` to `break`. ibm04's 1.3316 is now reproducible
   under --all conditions. Bonus: ibm18 picked up −0.0002 (1.7898 → 1.7896) from the relaxed
   cap allowing one more iteration.
+- **DREAMPlace bridge (Phase 1-3 implemented, integration REVERTED 2026-05-11).**
+  Built and installed DREAMPlace from source (Phase 1, ~75min including OOM-fix and ABI=1
+  rebuild). Wrote pb.txt → Bookshelf converter and back-converter (Phase 2-3a). Integrated
+  as a new restart slot before Phase 1 cong-grad (Phase 3b). Tested on full --all
+  (2026-05-11): **avg 1.4897 vs v12's 1.4854 (+0.0043 worse)**. Two real wins (ibm04 −0.0075,
+  ibm11 −0.0019, both from DREAMPlace's plc-state mutation enabling new cong-grad basins),
+  but seven regressions (biggest: ibm03 +0.034, ibm08 +0.029, ibm09 +0.006) all caused by
+  DREAMPlace's 10-15s subprocess overhead displacing productive noise/cong-grad restarts.
+  DREAMPlace's standalone placement is consistently ~0.2-0.3 worse than baseline because
+  soft macros stay at initial positions while hard macros move (the soft-macro mismatch
+  problem from CLAUDE.md). Reverted from placer.py. **The bridge module remains** in
+  `dreamplace_bridge/` as working code for future experiments. Possible salvage paths
+  (each is a separate experiment): (a) only run DREAMPlace when budget headroom allows
+  without displacing other restarts, (b) run DREAMPlace asynchronously while baseline
+  scoring overlaps, (c) add a "Phase 5: cong-grad-from-dreamplace" as a final restart so
+  DREAMPlace doesn't displace existing phases but still mutates plc state for one extra
+  cong-grad chain, (d) use `optimize_stdcells` to re-place soft macros after DREAMPlace
+  (slow, minutes/call).
 
 ---
 
@@ -340,4 +358,4 @@ DENSITY_GRAD_MAX_N    = 100        # never fires for IBM benchmarks (all n>100)
 8. [~] Multiple congestion-grad starting points (Phase 4): TESTED 2026-05-09 with 2% perturbed start. Strictly worse on all 4 benchmarks tested. Reverted. Could retry with 0.5% or 4-6% scales.
 9. [x] ibm04 congestion-grad: Phase 3 cong-grad now consistently lands at 1.3316 on clean CPU (was 1.3390 in v11). Confirmed 3-for-3 on 2026-05-09. Gap to RePlAce closed from -2.8% to -2.2%.
 10. [~] **WireMask-BBO greedy evaluator** -- IMPLEMENTED AND REVERTED 2026-05-09. Two failure patterns: (a) sparse benchmarks legalized back to baseline (no movement), (b) ibm04 produced 1.4127 vs baseline 1.4101 (clustered macros → worse congestion). Confirms CLAUDE.md/PAPERS_NOTES warning that pure HPWL minimization hurts congestion-dominated proxy. See "Key Findings" section above. Salvage paths: wire-mask + congestion penalty, wire-mask + outer BBO loop, wire-mask on top-net-weight subset.
-11. [ ] **DREAMPlace bridge** (`pb.txt → Bookshelf → DREAMPlace global → legalize`) -- leaderboard #1 (1.4076) does this. Multi-day build. Bridge converter `scripts/pb_to_bookshelf.py` doesn't exist; would need to live inside `submissions/varrahan/` per file-scope restriction.
+11. [~] **DREAMPlace bridge** (`pb.txt → Bookshelf → DREAMPlace global → legalize`) -- IMPLEMENTED AND REVERTED 2026-05-11. v13 --all = 1.4897 vs v12's 1.4854 (+0.0043 worse). Real wins on ibm04 (−0.0075) and ibm11 (−0.0019) from DREAMPlace's plc-state mutation enabling new cong-grad basins. But 10-15s subprocess overhead displaced productive noise/cong-grad restarts on 7 benchmarks (biggest regressions: ibm03 +0.034, ibm08 +0.029). Bridge module retained at `dreamplace_bridge/` for future experiments. See "Key Findings" for salvage paths.
