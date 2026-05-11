@@ -1,0 +1,8 @@
+# DREAMPlace bridge build artifacts (~500MB).
+# Reproduce by following install steps in v1/dreamplace_bridge/README.md.
+dreamplace_build/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.so
