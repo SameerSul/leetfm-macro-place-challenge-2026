@@ -570,6 +570,18 @@ class MacroPlacer:
         # confirmed that the sum-of-squares occupancy fallback is anti-correlated
         # with proxy cost (rewards spread, which hurts congestion), so unranked
         # baseline beats density-ranked restarts on every n>400 / large-grid case.
+        #
+        # Displacement-ranked multi-order tested 2026-05-19, REJECTED:
+        #   - Hypothesis: lower total displacement from initial.plc → lower
+        #     proxy (since initial.plc is hand-tuned).
+        #   - Reality: tallest order minimized displacement on ibm10 (414 vs
+        #     1051 default) but raised congestion → proxy 1.5658 vs v12's 1.4037
+        #     (+0.162 regression). On dense benchmarks (ibm12), smallest-area
+        #     order produced INVALID placements (27 overlaps) because big macros
+        #     placed last couldn't find slots within the 60s spiral deadline.
+        #   - Conclusion: displacement-sum is NOT a useful proxy ranker.
+        #     Different orderings produce legitimately different placements,
+        #     not strictly-better ones.
         if not use_exact:
             _log(f"  total={time.time()-t0:.1f}s")
             return pl_scratch  # safe: no more in-place writes will happen
@@ -607,13 +619,20 @@ class MacroPlacer:
             restarts vary this to explore different legal arrangements from the
             same starting positions.
             """
-            nonlocal best_score, best_pl
+            nonlocal best_score, best_pl, t_one_score
             elapsed = time.time() - t0
             cap = self.time_budget_s + (BUDGET_OVERRUN_S if allow_overrun else 0.0)
             remaining = cap - elapsed
-            # t_one_score is the baseline scoring time. Factor 1.3 covers score + legalize.
-            # We use the baseline measurement (not a running max) to avoid over-conserving
-            # when individual scorings are slightly slower than baseline (load jitter).
+            # t_one_score is a running max over observed scoring times (initialized
+            # from the baseline score). Factor 1.3 covers score + legalize.
+            # Running-max (v11 design, removed in v12) is re-added because under
+            # --all CPU contention, scorings can be 3-5x slower than baseline —
+            # a much larger swing than "load jitter". Without adapting, the budget
+            # check approves restarts that then exceed the cap, causing Phase 3
+            # to be skipped on benchmarks like ibm04 (1.3316 → 1.3449 regression
+            # observed in the multi-order --all run). The trade-off: brief blips
+            # also tighten the budget, but blips that double t_one_score still
+            # leave 60s overrun for directed phases.
             estimated_cost = t_one_score * 1.3
             if remaining < estimated_cost:
                 _log(f"  Skipping restart {k}+ (budget: {remaining:.0f}s left, "
@@ -627,7 +646,11 @@ class MacroPlacer:
             t_leg = time.time() - t1
             _log(f"  Restart {k} ({label}) legalized in {t_leg:.1f}s")
 
+            t_score_start = time.time()
             score = _score(leg)
+            t_score_observed = time.time() - t_score_start
+            if t_score_observed > t_one_score:
+                t_one_score = t_score_observed
             _log(f"  Candidate {k}: proxy={score:.4f}")
             if score < best_score:
                 best_score = score
@@ -641,73 +664,20 @@ class MacroPlacer:
 
             return True
 
+        # -- Restart 1: Density-gradient (occupancy spread, small benchmarks) -
+        # Only for small benchmarks (n <= 100): occupancy-spread helped ibm01 (54
+        # macros) but hurt ibm03 (126) and ibm08 (301), and also consumed ~40s per
+        # restart, blocking the 6% random noise slot that wins on ibm08.
         directed_ran = 0
-
-        # -- Multi-order baseline legalization (before Phase 1) ----------------
-        # The default `_will_legalize` placement order is largest-area first.
-        # Try alternative orderings (smallest-area, tallest, widest) which produce
-        # legitimately different legal arrangements from the SAME initial positions
-        # — different macros land in different slots when the placement priority
-        # changes. With Tier 3's vectorized spiral search, each alt legalize is
-        # ~0.1-1s; the marginal cost per candidate is dominated by scoring.
-        #
-        # Budget guard: reserve MULTI_ORDER_RESERVE_FACTOR × t_one_score scorings
-        # for the rest of the pipeline (Phase 1/2/3 cong-grad ~5 + at least 2
-        # noise restarts). Naturally excludes slow benchmarks (ibm15 t_score=43s
-        # → reserve ~390s > 200s budget → skipped). Re-scoring baseline_pos after
-        # multi-order restores plc's congestion map so Phase 1's gradient signal
-        # is aligned with baseline_pos (the perturb starting point).
-        multi_order_specs = [
-            ("smallest-area",
-             sorted(range(n), key=lambda i: sizes[i, 0] * sizes[i, 1])),
-            ("tallest",
-             sorted(range(n), key=lambda i: -sizes[i, 1])),
-            ("widest",
-             sorted(range(n), key=lambda i: -sizes[i, 0])),
-        ]
-        MULTI_ORDER_RESERVE_FACTOR = 7
-        multi_order_count = 0
-        for label, alt_order in multi_order_specs:
-            elapsed = time.time() - t0
-            remaining = self.time_budget_s + BUDGET_OVERRUN_S - elapsed
-            needed_reserve = MULTI_ORDER_RESERVE_FACTOR * t_one_score * 1.3
-            if remaining < needed_reserve:
-                if multi_order_count == 0:
-                    _log(f"  Multi-order skipped (need {needed_reserve:.0f}s reserve, "
-                         f"have {remaining:.0f}s)")
-                else:
-                    _log(f"  Multi-order stopped at {multi_order_count}/"
-                         f"{len(multi_order_specs)} (budget reserve)")
-                break
-            if not _try_restart(f"multi-order {label}", init_pos,
-                                k=1 + directed_ran, allow_overrun=True,
-                                order=alt_order):
-                break
-            directed_ran += 1
-            multi_order_count += 1
-
-        # Re-score baseline_pos to restore plc's congestion map for Phase 1.
-        # Phase 1's cong-grad perturb computes the gradient at each macro's
-        # current cell using plc's map; this map must reflect baseline_pos
-        # (the perturb input), otherwise the gradient direction is misaligned.
-        if multi_order_count > 0:
-            _log(f"  Re-scoring baseline to restore plc state for Phase 1")
-            _ = _score(baseline_pos)
-
-        # -- Density-gradient (occupancy spread, small benchmarks only) -------
-        # n <= 100: occupancy-spread helped ibm01 (54 macros) but hurt ibm03
-        # (126) and ibm08 (301), and also consumed ~40s per restart, blocking
-        # the 6% random noise slot that wins on ibm08.
         DENSITY_GRAD_MAX_N = 100
         if n <= DENSITY_GRAD_MAX_N:
             density_perturbed = _density_gradient_perturb(
                 init_pos, baseline_pos, movable, n, cw, ch, hw, hh, frac=0.04
             )
-            if not _try_restart("density-grad frac=4%", density_perturbed,
-                                k=1 + directed_ran, allow_overrun=True):
+            if not _try_restart("density-grad frac=4%", density_perturbed, k=1):
                 _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
                 return best_pl
-            directed_ran += 1
+            directed_ran = 1
 
         # -- Routing-congestion-gradient descent (v8, iterative + wide) --------
         # Phase 1: iterative gradient descent at frac=0.04.
