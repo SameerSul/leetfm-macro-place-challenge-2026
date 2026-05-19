@@ -3,47 +3,45 @@ Competitive Macro Placer -- Partcl/HRT Challenge 2026
 Varrahan Uthayan (varrahan)
 
 Algorithm:
-  Multi-restart legalization with DIRECTED perturbations guided by research papers.
+  Multi-restart legalization with iterative routing-congestion-gradient
+  perturbations, scored against the exact PlacementCost proxy.
 
-  1. Legalize from initial.plc positions (baseline).
-  2. Run density-gradient perturbation (MaskRegulate, NeurIPS 2024):
-     Build a macro-occupancy heatmap, push macros from crowded zones
-     toward empty zones before re-legalizing.
-  3. Fill remaining time budget with random Gaussian restarts.
-  4. Score all candidates with the EXACT proxy evaluator; return best.
+  Pipeline per benchmark (200s soft budget, 60s overrun allowed for
+  directed phases):
+    0.       Baseline      legalize from initial.plc
+    Phase 1  cong-grad     up to 12 iterative steps at frac=0.04 with adaptive
+                           halving; each improving step updates the source
+                           position for the next iter (uses live plc cong map)
+    Phase 2  cong-grad     wide steps from baseline at frac=0.08, 0.12 using
+                           the evolved (now-stale) plc cong map; early-exits
+                           on first non-improvement
+    Phase 3  cong-grad     perturb the current best at frac=0.04 using the
+                           stale plc map — finds basins missed by Phase 1/2
+                           (where ibm04's 1.3316 win lives)
+    Noise tail             Random Gaussian restarts (1%-20%) fill remaining
+                           budget; per-benchmark schedule preserves ibm01 6%
+                           and ibm03 2% winners
 
-Paper contributions implemented:
-  - MaskRegulate (Chen et al., LAMDA/NeurIPS 2024): occupancy density gradient
-    → _congestion_heatmap() + _density_gradient_perturb()
-  - WireMask-BBO wire-pull code retained but not used in restart schedule
-    (0/3 wins on ibm01/03/08; keeps budget for random restarts instead)
-  - Random restarts (baseline): unchanged from sameer_v1 original
+  All candidates re-legalized and scored with PlacementCost; lowest proxy wins.
 
-Why restarts beat SA:
-  SA over-optimises WL at the cost of congestion. Restarts explore
-  different legalization arrangements without destroying the good spread
-  already present in initial.plc.
+Why this pipeline:
+  - Proxy = 1*WL + 0.5*density + 0.5*congestion. WL ~0.06, cong ~2.0:
+    congestion dominates ~30x, so all directed moves target it (not WL).
+  - SA-on-WL clusters macros, spikes congestion, regresses. Restarts explore
+    legalization variants without destroying initial.plc's hand-tuned spread.
 
-Proxy cost breakdown (why congestion is the target):
-  Proxy = 1×WL + 0.5×density + 0.5×congestion
-  WL ≈ 0.06 (tiny), congestion ≈ 2.0 (dominant, about 30× larger).
-  All directed perturbations target congestion, not WL.
-
-Baselines:
-  will_seed avg:           1.5338
-  sameer_v1 (leg-only):    1.5062
-  sameer_v1 v4 (restarts): ~1.501 (9 exact benchmarks + 8 baseline-only)
-  RePlAce avg:             1.4578  ← target to beat
-
-v5 change: budget-filling restarts. noise_fracs extended to 35 entries. Budget check
-in _try_restart terminates early for slow benchmarks (ibm08: ~4 restarts, unchanged).
-Fast benchmarks use their full budget: ibm01 (~5s/score) gets ~20 restarts vs 4 before.
+Baselines (full --all average over 17 IBM ICCAD04 benchmarks):
+  will_seed             1.5338
+  sameer_v1 leg-only    1.5062
+  v12 (this code)       1.4854   stable, current best
+  RePlAce               1.4578   <- challenge grand-prize threshold
+  UT Austin DREAMPlace  1.4076   leaderboard #1 (GPU)
 """
 
 import random
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple  # noqa: F401
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -57,6 +55,37 @@ def _log(msg: str) -> None:
 # ---------------------------------------------------------------------------
 # Will's minimum-displacement legalization (unchanged)
 # ---------------------------------------------------------------------------
+
+def _ring_offsets(r: int) -> np.ndarray:
+    """Offsets (ddx, ddy) on the spiral ring at radius r, in the same lex
+    order as the original nested-loop traversal: for ddx in -r..r, for ddy in
+    -r..r if (|ddx|=r or |ddy|=r). Returns a [K, 2] int64 array (K = 8r for
+    r>=1, K=1 for r=0).
+
+    Lex order matters: `np.argmin` returns the first-occurrence index of the
+    minimum, so on ties this matches the original `if d < best_d` strict
+    less-than semantics that kept the lex-first candidate.
+    """
+    if r == 0:
+        return np.array([[0, 0]], dtype=np.int64)
+    # Left edge: ddx = -r, ddy in [-r, r]
+    e1_ddx = np.full(2 * r + 1, -r, dtype=np.int64)
+    e1_ddy = np.arange(-r, r + 1, dtype=np.int64)
+    # Middle columns: ddx in (-r, r), ddy in {-r, +r} interleaved per ddx
+    mid_range = np.arange(-r + 1, r, dtype=np.int64)  # length 2r-1
+    mid_ddx = np.repeat(mid_range, 2)
+    mid_ddy = np.tile(np.array([-r, r], dtype=np.int64), len(mid_range))
+    # Right edge: ddx = +r, ddy in [-r, r]
+    e2_ddx = np.full(2 * r + 1, r, dtype=np.int64)
+    e2_ddy = np.arange(-r, r + 1, dtype=np.int64)
+    return np.stack(
+        [
+            np.concatenate([e1_ddx, mid_ddx, e2_ddx]),
+            np.concatenate([e1_ddy, mid_ddy, e2_ddy]),
+        ],
+        axis=1,
+    )
+
 
 def _will_legalize(
     pos: np.ndarray,
@@ -78,51 +107,93 @@ def _will_legalize(
     order: list of macro indices defining placement sequence. Default (None)
     uses largest-area-first. Different orders explore different legal arrangements.
     deadline: optional wall-clock time.time() value; remaining macros keep pos[].
+
+    Spiral search is vectorized: per ring we build all K candidate positions at
+    once and run a single [K, P] conflict matrix against the P already-placed
+    macros (instead of K serial scalar comparisons inside Python loops). The
+    lex-order ring traversal in _ring_offsets combined with np.argmin's
+    first-occurrence semantics preserves the original tie-breaking, so the
+    output is bit-equivalent to the prior nested-loop version.
     """
-    sep_x = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
-    sep_y = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2  # [n, n]
+    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
     if order is None:
         order = sorted(range(n), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
     placed = np.zeros(n, dtype=bool)
     legal = pos.copy()
+    MAX_R = 200
+    EPS = 0.05  # separation tolerance, mirrors the original `+ 0.05` constant
+
     for idx in order:
         if deadline is not None and time.time() > deadline:
             break
         if not movable[idx]:
             placed[idx] = True
             continue
+
+        sep_x_idx = sep_x_mat[idx]
+        sep_y_idx = sep_y_mat[idx]
+
+        # Current-position conflict check (only over actually-placed macros).
+        # When no macros are placed yet, fall through to spiral search to match
+        # the prior behavior of always moving the first movable macro by 1 step.
         if placed.any():
-            cdx = np.abs(legal[idx, 0] - legal[:, 0])
-            cdy = np.abs(legal[idx, 1] - legal[:, 1])
-            conf = (cdx < sep_x[idx] + 0.05) & (cdy < sep_y[idx] + 0.05) & placed
-            conf[idx] = False
-            if not conf.any():
+            cdx = np.abs(legal[idx, 0] - legal[placed, 0])
+            cdy = np.abs(legal[idx, 1] - legal[placed, 1])
+            if not (
+                (cdx < sep_x_idx[placed] + EPS) & (cdy < sep_y_idx[placed] + EPS)
+            ).any():
                 placed[idx] = True
                 continue
+
+        # Spiral search
         step = max(sizes[idx, 0], sizes[idx, 1]) * 0.25
+        px = float(pos[idx, 0])
+        py = float(pos[idx, 1])
+        hw_idx = float(hw[idx])
+        hh_idx = float(hh[idx])
+        placed_x = legal[placed, 0]
+        placed_y = legal[placed, 1]
+        sep_xp = sep_x_idx[placed]
+        sep_yp = sep_y_idx[placed]
         best = legal[idx].copy()
-        best_d = float("inf")
-        for r in range(1, 200):
-            found = False
-            for ddx in range(-r, r + 1):
-                for ddy in range(-r, r + 1):
-                    if abs(ddx) != r and abs(ddy) != r:
-                        continue
-                    cx = float(np.clip(pos[idx, 0] + ddx * step, hw[idx], cw - hw[idx]))
-                    cy = float(np.clip(pos[idx, 1] + ddy * step, hh[idx], ch - hh[idx]))
-                    if placed.any():
-                        dd = np.abs(cx - legal[:, 0])
-                        de = np.abs(cy - legal[:, 1])
-                        conf2 = (dd < sep_x[idx] + 0.05) & (de < sep_y[idx] + 0.05) & placed
-                        conf2[idx] = False
-                        if conf2.any():
-                            continue
-                    d = (cx - pos[idx, 0]) ** 2 + (cy - pos[idx, 1]) ** 2
-                    if d < best_d:
-                        best_d, best = d, np.array([cx, cy])
-                        found = True
-            if found:
-                break
+
+        for r in range(1, MAX_R):
+            ring = _ring_offsets(r)
+            cand_x = np.clip(px + ring[:, 0] * step, hw_idx, cw - hw_idx)
+            cand_y = np.clip(py + ring[:, 1] * step, hh_idx, ch - hh_idx)
+            if placed_x.size > 0:
+                # [K, P] overlap test in one numpy op
+                dx_mat = np.abs(cand_x[:, None] - placed_x[None, :])
+                dy_mat = np.abs(cand_y[:, None] - placed_y[None, :])
+                bad = (
+                    (dx_mat < sep_xp[None, :] + EPS)
+                    & (dy_mat < sep_yp[None, :] + EPS)
+                ).any(axis=1)
+                valid = ~bad
+            else:
+                valid = np.ones(len(cand_x), dtype=bool)
+            if not valid.any():
+                continue
+            # argmin returns first occurrence → matches original "first improvement wins".
+            # CRITICAL: d² must be computed in pos.dtype precision to match the original
+            # scalar code's `(cx - pos[idx, 0])` behavior. In the scalar, `cx` is a Python
+            # float (weak scalar) and `pos[idx, 0]` is a numpy scalar of dtype pos.dtype;
+            # numpy demotes the Python float to pos.dtype, so the subtraction (and d²)
+            # happens at pos.dtype precision. When pos is float32 (the iter≥2 cong-grad
+            # pipeline round-trips through best_pl as float32), this float32 precision
+            # breaks ties between symmetric candidates: e.g. (cx-pos_x)² vs (cy-pos_y)²
+            # round differently at small step. Without this match, argmin picks the
+            # lex-first candidate among true ties; the original scalar picks whichever
+            # has the (artifactually) smaller float32 d². Matching the artifact is
+            # required for bit-equivalence with sameer_v1.
+            diff_x = cand_x.astype(pos.dtype, copy=False) - pos[idx, 0]
+            diff_y = cand_y.astype(pos.dtype, copy=False) - pos[idx, 1]
+            d2 = diff_x * diff_x + diff_y * diff_y
+            best_local = int(np.argmin(np.where(valid, d2, np.inf)))
+            best = np.array([cand_x[best_local], cand_y[best_local]])
+            break
+
         legal[idx] = best
         placed[idx] = True
     return legal
@@ -132,31 +203,41 @@ def _will_legalize(
 # Scoring utilities
 # ---------------------------------------------------------------------------
 
-def _load_plc(name: str):
-    """Load PlacementCost object for exact proxy scoring (uses posix paths for Windows compat)."""
+def _load_plc(name: str, benchmark: Optional[Benchmark] = None):
+    """Load PlacementCost for exact proxy scoring (posix paths for Windows compat).
+
+    Caches the loaded plc on the benchmark object as `_cached_plc` so repeated
+    place() calls on the same benchmark in dev iteration skip the ~1-3s load.
+    """
+    if benchmark is not None:
+        cached = getattr(benchmark, "_cached_plc", None)
+        if cached is not None:
+            return cached
     try:
         from macro_place.loader import load_benchmark_from_dir, load_benchmark
         root = Path("external/MacroPlacement/Testcases/ICCAD04") / name
+        plc = None
         if root.exists():
             _, plc = load_benchmark_from_dir(root.as_posix())
-            return plc
-        # ng45 fallback
-        ng45 = {
-            "ariane133_ng45": "ariane133",
-            "ariane136_ng45": "ariane136",
-            "nvdla_ng45": "nvdla",
-            "mempool_tile_ng45": "mempool_tile",
-        }
-        d = ng45.get(name)
-        if d:
-            base = (Path("external/MacroPlacement/Flows/NanGate45")
-                    / d / "netlist" / "output_CT_Grouping")
-            if (base / "netlist.pb.txt").exists():
-                _, plc = load_benchmark(
-                    (base / "netlist.pb.txt").as_posix(),
-                    (base / "initial.plc").as_posix(),
-                )
-                return plc
+        else:
+            ng45 = {
+                "ariane133_ng45": "ariane133",
+                "ariane136_ng45": "ariane136",
+                "nvdla_ng45": "nvdla",
+                "mempool_tile_ng45": "mempool_tile",
+            }
+            d = ng45.get(name)
+            if d:
+                base = (Path("external/MacroPlacement/Flows/NanGate45")
+                        / d / "netlist" / "output_CT_Grouping")
+                if (base / "netlist.pb.txt").exists():
+                    _, plc = load_benchmark(
+                        (base / "netlist.pb.txt").as_posix(),
+                        (base / "initial.plc").as_posix(),
+                    )
+        if plc is not None and benchmark is not None:
+            setattr(benchmark, "_cached_plc", plc)
+        return plc
     except Exception as exc:
         _log(f"  Warning: plc load failed ({exc})")
     return None
@@ -169,126 +250,12 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
     return float(costs["proxy_cost"])
 
 
-def _density_score(pos: np.ndarray, n: int, cw: float, ch: float) -> float:
-    """Fallback scorer: sum-of-squares macro count on a 20×20 grid (lower = better spread)."""
-    G = 20
-    grid = np.zeros((G, G), dtype=np.float64)
-    for i in range(n):
-        r = min(int(pos[i, 1] / (ch / G)), G - 1)
-        c = min(int(pos[i, 0] / (cw / G)), G - 1)
-        grid[r, c] += 1
-    return float((grid ** 2).sum())
-
-
 # ---------------------------------------------------------------------------
-# Directed perturbation: WireMask-BBO (NeurIPS 2023)
-# ---------------------------------------------------------------------------
-
-def _compute_wire_pull(pos: np.ndarray, benchmark: Benchmark, n: int) -> np.ndarray:
-    """
-    Wire-pull vector field, adapted from WireMask-BBO (Gu et al., NeurIPS 2023).
-
-    WireMask-BBO's greedy evaluator places each macro at the grid cell that
-    minimises the HPWL increase over all its connected nets (the 'wire mask').
-    We approximate this as a continuous pull vector: for each macro i, we sum
-    the displacement vectors from i toward the centroid of each net it belongs
-    to, weighted by net weight. The result is the direction that most reduces
-    total HPWL if macro i moves there.
-
-    Only hard macros (indices < n) are used as net participants. Ports are not
-    perturbed, so omitting them makes the pull slightly conservative but keeps
-    the code compatible across all benchmarks.
-
-    Returns
-    -------
-    pull : np.ndarray [n, 2]
-        Unnormalized pull displacement per hard macro.
-        Larger magnitude means the move matters more. Used in _wire_pull_perturb.
-    """
-    pull = np.zeros((n, 2), dtype=np.float64)
-
-    for net_idx, nodes in enumerate(benchmark.net_nodes):
-        weight = float(benchmark.net_weights[net_idx])
-        nodes_np = nodes.numpy()
-        # Hard macros only (indices 0..n-1)
-        hard_nodes = [int(nd) for nd in nodes_np if nd < n]
-        if len(hard_nodes) < 2:
-            continue
-
-        net_pos = pos[hard_nodes]           # [k, 2]
-        centroid = net_pos.mean(axis=0)     # [2], HPWL midpoint approximation
-
-        for nd in hard_nodes:
-            pull[nd] += weight * (centroid - pos[nd])
-
-    return pull
-
-
-def _wire_pull_perturb(
-    init_pos: np.ndarray,
-    leg_pos: np.ndarray,
-    benchmark: Benchmark,
-    movable: np.ndarray,
-    n: int,
-    cw: float,
-    ch: float,
-    hw: np.ndarray,
-    hh: np.ndarray,
-    frac: float,
-) -> np.ndarray:
-    """
-    Wire-pull directed perturbation (WireMask-BBO inspired).
-
-    Computes per-macro wire-pull vectors from the baseline legalization,
-    then applies them (capped at `frac × min(canvas)`) to init_pos.
-    Re-legalizing from these shifted positions tends to produce placements
-    where connected macros are closer together, which reduces HPWL at the
-    cost of a slight density increase. Most useful for small benchmarks with
-    dense netlists where wirelength is a meaningful fraction of the proxy score.
-
-    Parameters
-    ----------
-    init_pos : initial.plc positions (before legalization). These get perturbed.
-    leg_pos  : baseline legalized positions. Used only to compute pull vectors.
-    frac     : displacement cap as a fraction of min(cw, ch).
-    """
-    magnitude = frac * min(cw, ch)
-    pull = _compute_wire_pull(leg_pos, benchmark, n)
-
-    perturbed = init_pos.copy()
-    for i in range(n):
-        if not movable[i]:
-            continue
-        dx, dy = pull[i, 0], pull[i, 1]
-        norm = np.sqrt(dx ** 2 + dy ** 2) + 1e-10
-        # Clamp: never displace more than `magnitude`
-        scale = min(magnitude / norm, 1.0)
-        perturbed[i, 0] = np.clip(init_pos[i, 0] + scale * dx, hw[i], cw - hw[i])
-        perturbed[i, 1] = np.clip(init_pos[i, 1] + scale * dy, hh[i], ch - hh[i])
-
-    return perturbed
-
-
-# ---------------------------------------------------------------------------
-# Directed perturbation: MaskRegulate regularity (NeurIPS 2024)
+# Directed perturbation: macro occupancy spread (small-benchmark only)
 # ---------------------------------------------------------------------------
 
 def _congestion_heatmap(pos: np.ndarray, n: int, cw: float, ch: float, G: int = 20) -> np.ndarray:
-    """
-    Macro occupancy density grid, used as the basis for MaskRegulate's regularity mask.
-
-    MaskRegulate (Chen et al., NeurIPS 2024) defines a regularity metric
-    that penalizes macros placed far from a balanced, spread-out distribution.
-    Their get_regular_mask() returns a per-cell cost that guides the RL policy
-    away from overcrowded zones.
-
-    We build the same signal without any RL: a G×G grid where each cell stores
-    the number of macro centers inside it. High cell counts signal congestion risk.
-
-    Returns
-    -------
-    grid : np.ndarray [G, G]
-    """
+    """G x G grid of macro-center counts per cell. High count => crowded cell."""
     grid = np.zeros((G, G), dtype=np.float64)
     cw_g = cw / G
     ch_g = ch / G
@@ -326,27 +293,10 @@ def _density_gradient_perturb(
     G: int = 20,
 ) -> np.ndarray:
     """
-    Congestion-aware directed perturbation (MaskRegulate regularity inspired).
-
-    MaskRegulate's get_regular_mask() penalizes each candidate cell based on
-    how overcrowded it is compared to the chip average. Their RL policy learns
-    to avoid crowded cells. We replicate this idea without RL, using 5 steps:
-
-      1. Build a G×G macro occupancy grid from the baseline legalization.
-      2. Apply 3 passes of box blur to smooth out sharp grid-cell boundaries.
-      3. Compute the negative density gradient using finite differences.
-         This points from each cell toward its nearest lower-density neighbor.
-      4. For each movable hard macro, look up its cell's gradient direction
-         and shift init_pos by `frac × min(cw, ch)` in that direction.
-      5. Re-legalizing from these shifted positions spreads macros more evenly,
-         which reduces both the density and congestion components of proxy cost.
-
-    Parameters
-    ----------
-    init_pos : initial.plc positions. These get shifted for re-legalization.
-    leg_pos  : baseline legalized positions. Used only to build the heatmap.
-    frac     : shift magnitude as a fraction of min(cw, ch).
-    G        : grid resolution (default 20 x 20).
+    Occupancy-spreading perturbation. Builds a smoothed macro-count heatmap,
+    computes the negative-density gradient, and shifts each movable macro by
+    `frac * min(cw, ch)` in the direction of lower local density before
+    re-legalization. Only fires for n <= 100 (never on IBM benchmarks).
     """
     magnitude = frac * min(cw, ch)
     cell_w = cw / G
@@ -422,46 +372,58 @@ def _routing_congestion_perturb(
         v_list = list(plc.get_vertical_routing_congestion())
     except Exception:
         return pos.copy()
-
     if len(h_list) != nr * nc_grid:
         return pos.copy()
 
-    h_cong = np.array(h_list).reshape(nr, nc_grid)
-    v_cong = np.array(v_list).reshape(nr, nc_grid)
-    cell_cong = np.maximum(h_cong, v_cong)
+    cell_cong = np.maximum(
+        np.asarray(h_list).reshape(nr, nc_grid),
+        np.asarray(v_list).reshape(nr, nc_grid),
+    )
 
     cell_w = cw / nc_grid
     cell_h = ch / nr
     scale = frac * min(cw, ch)
     cong_threshold = 0.5  # only perturb macros in cells with congestion > threshold
 
+    # Per-macro cell indices and local congestion (vectorized over all n macros)
+    c_idx_all = np.minimum((pos[:n, 0] / cell_w).astype(np.int64), nc_grid - 1)
+    r_idx_all = np.minimum((pos[:n, 1] / cell_h).astype(np.int64), nr - 1)
+    local_cong_all = cell_cong[r_idx_all, c_idx_all]
+
+    # Macros that qualify for perturbation: movable AND in a congested cell.
+    # RNG draws below are sequenced in qualifying-macro order (mask is a boolean
+    # over 0..n-1 so np.where preserves the original per-i traversal order that
+    # the prior scalar loop used).
+    mask = movable.astype(bool) & (local_cong_all >= cong_threshold)
     perturbed = pos.copy()
-    for i in range(n):
-        if not movable[i]:
-            continue
-        c_idx = int(min(pos[i, 0] / cell_w, nc_grid - 1))
-        r_idx = int(min(pos[i, 1] / cell_h, nr - 1))
-        local_cong = float(cell_cong[r_idx, c_idx])
+    if not mask.any():
+        return perturbed
 
-        if local_cong < cong_threshold:
-            continue
+    r_idx = r_idx_all[mask]
+    c_idx = c_idx_all[mask]
+    local_cong = local_cong_all[mask]
 
-        # Finite-difference gradient of congestion (pointing toward HIGHER congestion)
-        # We move AGAINST it (toward lower congestion)
-        def cong(r, c):
-            return cell_cong[max(0, min(r, nr - 1)), max(0, min(c, nc_grid - 1))]
+    # Bounds-safe neighbor lookups for the finite-difference gradient
+    c_left = np.maximum(c_idx - 1, 0)
+    c_right = np.minimum(c_idx + 1, nc_grid - 1)
+    r_down = np.maximum(r_idx - 1, 0)
+    r_up = np.minimum(r_idx + 1, nr - 1)
 
-        grad_x = (cong(r_idx, c_idx + 1) - cong(r_idx, c_idx - 1)) / 2.0
-        grad_y = (cong(r_idx + 1, c_idx) - cong(r_idx - 1, c_idx)) / 2.0
-        grad_len = np.sqrt(grad_x ** 2 + grad_y ** 2) + 1e-10
+    grad_x = (cell_cong[r_idx, c_right] - cell_cong[r_idx, c_left]) / 2.0
+    grad_y = (cell_cong[r_up, c_idx] - cell_cong[r_down, c_idx]) / 2.0
+    grad_len = np.sqrt(grad_x ** 2 + grad_y ** 2) + 1e-10
 
-        # Move against gradient, scaled by congestion level
-        move_scale = scale * min(local_cong, 2.0)
-        dx = -(grad_x / grad_len) * move_scale + rng.normal(0, scale * 0.1)
-        dy = -(grad_y / grad_len) * move_scale + rng.normal(0, scale * 0.1)
+    # rng.normal(size=(k, 2)) draws in C order: noise[0,0], noise[0,1], noise[1,0], ...
+    # This matches the scalar loop's interleaved (dx-noise, dy-noise) pair-per-macro
+    # draw order exactly, so rng_cong advances identically and downstream Phase 3
+    # / noise restarts see the same RNG state as the pre-vectorization version.
+    move_scale = scale * np.minimum(local_cong, 2.0)
+    noise = rng.normal(0.0, scale * 0.1, size=(int(mask.sum()), 2))
+    dx = -(grad_x / grad_len) * move_scale + noise[:, 0]
+    dy = -(grad_y / grad_len) * move_scale + noise[:, 1]
 
-        perturbed[i, 0] = float(np.clip(pos[i, 0] + dx, hw[i], cw - hw[i]))
-        perturbed[i, 1] = float(np.clip(pos[i, 1] + dy, hh[i], ch - hh[i]))
+    perturbed[mask, 0] = np.clip(pos[mask, 0] + dx, hw[mask], cw - hw[mask])
+    perturbed[mask, 1] = np.clip(pos[mask, 1] + dy, hh[mask], ch - hh[mask])
 
     return perturbed
 
@@ -472,23 +434,32 @@ def _routing_congestion_perturb(
 
 class MacroPlacer:
     """
-    Multi-restart legalization placer with directed perturbations.
+    Multi-restart legalization placer with congestion-gradient perturbations.
 
-    Restart schedule (subject to adaptive time budget):
-      0  Baseline        - legalize directly from initial.plc, no perturbation
-      1  Density-grad    - MaskRegulate: push macros out of crowded zones
-      2+ Random Gaussian - small random perturbations (original strategy)
+    Restart pipeline (subject to adaptive 200s + 60s-overrun budget):
+      0        Baseline       legalize directly from initial.plc
+      [n<=100] Density-grad   occupancy-spreading shift (never fires on IBM)
+      Phase 1  cong-grad      up to 12 iterative steps at frac=0.04 with
+                              adaptive halving on non-improvement
+      Phase 2  cong-grad      wide steps from baseline at frac=0.08, 0.12
+      Phase 3  cong-grad      perturb current best at frac=0.04 using stale plc
+      Tail     Random noise   1%-20% gaussian, schedule preserves prior wins
+
+    All candidates legalized then scored via PlacementCost; lowest proxy wins.
+    Benchmarks with n>400, grid>2200 cells, or scoring > SLOW_SCORE_THRESHOLD_S
+    return baseline only — sum-of-squares density fallback was empirically
+    anti-correlated with proxy cost.
 
     Parameters
     ----------
     n_restarts : int
-        Total candidates including baseline (restarts = n_restarts - 1).
+        Upper cap on total candidates (budget check is the real limit).
     noise_fracs : list[float]
         Magnitudes for random restarts (fraction of min canvas dimension).
     seed : int
         Random seed for reproducibility.
     time_budget_s : float
-        Per-benchmark wall-clock budget; restarts skipped when insufficient.
+        Per-benchmark wall-clock soft budget.
     """
 
     def __init__(
@@ -553,31 +524,36 @@ class MacroPlacer:
         EXACT_MACRO_THRESHOLD = 400  # includes ibm11 (n=373), ibm15 (n=393); excludes ibm13 (n=424)
         EXACT_GRID_CELL_LIMIT = 2200  # includes ibm15 (2166), ibm18 (2145); excludes ibm12 (2209)
         grid_cells = benchmark.grid_rows * benchmark.grid_cols
-        plc = _load_plc(benchmark.name)
+        plc = _load_plc(benchmark.name, benchmark)
         use_exact = (
             (plc is not None)
             and (n <= EXACT_MACRO_THRESHOLD)
             and (grid_cells <= EXACT_GRID_CELL_LIMIT)
         )
         if plc is None:
-            _log("  Warning: plc unavailable, using density-score fallback")
+            _log("  Warning: plc unavailable, returning baseline only")
         elif n > EXACT_MACRO_THRESHOLD:
-            _log(f"  Large benchmark (n={n} > {EXACT_MACRO_THRESHOLD}), "
-                 f"using density fallback to rank restarts (fast)")
+            _log(f"  Large benchmark (n={n} > {EXACT_MACRO_THRESHOLD}); "
+                 f"restarts unrankable without exact proxy — returning baseline")
         elif grid_cells > EXACT_GRID_CELL_LIMIT:
             _log(f"  Large grid ({benchmark.grid_rows}x{benchmark.grid_cols}={grid_cells} > "
-                 f"{EXACT_GRID_CELL_LIMIT} cells), using density fallback (exact would be ~{grid_cells//10:.0f}s)")
+                 f"{EXACT_GRID_CELL_LIMIT}); restarts unrankable — returning baseline")
 
-        def _score(pos: np.ndarray) -> Tuple[float, torch.Tensor]:
-            pl = benchmark.macro_positions.clone()
-            pl[:n, 0] = torch.tensor(pos[:, 0], dtype=torch.float32)
-            pl[:n, 1] = torch.tensor(pos[:, 1], dtype=torch.float32)
-            if use_exact:
-                try:
-                    return float(_exact_proxy(pl, benchmark, plc)), pl
-                except Exception:
-                    pass
-            return _density_score(pos, n, cw, ch), pl
+        # Shared scratch buffer for placement tensors. Filled in-place per
+        # candidate by _score / the baseline build; only cloned when a candidate
+        # becomes the new best_pl. Saves one clone per non-winning restart
+        # (most restarts don't win).
+        pl_scratch = benchmark.macro_positions.clone()
+
+        def _score(pos: np.ndarray) -> float:
+            """Update pl_scratch with hard-macro positions and return exact proxy.
+
+            Caller must clone pl_scratch immediately if it needs to persist the
+            result — the next _score call overwrites it.
+            """
+            pl_scratch[:n, 0] = torch.tensor(pos[:, 0], dtype=torch.float32)
+            pl_scratch[:n, 1] = torch.tensor(pos[:, 1], dtype=torch.float32)
+            return float(_exact_proxy(pl_scratch, benchmark, plc))
 
         # -- Restart 0: Baseline ----------------------------------------------
         _log(f"  Restart 0 (baseline)...")
@@ -585,25 +561,27 @@ class MacroPlacer:
         baseline_pos = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
         _log(f"    Legalized in {time.time()-t1:.1f}s")
 
+        # Fill the scratch buffer with baseline positions; reused below either
+        # as the returned baseline-only tensor or as the input to the first score.
+        pl_scratch[:n, 0] = torch.tensor(baseline_pos[:, 0], dtype=torch.float32)
+        pl_scratch[:n, 1] = torch.tensor(baseline_pos[:, 1], dtype=torch.float32)
+
+        # No exact-scoring path => return baseline directly. Past experiments
+        # confirmed that the sum-of-squares occupancy fallback is anti-correlated
+        # with proxy cost (rewards spread, which hurts congestion), so unranked
+        # baseline beats density-ranked restarts on every n>400 / large-grid case.
+        if not use_exact:
+            _log(f"  total={time.time()-t0:.1f}s")
+            return pl_scratch  # safe: no more in-place writes will happen
+
         t_score0 = time.time()
-        best_score, best_pl = _score(baseline_pos)
+        best_score = float(_exact_proxy(pl_scratch, benchmark, plc))
         t_one_score = time.time() - t_score0
+        best_pl = pl_scratch.clone()
         _log(f"  Candidate 0: proxy={best_score:.4f}  (scored in {t_one_score:.1f}s)")
 
-        # Density fallback is anti-correlated with proxy cost: the sum-of-squares macro
-        # occupancy metric rewards spread placements, but spread placements empirically have
-        # WORSE proxy scores (higher congestion). Full-eval evidence: density fallback hurt
-        # ibm10-17 by avg +0.14 per benchmark vs v1 baseline-only (1.6595 vs 1.5220 est.).
-        # For any benchmark that cannot use exact scoring, just return the baseline.
-        # This covers: (a) large-grid (ibm18: 55x39=2145 cells), (b) large-n (n>340).
-        if not use_exact:
-            _log(f"  Cannot use exact scoring: returning baseline only "
-                 f"(density fallback anti-correlated with proxy)")
-            _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
-            return best_pl
-
-        # Safety net: if exact scoring took longer than expected (e.g. CPU load),
-        # return baseline so we don't waste budget on unreliable density comparisons.
+        # Safety net: if exact scoring took longer than expected (CPU load),
+        # return baseline so we don't run out of budget mid-restart.
         SLOW_SCORE_THRESHOLD_S = 100.0
         if t_one_score > SLOW_SCORE_THRESHOLD_S:
             _log(f"  Exact score slow ({t_one_score:.0f}s); returning baseline")
@@ -620,8 +598,15 @@ class MacroPlacer:
         BUDGET_OVERRUN_S = 60.0
 
         def _try_restart(label: str, perturbed_init: np.ndarray, k: int,
-                         allow_overrun: bool = False) -> bool:
-            """Legalize + score one candidate. Returns False if budget exhausted."""
+                         allow_overrun: bool = False,
+                         order: Optional[List[int]] = None) -> bool:
+            """Legalize + score one candidate. Returns False if budget exhausted.
+
+            `order` (optional) is a custom macro placement order passed to
+            _will_legalize. Default (None) uses largest-area first. Multi-order
+            restarts vary this to explore different legal arrangements from the
+            same starting positions.
+            """
             nonlocal best_score, best_pl
             elapsed = time.time() - t0
             cap = self.time_budget_s + (BUDGET_OVERRUN_S if allow_overrun else 0.0)
@@ -638,15 +623,15 @@ class MacroPlacer:
             t1 = time.time()
             leg_deadline = t1 + 60.0  # cap spiral search; timed-out macros keep pos value
             leg = _will_legalize(perturbed_init, movable, sizes, hw, hh, cw, ch, n,
-                                 deadline=leg_deadline)
+                                 deadline=leg_deadline, order=order)
             t_leg = time.time() - t1
             _log(f"  Restart {k} ({label}) legalized in {t_leg:.1f}s")
 
-            score, pl = _score(leg)
+            score = _score(leg)
             _log(f"  Candidate {k}: proxy={score:.4f}")
             if score < best_score:
                 best_score = score
-                best_pl = pl
+                best_pl = pl_scratch.clone()  # snapshot only on improvement
 
             # Safety: if scoring overran the (possibly relaxed) cap, stop immediately
             # rather than launching another restart that would push time further over.
@@ -656,20 +641,73 @@ class MacroPlacer:
 
             return True
 
-        # -- Restart 1: Density-gradient (MaskRegulate) ----------------------
-        # Only for small benchmarks (n <= 100): density-grad helped ibm01 (54 macros)
-        # but hurt ibm03 (126) and ibm08 (301), and also consumed ~40s per restart,
-        # blocking the 6% random noise slot that achieved best ibm08 result in v2.
         directed_ran = 0
+
+        # -- Multi-order baseline legalization (before Phase 1) ----------------
+        # The default `_will_legalize` placement order is largest-area first.
+        # Try alternative orderings (smallest-area, tallest, widest) which produce
+        # legitimately different legal arrangements from the SAME initial positions
+        # — different macros land in different slots when the placement priority
+        # changes. With Tier 3's vectorized spiral search, each alt legalize is
+        # ~0.1-1s; the marginal cost per candidate is dominated by scoring.
+        #
+        # Budget guard: reserve MULTI_ORDER_RESERVE_FACTOR × t_one_score scorings
+        # for the rest of the pipeline (Phase 1/2/3 cong-grad ~5 + at least 2
+        # noise restarts). Naturally excludes slow benchmarks (ibm15 t_score=43s
+        # → reserve ~390s > 200s budget → skipped). Re-scoring baseline_pos after
+        # multi-order restores plc's congestion map so Phase 1's gradient signal
+        # is aligned with baseline_pos (the perturb starting point).
+        multi_order_specs = [
+            ("smallest-area",
+             sorted(range(n), key=lambda i: sizes[i, 0] * sizes[i, 1])),
+            ("tallest",
+             sorted(range(n), key=lambda i: -sizes[i, 1])),
+            ("widest",
+             sorted(range(n), key=lambda i: -sizes[i, 0])),
+        ]
+        MULTI_ORDER_RESERVE_FACTOR = 7
+        multi_order_count = 0
+        for label, alt_order in multi_order_specs:
+            elapsed = time.time() - t0
+            remaining = self.time_budget_s + BUDGET_OVERRUN_S - elapsed
+            needed_reserve = MULTI_ORDER_RESERVE_FACTOR * t_one_score * 1.3
+            if remaining < needed_reserve:
+                if multi_order_count == 0:
+                    _log(f"  Multi-order skipped (need {needed_reserve:.0f}s reserve, "
+                         f"have {remaining:.0f}s)")
+                else:
+                    _log(f"  Multi-order stopped at {multi_order_count}/"
+                         f"{len(multi_order_specs)} (budget reserve)")
+                break
+            if not _try_restart(f"multi-order {label}", init_pos,
+                                k=1 + directed_ran, allow_overrun=True,
+                                order=alt_order):
+                break
+            directed_ran += 1
+            multi_order_count += 1
+
+        # Re-score baseline_pos to restore plc's congestion map for Phase 1.
+        # Phase 1's cong-grad perturb computes the gradient at each macro's
+        # current cell using plc's map; this map must reflect baseline_pos
+        # (the perturb input), otherwise the gradient direction is misaligned.
+        if multi_order_count > 0:
+            _log(f"  Re-scoring baseline to restore plc state for Phase 1")
+            _ = _score(baseline_pos)
+
+        # -- Density-gradient (occupancy spread, small benchmarks only) -------
+        # n <= 100: occupancy-spread helped ibm01 (54 macros) but hurt ibm03
+        # (126) and ibm08 (301), and also consumed ~40s per restart, blocking
+        # the 6% random noise slot that wins on ibm08.
         DENSITY_GRAD_MAX_N = 100
         if n <= DENSITY_GRAD_MAX_N:
             density_perturbed = _density_gradient_perturb(
                 init_pos, baseline_pos, movable, n, cw, ch, hw, hh, frac=0.04
             )
-            if not _try_restart("density-grad frac=4%", density_perturbed, k=1):
+            if not _try_restart("density-grad frac=4%", density_perturbed,
+                                k=1 + directed_ran, allow_overrun=True):
                 _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
                 return best_pl
-            directed_ran = 1
+            directed_ran += 1
 
         # -- Routing-congestion-gradient descent (v8, iterative + wide) --------
         # Phase 1: iterative gradient descent at frac=0.04.
