@@ -199,6 +199,143 @@ def _will_legalize(
     return legal
 
 
+def _two_opt_swap(
+    legal_pos: np.ndarray,
+    init_pos: np.ndarray,
+    sizes: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    cw: float,
+    ch: float,
+    movable: np.ndarray,
+    n: int,
+    k_neighbors: int = 5,
+    max_iters: int = 3,
+    deadline: float | None = None,
+) -> "tuple[np.ndarray, int]":
+    """Post-legalize 2-opt swap pass.
+
+    `_will_legalize` is greedy and cannot backtrack: once macro A is placed,
+    it cannot move to give macro B a closer slot. This 2-opt pass examines
+    pairs of nearby movable macros and tries swapping their positions. A swap
+    is accepted iff:
+        (1) Both macros remain in canvas bounds at their new positions.
+        (2) Neither macro conflicts with any OTHER placed macro at its new
+            position (and they don't conflict with each other).
+        (3) Total per-pair displacement from init_pos strictly decreases.
+
+    Spatial scope: for each macro i, we consider only its k_neighbors nearest
+    placed macros (by current legal position). Distant swaps would increase
+    total displacement anyway, so this restriction is essentially free.
+
+    Iterates until no improvement or max_iters reached. Each iter is O(n²·k)
+    in vectorized numpy (k_neighbors=5, max_iters=3 → ~1-3s for n=760).
+
+    Returns (new_pos, swap_count).
+    """
+    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2  # [n, n]
+    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    EPS = 0.05
+
+    pos = legal_pos.copy()
+    # Per-macro squared displacement from initial. We use squared (not L2) so
+    # the strict-improvement check `d_new < d_old - 1e-9` is exact in float64.
+    disp_sq = (pos[:, 0] - init_pos[:, 0]) ** 2 + (pos[:, 1] - init_pos[:, 1]) ** 2
+
+    swap_count = 0
+    for it in range(max_iters):
+        if deadline is not None and time.time() > deadline:
+            break
+        improved_any = False
+
+        # For each macro i (in fixed order), find K nearest movable peers and
+        # try swap with each. We re-derive kNN per outer iter — positions
+        # change across iters, so the neighborhood changes too.
+        # Pairwise sq distances (vectorized): O(n²) memory but n<=800 is fine.
+        dx = pos[:, 0:1] - pos[:, 0:1].T
+        dy = pos[:, 1:2] - pos[:, 1:2].T
+        d_pair = dx * dx + dy * dy
+        np.fill_diagonal(d_pair, np.inf)
+        # Mask non-movable rows/cols to inf so they're never selected as neighbors.
+        non_movable = ~movable
+        d_pair[non_movable, :] = np.inf
+        d_pair[:, non_movable] = np.inf
+        # kNN per row: indices of K smallest entries.
+        # argpartition is O(n) per row, faster than argsort.
+        k_eff = min(k_neighbors, n - 1)
+        if k_eff <= 0:
+            break
+        neighbors = np.argpartition(d_pair, k_eff, axis=1)[:, :k_eff]
+
+        for i in range(n):
+            if not movable[i]:
+                continue
+            if deadline is not None and time.time() > deadline:
+                break
+            for j in neighbors[i]:
+                if not movable[j] or i == j:
+                    continue
+                # Tentative swap: i moves to pos[j], j moves to pos[i].
+                new_ix, new_iy = pos[j, 0], pos[j, 1]
+                new_jx, new_jy = pos[i, 0], pos[i, 1]
+
+                # Bounds check.
+                if (new_ix - hw[i] < -EPS or new_ix + hw[i] > cw + EPS or
+                        new_iy - hh[i] < -EPS or new_iy + hh[i] > ch + EPS):
+                    continue
+                if (new_jx - hw[j] < -EPS or new_jx + hw[j] > cw + EPS or
+                        new_jy - hh[j] < -EPS or new_jy + hh[j] > ch + EPS):
+                    continue
+
+                # Displacement check — strict improvement only.
+                d_i_new = (new_ix - init_pos[i, 0]) ** 2 + (new_iy - init_pos[i, 1]) ** 2
+                d_j_new = (new_jx - init_pos[j, 0]) ** 2 + (new_jy - init_pos[j, 1]) ** 2
+                if d_i_new + d_j_new >= disp_sq[i] + disp_sq[j] - 1e-9:
+                    continue
+
+                # Conflict check: i at new pos vs all macros except i,j.
+                # Build a mask excluding i and j.
+                mask = np.ones(n, dtype=bool)
+                mask[i] = False
+                mask[j] = False
+                ox = pos[mask, 0]
+                oy = pos[mask, 1]
+                sxi = sep_x_mat[i, mask]
+                syi = sep_y_mat[i, mask]
+                conf_i = ((np.abs(new_ix - ox) < sxi + EPS) &
+                          (np.abs(new_iy - oy) < syi + EPS)).any()
+                if conf_i:
+                    continue
+                sxj = sep_x_mat[j, mask]
+                syj = sep_y_mat[j, mask]
+                conf_j = ((np.abs(new_jx - ox) < sxj + EPS) &
+                          (np.abs(new_jy - oy) < syj + EPS)).any()
+                if conf_j:
+                    continue
+                # i vs j (they end up where the other was — only an issue when
+                # they were not separated to begin with; the original placement
+                # is legal so pos[i] and pos[j] satisfy separation, but the new
+                # i-at-pos[j] / j-at-pos[i] separation is symmetric so this is
+                # also legal. Still verify defensively).
+                if (abs(new_ix - new_jx) < sep_x_mat[i, j] + EPS and
+                        abs(new_iy - new_jy) < sep_y_mat[i, j] + EPS):
+                    continue
+
+                # Accept swap.
+                pos[i, 0], pos[i, 1] = new_ix, new_iy
+                pos[j, 0], pos[j, 1] = new_jx, new_jy
+                disp_sq[i] = d_i_new
+                disp_sq[j] = d_j_new
+                improved_any = True
+                swap_count += 1
+                break  # move to next i (positions changed; further j checks stale)
+
+        if not improved_any:
+            break
+
+    return pos, swap_count
+
+
 # ---------------------------------------------------------------------------
 # Scoring utilities
 # ---------------------------------------------------------------------------
@@ -248,92 +385,6 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
     from macro_place.objective import compute_proxy_cost
     costs = compute_proxy_cost(placement, benchmark, plc)
     return float(costs["proxy_cost"])
-
-
-# ---------------------------------------------------------------------------
-# Directed perturbation: macro occupancy spread (small-benchmark only)
-# ---------------------------------------------------------------------------
-
-def _congestion_heatmap(pos: np.ndarray, n: int, cw: float, ch: float, G: int = 20) -> np.ndarray:
-    """G x G grid of macro-center counts per cell. High count => crowded cell."""
-    grid = np.zeros((G, G), dtype=np.float64)
-    cw_g = cw / G
-    ch_g = ch / G
-    for i in range(n):
-        c = min(int(pos[i, 0] / cw_g), G - 1)
-        r = min(int(pos[i, 1] / ch_g), G - 1)
-        grid[r, c] += 1.0
-    return grid
-
-
-def _box_blur(grid: np.ndarray, G: int) -> np.ndarray:
-    """
-    3×3 box blur using pure NumPy (no scipy dependency).
-    Equivalent to one step of Gaussian blur with σ≈0.85.
-    Running this 3× approximates σ≈1.5 Gaussian.
-    """
-    padded = np.pad(grid, 1, mode="edge")
-    result = np.zeros_like(grid)
-    for dr in range(3):
-        for dc in range(3):
-            result += padded[dr: dr + G, dc: dc + G]
-    return result / 9.0
-
-
-def _density_gradient_perturb(
-    init_pos: np.ndarray,
-    leg_pos: np.ndarray,
-    movable: np.ndarray,
-    n: int,
-    cw: float,
-    ch: float,
-    hw: np.ndarray,
-    hh: np.ndarray,
-    frac: float,
-    G: int = 20,
-) -> np.ndarray:
-    """
-    Occupancy-spreading perturbation. Builds a smoothed macro-count heatmap,
-    computes the negative-density gradient, and shifts each movable macro by
-    `frac * min(cw, ch)` in the direction of lower local density before
-    re-legalization. Only fires for n <= 100 (never on IBM benchmarks).
-    """
-    magnitude = frac * min(cw, ch)
-    cell_w = cw / G
-    cell_h = ch / G
-
-    # Build and smooth the occupancy grid
-    grid = _congestion_heatmap(leg_pos, n, cw, ch, G)
-    smooth = grid.copy()
-    for _ in range(3):
-        smooth = _box_blur(smooth, G)
-
-    # Negative density gradient: points toward lower density
-    grad_x = np.zeros((G, G))
-    grad_y = np.zeros((G, G))
-    for r in range(G):
-        for c in range(G):
-            left  = smooth[r, c - 1] if c > 0    else smooth[r, c]
-            right = smooth[r, c + 1] if c < G-1  else smooth[r, c]
-            grad_x[r, c] = -(right - left) / 2.0   # negative = toward lower density
-
-            down = smooth[r - 1, c] if r > 0    else smooth[r, c]
-            up   = smooth[r + 1, c] if r < G-1  else smooth[r, c]
-            grad_y[r, c] = -(up - down) / 2.0
-
-    perturbed = init_pos.copy()
-    for i in range(n):
-        if not movable[i]:
-            continue
-        c_idx = min(int(leg_pos[i, 0] / cell_w), G - 1)
-        r_idx = min(int(leg_pos[i, 1] / cell_h), G - 1)
-        dx = grad_x[r_idx, c_idx]
-        dy = grad_y[r_idx, c_idx]
-        norm = np.sqrt(dx ** 2 + dy ** 2) + 1e-10
-        perturbed[i, 0] = np.clip(init_pos[i, 0] + magnitude * dx / norm, hw[i], cw - hw[i])
-        perturbed[i, 1] = np.clip(init_pos[i, 1] + magnitude * dy / norm, hh[i], ch - hh[i])
-
-    return perturbed
 
 
 def _routing_congestion_perturb(
@@ -555,11 +606,67 @@ class MacroPlacer:
             pl_scratch[:n, 1] = torch.tensor(pos[:, 1], dtype=torch.float32)
             return float(_exact_proxy(pl_scratch, benchmark, plc))
 
+        # -- Async DREAMPlace launch (Phase 5 candidate, fire-and-forget) ----
+        # Launch DREAMPlace as a non-blocking subprocess BEFORE the main
+        # pipeline starts. DREAMPlace runs in parallel with our scoring
+        # (which is C++-side and releases the GIL on long ops). Its output
+        # is checked at the END of the directed pipeline as one additional
+        # candidate — additive, never displacing Phase 1/2/3 wins.
+        #
+        # v13 (sync) was rejected because it ran DREAMPlace BEFORE Phase 1,
+        # paying 30-90s of subprocess time that displaced 5-10 noise/cong-grad
+        # restarts on most benchmarks. Async hides that cost behind scoring.
+        # Only attempted for ICCAD04 benchmarks with exact-scoring available.
+        dp_handle = None
+        if use_exact:
+            try:
+                # Inject this file's directory into sys.path so the sibling
+                # `dreamplace_bridge` package resolves when placer.py is loaded
+                # by the evaluator (which sets sys.path differently than CLI).
+                import sys as _sys
+                _v1_dir = str(Path(__file__).resolve().parent)
+                if _v1_dir not in _sys.path:
+                    _sys.path.insert(0, _v1_dir)
+                from dreamplace_bridge.run_bridge import (  # noqa: E402
+                    launch_dreamplace_async, is_available as _dp_available,
+                )
+                if _dp_available():
+                    iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
+                                 / benchmark.name)
+                    if iccad_dir.exists():
+                        # soft_macros_movable=True closes the v13 soft-macro
+                        # mismatch — DREAMPlace re-places soft macros around
+                        # the new hard placement so density/congestion isn't
+                        # broken by stale soft positions. Without this, the
+                        # standalone DREAMPlace placement is +0.2 to +0.3
+                        # worse than baseline (PROGRESS.md v13 finding).
+                        dp_handle = launch_dreamplace_async(
+                            str(iccad_dir), plc=plc,
+                            timeout_s=120.0,
+                            iterations=150,
+                            num_threads=2,
+                            soft_macros_movable=True,
+                        )
+                        _log(f"  DREAMPlace launched async (soft-movable, "
+                             f"will check after Phase 3)")
+            except Exception as exc:
+                _log(f"  DREAMPlace launch failed: {type(exc).__name__}: {exc}")
+                dp_handle = None
+
         # -- Restart 0: Baseline ----------------------------------------------
         _log(f"  Restart 0 (baseline)...")
         t1 = time.time()
         baseline_pos = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
         _log(f"    Legalized in {time.time()-t1:.1f}s")
+
+        # 2-opt on the baseline causes subtle Phase 1 trajectory changes that
+        # can BREAK the existing wins. Tested 2026-05-19: baseline 2-opt
+        # improved ibm06 iter=1 from 1.6835 → 1.6801, but this made iter=2
+        # (1.6812) unable to clear the higher bar, triggering Phase 1's
+        # break-on-no-improvement and skipping the 5+ iterations that produced
+        # v12's 1.6684 Phase 3 win. Net regression: ibm06 +0.0087.
+        # 2-opt is therefore only applied on the baseline-only branch (below)
+        # where there's no cong-grad trajectory to disrupt.
 
         # Fill the scratch buffer with baseline positions; reused below either
         # as the returned baseline-only tensor or as the input to the first score.
@@ -579,10 +686,25 @@ class MacroPlacer:
         #     (+0.162 regression). On dense benchmarks (ibm12), smallest-area
         #     order produced INVALID placements (27 overlaps) because big macros
         #     placed last couldn't find slots within the 60s spiral deadline.
-        #   - Conclusion: displacement-sum is NOT a useful proxy ranker.
-        #     Different orderings produce legitimately different placements,
-        #     not strictly-better ones.
+        #   - Conclusion: across orderings, displacement-sum is NOT a useful
+        #     proxy ranker; different orderings produce legitimately different
+        #     placements, not strictly-better ones.
+        #
+        # 2-opt swap post-pass (added 2026-05-19): WITHIN the same ordering, a
+        # 2-opt local refinement can ONLY reduce per-pair displacement (strict
+        # improvement check) and ONLY accepts legal swaps. Safe to apply on the
+        # baseline-only branch: no cong-grad pipeline to interfere with. Tested
+        # gain is small (~−0.0005 per benchmark on n>400 baseline-only set).
         if not use_exact:
+            t_2opt = time.time()
+            opt_pos, swap_count = _two_opt_swap(
+                baseline_pos, init_pos, sizes, hw, hh, cw, ch, movable, n,
+                k_neighbors=5, max_iters=3, deadline=t_2opt + 30.0,
+            )
+            _log(f"  2-opt: {swap_count} swaps in {time.time()-t_2opt:.1f}s")
+            if swap_count > 0:
+                pl_scratch[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
+                pl_scratch[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
             _log(f"  total={time.time()-t0:.1f}s")
             return pl_scratch  # safe: no more in-place writes will happen
 
@@ -597,6 +719,8 @@ class MacroPlacer:
         SLOW_SCORE_THRESHOLD_S = 100.0
         if t_one_score > SLOW_SCORE_THRESHOLD_S:
             _log(f"  Exact score slow ({t_one_score:.0f}s); returning baseline")
+            if dp_handle is not None:
+                dp_handle.kill()
             _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
             return best_pl
 
@@ -646,6 +770,20 @@ class MacroPlacer:
             t_leg = time.time() - t1
             _log(f"  Restart {k} ({label}) legalized in {t_leg:.1f}s")
 
+            # 2-opt-everywhere tested 2026-05-19, REJECTED. Applied to each
+            # cong-grad iter, it produces:
+            #   - ibm04: 1.3316 → 1.3201 (−0.0115 improvement ✓)
+            #   - ibm06: 1.6684 → 1.6769 (+0.0085 regression ✗)
+            #   - ibm02: 1.5923 → 1.5938 (+0.0015 regression ✗)
+            # Net sporadic (similar variance pattern as WireMask). Root cause:
+            # 2-opt pulls cong-grad-perturbed positions BACK toward their pre-
+            # perturbation displacement target, undoing the cong-grad exploration
+            # that was supposed to push macros AWAY from congested cells. The
+            # cong-grad trajectory depends on consistent perturbation direction
+            # across iters; 2-opt's "snap back to target" interferes.
+            # 2-opt is still applied to BASELINE legalize (outside this function)
+            # where there's no cong-grad trajectory to disrupt.
+
             t_score_start = time.time()
             score = _score(leg)
             t_score_observed = time.time() - t_score_start
@@ -664,20 +802,12 @@ class MacroPlacer:
 
             return True
 
-        # -- Restart 1: Density-gradient (occupancy spread, small benchmarks) -
-        # Only for small benchmarks (n <= 100): occupancy-spread helped ibm01 (54
-        # macros) but hurt ibm03 (126) and ibm08 (301), and also consumed ~40s per
-        # restart, blocking the 6% random noise slot that wins on ibm08.
+        # Density-grad / occupancy-spreading restart only fires for n <= 100,
+        # which never occurs on IBM benchmarks (smallest ibm01 has n=246). It
+        # also empirically hurt ibm03 (n=126) and ibm08 (n=301) in earlier
+        # experiments. Removed 2026-05-19 along with its helpers
+        # (_congestion_heatmap, _box_blur, _density_gradient_perturb).
         directed_ran = 0
-        DENSITY_GRAD_MAX_N = 100
-        if n <= DENSITY_GRAD_MAX_N:
-            density_perturbed = _density_gradient_perturb(
-                init_pos, baseline_pos, movable, n, cw, ch, hw, hh, frac=0.04
-            )
-            if not _try_restart("density-grad frac=4%", density_perturbed, k=1):
-                _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
-                return best_pl
-            directed_ran = 1
 
         # -- Routing-congestion-gradient descent (v8, iterative + wide) --------
         # Phase 1: iterative gradient descent at frac=0.04.
@@ -757,6 +887,17 @@ class MacroPlacer:
         # high-congestion regions of this stale map may explore a different local
         # minimum. Only runs when cong-grad improved at least once (cong_improved)
         # so we know the gradient signal is useful for this benchmark.
+        # Phase 3: cong-grad from best known position using current (stale) plc.
+        # After Phase 2 failed wide steps, plc holds the cong map from a placement
+        # that was WORSE than our best. Moving from the BEST position away from the
+        # high-congestion regions of this stale map may explore a different local
+        # minimum. Only runs when cong-grad improved at least once (cong_improved)
+        # so we know the gradient signal is useful for this benchmark.
+        #
+        # Multi-frac Phase 3 (0.02/0.04/0.06) tested 2026-05-19, REJECTED. f=0.04
+        # consistently wins on tested benchmarks (ibm04 1.3316, ibm06 1.6684,
+        # ibm02 1.5923, ibm09 1.1304); the extra fracs 0.02/0.06 never found
+        # deeper basins. Safe but ineffective; reverted for code clarity.
         if cong_improved:
             # Use relaxed cap so Phase 3 fires after a Phase 1 spike — this is
             # where ibm04's 1.3316 win lives.
@@ -774,6 +915,88 @@ class MacroPlacer:
                     directed_ran += 1
                 # On Phase 3 failure, fall through to noise loop (which will
                 # likely also skip on its own strict pre-check)
+
+        # -- Async DREAMPlace check (Phase 5: additive candidate, hard+soft) -
+        # Check if the DREAMPlace subprocess (launched at place() start)
+        # has finished. Uses wait_for_result_full so we get BOTH the hard
+        # and soft macro placements. With soft_macros_movable=True at launch,
+        # DREAMPlace re-places soft macros around the new hard placement,
+        # closing the v13 soft-macro mismatch that made standalone DREAMPlace
+        # 0.2-0.3 worse than baseline.
+        if dp_handle is not None:
+            remaining_dp = (self.time_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+            max_wait = max(0.0, min(remaining_dp - 3.0 * t_one_score, 30.0))
+            dp_full = dp_handle.wait_for_result_full(max_wait_s=max_wait)
+            if dp_full is not None:
+                dp_hard, dp_soft = dp_full
+                _log(f"  DREAMPlace ready in {dp_handle.time_elapsed():.1f}s "
+                     f"(hard={dp_hard.shape[0]}, soft={dp_soft.shape[0]}); "
+                     f"testing as candidate")
+                # Phase 5a: DREAMPlace placement with BOTH hard + soft.
+                # Legalize hard macros (DREAMPlace's NLP may leave overlaps).
+                t_dp = time.time()
+                dp_leg_deadline = t_dp + 60.0
+                dp_hard_leg = _will_legalize(
+                    dp_hard, movable, sizes, hw, hh, cw, ch, n,
+                    deadline=dp_leg_deadline,
+                )
+                # Build a fresh placement tensor: legalized hard + DREAMPlace soft
+                # + ports unchanged (taken from benchmark.macro_positions).
+                dp_pl = benchmark.macro_positions.clone()
+                dp_pl[:n, 0] = torch.tensor(dp_hard_leg[:, 0], dtype=torch.float32)
+                dp_pl[:n, 1] = torch.tensor(dp_hard_leg[:, 1], dtype=torch.float32)
+                # Soft positions go into [n : n + num_soft].
+                n_soft_dp = int(min(dp_soft.shape[0], benchmark.num_soft_macros))
+                if n_soft_dp > 0:
+                    dp_pl[n:n + n_soft_dp, 0] = torch.tensor(
+                        dp_soft[:n_soft_dp, 0], dtype=torch.float32
+                    )
+                    dp_pl[n:n + n_soft_dp, 1] = torch.tensor(
+                        dp_soft[:n_soft_dp, 1], dtype=torch.float32
+                    )
+                t_dp_score_start = time.time()
+                dp_score = float(_exact_proxy(dp_pl, benchmark, plc))
+                t_dp_score = time.time() - t_dp_score_start
+                if t_dp_score > t_one_score:
+                    t_one_score = t_dp_score
+                directed_ran += 1
+                _log(f"  Candidate {directed_ran} (dreamplace hard+soft): "
+                     f"proxy={dp_score:.4f}  (leg+score {time.time()-t_dp:.1f}s)")
+                if dp_score < best_score:
+                    best_score = dp_score
+                    best_pl = dp_pl.clone()
+
+                # Phase 5b: cong-grad from best_pl using DREAMPlace's plc state.
+                # plc was just scored with DREAMPlace's placement, so its cong
+                # map is now DREAMPlace-state. Perturbing best_pl with this
+                # gradient explores basins the original-baseline plc state
+                # couldn't reach.
+                remaining_5b = (self.time_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+                if remaining_5b >= t_one_score * 1.3:
+                    best_pos_now = np.stack(
+                        [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
+                    )
+                    dp_perturbed = _routing_congestion_perturb(
+                        best_pos_now, plc, benchmark, n, cw, ch, hw, hh, movable,
+                        frac=0.04, rng=rng_cong,
+                    )
+                    if _try_restart("cong-grad-best from-dreamplace-plc f=0.04",
+                                     dp_perturbed,
+                                     k=1 + directed_ran, allow_overrun=True):
+                        directed_ran += 1
+            else:
+                _log(f"  DREAMPlace not ready (elapsed={dp_handle.time_elapsed():.1f}s); "
+                     f"killing subprocess")
+                dp_handle.kill()
+
+        # WireMask-BBO with congestion penalty tested 2026-05-19, REJECTED.
+        # Helps sparse benchmarks (ibm01 WM=1.1964 vs baseline 1.2253) but hurts
+        # dense ones (ibm04 WM=1.5070 vs 1.4101; ibm06 WM=1.8890 vs 1.7197).
+        # Root cause: WireMask is constructive — rebuilds from scratch and
+        # loses initial.plc's hand-tuned spread that the pipeline operates around.
+        # A single alpha can't satisfy all benchmarks (would need per-benchmark
+        # tuning, which violates the "no benchmark-specific tweaks" rule).
+        # Implementation removed 2026-05-19; see commit 121a555-era history.
 
         # -- Restarts 1+: Random Gaussian -------------------------------------
         noise_scale_base = min(cw, ch)
