@@ -3,9 +3,11 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Note (2026-05-09):** This is varrahan/v1's local copy of the team's `PROGRESS.md`,
-> updated with v12 findings. The team copy at `/PROGRESS.md` is read-only for this
-> submission slot — apply the v12 edits there manually if you want them in the team log.
+> **Note (2026-05-20):** This is varrahan/v1's local copy of the team's `PROGRESS.md`,
+> updated with v12 → v14 findings. The team copy at `/PROGRESS.md` is read-only for this
+> submission slot — apply the edits there manually if you want them in the team log.
+> Most recent: v14 (Tier 3 vectorize legalize + 2-opt baseline-only + running-max + async
+> DREAMPlace integration in progress).
 
 ---
 
@@ -207,6 +209,54 @@ Wins (vs v11 estimate): ibm04 −0.0074, ibm06 −0.0113, ibm07 −0.0026, ibm18
 Regressions (vs v11 estimate): ibm01 +0.0006, ibm02 +0.0100, ibm03 +0.0056 = +0.0162
 Net: −0.0096 / 17 ≈ −0.00057 to avg.
 
+---
+
+### v14 = today's session (2026-05-19 → 2026-05-20): speed-only kept, structural attempts deferred to DREAMPlace
+
+#### Kept changes (verified, no regression)
+
+1. **Tier 3: Vectorize `_will_legalize`** (2026-05-19). Greedy spiral search rewritten in numpy: per ring, generate all 8r candidates at once via `_ring_offsets`, run a single `[K, P]` conflict matrix instead of nested Python loops. ibm04 legalize: 3.2s → 0.27s (12×). All cong-grad iters now run sub-second.
+
+   **Critical correctness fix**: the original scalar computed `d² = (cx - pos[idx, 0])²` where `cx` is a Python float and `pos[idx, 0]` is numpy float32. NumPy demotes the Python float to float32 for the subtraction (Python-scalar-meets-numpy-scalar rule), so d² is computed at float32 precision. This causes symmetric ring candidates like (-1, 0) and (0, -1) to break ties at float32 noise instead of being truly equal. My initial vectorized version computed d² in float64 (cand_x is a strong-typed float64 array, no demotion), which made ties exact and changed which candidate `np.argmin` picked. Result: ibm04's cong-grad iter-2 diverged and the placer landed at 1.3364 instead of 1.3316. **Fix**: cast `cand_x`/`cand_y` to `pos.dtype` before subtraction, mirroring scalar's float32 demotion. Bit-equivalent legalize confirmed via diff harness on ibm04 iter-2 input. See `placer.py:178-191`.
+
+2. **Running-max `t_one_score`** (2026-05-19). Re-added v11's running-max budget guard (removed in v12 for noise sensitivity). Under --all CPU contention, scoring can be 3-5× slower than the baseline measurement (not "jitter"). Without adaptation, the budget check approves restarts that then exceed cap, causing Phase 3 to skip on benchmarks like ibm04 (observed 1.3316 → 1.3449 regression in multi-order --all). The running-max tightens budget when contention is observed; brief blips that double t_one_score still leave 60s overrun for directed phases. Defensive — no improvement on its own, enables other experiments.
+
+3. **2-opt swap post-pass on baseline-only branch** (2026-05-19). After greedy spiral-search legalize, scan macro pairs within K=5 nearest neighbors; accept swaps that legal AND strictly reduce per-pair displacement. Applied only to the `n>400` baseline-only branch (no cong-grad trajectory to disrupt). Tested gains: ibm10 −0.0006, ibm12 −0.0001, ibm13 −0.0005, ibm14 −0.0005, ibm16 +0.0001, ibm17 +0.0001. Net sum: −0.0015 across 6 baseline-only benchmarks ≈ −0.0001 to 17-bench avg.
+
+#### Cleanup (2026-05-20, prepping for DREAMPlace integration)
+
+- **Removed from placer.py**: `_wiremask_place`, `_build_wm_net_cache`, `_density_gradient_perturb`, `_congestion_heatmap`, `_box_blur` (all dead code on IBM — density-grad never fires for n>100).
+- **Deleted files**: `surrogate.py`, `_calibration_test.py`, `_path3_incremental_test.py` (rejected experiments, never wired in).
+- **placer.py**: 1159 → 894 lines.
+
+#### Rejected today (sporadic / catastrophic / dead)
+
+1. **Multi-order baseline (Phase 1-disrupting)** — adds smallest-area / tallest / widest orderings as extra Phase-0 candidates before Phase 1. Under --all CPU contention, the 4 extra scorings (3 multi-order + 1 baseline re-score) consumed enough budget that Phase 3 didn't fit on ibm04 (regression 1.3316 → 1.3449). Net negative.
+
+2. **Displacement-ranked multi-order on baseline-only** — pick the legalization with smallest total displacement from initial.plc among 3 orderings. Catastrophically wrong: ibm10 with `tallest` order had lowest displacement (414 vs 1051 default) but proxy was 1.5658 vs 1.4037 (+0.162 regression — congestion blew up). ibm12 with `smallest-area` produced INVALID placement (27 overlaps) because large macros couldn't find slots within the 60s spiral deadline. Conclusion: displacement-sum is NOT a useful proxy ranker across orderings.
+
+3. **2-opt-everywhere (in `_try_restart`)** — applied to every legalize result (baseline + cong-grad iters + noise). On ibm04, baseline 2-opt nudge cascades through cong-grad: −0.0115 win (1.3201). But on ibm06, the same baseline 2-opt nudge improves iter-1 enough that iter-2 can't beat it → Phase 1 break-on-no-improvement fires at cong_iter=1 (<2 halving threshold) → Phase 3 skipped → +0.0087 regression. Sporadic. Root cause: 2-opt's "snap back toward target" interferes with cong-grad's "push away from congested cells" trajectory.
+
+4. **Multi-frac Phase 3** — try `frac ∈ {0.02, 0.04, 0.06}` instead of just 0.04. Tested ibm04/06/02/09: f=0.04 always wins; extra fracs add 2 scorings of overhead per Phase-3 benchmark for no improvement. Safe but ineffective.
+
+5. **WireMask-BBO + congestion penalty** (alpha=30, G=25) — the v13 salvage path from PROGRESS.md. Tested ibm01/04/06: sporadic. Helps sparse (ibm01: 1.1964 vs baseline 1.2253 = −0.029) but hurts dense (ibm04: 1.5070 vs 1.4101 = +0.097; ibm06: 1.8890 vs 1.7197 = +0.169). Root cause: WireMask is constructive — rebuilds from scratch and loses initial.plc's hand-tuned spread that the pipeline operates around. A single alpha cannot satisfy all benchmarks (would need per-benchmark tuning, which violates the "no benchmark-specific tweaks" rule). Implementation removed from placer.py.
+
+6. **`plc.optimize_stdcells` post-pass** — academic force-directed soft-macro re-placement (`external/MacroPlacement/CodeElements/Plc_client/plc_client_os.py` line 2886). Timed on ibm01 (smallest, n_soft=894) at num_steps=10: **126.6s** (~13s per step), and the result was **+0.1296 WORSE** than baseline (1.2253 → 1.3549 with default attract/repel factors). Pure Python iteration over ~1000 soft macros and ~10000 nets per step; no C++ binding. Effectively infeasible inside our 200s budget. Would need a multi-day rewrite in vectorized numpy/torch with tuned parameters to ever be useful. Dead path.
+
+#### In progress: async DREAMPlace bridge (2026-05-20)
+
+The v13 sync bridge was rejected in May because its 10-15s subprocess overhead displaced productive restarts on 7/17 benchmarks (net +0.0043 worse). PROGRESS.md notes the salvage path: async invocation so DREAMPlace runs in parallel with our scoring.
+
+**Status**: restored `dreamplace_bridge/` from commit 111f315; added `AsyncDreamplaceHandle` + `launch_dreamplace_async` for non-blocking subprocess management. Integrated into `placer.py` as Phase 5: launch DREAMPlace at `place()` entry, check after Phase 3 as additive candidate ("dreamplace global"), and follow with one cong-grad iter from DREAMPlace's legalized position ("cong-grad from-dreamplace") to exploit the plc-state-mutation effect that PROGRESS.md noted as the source of v13's real wins. DREAMPlace build in progress (cmake done, `make -j2` ~70% on 2026-05-20 10:15).
+
+**Expected gain (if async parallelism works)**: −0.005 to −0.025 to avg. Lower bound (−0.005) is the v13 wins (ibm04, ibm11) without the displacement cost. Upper bound (−0.025) assumes DREAMPlace also mutates plc-state usefully on 3-5 other benchmarks. Won't reach DREAMPlace standalone's 1.4076 because our pipeline still owns the basin search; DREAMPlace is just one additional seed.
+
+**Risks**:
+- *Async parallelism may not materialize* — depends on whether plc's C++ scoring releases the GIL. If it doesn't, DREAMPlace burns CPU contending with the scoring thread.
+- *Soft-macro mismatch* — v13's standalone DREAMPlace was ~0.2-0.3 worse than baseline because soft macros stayed at initial positions while hard macros moved. The cong-grad-from-DREAMPlace step partially compensates (cong-grad nudges hard macros and softs are re-scored via plc), but doesn't fix the underlying issue. `optimize_stdcells` would, but it's too slow.
+
+---
+
 ### v11: Budget safety + EXACT_MACRO_THRESHOLD 400→340
 
 **Problem found in v10b full eval**: ibm11 (n=373) baseline scored in **263.6s** under CPU load
@@ -313,18 +363,26 @@ baseline; no restarts possible. ibm10, ibm12 already beat RePlAce at legalizatio
   DREAMPlace's 10-15s subprocess overhead displacing productive noise/cong-grad restarts.
   DREAMPlace's standalone placement is consistently ~0.2-0.3 worse than baseline because
   soft macros stay at initial positions while hard macros move (the soft-macro mismatch
-  problem from CLAUDE.md). Reverted from placer.py. **The bridge module remains** in
-  `dreamplace_bridge/` as working code for future experiments. Possible salvage paths
-  (each is a separate experiment): (a) only run DREAMPlace when budget headroom allows
-  without displacing other restarts, (b) run DREAMPlace asynchronously while baseline
-  scoring overlaps, (c) add a "Phase 5: cong-grad-from-dreamplace" as a final restart so
-  DREAMPlace doesn't displace existing phases but still mutates plc state for one extra
-  cong-grad chain, (d) use `optimize_stdcells` to re-place soft macros after DREAMPlace
-  (slow, minutes/call).
+  problem from CLAUDE.md). Reverted from placer.py. The bridge module was later deleted
+  (commit a93a5ae) but **restored 2026-05-20** with async wrapper — see v14 entry.
+- **`plc.optimize_stdcells` salvage attempt tested + REJECTED 2026-05-20.** The academic
+  force-directed soft-macro re-placement (path (d) above). Timed on ibm01 (n_soft=894) at
+  num_steps=10: 126.6s per call AND +0.13 regression with default attract/repel params.
+  Pure Python iteration over thousands of soft macros and tens of thousands of nets per
+  step; no C++ binding. Effectively infeasible inside our 200s budget. Path (d) is dead;
+  would need multi-day vectorized-numpy rewrite to ever be useful.
+- **Async DREAMPlace integration (salvage path (b)+(c) combined) IN PROGRESS 2026-05-20.**
+  Restored `dreamplace_bridge/` from commit 111f315; added `AsyncDreamplaceHandle` and
+  `launch_dreamplace_async` for non-blocking subprocess management. Integrated into
+  `placer.py` as Phase 5: launch at `place()` entry (subprocess runs while we score baseline
+  and Phase 1/2/3), check after Phase 3 as additive candidate. Adds a second additive
+  ("cong-grad from-dreamplace") that runs one cong-grad iter from DREAMPlace's legalized
+  position to capture the plc-state-mutation effect that v13's wins came from. Build
+  completes ~2026-05-20; results pending.
 
 ---
 
-## Tunable Parameters (current v12 values)
+## Tunable Parameters (current v14 values)
 
 ```python
 n_restarts            = 50         # cap; budget check is the real limit
@@ -340,7 +398,23 @@ BUDGET_OVERRUN_S      = 60.0       # v12 (2026-05-10): allow up to 60s extra for
 EXACT_MACRO_THRESHOLD = 400        # v12: was 340 in v11. ibm11 (n=373) and ibm15 (n=393) included; ibm13 (n=424) excluded
 EXACT_GRID_CELL_LIMIT = 2200       # v12: was 2000 in v11. ibm15 (2166) and ibm18 (2145) included; ibm12 (2209) excluded
 SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
-DENSITY_GRAD_MAX_N    = 100        # never fires for IBM benchmarks (all n>100)
+# DENSITY_GRAD_MAX_N removed in v14 — density-grad helpers deleted (never fired on IBM)
+
+# v14 (2026-05-20): t_one_score is now a RUNNING MAX inside _try_restart, not a fixed
+# baseline value. Defends against --all CPU contention where scoring can be 3-5× slower
+# than baseline. Re-adds v11's logic that v12 removed; the v12 rationale ("scorings are
+# within jitter of baseline") doesn't hold under --all heat.
+
+# v14 (2026-05-20): 2-opt swap post-pass applied ONLY on the baseline-only branch
+# (n>400 / grid>2200). k_neighbors=5, max_iters=3. Net +0.0001 to avg.
+# Applied to cong-grad/noise legalize outputs (2-opt-everywhere): tested and REJECTED
+# due to sporadic gain/loss pattern (ibm04 −0.0115 ✓ but ibm06 +0.0087 ✗).
+
+# v14 (2026-05-20): Async DREAMPlace as Phase 5 candidate. Launch at place() entry,
+# wait_for_result(max_wait_s=30) after Phase 3, follow with one cong-grad iter from
+# DREAMPlace's legalized position. Gated by `is_available()` so placer is a no-op
+# when DREAMPlace isn't built. Build location: submissions/varrahan/dreamplace_build/
+# (gitignored, ~500MB).
 ```
 
 ---
@@ -358,4 +432,13 @@ DENSITY_GRAD_MAX_N    = 100        # never fires for IBM benchmarks (all n>100)
 8. [~] Multiple congestion-grad starting points (Phase 4): TESTED 2026-05-09 with 2% perturbed start. Strictly worse on all 4 benchmarks tested. Reverted. Could retry with 0.5% or 4-6% scales.
 9. [x] ibm04 congestion-grad: Phase 3 cong-grad now consistently lands at 1.3316 on clean CPU (was 1.3390 in v11). Confirmed 3-for-3 on 2026-05-09. Gap to RePlAce closed from -2.8% to -2.2%.
 10. [~] **WireMask-BBO greedy evaluator** -- IMPLEMENTED AND REVERTED 2026-05-09. Two failure patterns: (a) sparse benchmarks legalized back to baseline (no movement), (b) ibm04 produced 1.4127 vs baseline 1.4101 (clustered macros → worse congestion). Confirms CLAUDE.md/PAPERS_NOTES warning that pure HPWL minimization hurts congestion-dominated proxy. See "Key Findings" section above. Salvage paths: wire-mask + congestion penalty, wire-mask + outer BBO loop, wire-mask on top-net-weight subset.
-11. [~] **DREAMPlace bridge** (`pb.txt → Bookshelf → DREAMPlace global → legalize`) -- IMPLEMENTED AND REVERTED 2026-05-11. v13 --all = 1.4897 vs v12's 1.4854 (+0.0043 worse). Real wins on ibm04 (−0.0075) and ibm11 (−0.0019) from DREAMPlace's plc-state mutation enabling new cong-grad basins. But 10-15s subprocess overhead displaced productive noise/cong-grad restarts on 7 benchmarks (biggest regressions: ibm03 +0.034, ibm08 +0.029). Bridge module retained at `dreamplace_bridge/` for future experiments. See "Key Findings" for salvage paths.
+11. [~] **DREAMPlace bridge sync** (`pb.txt → Bookshelf → DREAMPlace global → legalize`) -- IMPLEMENTED AND REVERTED 2026-05-11. v13 --all = 1.4897 vs v12's 1.4854 (+0.0043 worse). Real wins on ibm04 (−0.0075) and ibm11 (−0.0019). 10-15s subprocess overhead displaced productive restarts on 7 benchmarks. Bridge module deleted in a93a5ae but restored 2026-05-20.
+12. [x] **Tier 1/2/3 vectorize core paths** -- DONE 2026-05-19. Vectorized `_will_legalize` (12× speedup on ibm04), `_routing_congestion_perturb`, `_score` pl_scratch buffer. Critical float32 precision fix in vectorized legalize (without it, ibm04 lands at 1.3364 instead of 1.3316). Bit-equivalent to scalar baseline; ibm04/ibm06/ibm02 preserved.
+13. [x] **Running-max t_one_score** -- DONE 2026-05-19. Defensive; re-adds v11 logic that v12 removed. Adapts to --all CPU contention.
+14. [x] **2-opt swap post-pass on baseline-only branch** -- DONE 2026-05-19. Net −0.0015 sum across 6 baseline-only benchmarks, ≈ −0.0001 to avg.
+15. [~] **2-opt-everywhere (in `_try_restart`)** -- TESTED AND REVERTED 2026-05-19. Sporadic: ibm04 −0.0115 ✓ but ibm06 +0.0087 ✗, ibm02 +0.0015 ✗. Root cause: 2-opt's "snap toward target" disrupts cong-grad's "push away from congestion" trajectory.
+16. [~] **Multi-frac Phase 3 (fracs 0.02/0.04/0.06)** -- TESTED AND REVERTED 2026-05-19. Safe but ineffective: f=0.04 always wins on tested benchmarks.
+17. [~] **WireMask + congestion penalty (α=30, G=25)** -- TESTED AND REVERTED 2026-05-19. Sporadic: ibm01 −0.029 ✓ but ibm04 +0.097 ✗, ibm06 +0.169 ✗. Same root cause as pure WireMask: constructive placer abandons initial.plc's good seed.
+18. [~] **Multi-order baseline (smallest-area / tallest / widest)** -- TESTED AND REVERTED 2026-05-19. Phase 1-disrupting version regressed ibm03/04/09 under --all. Displacement-ranked variant on baseline-only catastrophically wrong (ibm10 +0.162, ibm12 INVALID).
+19. [~] **`plc.optimize_stdcells` post-pass** -- TESTED AND REJECTED 2026-05-20. 126.6s per call on smallest benchmark (ibm01) AND +0.13 proxy regression with default FD params. Pure Python; would need multi-day rewrite to be feasible. Dead path.
+20. [ ] **Async DREAMPlace bridge as Phase 5** -- IN PROGRESS 2026-05-20. Restored `dreamplace_bridge/`, added `AsyncDreamplaceHandle` + `launch_dreamplace_async`. Integration: launch at `place()` entry, check after Phase 3, follow with cong-grad-from-dreamplace. Build active. Results pending.
