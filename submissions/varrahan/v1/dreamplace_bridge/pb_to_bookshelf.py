@@ -321,8 +321,15 @@ def _write_scl(out_dir: Path, design: str, canvas_w: float, canvas_h: float,
 
 
 def convert(benchmark_dir: str, output_dir: str, design: Optional[str] = None,
-            soft_macros_movable: bool = False) -> Path:
-    """Convert a TILOS benchmark dir to Bookshelf. Returns the .aux path."""
+            soft_macros_movable: bool = False,
+            plc: Optional[PlacementCost] = None) -> Path:
+    """Convert a TILOS benchmark dir to Bookshelf. Returns the .aux path.
+
+    If `plc` is provided, it is reused instead of re-parsing netlist.pb.txt
+    (saves ~0.5-2s per benchmark). Caller is responsible for ensuring the
+    passed plc was loaded from the same benchmark_dir with initial.plc
+    restored.
+    """
     benchmark_dir = Path(benchmark_dir).resolve()
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -335,9 +342,10 @@ def convert(benchmark_dir: str, output_dir: str, design: Optional[str] = None,
     if design is None:
         design = benchmark_dir.name
 
-    plc = PlacementCost(str(netlist_file))
-    if plc_file.exists():
-        plc.restore_placement(str(plc_file), ifInital=True, ifReadComment=True)
+    if plc is None:
+        plc = PlacementCost(str(netlist_file))
+        if plc_file.exists():
+            plc.restore_placement(str(plc_file), ifInital=True, ifReadComment=True)
 
     nodes, nets, cw, ch, scale = extract_bookshelf_data(
         plc, soft_macros_movable=soft_macros_movable
