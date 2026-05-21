@@ -92,3 +92,7 @@ docs/
 output/
 BENCHMARK_EVALUATION_RESULTS.md
 NETLIST_CLEANING_SUMMARY.md
+
+# Claude directory
+.claude*
+.claude/*
