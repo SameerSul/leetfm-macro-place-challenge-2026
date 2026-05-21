@@ -17,6 +17,7 @@ DREAMPlace every call. Caching to a `.npy` would be a future optimization.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -33,6 +34,68 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from macro_place._plc import PlacementCost  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Disk cache — DREAMPlace output is deterministic given fingerprint inputs.
+# ---------------------------------------------------------------------------
+# The (hard_pos, soft_pos) result depends only on: input netlist + initial
+# placement + config (iterations, seed, num_threads, soft_macros_movable,
+# random_center_init). Threads affect determinism only via NUM_THREADS env
+# (deterministic_flag=1 + fixed seed gives bit-identical output on same
+# threads). We fingerprint the input files by (size, mtime_ns) so dev edits
+# invalidate the cache automatically, and bake config into the key.
+CACHE_VERSION = "v1"
+
+
+def _file_fingerprint(p: Path) -> str:
+    try:
+        st = p.stat()
+    except FileNotFoundError:
+        return "missing"
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
+def _cache_key(benchmark_dir: Path, iterations: int, random_seed: int,
+               num_threads: int, soft_macros_movable: bool,
+               random_center_init: bool) -> str:
+    netlist_fp = _file_fingerprint(benchmark_dir / "netlist.pb.txt")
+    init_fp = _file_fingerprint(benchmark_dir / "initial.plc")
+    raw = (
+        f"{CACHE_VERSION}|{benchmark_dir.name}|netlist={netlist_fp}|"
+        f"init={init_fp}|iter={iterations}|seed={random_seed}|"
+        f"threads={num_threads}|soft={int(soft_macros_movable)}|"
+        f"rci={int(random_center_init)}"
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_paths(work_dir: Path, key: str) -> "tuple[Path, Path]":
+    """Returns (npz_path, meta_path) for a given cache key."""
+    return (work_dir / f"cached_{key}.npz", work_dir / f"cached_{key}.json")
+
+
+def _try_load_cache(work_dir: Path, key: str) -> "Optional[tuple[np.ndarray, np.ndarray]]":
+    npz_path, meta_path = _cache_paths(work_dir, key)
+    if not (npz_path.exists() and meta_path.exists()):
+        return None
+    try:
+        with np.load(npz_path) as data:
+            hard = data["hard_pos"]
+            soft = data["soft_pos"]
+        return (np.ascontiguousarray(hard), np.ascontiguousarray(soft))
+    except Exception:
+        return None
+
+
+def _write_cache(work_dir: Path, key: str, hard: np.ndarray, soft: np.ndarray) -> None:
+    npz_path, meta_path = _cache_paths(work_dir, key)
+    try:
+        np.savez_compressed(npz_path, hard_pos=hard, soft_pos=soft)
+        meta_path.write_text(json.dumps({"key": key, "ts": time.time()}))
+    except Exception:
+        # Cache write is best-effort; never fail the placer because of it.
+        pass
 
 # Sibling-module imports — work whether this package is loaded as
 # `dreamplace_bridge.run_bridge` (placer-side, after sys.path injection)
@@ -59,7 +122,8 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
                                 random_seed: int = 1000,
                                 iterations: int = 200,
                                 num_threads: int = 4,
-                                random_center_init: bool = False) -> dict:
+                                random_center_init: bool = False,
+                                target_density: float = 0.75) -> dict:
     """Single CPU-only global-placement stage. Tuned to be fast: 200 iters,
     64x64 density bins. No legalization or detailed placement (we do those
     in our own pipeline).
@@ -82,7 +146,7 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
             "wirelength": "weighted_average", "optimizer": "nesterov",
             "Llambda_density_weight_iteration": 1, "Lsub_iteration": 1,
         }],
-        "target_density": 0.75,
+        "target_density": target_density,
         "density_weight": 5e-3,
         "gamma": 4.0,
         "random_seed": random_seed,
@@ -125,6 +189,7 @@ def run_dreamplace(
     soft_macros_movable: bool = False,
     random_center_init: bool = False,
     keep_log: bool = False,
+    target_density: float = 0.75,
 ) -> np.ndarray:
     """Run the full DREAMPlace pipeline on a benchmark.
 
@@ -168,9 +233,21 @@ def run_dreamplace(
     work_dir = Path(scratch_root).resolve() / design
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Phase 2: forward convert
+    # Disk-cache fast path (same fingerprint scheme as the async launcher).
+    cache_key = _cache_key(
+        benchmark_dir, iterations, random_seed, num_threads,
+        soft_macros_movable, random_center_init,
+    )
+    cached = _try_load_cache(work_dir, cache_key)
+    if cached is not None:
+        hard_pos, _soft_pos = cached
+        print(f"  [dreamplace] {design}: {hard_pos.shape[0]} hard macros "
+              f"(cache hit, skipped subprocess)")
+        return hard_pos
+
+    # Phase 2: forward convert (re-use caller's plc when available)
     convert(str(benchmark_dir), str(work_dir), design=design,
-            soft_macros_movable=soft_macros_movable)
+            soft_macros_movable=soft_macros_movable, plc=plc)
 
     # Write JSON config
     result_dir = work_dir / "results"
@@ -182,6 +259,7 @@ def run_dreamplace(
         iterations=iterations,
         num_threads=num_threads,
         random_center_init=random_center_init,
+        target_density=target_density,
     )
     cfg_path = work_dir / f"{design}.json"
     cfg_path.write_text(json.dumps(cfg, indent=2))
@@ -224,7 +302,14 @@ def run_dreamplace(
         if init_plc.exists():
             plc.restore_placement(str(init_plc), ifInital=True, ifReadComment=True)
 
-    pos = read_dreamplace_positions(plc, str(work_dir), design)
+    # Use the full reader so we can persist both hard + soft to cache. The
+    # callers expect ONLY hard back, so we return that and stash soft on disk.
+    try:
+        hard_pos, soft_pos = read_dreamplace_positions_full(plc, str(work_dir), design)
+        _write_cache(work_dir, cache_key, hard_pos, soft_pos)
+        pos = hard_pos
+    except Exception:
+        pos = read_dreamplace_positions(plc, str(work_dir), design)
     print(f"  [dreamplace] {design}: {pos.shape[0]} hard macros placed "
           f"(global-place {dp_time:.1f}s)")
     return pos
@@ -233,6 +318,36 @@ def run_dreamplace(
 # ---------------------------------------------------------------------------
 # Async launch: fire DREAMPlace as non-blocking subprocess
 # ---------------------------------------------------------------------------
+
+class _CachedDreamplaceHandle:
+    """Drop-in stand-in for AsyncDreamplaceHandle when a disk-cache hit
+    means the subprocess never has to run. Implements the same surface the
+    placer uses: poll/is_done/time_elapsed/wait_for_result*/kill."""
+
+    def __init__(self, result: "tuple[np.ndarray, np.ndarray]", start_time: float):
+        self._result = result
+        self.start_time = start_time
+
+    def poll(self) -> Optional[int]:
+        return 0
+
+    def is_done(self) -> bool:
+        return True
+
+    def time_elapsed(self) -> float:
+        return time.time() - self.start_time
+
+    def wait_for_result(self, max_wait_s: float = 0.0) -> Optional[np.ndarray]:
+        return self._result[0]
+
+    def wait_for_result_full(
+        self, max_wait_s: float = 0.0
+    ) -> "Optional[tuple[np.ndarray, np.ndarray]]":
+        return self._result
+
+    def kill(self) -> None:
+        return
+
 
 class AsyncDreamplaceHandle:
     """Handle to a DREAMPlace subprocess launched via `launch_dreamplace_async`.
@@ -252,7 +367,8 @@ class AsyncDreamplaceHandle:
 
     def __init__(self, popen: "subprocess.Popen", work_dir: Path,
                  design: str, plc: PlacementCost, start_time: float,
-                 timeout_s: float, log_handle):
+                 timeout_s: float, log_handle,
+                 cache_key: Optional[str] = None):
         self.popen = popen
         self.work_dir = work_dir
         self.design = design
@@ -260,6 +376,7 @@ class AsyncDreamplaceHandle:
         self.start_time = start_time
         self.timeout_s = timeout_s
         self._log_handle = log_handle
+        self._cache_key = cache_key
         # Internally stores the (hard_pos, soft_pos) tuple from
         # read_dreamplace_positions_full once the subprocess completes.
         # wait_for_result extracts the hard component for backward-compatible callers.
@@ -363,6 +480,9 @@ class AsyncDreamplaceHandle:
             self._result = read_dreamplace_positions_full(
                 self.plc, str(self.work_dir), self.design
             )
+            if self._cache_key is not None and self._result is not None:
+                _write_cache(self.work_dir, self._cache_key,
+                             self._result[0], self._result[1])
             return self._result
         except Exception:
             self._failed = True
@@ -405,6 +525,7 @@ def launch_dreamplace_async(
     num_threads: int = 2,
     soft_macros_movable: bool = False,
     random_center_init: bool = False,
+    target_density: float = 0.75,
 ) -> AsyncDreamplaceHandle:
     """Launch DREAMPlace as a non-blocking subprocess. Returns immediately
     with a handle for polling.
@@ -432,9 +553,22 @@ def launch_dreamplace_async(
     work_dir = Path(scratch_root).resolve() / design
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Forward convert (~1s)
+    # Disk-cache check: DREAMPlace output is deterministic given fingerprint
+    # (input files + iterations + seed + threads + softs + rci). If we have
+    # a matching .npz, skip the whole subprocess pipeline and return a stub
+    # handle that produces the cached arrays immediately.
+    cache_key = _cache_key(
+        benchmark_dir_p, iterations, random_seed, num_threads,
+        soft_macros_movable, random_center_init,
+    )
+    cached = _try_load_cache(work_dir, cache_key)
+    if cached is not None:
+        return _CachedDreamplaceHandle(cached, start_time=time.time())
+
+    # Forward convert (~1s). Pass the caller's plc through if provided so the
+    # converter doesn't re-parse netlist.pb.txt (saves ~0.5-2s).
     convert(str(benchmark_dir_p), str(work_dir), design=design,
-            soft_macros_movable=soft_macros_movable)
+            soft_macros_movable=soft_macros_movable, plc=plc)
 
     result_dir = work_dir / "results"
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -445,6 +579,7 @@ def launch_dreamplace_async(
         iterations=iterations,
         num_threads=num_threads,
         random_center_init=random_center_init,
+        target_density=target_density,
     )
     cfg_path = work_dir / f"{design}.json"
     cfg_path.write_text(json.dumps(cfg, indent=2))
@@ -491,6 +626,7 @@ def launch_dreamplace_async(
     handle = AsyncDreamplaceHandle(
         popen=popen, work_dir=work_dir, design=design, plc=plc,
         start_time=time.time(), timeout_s=timeout_s, log_handle=log_handle,
+        cache_key=cache_key,
     )
     handle._start_watchdog()
     return handle
