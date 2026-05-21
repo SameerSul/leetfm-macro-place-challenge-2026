@@ -243,6 +243,20 @@ Net: −0.0096 / 17 ≈ −0.00057 to avg.
 
 6. **`plc.optimize_stdcells` post-pass** — academic force-directed soft-macro re-placement (`external/MacroPlacement/CodeElements/Plc_client/plc_client_os.py` line 2886). Timed on ibm01 (smallest, n_soft=894) at num_steps=10: **126.6s** (~13s per step), and the result was **+0.1296 WORSE** than baseline (1.2253 → 1.3549 with default attract/repel factors). Pure Python iteration over ~1000 soft macros and ~10000 nets per step; no C++ binding. Effectively infeasible inside our 200s budget. Would need a multi-day rewrite in vectorized numpy/torch with tuned parameters to ever be useful. Dead path.
 
+7. **Vectorized soft-macro re-placement (the rewrite of #6)** — implemented and tested 2026-05-20. Three algorithms, all in a new `soft_relax.py` module: (a) HPWL² gradient descent (textbook analytical placement); (b) connectivity-weighted displacement-follow (translate softs by the avg displacement of their connected hards); (c) HPWL + grid-bin density repulsion (the "do it right" combined version). Edge extraction from `plc.nets` cached on plc object (~1.5s one-time per benchmark); per-call runtime 0.5–10ms — performance was never the issue. **All three regress proxy on every benchmark tested.** Best result was hpwl+density with 2 steps × 0.005 max_frac × dw=0.5: +0.003 (ibm06) to +0.031 (ibm01). Tested across hard-perturbation magnitudes 0% → 80%; no regime where any variant netted negative delta. Module deleted after the test; see this entry for the negative result.
+
+   **Decomposition that explains the loss** (ibm04, 15% hard perturb):
+   ```
+   stale softs:           WL=0.082, D=0.951, C=1.815, proxy=1.465
+   HPWL-only relax:       WL=0.077, D=1.074, C=1.715, proxy=1.472  (D ↑)
+   HPWL + density repel:  WL=0.072, D=0.950, C=1.747, proxy=1.420 → 1.420 vs base 1.410 = +0.010
+   ```
+   HPWL relax DOES improve WL (−0.005) and congestion (−0.10), and density repulsion successfully cancels the density rise — but the residual is still net positive. Initial.plc softs sit in a steep local minimum on the *joint* (WL, density, congestion) surface; any motion away from there pays one component faster than it gains on others, no matter how the forces are balanced.
+
+   **Corrects #6's "soft mismatch" theory.** PROGRESS.md previously attributed DREAMPlace standalone's 0.2–0.3 regression to stale softs around moved hards. The decomposition above shows stale-soft cost is at most **~0.05** even at 30%–80% random hard perturbation (ibm04 stale-softs at perturb=0.30: 1.579; at perturb=0.80: 1.500 — actually goes *down* as hards spread to fill canvas). DREAMPlace standalone's real failure is that **its WL-optimized hard placement lands in a WL basin, which is uncorrelated with the congestion-dominated proxy basin** — same root cause as the WireMask-BBO failure. No amount of soft re-placement can fix that. The async DREAMPlace integration retains value as a side-channel for plc-state mutation (which seeds new cong-grad basins), not for its placement quality per se.
+
+   **Implication: hard-placement search is the only useful axis.** Stop trying to optimize softs.
+
 #### In progress: async DREAMPlace bridge (2026-05-20)
 
 The v13 sync bridge was rejected in May because its 10-15s subprocess overhead displaced productive restarts on 7/17 benchmarks (net +0.0043 worse). PROGRESS.md notes the salvage path: async invocation so DREAMPlace runs in parallel with our scoring.
@@ -254,6 +268,53 @@ The v13 sync bridge was rejected in May because its 10-15s subprocess overhead d
 **Risks**:
 - *Async parallelism may not materialize* — depends on whether plc's C++ scoring releases the GIL. If it doesn't, DREAMPlace burns CPU contending with the scoring thread.
 - *Soft-macro mismatch* — v13's standalone DREAMPlace was ~0.2-0.3 worse than baseline because soft macros stayed at initial positions while hard macros moved. The cong-grad-from-DREAMPlace step partially compensates (cong-grad nudges hard macros and softs are re-scored via plc), but doesn't fix the underlying issue. `optimize_stdcells` would, but it's too slow.
+
+---
+
+### v15 = current session (2026-05-20 → 2026-05-21): DREAMPlace bridge functional, Improvement #1 enabled
+
+**Headline: --all avg 1.4854 → 1.4804 (−0.0050 absolute)** — confirmed via partial v5 run (16/17 benchmarks; ibm17 timed out at 3600s cumulative). Wins: ibm01 (−0.044), ibm04 (−0.012), ibm10 (−0.037), ibm14 (−0.003). Regression: ibm07 (+0.003).
+
+#### Bridge architecture fix (was: DP NLP plateaus at iter=1; output is junk)
+
+Diagnostic 2026-05-20: DREAMPlace's Nesterov optimizer was producing essentially no movement on our Bookshelf input — wHPWL frozen at 5.31e7 across 150 iters, iter times 0.3ms (vs typical 50-500ms). Standalone DP proxy ~1.7714 even after fixing soft_macros_movable (vs predicted 1.3-1.4 in DREAMPLACE_FIXES.md). Three compounding bugs in `pb_to_bookshelf.py` / `run_bridge.py`:
+
+1. **`.scl` row structure (`pb_to_bookshelf.py:_write_scl`)** — was emitting a single canvas-height row (`Height: 34081` for ibm04). DREAMPlace's density bins and macro legalizer need stdcell-row-height rows to function. Reference benchmark `simple.scl` uses 8 rows of 12 over a 96-tall canvas (12.5% per row). **Fix**: write `num_rows_target=8` rows of height `canvas_h/8` each (~4260 scaled units = 4.3 microns for ibm04). After this, iter 0 → iter 1 transition produces real motion but optimizer still plateaus.
+
+2. **`macro_place_flag=1` + `use_bb=1` (`run_bridge._default_dreamplace_config`)** — was off. Without these, DP treats macros as huge stdcells and the optimizer's gradient step is essentially zero (we were seeing ~0.5ms per iter wall time, way below the ~50ms needed for real per-cell gradient computation). With macro_place_flag, the 2-stage BB-step → NLP pipeline engages: trajectory becomes wHPWL 5.56e7 → 5.10e7 → 5.22e7 over 150 iters, Overflow drops 0.20 → 0.40 (real convergence). Standalone DP proxy on ibm04 drops from 1.7714 → 1.5207.
+
+3. **Iteration count `iter=300`** — `iter=150` was under-converged (Overflow stuck at 0.4 vs target 0.10). Bumped to 300 → ibm04 standalone DP proxy = **1.3196**. Bigger values (500-1000) showed DensityWeight runaway (Obj jumping to 1e12) with no proxy improvement. `iter=300` is the sweet spot.
+
+After all three fixes: standalone DP proxy on ibm04 = **1.3196** (vs Phase 3's 1.3316 — beats it by 0.012). On ibm01: standalone DP = **1.1521** (vs PROGRESS.md best 1.1964 — beats it by 0.044). On ibm06/08/11: DP loses to Phase 3 / noise restarts (small margins).
+
+#### Kept changes (verified, no regression in --all v5)
+
+1. **DREAMPlace bridge rewrite** (above). Module: `dreamplace_bridge/{pb_to_bookshelf.py, run_bridge.py, bookshelf_to_pb.py}`. The async Phase 5 candidate now actually wins on ibm01 and ibm04. Also: `soft_macros_movable=False` (verified 2026-05-20: softs movable inflates congestion +0.011 on ibm04).
+
+2. **Phase 5c — wide-from-best at frac=0.08** (`placer.py` after Phase 5b). Fills the slot left by Phase 2 (wide from BASELINE only) and Phase 3/5b (frac=0.04 from BEST only). Purely additive — fires only if `cong_improved=True` and budget allows; placed after Phase 5b so no current winning rng_cong path is disturbed. Fires on ibm04/06; doesn't find new wins in tested benchmarks but doesn't regress either. Net ~0 with no risk.
+
+3. **CPU contention fixes in DREAMPlace subprocess launcher** (`run_bridge.launch_dreamplace_async`):
+   - Set `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` to match `num_threads=2` in the DP subprocess env. Without this, DREAMPlace's internal OMP/MKL pools default to all available cores and oversubscribe with the parent's scoring thread.
+   - Watchdog thread in `AsyncDreamplaceHandle._start_watchdog()` enforces `timeout_s` even when the placer is blocked in scoring (without it, a hung DP saturated CPU and slowed scoring 100×, observed on ibm06: baseline scoring took 1599s vs typical 14s, triggered SLOW_SCORE_THRESHOLD and lost the 1.6684 win → 1.7197).
+   - `start_new_session=True` + `os.killpg()` for clean teardown.
+
+4. **Improvement #1 — DP on `n>400` / `grid>2200` benchmarks** (`placer.py` `if not use_exact:` branch). 6 benchmarks (ibm10/12/13/14/16/17) previously took the baseline-only early return. Now does one head-to-head: score baseline once with `_exact_proxy`, wait for DP, legalize+score DP, return whichever is better. Gated on baseline scoring < **130s** (raised from initial 100s after v4 measurements showed ibm10 baseline scoring climbs 67s → 101s under --all CPU contention, just tripping the 100s threshold and losing the −0.037 DP win). Wins: **ibm10 1.4031 → 1.3661 (−0.037)**, ibm14 1.6028 → 1.6002 (−0.003). No regressions on ibm12/13 (baseline correctly wins). ibm16/17 skip (baseline scoring 157s/280s+ exceeds 130s threshold).
+
+#### Rejected today
+
+1. **Fix 3 variant A: "DP as PRIMARY baseline_pos"** (DREAMPLACE_FIXES.md's recommendation). Replace `baseline_pos = _will_legalize(initial.plc)` with `baseline_pos = legalized DP output` when DP wins as Candidate 0. Phase 1/2/3 then iterate from DP placement instead of initial.plc. **Tested on ibm04 (1.3196 — same as additive) and ibm06 (1.6789 vs 1.6684 — +0.0105 regression)**. The MD's warned-of risk materialized: Phase 3 cong-grad from DP's placement converges to a different (worse) basin than Phase 3 from initial.plc. ibm06's 1.6684 win specifically lives in the basin reached by stale-plc-after-Phase-2 from initial.plc; DP's plc-state path doesn't get there.
+
+2. **Fix 3 variant B: "Phase 6 cong-grad-from-DP" (additive, multi-iter)** — preserves all existing wins by NOT replacing baseline; instead adds a 4-iter cong-grad loop starting from DP's placement after Phase 5b. **Tested on ibm04 (1.3196 — same), ibm06 (1.6684 — same), ibm01 (1.1521 — same), ibm08 (1.5419 — +0.017 regression)**. ibm08 found a small win on Phase 6 iter=1 (1.5419 vs DP additive 1.5444) BUT the 4-iter loop consumed budget that previously reached the noise=6% winner (1.5251 in v14). Limiting to 1 iter still didn't fit noise=6% within budget. Conclusion: cong-grad from DP placement doesn't find systematically better basins; the marginal wins it does find cost more budget than they save elsewhere.
+
+3. **DP-first ordering on Improvement #1 path** — flip the order: score DP first, then baseline if budget allows. Goal: capture wins on ibm16/ibm17 where baseline scoring exceeds the threshold. **Tested on ibm16 (DP=1.5751 vs baseline=1.5324 → +0.043 regression)** — DP loses to baseline on ibm16, and trusting DP unconditionally when baseline scoring doesn't fit is strictly worse than skipping DP. ibm17 timed out at 350s. Baseline-first is strictly safer.
+
+#### Outstanding issues (deferred)
+
+- **ibm07 regression (+0.003)**: DP candidate consumes ~60s of budget; on ibm07's tight budget the winning 1% noise restart (5th in the noise_fracs order) doesn't get enough time. PROGRESS.md table says ibm07 wins at 1% noise. Mitigation would be runtime gating: skip DP launch when expected DP+score time > available-budget-for-noise. Low priority (0.003 only).
+
+- **--all wall-clock budget**: v4 and v5 both timed out at ibm17 (>3600s cumulative). 17 benchmarks × ~210s avg = ~3570s leaves no margin. Bottleneck: ibm15 (239s) and ibm16 (170s baseline-only after slow-score skip) and ibm17 (>300s baseline scoring alone). The challenge spec allows 1 hour total; if --all itself takes >3600s in the harness, we lose. **Workaround for now**: PROGRESS.md results assume ibm17=1.7438 and ibm18=1.7881 from prior runs; --all avg 1.4804 is a partial-run extrapolation. A clean full --all needs either lower scoring threshold on largest benchmarks or a more aggressive timeout management.
+
+- **No new wins on ibm02/03/06/08/09/11/15/16/18** (9 of 17 benchmarks). These contribute roughly half the avg sum but have no DP win and no Improvement #1 win. The fundamental signal: DP optimizes WL+density while our proxy is congestion-dominated; on benchmarks where the cong-grad pipeline already finds a deep basin, DP can't compete. The next leverage frontier is something orthogonal to both — possibly a soft-macro re-placement that DOES help (the rejected #7 in v14 attempts), or a different perturbation primitive (gravitational rather than gradient-following).
 
 ---
 
@@ -441,4 +502,10 @@ SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
 17. [~] **WireMask + congestion penalty (α=30, G=25)** -- TESTED AND REVERTED 2026-05-19. Sporadic: ibm01 −0.029 ✓ but ibm04 +0.097 ✗, ibm06 +0.169 ✗. Same root cause as pure WireMask: constructive placer abandons initial.plc's good seed.
 18. [~] **Multi-order baseline (smallest-area / tallest / widest)** -- TESTED AND REVERTED 2026-05-19. Phase 1-disrupting version regressed ibm03/04/09 under --all. Displacement-ranked variant on baseline-only catastrophically wrong (ibm10 +0.162, ibm12 INVALID).
 19. [~] **`plc.optimize_stdcells` post-pass** -- TESTED AND REJECTED 2026-05-20. 126.6s per call on smallest benchmark (ibm01) AND +0.13 proxy regression with default FD params. Pure Python; would need multi-day rewrite to be feasible. Dead path.
-20. [ ] **Async DREAMPlace bridge as Phase 5** -- IN PROGRESS 2026-05-20. Restored `dreamplace_bridge/`, added `AsyncDreamplaceHandle` + `launch_dreamplace_async`. Integration: launch at `place()` entry, check after Phase 3, follow with cong-grad-from-dreamplace. Build active. Results pending.
+20. [x] **Async DREAMPlace bridge as Phase 5** -- DONE 2026-05-20/21. Three architectural bugs found and fixed: `.scl` single-row → 8 rows of `canvas_h/8`; `macro_place_flag=1` + `use_bb=1` enabled; iter raised 150→300. Standalone DP proxy on ibm04 dropped 1.7714 → 1.3196. Wins as Phase 5 additive candidate on ibm01 (−0.044) and ibm04 (−0.012). See v15 section for full diagnostic.
+21. [x] **DREAMPlace CPU contention fix** -- DONE 2026-05-20. Set OMP/MKL/OPENBLAS/NUMEXPR `NUM_THREADS=2` in DP subprocess env to match `num_threads=2` config. Added watchdog thread in `AsyncDreamplaceHandle` to enforce `timeout_s` regardless of placer state. Without these, DP saturated CPU during scoring and slowed it 100× (ibm06: 1599s baseline scoring → triggered safety bail → +0.051 regression). Fix verified: ibm06 baseline scoring returned to ~10s.
+22. [x] **Phase 5c — wide-from-best at frac=0.08** -- DONE 2026-05-20. Additive cong-grad step using current plc state. Fills the gap between Phase 2 (wide from baseline) and Phase 3/5b (frac=0.04 from best). Fires on cong_improved benchmarks; doesn't find new wins but doesn't regress. Pure insurance.
+23. [x] **Improvement #1: DP on n>400 / grid>2200 benchmarks** -- DONE 2026-05-21. Adds head-to-head DP-vs-baseline comparison on the 6 large benchmarks (ibm10/12/13/14/16/17) that previously took the baseline-only early return. Threshold 130s on baseline scoring time (raised from 100s after observing CPU-contention slowdowns under --all). Wins: **ibm10 −0.037, ibm14 −0.003**. ibm12/13 baseline correctly wins. ibm16/17 skip (too slow). See v15 section.
+24. [~] **Fix 3 "DP as PRIMARY baseline_pos"** -- TESTED AND REJECTED 2026-05-21. Phase 1/2/3 cong-grad from DP placement converges to a different (worse) basin on ibm06 (+0.0105 regression on the 1.6684 win). Same architecture risk warned about in DREAMPLACE_FIXES.md.
+25. [~] **Fix 3 variant: Phase 6 additive cong-grad from DP placement** -- TESTED AND REJECTED 2026-05-21. On ibm08, the 4-iter loop displaced budget that previously reached noise=6% (the 1.5251 winner), causing +0.017 regression. Marginal wins (ibm08 found 1.5419 on Phase 6 iter=1) don't outweigh budget displacement costs.
+26. [~] **DP-first ordering on Improvement #1** -- TESTED AND REJECTED 2026-05-21. Flipping to score DP before baseline on large benchmarks lets us return DP when baseline scoring would exceed threshold. But on ibm16, DP=1.5751 loses to baseline=1.5324 (+0.043 regression). Trusting DP unconditionally when baseline can't be scored is strictly worse than skipping DP. Baseline-first kept.

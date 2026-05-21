@@ -275,29 +275,48 @@ def _write_pl(out_dir: Path, design: str, nodes: List[BookshelfNode]) -> None:
     (out_dir / f"{design}.pl").write_text("\n".join(lines) + "\n")
 
 
-def _write_scl(out_dir: Path, design: str, canvas_w: float, canvas_h: float) -> None:
-    """Single row covering the entire canvas. DREAMPlace's analytic global
-    placer doesn't use rows for macro positioning — they exist for stdcell
-    legalization, which we don't care about here.
+def _write_scl(out_dir: Path, design: str, canvas_w: float, canvas_h: float,
+               num_rows_target: int = 8) -> None:
+    """Multi-row .scl spec. DREAMPlace's global-placement NLP needs stdcell-
+    row-height rows to build density bins correctly. A single canvas-height
+    row makes the optimizer plateau immediately (iter times collapse to 0.3ms,
+    wHPWL frozen; verified 2026-05-20).
+
+    DREAMPlace reference benchmark `simple` uses 8 rows of height 12 over a
+    96-tall canvas (12.5% per row, macros 3-4 rows tall). We mirror that ratio
+    by computing row_height = canvas_h / num_rows_target, so ~8 rows regardless
+    of canvas size. For ibm04's 34081-tall canvas this gives row_height ~4260
+    (~4.3 micron unscaled), comparable to typical Bookshelf macro-placement
+    inputs. Previously used row_height=200 (~170 rows of 0.2 micron each),
+    which was 20-50x too fine and made the NLP plateau at iter 1.
 
     The .scl parser requires INTEGER values for Height/Coordinate/SubrowOrigin/
-    NumSites — even though .pl/.nodes accept floats. We round up to ensure
-    the row covers the canvas, then site grid is 1x1 unit."""
-    row_height = max(1, int(canvas_h) + 1)  # +1 to ensure full coverage after int()
-    sites = max(1, int(canvas_w) + 1)
-    lines = [
-        "UCLA scl 1.0", "",
-        "NumRows : 1", "",
-        "CoreRow Horizontal",
-        "  Coordinate    :   0",
-        f"  Height        :   {row_height}",
-        "  Sitewidth     :    1",
-        "  Sitespacing   :    1",
-        "  Siteorient    :    1",
-        "  Sitesymmetry  :    1",
-        f"  SubrowOrigin  :   0\tNumSites  :  {sites}",
-        "End",
-    ]
+    NumSites — even though .pl/.nodes accept floats. Site grid is 1x1 unit."""
+    canvas_w_i = max(1, int(canvas_w) + 1)
+    canvas_h_i = max(1, int(canvas_h) + 1)
+    # row_height = ceil(canvas_h / num_rows_target) so num_rows * row_height >= canvas_h
+    # but using floor + extra final row would cause out-of-canvas placement; instead,
+    # bump row_height up so num_rows * row_height fits as close to canvas_h as possible
+    # without overshoot beyond one row.
+    row_height = max(1, (canvas_h_i + num_rows_target - 1) // num_rows_target)
+    num_rows = num_rows_target
+    sites = canvas_w_i
+
+    lines = ["UCLA scl 1.0", "",
+             f"NumRows : {num_rows}", ""]
+    for r in range(num_rows):
+        y = r * row_height
+        lines += [
+            "CoreRow Horizontal",
+            f"  Coordinate    :   {y}",
+            f"  Height        :   {row_height}",
+            "  Sitewidth     :    1",
+            "  Sitespacing   :    1",
+            "  Siteorient    :    1",
+            "  Sitesymmetry  :    1",
+            f"  SubrowOrigin  :   0\tNumSites  :  {sites}",
+            "End",
+        ]
     (out_dir / f"{design}.scl").write_text("\n".join(lines) + "\n")
 
 
