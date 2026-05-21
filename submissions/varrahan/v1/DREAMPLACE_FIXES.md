@@ -1,5 +1,26 @@
 # DREAMPlace Integration — Required Fixes
 
+## STATUS (2026-05-21): SUPERSEDED — see PROGRESS.md v15 section for outcome
+
+**Bottom line:** the diagnosis in this doc was *wrong about the cause*. The true root cause of DREAMPlace producing junk output was a broken Bookshelf conversion (single-row `.scl` + `macro_place_flag=0` + under-converged 150 iters), not a soft-macro / density-tuning issue. With the corrected bridge, standalone DP proxy on ibm04 dropped from **1.7714 → 1.3196** (winning as Phase 5 additive). Fix 1 (soft movable) was actually a NEUTRAL/NEGATIVE change once the bridge worked (softs movable inflates congestion); Fix 2 (density sweep) was a no-op on the broken NLP and remained marginal even after the bridge worked.
+
+**What was actually needed (see PROGRESS.md v15 → "Bridge architecture fix"):**
+1. **`.scl`** → 8 rows of `canvas_h/8` instead of 1 canvas-height row.
+2. **`run_bridge._default_dreamplace_config`** → `macro_place_flag=1`, `use_bb=1`.
+3. **Iterations** → 300 (was 150 — under-converged).
+4. **Subprocess env** → `OMP_NUM_THREADS=2` etc. to prevent CPU oversubscription with the parent scoring thread (caused 100× slowdown on ibm06 under --all).
+5. **Watchdog thread** in `AsyncDreamplaceHandle` to enforce `timeout_s` when the placer is blocked in scoring.
+
+**What was tried from this doc's Fix 3 and rejected:**
+- "DP as PRIMARY baseline_pos" (replace `_will_legalize(initial.plc)` with legalized DP output) regressed ibm06 1.6684 → 1.6789 (+0.011). Phase 3 cong-grad from DP's placement converges to a different (worse) basin than from initial.plc.
+- Additive Phase 6 cong-grad-from-DP regressed ibm08 by +0.017 (budget displacement).
+
+**Net result:** --all avg 1.4854 → 1.4804 (−0.0050). Wins from this work: ibm01 (−0.044), ibm04 (−0.012), ibm10 (−0.037, via separate Improvement #1 on n>400 benchmarks), ibm14 (−0.003).
+
+---
+
+# (Below is the original 2026-05-20 plan, kept as historical record)
+
 This document specifies the changes needed to make the DREAMPlace bridge actually improve our placer score. As of 2026-05-20, the bridge is **built, integrated, and async-launched, but yields zero improvement** because of three compounding issues. Each fix below is independently necessary; **Fix 1 is critical** (without it, the others can't help).
 
 ## Repository state (what you're working with)

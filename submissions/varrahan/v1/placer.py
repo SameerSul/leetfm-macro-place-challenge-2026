@@ -527,6 +527,12 @@ class MacroPlacer:
         # unchanged. Entries 5+ fill remaining budget for fast benchmarks:
         #   ibm01 (~5s/score): ~20 restarts fit in 200s → uses entries through ~20
         #   ibm08 (~36s/score): ~4 restarts fit → only core 4 used, unchanged behavior
+        #
+        # Wide-noise tail (indices 35-51 in [0.10, 0.25]) was tested 2026-05-20 on ibm01
+        # and confirmed ineffective: 3 wide-tail entries fired (restarts 39-41), all
+        # scored 1.244-1.255 vs the 6% noise winner at 1.1860. The actual ibm01 -0.034
+        # improvement came from the DREAMPlace candidate, not from any noise restart.
+        # Wide-noise hypothesis is empirically dead on this benchmark.
         self.noise_fracs = noise_fracs or [
             # Core (preserves ibm01 6%-win and ibm03 2%-win)
             0.02, 0.04, 0.06, 0.08,
@@ -616,42 +622,47 @@ class MacroPlacer:
         # v13 (sync) was rejected because it ran DREAMPlace BEFORE Phase 1,
         # paying 30-90s of subprocess time that displaced 5-10 noise/cong-grad
         # restarts on most benchmarks. Async hides that cost behind scoring.
-        # Only attempted for ICCAD04 benchmarks with exact-scoring available.
+        #
+        # Launched for all ICCAD04 benchmarks (even when use_exact=False), so
+        # the large-benchmark path (n>400 / grid>2200) can compare DP-vs-
+        # baseline via a single _exact_proxy call. The 6 affected benchmarks
+        # (ibm10/12/13/14/16/17) previously returned baseline-only in 2-6s.
         dp_handle = None
-        if use_exact:
-            try:
-                # Inject this file's directory into sys.path so the sibling
-                # `dreamplace_bridge` package resolves when placer.py is loaded
-                # by the evaluator (which sets sys.path differently than CLI).
-                import sys as _sys
-                _v1_dir = str(Path(__file__).resolve().parent)
-                if _v1_dir not in _sys.path:
-                    _sys.path.insert(0, _v1_dir)
-                from dreamplace_bridge.run_bridge import (  # noqa: E402
-                    launch_dreamplace_async, is_available as _dp_available,
-                )
-                if _dp_available():
-                    iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
-                                 / benchmark.name)
-                    if iccad_dir.exists():
-                        # soft_macros_movable=True closes the v13 soft-macro
-                        # mismatch — DREAMPlace re-places soft macros around
-                        # the new hard placement so density/congestion isn't
-                        # broken by stale soft positions. Without this, the
-                        # standalone DREAMPlace placement is +0.2 to +0.3
-                        # worse than baseline (PROGRESS.md v13 finding).
-                        dp_handle = launch_dreamplace_async(
-                            str(iccad_dir), plc=plc,
-                            timeout_s=120.0,
-                            iterations=150,
-                            num_threads=2,
-                            soft_macros_movable=True,
-                        )
-                        _log(f"  DREAMPlace launched async (soft-movable, "
-                             f"will check after Phase 3)")
-            except Exception as exc:
-                _log(f"  DREAMPlace launch failed: {type(exc).__name__}: {exc}")
-                dp_handle = None
+        try:
+            # Inject this file's directory into sys.path so the sibling
+            # `dreamplace_bridge` package resolves when placer.py is loaded
+            # by the evaluator (which sets sys.path differently than CLI).
+            import sys as _sys
+            _v1_dir = str(Path(__file__).resolve().parent)
+            if _v1_dir not in _sys.path:
+                _sys.path.insert(0, _v1_dir)
+            from dreamplace_bridge.run_bridge import (  # noqa: E402
+                launch_dreamplace_async, is_available as _dp_available,
+            )
+            if _dp_available():
+                iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
+                             / benchmark.name)
+                if iccad_dir.exists():
+                    # 2026-05-20 bridge rewrite: macro_place_flag=1 +
+                    # multi-row .scl (8 rows of ~canvas_h/8 each) gives
+                    # working DP optimization. With softs FIXED and
+                    # iter=300, standalone DP proxy=1.3196 on ibm04
+                    # (vs Phase 3 win 1.3316 — beats it by 0.012).
+                    # softs movable hurts congestion (1.79 vs 1.69) and
+                    # raises proxy to 1.3304; iter<300 under-converges
+                    # (150 gives 1.5498); iter>500 DensityWeight runaway.
+                    dp_handle = launch_dreamplace_async(
+                        str(iccad_dir), plc=plc,
+                        timeout_s=120.0,
+                        iterations=300,
+                        num_threads=2,
+                        soft_macros_movable=False,
+                    )
+                    _log(f"  DREAMPlace launched async "
+                         f"(macro_place_flag=1, iter=300, will check after Phase 3)")
+        except Exception as exc:
+            _log(f"  DREAMPlace launch failed: {type(exc).__name__}: {exc}")
+            dp_handle = None
 
         # -- Restart 0: Baseline ----------------------------------------------
         _log(f"  Restart 0 (baseline)...")
@@ -705,6 +716,99 @@ class MacroPlacer:
             if swap_count > 0:
                 pl_scratch[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
                 pl_scratch[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
+
+            # DP-vs-baseline comparison on large benchmarks (Improvement #1,
+            # 2026-05-20). 6 benchmarks (ibm10/12/13/14/16/17) previously
+            # returned baseline-only because exact scoring with cong-grad
+            # ranking is too slow / density fallback is anti-correlated.
+            # Strategy: score BASELINE FIRST (fast on most benchmarks, ~30-90s);
+            # if scoring is fast enough that DP scoring also fits, score DP
+            # and compare; if baseline scoring is too slow, skip DP and return
+            # baseline (safe — DP might have won, but we can't fit both).
+            #
+            # DP-first tested 2026-05-20, REJECTED: on ibm16 (baseline 1.5324
+            # vs DP 1.5751) and likely ibm17, DP loses to baseline. Trusting
+            # DP unconditionally when baseline scoring doesn't fit caused
+            # +0.043 regression on ibm16. Baseline-first is strictly safer:
+            # we either know who won (small benchmarks) or correctly fall
+            # back to baseline (slowest benchmarks where DP can't be verified).
+            if plc is not None and dp_handle is not None:
+                large_dp_budget = self.time_budget_s + 60.0  # mirrors BUDGET_OVERRUN_S below
+                t_base_score_start = time.time()
+                try:
+                    base_score = float(_exact_proxy(pl_scratch, benchmark, plc))
+                    t_base_score = time.time() - t_base_score_start
+                    _log(f"  [large-DP] baseline exact proxy={base_score:.4f}  "
+                         f"(scored in {t_base_score:.1f}s)")
+                    # 130s threshold (vs the 100s SLOW_SCORE_THRESHOLD_S used in
+                    # the use_exact=True path): under --all CPU contention, ibm10
+                    # baseline scoring climbs from 67s standalone to 101s, just
+                    # tripping a 100s threshold and losing a -0.037 DP win.
+                    # 130s catches ibm10/12 (~100-110s under load) while still
+                    # safely skipping ibm16/17 (~280s scoring even alone).
+                    if t_base_score < 130.0:
+                        # Wait for DP up to remaining budget minus reserved
+                        # legalize+score window (~2*t_base_score).
+                        remaining = large_dp_budget - (time.time() - t0)
+                        max_wait = max(0.0, remaining - 2.0 * t_base_score - 5.0)
+                        dp_full_large = dp_handle.wait_for_result_full(
+                            max_wait_s=min(max_wait, 60.0)
+                        )
+                        if dp_full_large is not None:
+                            dp_hard_l, dp_soft_l = dp_full_large
+                            dp_hard_l_clip = dp_hard_l.copy()
+                            dp_hard_l_clip[:, 0] = np.clip(dp_hard_l_clip[:, 0], hw, cw - hw)
+                            dp_hard_l_clip[:, 1] = np.clip(dp_hard_l_clip[:, 1], hh, ch - hh)
+                            t_dp_leg = time.time()
+                            dp_leg_large = _will_legalize(
+                                dp_hard_l_clip, movable, sizes, hw, hh, cw, ch, n,
+                                deadline=t_dp_leg + 60.0,
+                            )
+                            dp_pl_large = benchmark.macro_positions.clone()
+                            dp_pl_large[:n, 0] = torch.tensor(
+                                dp_leg_large[:, 0], dtype=torch.float32
+                            )
+                            dp_pl_large[:n, 1] = torch.tensor(
+                                dp_leg_large[:, 1], dtype=torch.float32
+                            )
+                            n_soft_l = int(min(dp_soft_l.shape[0], benchmark.num_soft_macros))
+                            if n_soft_l > 0:
+                                dp_pl_large[n:n + n_soft_l, 0] = torch.tensor(
+                                    dp_soft_l[:n_soft_l, 0], dtype=torch.float32
+                                )
+                                dp_pl_large[n:n + n_soft_l, 1] = torch.tensor(
+                                    dp_soft_l[:n_soft_l, 1], dtype=torch.float32
+                                )
+                            t_dp_score_start = time.time()
+                            dp_score_large = float(_exact_proxy(dp_pl_large, benchmark, plc))
+                            t_dp_score_large = time.time() - t_dp_score_start
+                            _log(f"  [large-DP] dreamplace exact proxy={dp_score_large:.4f}  "
+                                 f"(leg+score {time.time()-t_dp_leg:.1f}s)")
+                            if dp_score_large < base_score:
+                                _log(f"  [large-DP] DP wins ({dp_score_large:.4f} < "
+                                     f"{base_score:.4f}); returning DP placement")
+                                _log(f"  total={time.time()-t0:.1f}s")
+                                return dp_pl_large
+                            else:
+                                _log(f"  [large-DP] baseline wins ({base_score:.4f} <= "
+                                     f"{dp_score_large:.4f}); returning baseline")
+                        else:
+                            _log(f"  [large-DP] DP not ready in {max_wait:.0f}s; "
+                                 f"returning baseline")
+                            dp_handle.kill()
+                    else:
+                        _log(f"  [large-DP] baseline scoring slow ({t_base_score:.0f}s); "
+                             f"skipping DP comparison, returning baseline")
+                        dp_handle.kill()
+                except Exception as exc:
+                    _log(f"  [large-DP] error: {type(exc).__name__}: {exc}; "
+                         f"returning baseline")
+                    if dp_handle is not None:
+                        try:
+                            dp_handle.kill()
+                        except Exception:
+                            pass
+
             _log(f"  total={time.time()-t0:.1f}s")
             return pl_scratch  # safe: no more in-place writes will happen
 
@@ -934,10 +1038,17 @@ class MacroPlacer:
                      f"testing as candidate")
                 # Phase 5a: DREAMPlace placement with BOTH hard + soft.
                 # Legalize hard macros (DREAMPlace's NLP may leave overlaps).
+                # Clip out-of-canvas first: DREAMPlace's macro_place_flag stage
+                # can produce positions slightly past canvas (its .scl rows
+                # cover canvas + slack). _will_legalize trusts initial pos
+                # and won't re-clip a conflict-free out-of-bounds macro.
                 t_dp = time.time()
                 dp_leg_deadline = t_dp + 60.0
+                dp_hard_clip = dp_hard.copy()
+                dp_hard_clip[:, 0] = np.clip(dp_hard_clip[:, 0], hw, cw - hw)
+                dp_hard_clip[:, 1] = np.clip(dp_hard_clip[:, 1], hh, ch - hh)
                 dp_hard_leg = _will_legalize(
-                    dp_hard, movable, sizes, hw, hh, cw, ch, n,
+                    dp_hard_clip, movable, sizes, hw, hh, cw, ch, n,
                     deadline=dp_leg_deadline,
                 )
                 # Build a fresh placement tensor: legalized hard + DREAMPlace soft
@@ -984,10 +1095,43 @@ class MacroPlacer:
                                      dp_perturbed,
                                      k=1 + directed_ran, allow_overrun=True):
                         directed_ran += 1
+
+                # Phase 6 (cong-grad from DP placement) tested 2026-05-20, REJECTED.
+                # Found a single-iter win on ibm08 (1.5419 vs DP-additive 1.5444)
+                # but the 4-iter loop displaced 3+ noise restarts that previously
+                # found 1.5251 at 6% noise — net regression +0.0168. On ibm04/06
+                # Phase 6 iter=1 didn't improve (best was already DP / Phase-3).
+                # Limiting Phase 6 to 1 iter still didn't fit noise-6% on ibm08
+                # within budget. Conclusion: cong-grad from DP placement doesn't
+                # find systematically better basins; the marginal wins it does
+                # find come at the cost of budget that helps more elsewhere.
             else:
                 _log(f"  DREAMPlace not ready (elapsed={dp_handle.time_elapsed():.1f}s); "
                      f"killing subprocess")
                 dp_handle.kill()
+
+        # Phase 5c: wide-from-best with current plc state. Fills the slot left
+        # by Phase 2 (wide from BASELINE only) and Phase 3/5b (frac=0.04 from
+        # BEST only). Uses the latest plc state (post-Phase-5b if DP fired,
+        # else post-Phase-3) which encodes the most-recent congestion pattern.
+        # Purely additive: fires only if cong-grad helped earlier and budget
+        # allows; placed AFTER Phase 5b so no current winning rng_cong path is
+        # affected. Noise loop uses np.random directly (not rng_cong), so the
+        # extra rng_cong draw here doesn't perturb noise restarts.
+        if cong_improved:
+            remaining_5c = (self.time_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+            if remaining_5c >= t_one_score * 1.3:
+                best_pos_5c = np.stack(
+                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
+                )
+                wide_perturbed = _routing_congestion_perturb(
+                    best_pos_5c, plc, benchmark, n, cw, ch, hw, hh, movable,
+                    frac=0.08, rng=rng_cong,
+                )
+                if _try_restart("cong-grad wide-from-best f=0.08",
+                                 wide_perturbed,
+                                 k=1 + directed_ran, allow_overrun=True):
+                    directed_ran += 1
 
         # WireMask-BBO with congestion penalty tested 2026-05-19, REJECTED.
         # Helps sparse benchmarks (ibm01 WM=1.1964 vs baseline 1.2253) but hurts

@@ -103,7 +103,8 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
         "sort_nets_by_degree": 0,
         "num_threads": num_threads,
         "deterministic_flag": 1,
-        "macro_place_flag": 0,
+        "macro_place_flag": 1,
+        "use_bb": 1,
         "result_dir": result_dir,
     }
 
@@ -191,6 +192,13 @@ def run_dreamplace(
     if env.get("PYTHONPATH"):
         pythonpath = pythonpath + ":" + env["PYTHONPATH"]
     env["PYTHONPATH"] = pythonpath
+    # Cap CPU footprint to match num_threads (see launch_dreamplace_async for
+    # rationale).
+    nt = str(max(1, int(num_threads)))
+    env["OMP_NUM_THREADS"] = nt
+    env["MKL_NUM_THREADS"] = nt
+    env["OPENBLAS_NUM_THREADS"] = nt
+    env["NUMEXPR_NUM_THREADS"] = nt
 
     log_target = (work_dir / "dreamplace.log").open("w") if keep_log else subprocess.DEVNULL
     t0 = time.time()
@@ -258,6 +266,42 @@ class AsyncDreamplaceHandle:
         self._result: "Optional[tuple[np.ndarray, np.ndarray]]" = None
         self._failed = False
         self._kill_called = False
+        self._watchdog_thread = None
+
+    def _start_watchdog(self) -> None:
+        """Spawn a daemon thread that enforces timeout_s by killing the DP
+        subprocess if it runs past the deadline. Necessary because the placer
+        may be blocked in scoring (which doesn't release the GIL fast enough
+        for wait_for_result to fire) while DP keeps eating CPU. Without this,
+        a hung or slow DP can saturate cores and slow scoring 100x (verified
+        2026-05-20 on ibm06 in --all)."""
+        import threading
+
+        def _watch():
+            try:
+                self.popen.wait(timeout=self.timeout_s)
+            except subprocess.TimeoutExpired:
+                # Subprocess exceeded its budget; tear it (and its process group)
+                # down so it stops competing for CPU.
+                self._kill_called = True
+                try:
+                    import os, signal
+                    os.killpg(os.getpgid(self.popen.pid), signal.SIGKILL)
+                except Exception:
+                    try:
+                        self.popen.kill()
+                    except Exception:
+                        pass
+                try:
+                    self.popen.wait(timeout=2.0)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_watch, daemon=True, name=f"dp-watchdog-{self.design}")
+        t.start()
+        self._watchdog_thread = t
 
     def poll(self) -> Optional[int]:
         """Return exit code if process done, None if still running."""
@@ -325,13 +369,22 @@ class AsyncDreamplaceHandle:
             return None
 
     def kill(self) -> None:
-        """Abort the subprocess if still running. Safe to call multiple times."""
+        """Abort the subprocess if still running. Safe to call multiple times.
+        Sends SIGKILL to the entire process group (matched by start_new_session
+        at launch) so any child threads / processes DP spawned also die."""
         if self._kill_called:
             return
         self._kill_called = True
         if self.popen.poll() is None:
             try:
-                self.popen.kill()
+                import os, signal
+                os.killpg(os.getpgid(self.popen.pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    self.popen.kill()
+                except Exception:
+                    pass
+            try:
                 self.popen.wait(timeout=2.0)
             except Exception:
                 pass
@@ -401,6 +454,17 @@ def launch_dreamplace_async(
     if env.get("PYTHONPATH"):
         pythonpath = pythonpath + ":" + env["PYTHONPATH"]
     env["PYTHONPATH"] = pythonpath
+    # Cap DP's CPU footprint to match its declared num_threads. Without this,
+    # DREAMPlace's internal OMP/MKL pools default to all available cores and
+    # oversubscribe alongside the parent's scoring (torch + PlacementCost C++),
+    # causing 100x scoring slowdowns on contended runs (ibm06 in --all 2026-05-20
+    # saw scoring take 1599s vs the typical 14s, triggering the SLOW_SCORE_THRESHOLD
+    # safety bail and regressing -0.051 from the v8 PROGRESS.md result).
+    nt = str(max(1, int(num_threads)))
+    env["OMP_NUM_THREADS"] = nt
+    env["MKL_NUM_THREADS"] = nt
+    env["OPENBLAS_NUM_THREADS"] = nt
+    env["NUMEXPR_NUM_THREADS"] = nt
 
     # Lazy-load plc for back-conversion (done before launch so we don't pay
     # this cost on the critical path when the user calls wait_for_result).
@@ -411,18 +475,25 @@ def launch_dreamplace_async(
             plc.restore_placement(str(init_plc), ifInital=True, ifReadComment=True)
 
     log_handle = (work_dir / "dreamplace.log").open("w")
+    # start_new_session=True puts DP in its own process group so a kill can
+    # tear down any child threads DP might spawn (defensive — DREAMPlace
+    # doesn't typically spawn children, but cleanup safety matters when we
+    # may kill it from a watchdog thread).
     popen = subprocess.Popen(
         [str(VENV_PYTHON), str(DREAMPLACE_PLACER), str(cfg_path)],
         cwd=str(DREAMPLACE_INSTALL),
         env=env,
         stdout=log_handle,
         stderr=subprocess.STDOUT,
+        start_new_session=True,
     )
 
-    return AsyncDreamplaceHandle(
+    handle = AsyncDreamplaceHandle(
         popen=popen, work_dir=work_dir, design=design, plc=plc,
         start_time=time.time(), timeout_s=timeout_s, log_handle=log_handle,
     )
+    handle._start_watchdog()
+    return handle
 
 
 def _main():
