@@ -526,6 +526,33 @@ def _build_macro_pin_map(plc):
     return pin_map
 
 
+def _ensure_pos_cache(plc) -> np.ndarray:
+    """Maintain a per-module (x, y) position cache (B3, 2026-05-23).
+
+    Vectorized scoring functions previously called `mods[idx].get_pos()`
+    in Python loops per call — ~3-6ms on ibm10 across WL / density /
+    congestion combined. This cache eliminates those loops by storing
+    positions in a numpy array, updated in-place by `_fast_set_placement`.
+
+    Initial build is O(n_modules) get_pos calls; amortized to near-zero.
+    Reads from the cache are fancy-indexed numpy operations.
+
+    Returns a (n_modules, 2) float64 array. Indexed by `plc.modules_w_pins`
+    index — the same indexing used by `unique_ref`, `macro_indices`, and
+    `hard_indices` in the various scoring caches.
+    """
+    cache = getattr(plc, "_global_pos_cache", None)
+    if cache is None:
+        mods = plc.modules_w_pins
+        cache = np.empty((len(mods), 2), dtype=np.float64)
+        for k, m in enumerate(mods):
+            x, y = m.get_pos()
+            cache[k, 0] = x
+            cache[k, 1] = y
+        plc._global_pos_cache = cache
+    return cache
+
+
 def _build_wl_cache(plc):
     """Precompute per-pin arrays used by the vectorized wirelength.
 
@@ -640,13 +667,10 @@ def _vectorized_wirelength(plc) -> float:
     if cache["n_nets"] == 0:
         return 0.0
     unique_ref = cache["unique_ref"]
-    mods = plc.modules_w_pins
-    node_x = np.empty(unique_ref.shape[0], dtype=np.float64)
-    node_y = np.empty(unique_ref.shape[0], dtype=np.float64)
-    for k, ridx in enumerate(unique_ref):
-        x, y = mods[int(ridx)].get_pos()
-        node_x[k] = x
-        node_y[k] = y
+    # B3 (2026-05-23): use global pos cache instead of per-node get_pos loop.
+    pos_cache = _ensure_pos_cache(plc)
+    node_x = pos_cache[unique_ref, 0]
+    node_y = pos_cache[unique_ref, 1]
     inv = cache["ref_inv"]
     pin_x = node_x[inv] + cache["x_off"]
     pin_y = node_y[inv] + cache["y_off"]
@@ -926,16 +950,17 @@ def _vectorized_get_grid_cells_density(plc) -> "list[float]":
         plc.grid_cells = [0.0] * n_cells
         return plc.grid_cells
 
-    # Gather positions (one Python loop is necessary; PlacementCost stores
-    # positions on individual node objects).
+    # B3 (2026-05-23): use global pos cache instead of per-macro get_pos loop.
     macro_indices = cache["macro_indices"]
-    pos_x = np.empty(n_mod, dtype=np.float64)
-    pos_y = np.empty(n_mod, dtype=np.float64)
-    mods = plc.modules_w_pins
-    for k, idx in enumerate(macro_indices):
-        x, y = mods[idx].get_pos()
-        pos_x[k] = x
-        pos_y[k] = y
+    pos_cache = _ensure_pos_cache(plc)
+    macro_indices_arr = (
+        cache.get("macro_indices_arr") if isinstance(cache, dict) else None
+    )
+    if macro_indices_arr is None:
+        macro_indices_arr = np.asarray(macro_indices, dtype=np.int64)
+        cache["macro_indices_arr"] = macro_indices_arr
+    pos_x = pos_cache[macro_indices_arr, 0]
+    pos_y = pos_cache[macro_indices_arr, 1]
 
     half_w = cache["half_w"]
     half_h = cache["half_h"]
@@ -1521,15 +1546,11 @@ def _vectorized_get_routing(plc) -> None:
 
     n_nets = wl["n_nets"]
     if n_nets > 0:
-        # Compute all pin (row, col) via cached ref_idx + offsets
+        # B3 (2026-05-23): use global pos cache instead of per-node get_pos loop.
         unique_ref = wl["unique_ref"]
-        mods = plc.modules_w_pins
-        node_x = np.empty(unique_ref.shape[0], dtype=np.float64)
-        node_y = np.empty(unique_ref.shape[0], dtype=np.float64)
-        for k, ridx in enumerate(unique_ref):
-            x, y = mods[int(ridx)].get_pos()
-            node_x[k] = x
-            node_y[k] = y
+        pos_cache = _ensure_pos_cache(plc)
+        node_x = pos_cache[unique_ref, 0]
+        node_y = pos_cache[unique_ref, 1]
         inv = wl["ref_inv"]
         pin_x = node_x[inv] + wl["x_off"]
         pin_y = node_y[inv] + wl["y_off"]
@@ -1703,13 +1724,15 @@ def _vectorized_get_routing(plc) -> None:
     # Hard-macro routing contributions
     n_hard = cache["n_hard"]
     if n_hard > 0:
+        # B3 (2026-05-23): use global pos cache instead of per-macro get_pos loop.
         hard_indices = cache["hard_indices"]
-        hard_x = np.empty(n_hard, dtype=np.float64)
-        hard_y = np.empty(n_hard, dtype=np.float64)
-        for k, idx in enumerate(hard_indices):
-            x, y = plc.modules_w_pins[idx].get_pos()
-            hard_x[k] = x
-            hard_y[k] = y
+        hard_indices_arr = cache.get("hard_indices_arr")
+        if hard_indices_arr is None:
+            hard_indices_arr = np.asarray(hard_indices, dtype=np.int64)
+            cache["hard_indices_arr"] = hard_indices_arr
+        pos_cache = _ensure_pos_cache(plc)
+        hard_x = pos_cache[hard_indices_arr, 0]
+        hard_y = pos_cache[hard_indices_arr, 1]
         _apply_macro_routing(
             V_macro_flat, H_macro_flat, hard_x, hard_y,
             cache["hard_half_w"], cache["hard_half_h"],
@@ -1782,6 +1805,12 @@ def _fast_set_placement(plc, placement_np: np.ndarray, benchmark: Benchmark) -> 
         last = np.full(placement_np.shape, np.nan, dtype=np.float64)
         plc._last_pos_cache = last
 
+    # Global position cache (B3, 2026-05-23): keep `plc._global_pos_cache`
+    # synchronized with each set_pos call so the vectorized scoring
+    # functions can read positions via fancy indexing instead of looping
+    # mods[idx].get_pos().
+    pos_cache = _ensure_pos_cache(plc)
+
     any_changed = False
 
     # Hard macros
@@ -1794,6 +1823,8 @@ def _fast_set_placement(plc, placement_np: np.ndarray, benchmark: Benchmark) -> 
         last[i, 0] = x
         last[i, 1] = y
         plc.modules_w_pins[macro_idx].set_pos(x, y)
+        pos_cache[macro_idx, 0] = x
+        pos_cache[macro_idx, 1] = y
 
     # Soft macros — usually unchanged after baseline; the equality check
     # short-circuits the per-macro work for the common no-op case.
@@ -1807,6 +1838,8 @@ def _fast_set_placement(plc, placement_np: np.ndarray, benchmark: Benchmark) -> 
         last[row, 0] = x
         last[row, 1] = y
         plc.modules_w_pins[macro_idx].set_pos(x, y)
+        pos_cache[macro_idx, 0] = x
+        pos_cache[macro_idx, 1] = y
 
     _ensure_congestion_arrays(plc)
     # Only invalidate cached costs if something actually moved. If nothing
