@@ -6,7 +6,7 @@ This file gives Claude Code the context to work productively in this repository 
 
 Submission to the **Partcl/HRT Macro Placement Challenge** (deadline May 21, 2026, $20K grand prize). Goal: write a Python `MacroPlacer` that beats the RePlAce baseline (avg proxy cost **1.4578** across 17 IBM ICCAD04 benchmarks). Lower is better.
 
-Per-team active submission slot: `submissions/varrahan/v1/` (seeded with a copy of `sameer_v1/placer.py` as a starting point — modify in place).
+Per-team active submission slot: `submissions/varrahan/v2/`. The prior slot `submissions/varrahan/v1/` is **frozen / read-only** — it captures the v17 placer (multi-DP, multi-iter Phase 7, 2-opt-on-winner) as a checkpoint to compare against. All new work goes in v2.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](PROGRESS.md). Do not duplicate that content here.
 
@@ -18,16 +18,19 @@ git submodule update --init external/MacroPlacement
 uv sync
 
 # Single benchmark — fastest feedback loop, use this while iterating
-uv run evaluate submissions/varrahan/v1/placer.py -b ibm01
+uv run evaluate submissions/varrahan/v2/placer.py -b ibm01
 
 # All 17 IBM benchmarks — the headline score (~30 min on sameer_v1)
-uv run evaluate submissions/varrahan/v1/placer.py --all
+uv run evaluate submissions/varrahan/v2/placer.py --all
 
 # NG45 commercial designs (Tier 2, OpenROAD inputs)
-uv run evaluate submissions/varrahan/v1/placer.py --ng45
+uv run evaluate submissions/varrahan/v2/placer.py --ng45
 
 # Visualize a placement
-uv run evaluate submissions/varrahan/v1/placer.py -b ibm01 --vis
+uv run evaluate submissions/varrahan/v2/placer.py -b ibm01 --vis
+
+# Compare v2 against the v1 checkpoint
+uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/placer.py
 
 # Compare two placers head-to-head
 uv run python scripts/compare_placers.py submissions/A/placer.py submissions/B/placer.py
@@ -40,13 +43,21 @@ If `uv` is not on PATH, fall back to `pip install -e .` and replace `uv run` wit
 
 ## File modification scope
 
-**IMPORTANT — Claude may write only inside `submissions/varrahan/**`.** This includes this `CLAUDE.md` (now at `submissions/varrahan/CLAUDE.md`), the active placer at `submissions/varrahan/v1/placer.py`, and any new files Claude creates under `submissions/varrahan/`.
+**IMPORTANT — write scope is restricted to `submissions/varrahan/v2/**` plus this `CLAUDE.md`.** Anything outside that is read-only, including the prior submission slot `submissions/varrahan/v1/**`.
 
-**Every file outside `submissions/varrahan/` is read-only.** Claude may freely read any file in the repository — `macro_place/`, `external/`, other `submissions/*` siblings (`sameer_v1/`, `will_seed/`, `examples/`, `differential_placer.py`, `_test_legonly.py`), `scripts/`, `test/`, `benchmarks/`, `pyproject.toml`, `README.md`, `SETUP.md`, `PAPERS_NOTES.md`, `PROGRESS.md`, `TEAM_GUIDE.md`, `LICENSE.md`, etc. — but must not edit, create, move, or delete any of them.
+Writable:
+- `submissions/varrahan/v2/**` — the active submission slot (placer.py, any new files Claude creates here)
+- `submissions/varrahan/dreamplace_build/**` — DREAMPlace install tree (rebuilds / patches allowed)
+- `submissions/varrahan/dreamplace_src/**` — DREAMPlace source (custom forks / modifications allowed)
+- `submissions/varrahan/CLAUDE.md` — this file
 
-If a task seems to require modifying a read-only file (e.g. fixing a bug in `macro_place/`, adding a script under `scripts/`, correcting an error in `PAPERS_NOTES.md`), stop and surface the proposed change to the user instead of editing. They will lift the restriction explicitly when appropriate.
+Read-only (Claude may read but must not edit, create, move, or delete):
+- **`submissions/varrahan/v1/**`** — frozen v17 checkpoint, kept for comparison. Treat as if it lived under `external/`.
+- Everything outside `submissions/varrahan/` — `macro_place/`, `external/`, other `submissions/*` siblings (`sameer_v1/`, `will_seed/`, `examples/`, `differential_placer.py`, `_test_legonly.py`), `scripts/`, `test/`, `benchmarks/`, `pyproject.toml`, `README.md`, `SETUP.md`, `PAPERS_NOTES.md`, `PROGRESS.md`, `TEAM_GUIDE.md`, `LICENSE.md`, etc.
 
-This rule is documented here so Claude follows it. For hard enforcement, mirror it as a deny rule in `.claude/settings.local.json` (`Write(...)` and `Edit(...)` patterns matching anything outside `submissions/varrahan/`).
+If a task seems to require modifying a read-only file (e.g. fixing a bug in `macro_place/`, adding a script under `scripts/`, correcting an error in `PAPERS_NOTES.md`, or porting/tweaking something from `v1/`), stop and surface the proposed change to the user instead of editing. They will lift the restriction explicitly when appropriate — typically by asking Claude to copy the v1 file into v2 first, then modify the v2 copy.
+
+This rule is documented here so Claude follows it. For hard enforcement, mirror it as a deny rule in `.claude/settings.local.json` (`Write(...)` and `Edit(...)` patterns for everything outside the writable list above — `submissions/varrahan/v2/`, `submissions/varrahan/dreamplace_build/`, `submissions/varrahan/dreamplace_src/`, plus `submissions/varrahan/CLAUDE.md`).
 
 ## Submission contract (don't break these)
 
@@ -71,16 +82,18 @@ proxy_cost = 1.0 × wirelength + 0.5 × density + 0.5 × congestion
 
 After normalization, **wirelength ≈ 0.06**, **congestion ≈ 1.3–2.7**. Congestion dominates by ~30×. **Optimizing for wirelength alone reliably makes proxy cost worse** because clustering connected macros spikes density and congestion. This was tested exhaustively (see `PROGRESS.md`); do not retry it without a specific reason.
 
-The current best (`sameer_v1`, avg 1.486) reaches its score by *not* doing SA on HPWL — it legalizes from `initial.plc`, then runs multi-restart with congestion-gradient perturbations. Treat this as the floor a new placer must clear, not the ceiling.
+The floor v2 must clear is **the frozen v17 placer at `submissions/varrahan/v1/placer.py`** — multi-DP at target_density 0.85/0.65 + multi-iter Phase 7 cong-grad chain from each DP + 2-opt-on-winner. 6-benchmark spot check vs v15 was −0.0258 cumulative (notable: ibm02 −0.0194, ibm04 −0.0025, ibm07 −0.0026). Headline `--all` number not yet measured at the freeze point. Earlier reference (`sameer_v1`, avg 1.486) reaches its score by legalizing from `initial.plc` then running multi-restart with congestion-gradient perturbations.
 
 ## Repo layout
 
 ```
 macro_place/        Core framework — benchmark loader, evaluator wrapper, utilities. Don't modify lightly.
-submissions/        One folder per submission. New work goes in submissions/varrahan/v1/.
+submissions/        One folder per submission. New work goes in submissions/varrahan/v2/.
   examples/         Reference placers (greedy_row, simple_random) — pedagogical only.
   will_seed/        Organizer's baseline (~1.534).
-  sameer_v1/        Current best (~1.486).
+  sameer_v1/        Reference (~1.486).
+  varrahan/v1/      Frozen v17 checkpoint — multi-DP + multi-iter Phase 7 + 2-opt-on-winner. READ-ONLY.
+  varrahan/v2/      Active submission slot — writable.
   _test_legonly.py  Shortcut harness importing _will_legalize from sameer_v1.
 external/MacroPlacement/  TILOS submodule — evaluator + ICCAD04 testcases. Read-only.
 benchmarks/processed/     Pre-processed .pt files for fast loading.
@@ -114,6 +127,6 @@ test/                     pytest smoke tests.
 
 ## When in doubt
 
-- The leaderboard #1 entry (UT Austin DREAMPlace, 1.4076) suggests the strongest practical path is `pb.txt → Bookshelf → DREAMPlace global placement → legalize`. The bridge converter (`scripts/pb_to_bookshelf.py`) does not yet exist; building it is the highest-leverage open task.
+- The leaderboard #1 entry (UT Austin DREAMPlace, 1.4076) uses `pb.txt → Bookshelf → DREAMPlace global placement → legalize`. v1's bridge (`submissions/varrahan/v1/dreamplace_bridge/`) implements this path — v2 can import or copy it forward. The remaining gap (~0.05 from v1 to the leaderboard) is mostly congestion-aware optimization that DREAMPlace's NLP doesn't see; see v1's `_dp_diagnostic.py` for the empirical decomposition.
 - WireMask-BBO's greedy evaluator is the highest-leverage *non-GPU* unimplemented idea (avg ~27M HPWL on mixed-size IBM, no training needed). The current `_compute_wire_pull` is a continuous approximation, not the real greedy mask.
 - For anything ML-heavy (ChiPFormer-style DT, MaskPlace-style RL, diffusion), the cost/benefit ratio is poor on the remaining timeline — read `PAPERS_NOTES.md` for the team's reasoning before starting one.
