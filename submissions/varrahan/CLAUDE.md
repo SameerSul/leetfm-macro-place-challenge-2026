@@ -35,8 +35,13 @@ uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submi
 # Compare two placers head-to-head
 uv run python scripts/compare_placers.py submissions/A/placer.py submissions/B/placer.py
 
-# Smoke tests
+# Smoke tests (project-level)
 uv run pytest test/
+
+# Run a v2-specific diagnostic or verification script (note the v2/test/ path,
+# not the repo-root test/ path)
+uv run python submissions/varrahan/v2/test/diagnostic/_profile_score.py
+uv run python submissions/varrahan/v2/test/verification/_stress_verify.py
 ```
 
 If `uv` is not on PATH, fall back to `pip install -e .` and replace `uv run` with `python -m`.
@@ -94,11 +99,18 @@ submissions/        One folder per submission. New work goes in submissions/varr
   sameer_v1/        Reference (~1.486).
   varrahan/v1/      Frozen v17 checkpoint — multi-DP + multi-iter Phase 7 + 2-opt-on-winner. READ-ONLY.
   varrahan/v2/      Active submission slot — writable.
+    placer.py             Active MacroPlacer implementation.
+    docs/                 ISSUES.md / PROGRESS.md / DREAMPLACE_FIXES.md.
+    dreamplace_bridge/    pb.txt ↔ Bookshelf converters + async launcher.
+    test/                 v2-specific tests / diagnostics / probes — put ALL new v2 test files here.
+      diagnostic/         Profiling, timing, scoring breakdown scripts.
+      dreamplace/         DREAMPlace bridge tests + diagnostics.
+      verification/       Correctness checks vs scalar references.
   _test_legonly.py  Shortcut harness importing _will_legalize from sameer_v1.
 external/MacroPlacement/  TILOS submodule — evaluator + ICCAD04 testcases. Read-only.
 benchmarks/processed/     Pre-processed .pt files for fast loading.
 scripts/                  Comparison + benchmark-conversion utilities.
-test/                     pytest smoke tests.
+test/                     Project-level pytest smoke tests. READ-ONLY for v2 work — do not add v2 tests here.
 ```
 
 ## Things that have already burned us (read before debugging)
@@ -122,6 +134,7 @@ test/                     pytest smoke tests.
 - Iterate on one benchmark (`-b ibm01` or `-b ibm04`) until the change is sound; run `--all` only when you want a full leaderboard number. A `--all` run takes ~30 minutes, so it is not a substitute for unit-style debugging.
 - When a change improves one benchmark, verify it does not regress others before committing. The repo's history (`git log`) shows several "win on ibm04, lose on ibm09" reverts.
 - Record concrete numbers in `PROGRESS.md` when a change becomes the new best — that file is the source of truth for "what works", not commit messages.
+- **All v2-specific tests, diagnostics, and probes live under `submissions/varrahan/v2/test/`** (subdirs: `diagnostic/`, `dreamplace/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks Claude to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `submissions/varrahan/v2/test/` under the matching subdirectory — and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.
 - Never commit unless asked.
 - Do not push, force-push, or create PRs unless asked.
 
