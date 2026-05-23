@@ -1,9 +1,17 @@
-# Core dependencies
+# Core dependencies (mirror pyproject.toml `[project].dependencies`)
 torch>=2.0.0
+numpy>=1.20.0
+matplotlib>=3.5.0
+tqdm>=4.65.0
 absl-py>=1.0.0
-matplotlib>=3.3.0
-numpy>=1.19.0
 
-# Testing
+# Development / testing (mirror pyproject.toml `[project.optional-dependencies].dev`)
 pytest>=7.0.0
 pytest-cov>=4.0.0
+black>=23.0.0
+flake8>=6.0.0; python_version >= "3.8.1"
+
+# Optional baselines (mirror pyproject.toml `[project.optional-dependencies].baselines`)
+# Uncomment if running torch-geometric-based reference placers.
+# torch-geometric>=2.3.0
+# scipy>=1.10.0
