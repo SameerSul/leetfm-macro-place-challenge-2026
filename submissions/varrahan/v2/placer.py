@@ -345,11 +345,12 @@ def _two_opt_proxy_swap(
     ch: float,
     movable: np.ndarray,
     n: int,
-    score_fn,
-    initial_score: float,
+    score_fn=None,
+    initial_score: float = 0.0,
     k_neighbors: int = 5,
     max_iters: int = 3,
     deadline: float | None = None,
+    incremental_scorer=None,
 ) -> "tuple[np.ndarray, int, float, int]":
     """Proxy-driven 2-opt swap pass (issue #1, 2026-05-23).
 
@@ -449,15 +450,28 @@ def _two_opt_proxy_swap(
                 pos[i, 0], pos[i, 1] = new_ix, new_iy
                 pos[j, 0], pos[j, 1] = new_jx, new_jy
 
-                trial_score = score_fn(pos)
+                # B3 phase 2: if an incremental_scorer is provided, use its
+                # score_swap (which only recomputes WL for touched nets and
+                # reuses plc for density/congestion). Otherwise fall back to
+                # the full score_fn (B3 phase 1 / original path).
+                if incremental_scorer is not None:
+                    trial_score = incremental_scorer.score_swap(
+                        i, (new_ix, new_iy), j, (new_jx, new_jy)
+                    )
+                else:
+                    trial_score = score_fn(pos)
                 score_calls += 1
                 if trial_score < best_score:
+                    if incremental_scorer is not None:
+                        incremental_scorer.commit_swap(
+                            i, (new_ix, new_iy), j, (new_jx, new_jy)
+                        )
                     best_score = trial_score
                     accept_count += 1
                     improved_any = True
                     break  # positions changed; refresh kNN at next outer iter
                 else:
-                    # Revert
+                    # Revert (scorer already reverted plc internally)
                     pos[i, 0], pos[i, 1] = old_ix, old_iy
                     pos[j, 0], pos[j, 1] = old_jx, old_jy
 
@@ -640,6 +654,17 @@ def _build_wl_cache(plc):
     # then scatter via numpy indexing.
     unique_ref, inv = np.unique(ref_idx_arr, return_inverse=True)
 
+    # B3 phase 2 (2026-05-23): per-pin → net-index mapping for incremental
+    # scoring. Allows touched-net selection given a moved macro.
+    pin_to_net = (
+        np.searchsorted(net_starts_arr, np.arange(cursor), side="right") - 1
+    ).astype(np.int64)
+    # Per-net pin lengths (cursor as sentinel for the last net's end).
+    net_ends = np.empty_like(net_starts_arr)
+    net_ends[:-1] = net_starts_arr[1:]
+    net_ends[-1] = cursor
+    net_lengths = (net_ends - net_starts_arr).astype(np.int64)
+
     cache = {
         "ref_idx": ref_idx_arr,
         "ref_inv": inv.astype(np.int64),
@@ -647,7 +672,10 @@ def _build_wl_cache(plc):
         "x_off": x_off_arr,
         "y_off": y_off_arr,
         "net_starts": net_starts_arr,
+        "net_ends": net_ends,
+        "net_lengths": net_lengths,
         "net_weights": net_weights_arr,
+        "pin_to_net": pin_to_net,
         "n_pins": cursor,
         "n_nets": len(net_starts),
     }
@@ -1755,20 +1783,58 @@ def _vectorized_get_routing(plc) -> None:
     V_total = V_flat + V_macro_flat
     H_total = H_flat + H_macro_flat
 
-    plc.V_routing_cong = V_total.tolist()
-    plc.H_routing_cong = H_total.tolist()
-    plc.V_macro_routing_cong = V_macro_flat.tolist()
-    plc.H_macro_routing_cong = H_macro_flat.tolist()
+    # B3 phase 3 (2026-05-23): store as numpy arrays instead of Python lists.
+    # Saves ~2ms/call on .tolist() conversion. The patched get_congestion_cost
+    # (`_patch_plc_congestion_cost`) consumes them via numpy ops, and
+    # `_routing_congestion_perturb` already does `np.asarray(...).reshape(...)`
+    # so it transparently accepts arrays too.
+    plc.V_routing_cong = V_total
+    plc.H_routing_cong = H_total
+    plc.V_macro_routing_cong = V_macro_flat
+    plc.H_macro_routing_cong = H_macro_flat
     plc.FLAG_UPDATE_CONGESTION = False
 
 
+def _vectorized_get_congestion_cost(plc) -> float:
+    """Numpy-fast replacement for `PlacementCost.get_congestion_cost` (B3 phase 3).
+
+    The reference does
+        sorted(V_routing_cong + H_routing_cong, reverse=True)
+        return sum(top 5%) / cnt
+    on Python lists. With ~4500 elements that's ~3ms.
+
+    Numpy via `np.partition`: get the top-cnt elements (unordered) at O(n),
+    then mean. Same result (sum-of-top-cnt is order-independent), ~0.3ms.
+    """
+    if plc.FLAG_UPDATE_CONGESTION:
+        plc.get_routing()  # patched to _vectorized_get_routing
+    v = plc.V_routing_cong
+    h = plc.H_routing_cong
+    # Concat. plc may still hold the legacy lists on the very first call
+    # (before our get_routing patched-write executes); handle gracefully.
+    if isinstance(v, list):
+        v = np.asarray(v, dtype=np.float64)
+    if isinstance(h, list):
+        h = np.asarray(h, dtype=np.float64)
+    xx = np.concatenate([v, h])
+    n = xx.size
+    cnt = int(n * 0.05)  # floor (positive value)
+    if cnt == 0:
+        return float(xx.max())
+    # Top-cnt values via partition (unordered, but mean is order-independent).
+    top = np.partition(xx, n - cnt)[n - cnt:]
+    return float(top.sum() / cnt)
+
+
 def _patch_plc_congestion(plc, benchmark: Benchmark) -> None:
-    """Install vectorized congestion (get_routing) on this plc."""
+    """Install vectorized congestion (get_routing + get_congestion_cost) on this plc."""
     if getattr(plc, "_cong_vec_installed", False):
         return
     _build_wl_cache(plc)
     _build_cong_cache(plc, benchmark)
     plc.get_routing = lambda _plc=plc: _vectorized_get_routing(_plc)
+    # B3 phase 3 (2026-05-23): replace get_congestion_cost with numpy-fast version.
+    plc.get_congestion_cost = lambda _plc=plc: _vectorized_get_congestion_cost(_plc)
     plc._cong_vec_installed = True
 
 
@@ -1776,10 +1842,13 @@ def _ensure_congestion_arrays(plc) -> None:
     """Mirror objective._ensure_congestion_arrays without re-importing."""
     expected_size = plc.grid_col * plc.grid_row
     if len(plc.H_routing_cong) != expected_size:
-        plc.V_routing_cong = [0] * expected_size
-        plc.H_routing_cong = [0] * expected_size
-        plc.V_macro_routing_cong = [0] * expected_size
-        plc.H_macro_routing_cong = [0] * expected_size
+        # B3 phase 3 (2026-05-23): use numpy arrays to match the new
+        # `_vectorized_get_routing` output type. Saves the .tolist()
+        # conversion on every score call.
+        plc.V_routing_cong = np.zeros(expected_size, dtype=np.float64)
+        plc.H_routing_cong = np.zeros(expected_size, dtype=np.float64)
+        plc.V_macro_routing_cong = np.zeros(expected_size, dtype=np.float64)
+        plc.H_macro_routing_cong = np.zeros(expected_size, dtype=np.float64)
 
 
 def _fast_set_placement(plc, placement_np: np.ndarray, benchmark: Benchmark) -> None:
@@ -1876,6 +1945,244 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
     dens = plc.get_density_cost()
     cong = plc.get_congestion_cost()
     return float(wl + 0.5 * dens + 0.5 * cong)
+
+
+# ---------------------------------------------------------------------------
+# Incremental scorer for 2-opt (B3 phase 2, 2026-05-23)
+# ---------------------------------------------------------------------------
+
+class IncrementalScorer:
+    """Per-swap incremental proxy scorer used inside `_two_opt_proxy_swap`.
+
+    Phase 2 (this) does incremental wirelength only — `density` and
+    `congestion` still come from `plc.get_density_cost` /
+    `plc.get_congestion_cost` (full recompute via the dirty-flag path).
+    Phase 3 will tackle congestion incremental.
+
+    WL incremental:
+      - Build `macro_to_nets[macro_idx] = array of net indices` once.
+      - Cache per-net HPWL (`per_net_hpwl`) once after baseline.
+      - For a swap (i_hard, j_hard): touched_nets = macro_to_nets[i] ∪
+        macro_to_nets[j] (typically ~50-200 of ~28k nets).
+      - Recompute HPWL for touched nets only via gather + reduceat over a
+        compact pin range.
+      - `delta_wl = sum((new_hpwl - per_net_hpwl) * net_weights) for touched`.
+      - `new_total_wl = total_wl + delta_wl`.
+
+    State management:
+      - The scorer mirrors plc's set_pos calls: `score_swap` applies the
+        swap to plc, computes, then reverts. `commit_swap` applies and
+        persists the state (also updates `per_net_hpwl`).
+      - Caller (2-opt) must call `commit_swap` after an accept; reject
+        requires no action because score_swap already reverted plc.
+
+    Indexing notes:
+      - `i_hard`, `j_hard` are indices into `benchmark.hard_macro_indices`
+        (i.e., 0 ≤ i_hard < n_hard, the same indexing used by
+        `_two_opt_proxy_swap`).
+      - Internally translated to plc module indices via `hard_indices[i_hard]`.
+    """
+
+    def __init__(self, plc, benchmark: Benchmark, current_placement_np: np.ndarray):
+        self.plc = plc
+        self.benchmark = benchmark
+        self.n_hard = benchmark.num_hard_macros
+        self.hard_indices = list(benchmark.hard_macro_indices)
+
+        # Make sure plc + global pos cache reflect current_placement_np.
+        # _fast_set_placement is idempotent if positions match the last_pos_cache.
+        _fast_set_placement(plc, current_placement_np, benchmark)
+
+        wl_cache = _build_wl_cache(plc)
+        self.wl_cache = wl_cache
+        self.net_weights = wl_cache["net_weights"]
+        self.net_starts = wl_cache["net_starts"]
+        self.net_ends = wl_cache["net_ends"]
+        self.net_lengths = wl_cache["net_lengths"]
+        self.ref_inv = wl_cache["ref_inv"]
+        self.x_off = wl_cache["x_off"]
+        self.y_off = wl_cache["y_off"]
+        self.unique_ref = wl_cache["unique_ref"]
+        self.n_pins = wl_cache["n_pins"]
+        self.n_nets = wl_cache["n_nets"]
+
+        # Macro index → array of net indices that contain at least one of
+        # the macro's pins. Built once per benchmark from ref_idx + pin_to_net.
+        self._build_macro_to_nets()
+
+        # WL normalization: plc.get_cost() = sum(weighted HPWL) /
+        # ((canvas_w + canvas_h) * net_cnt). We must apply the same divisor
+        # so score_swap matches `_exact_proxy` exactly (which calls get_cost).
+        cw_, ch_ = plc.get_canvas_width_height()
+        self.wl_normalizer = float((cw_ + ch_) * max(plc.net_cnt, 1))
+
+        # Initial per-net HPWL + total WL (full recompute, ~3ms one-time).
+        # `per_net_hpwl` is RAW HPWL (max-min); `total_wl_raw` is the
+        # weighted sum BEFORE normalization. The normalized WL used in
+        # proxy is `total_wl_raw / wl_normalizer`.
+        self.per_net_hpwl = self._compute_per_net_hpwl_full()
+        self.total_wl_raw = float(np.sum(self.per_net_hpwl * self.net_weights))
+
+        # Committed hard-macro positions (only hard macros can swap).
+        self.committed_hard_pos = current_placement_np[:self.n_hard].astype(np.float64).copy()
+
+    def _build_macro_to_nets(self):
+        """Group nets by the macros (modules) that reference them.
+
+        Output: `self.macro_to_nets[module_idx]` is a sorted int64 ndarray of
+        net indices. Builds in O(n_pins) via vectorized grouping.
+        """
+        ref_idx = self.wl_cache["ref_idx"]
+        pin_to_net = self.wl_cache["pin_to_net"]
+        # Stable-sort pins by macro index, partition by macro boundary.
+        order = np.argsort(ref_idx, kind="stable")
+        sorted_macros = ref_idx[order]
+        sorted_nets = pin_to_net[order]
+        # Each contiguous run of identical macro idx corresponds to that macro's pins.
+        boundaries = np.flatnonzero(np.diff(sorted_macros) != 0) + 1
+        macro_segments = np.split(sorted_nets, boundaries)
+        macro_keys = sorted_macros[np.concatenate([[0], boundaries])] if len(sorted_macros) else np.array([], dtype=ref_idx.dtype)
+        self.macro_to_nets: "dict[int, np.ndarray]" = {}
+        for k, nets_for_macro in zip(macro_keys, macro_segments):
+            # Dedupe inside the macro (pin may reuse the same net? rare but safe).
+            uniq = np.unique(nets_for_macro)
+            self.macro_to_nets[int(k)] = uniq
+
+    def _compute_per_net_hpwl_full(self) -> np.ndarray:
+        """Full per-net HPWL recompute (one-time, mirrors `_vectorized_wirelength`)."""
+        if self.n_nets == 0:
+            return np.empty(0, dtype=np.float64)
+        pos_cache = _ensure_pos_cache(self.plc)
+        node_x = pos_cache[self.unique_ref, 0]
+        node_y = pos_cache[self.unique_ref, 1]
+        pin_x = node_x[self.ref_inv] + self.x_off
+        pin_y = node_y[self.ref_inv] + self.y_off
+        starts = self.net_starts
+        max_x = np.maximum.reduceat(pin_x, starts)
+        min_x = np.minimum.reduceat(pin_x, starts)
+        max_y = np.maximum.reduceat(pin_y, starts)
+        min_y = np.minimum.reduceat(pin_y, starts)
+        return (max_x - min_x) + (max_y - min_y)
+
+    def _compute_per_net_hpwl_subset(self, net_indices: np.ndarray) -> np.ndarray:
+        """Recompute HPWL for a subset of nets only.
+
+        Strategy: build a contiguous pin-index gather array over the subset
+        nets (using cached net_lengths via repeat + cumulative offsets), then
+        a single `reduceat` over that compact array. O(len(touched pins)),
+        not O(n_pins).
+        """
+        if len(net_indices) == 0:
+            return np.empty(0, dtype=np.float64)
+
+        starts_t = self.net_starts[net_indices]
+        lengths_t = self.net_lengths[net_indices]
+        total = int(lengths_t.sum())
+        if total == 0:
+            return np.zeros(len(net_indices), dtype=np.float64)
+
+        # Build the per-pin gather array: for net k with pin range
+        # [starts_t[k], starts_t[k]+lengths_t[k]), expand to that integer range.
+        # Implementation: cumulative within-net index (0..lengths_t[k]-1) for
+        # each output position, plus the corresponding net's start offset.
+        pin_indices = np.repeat(starts_t, lengths_t) + (
+            np.arange(total) - np.repeat(np.concatenate([[0], np.cumsum(lengths_t)[:-1]]), lengths_t)
+        )
+
+        pos_cache = _ensure_pos_cache(self.plc)
+        node_x = pos_cache[self.unique_ref, 0]
+        node_y = pos_cache[self.unique_ref, 1]
+        pin_x = node_x[self.ref_inv[pin_indices]] + self.x_off[pin_indices]
+        pin_y = node_y[self.ref_inv[pin_indices]] + self.y_off[pin_indices]
+
+        # reduceat starts in the compact array
+        sub_starts = np.concatenate([[0], np.cumsum(lengths_t)[:-1]])
+        max_x = np.maximum.reduceat(pin_x, sub_starts)
+        min_x = np.minimum.reduceat(pin_x, sub_starts)
+        max_y = np.maximum.reduceat(pin_y, sub_starts)
+        min_y = np.minimum.reduceat(pin_y, sub_starts)
+        return (max_x - min_x) + (max_y - min_y)
+
+    def _touched_nets(self, i_module: int, j_module: int) -> np.ndarray:
+        a = self.macro_to_nets.get(i_module)
+        b = self.macro_to_nets.get(j_module)
+        if a is None and b is None:
+            return np.empty(0, dtype=np.int64)
+        if a is None:
+            return b
+        if b is None:
+            return a
+        return np.union1d(a, b)
+
+    def _apply_pos(self, module_idx: int, x: float, y: float) -> None:
+        """set_pos + update global pos cache + dirty-flag plc."""
+        self.plc.modules_w_pins[module_idx].set_pos(float(x), float(y))
+        pos_cache = _ensure_pos_cache(self.plc)
+        pos_cache[module_idx, 0] = float(x)
+        pos_cache[module_idx, 1] = float(y)
+        # plc's density / congestion caches must invalidate; WL doesn't
+        # matter because we compute it ourselves.
+        self.plc.FLAG_UPDATE_DENSITY = True
+        self.plc.FLAG_UPDATE_CONGESTION = True
+
+    def score_swap(self, i_hard: int, new_i_xy, j_hard: int, new_j_xy) -> float:
+        """Trial: compute proxy as if (i_hard, j_hard) were swapped, then revert."""
+        i_module = self.hard_indices[i_hard]
+        j_module = self.hard_indices[j_hard]
+
+        # Save committed positions for revert
+        old_ix, old_iy = float(self.committed_hard_pos[i_hard, 0]), float(self.committed_hard_pos[i_hard, 1])
+        old_jx, old_jy = float(self.committed_hard_pos[j_hard, 0]), float(self.committed_hard_pos[j_hard, 1])
+
+        # Apply trial positions
+        new_ix, new_iy = float(new_i_xy[0]), float(new_i_xy[1])
+        new_jx, new_jy = float(new_j_xy[0]), float(new_j_xy[1])
+        self._apply_pos(i_module, new_ix, new_iy)
+        self._apply_pos(j_module, new_jx, new_jy)
+
+        # Incremental WL via touched nets (raw HPWL delta), then normalize
+        # the same way plc.get_cost() does for proxy.
+        touched = self._touched_nets(i_module, j_module)
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            new_total_raw = self.total_wl_raw + delta
+        else:
+            new_total_raw = self.total_wl_raw
+        new_wl_normalized = new_total_raw / self.wl_normalizer
+
+        # Density + congestion: full recompute via plc
+        dens = self.plc.get_density_cost()
+        cong = self.plc.get_congestion_cost()
+        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
+
+        # Revert positions
+        self._apply_pos(i_module, old_ix, old_iy)
+        self._apply_pos(j_module, old_jx, old_jy)
+
+        return score
+
+    def commit_swap(self, i_hard: int, new_i_xy, j_hard: int, new_j_xy) -> None:
+        """Commit a previously-trialed swap: persist positions + update per_net_hpwl."""
+        i_module = self.hard_indices[i_hard]
+        j_module = self.hard_indices[j_hard]
+
+        new_ix, new_iy = float(new_i_xy[0]), float(new_i_xy[1])
+        new_jx, new_jy = float(new_j_xy[0]), float(new_j_xy[1])
+        self._apply_pos(i_module, new_ix, new_iy)
+        self._apply_pos(j_module, new_jx, new_jy)
+
+        self.committed_hard_pos[i_hard, 0] = new_ix
+        self.committed_hard_pos[i_hard, 1] = new_iy
+        self.committed_hard_pos[j_hard, 0] = new_jx
+        self.committed_hard_pos[j_hard, 1] = new_jy
+
+        touched = self._touched_nets(i_module, j_module)
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            self.per_net_hpwl[touched] = new_per_net
+            self.total_wl_raw += delta
 
 
 def _routing_congestion_perturb(
@@ -2855,9 +3162,25 @@ class MacroPlacer:
             best_hard_pos = np.stack(
                 [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
             ).astype(np.float64)
-            # Score function for 2-opt: uses its own scratch tensor so the
-            # main pl_scratch buffer (and any state it carries from the
-            # last _score call) isn't disturbed by rejected swap trials.
+            # B3 phase 2 (2026-05-23): build an IncrementalScorer that
+            # recomputes WL incrementally (touched-nets only). Density and
+            # congestion still go through plc's full-recompute path; phase 3
+            # will tackle those.
+            #
+            # Seed the scorer from best_pl's full placement (hard + soft).
+            # plc state is mutated by the scorer's set_pos calls during
+            # trial swaps and reverted on reject. After 2-opt finishes, plc
+            # may have either the baseline state (all swaps rejected) or
+            # the post-final-accept state — either way, downstream code
+            # doesn't depend on plc state at this point (return path).
+            best_pl_np = best_pl.cpu().numpy().astype(np.float64)
+            try:
+                incremental_scorer = IncrementalScorer(plc, benchmark, best_pl_np)
+            except Exception as exc:
+                _log(f"  IncrementalScorer init failed: {type(exc).__name__}: {exc}; "
+                     f"falling back to full scoring")
+                incremental_scorer = None
+
             opt_scratch = best_pl.clone()
 
             def _2opt_score(pos_arr: np.ndarray) -> float:
@@ -2870,8 +3193,10 @@ class MacroPlacer:
                 best_hard_pos, sizes, hw, hh, cw, ch, movable, n,
                 score_fn=_2opt_score, initial_score=best_score,
                 k_neighbors=5, max_iters=3, deadline=t_2opt + 15.0,
+                incremental_scorer=incremental_scorer,
             )
-            _log(f"  2-opt-on-winner (proxy): {accept_count} accepts / "
+            scorer_tag = "incr" if incremental_scorer is not None else "full"
+            _log(f"  2-opt-on-winner (proxy/{scorer_tag}): {accept_count} accepts / "
                  f"{score_calls} scores, final={final_score:.4f} "
                  f"(was {best_score:.4f}) in {time.time()-t_2opt:.1f}s")
             if accept_count > 0 and final_score < best_score:
