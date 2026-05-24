@@ -19,18 +19,22 @@ A6=#9 (score); B1=#6, B2=#4 (perf); C1=#5 (maint).
 
 ## Current headline (2026-05-23 EOD)
 
-| Milestone | --all avg | Δ from prior | Gap vs RePlAce 1.4578 |
-|---|---|---|---|
-| v12 confirmed (baseline) | 1.4854 | — | +1.9% |
-| v15 partial (ibm17 timed out) | 1.4804 | −0.0050 | +1.6% |
-| v2 + B1 (cumulative guard) | 1.4782 | −0.0022 | +1.4% |
-| v2 + B1 + A1 (proxy 2-opt) | 1.4723 | −0.0059 | +1.0% |
-| v2 + B1 + A1 + B3-phase-1 (pos cache) | **1.4719** | −0.0004 | +1.0% |
+| Milestone | --all avg | Δ from prior | Gap vs RePlAce 1.4578 | --all wall-clock |
+|---|---|---|---|---|
+| v12 confirmed (baseline) | 1.4854 | — | +1.9% | — |
+| v15 partial (ibm17 timed out) | 1.4804 | −0.0050 | +1.6% | (no run) |
+| v2 + B1 (cumulative guard) | 1.4782 | −0.0022 | +1.4% | ~3360s |
+| v2 + B1 + A1 (proxy 2-opt) | 1.4723 | −0.0059 | +1.0% | 542.79s |
+| v2 + B1 + A1 + B3-phase-1 (pos cache) | 1.4719 | −0.0004 | +1.0% | 506.89s |
+| v2 + B1 + A1 + B3-phase-1+2 (per-net HPWL incr) | 1.4714 | −0.0005 | +0.9% | 502.06s |
+| v2 + B1 + A1 + B3-phase-1+2+3 (numpy abu) | **1.4711** | −0.0003 | **+0.9%** | **460.85s** |
 
-**Combined session progress: 1.4854 → 1.4719 = −0.0135 in 2026-05-23.**
+**Combined session progress: 1.4854 → 1.4711 = −0.0143 in 2026-05-23.**
 
-`--all` wall-clock now 506.89s (placer time), down from 542.79s before
-B3 — also a real speedup from the per-score cost reduction.
+Wall-clock dropped from ~3360s (B1) to 460.85s (placer time, B3p3).
+Most of the savings came from the B3 series — phase 1's get_pos
+elimination (~36s), phase 2's per-net HPWL (~5s), and phase 3's numpy
+abu + .tolist removal (~42s).
 
 ---
 
@@ -493,9 +497,69 @@ scoring functions now read positions via fancy indexing
 Bit-equivalence verified: ibm10 baseline scored 1.339672 pre-B3,
 1.339672 post-B3 (delta < 1e-12, float64 noise).
 
-**Remaining work (future B3 phases, if needed):**
+### Phase 2 — per-net HPWL incremental (SHIPPED 2026-05-23)
 
+`IncrementalScorer` class added. Tracks committed positions + per-net
+HPWL cache + macro→nets index. On a 2-opt swap:
+- `touched_nets = macro_to_nets[i] ∪ macro_to_nets[j]` (~50-200 of 28k).
+- Recompute HPWL for touched nets only via masked reduceat.
+- delta_wl = sum((new − old) × weights) for touched.
+- new_total_wl_raw = total_wl_raw + delta_wl.
+- Density / congestion still go through plc's full recompute.
 
+`--all` validation:
+- avg 1.4719 → **1.4714 (−0.0005)**.
+- ibm10 was the biggest win: 1.3800 → 1.3749 (−0.0051) — went from
+  955 scores / 302 accepts (B3p1) to deeper search.
+- Bit-equivalent verified via `_verify_incremental_scorer.py` across
+  ibm01/ibm04/ibm10 (12 trials + 4 commits each, Δ=0.00e+00).
+- `--all` wall-clock 506.89s → 502.06s.
+
+### Phase 3 — numpy-fast congestion cost path (SHIPPED 2026-05-23)
+
+Originally planned as "per-net routing incremental" — would have
+required reproducing ~250 lines of dispatch logic (length-2/3/≥4
+buckets, 3-pin steiner cases). Estimated 1000+ lines new code, high
+bug risk. **Scoped down to the numpy-fast cost path:**
+
+1. `_vectorized_get_routing` stores `V_routing_cong` / `H_routing_cong`
+   as numpy arrays directly (skipped 4× `.tolist()` calls, ~2ms saved).
+2. `_vectorized_get_congestion_cost` replaces plc's Python-list-based
+   abu (sorted + sum) with `np.partition` (top-5% mean).
+3. `_patch_plc_congestion` now also binds `plc.get_congestion_cost`.
+
+Microbenchmark on 4510-element array:
+- Python `sorted` + slice + sum: 0.525 ms
+- `np.partition + sum`: 0.014 ms (37× faster)
+- Plus the .tolist() savings: ~2ms
+
+`--all` validation (2026-05-23):
+- avg 1.4714 → **1.4711 (−0.0003)**.
+- Wall-clock 502.06s → **460.85s (−41s, 8% faster)**.
+- ibm10 picked up another −0.0021 (1.3749 → 1.3728) from the extra
+  budget freed.
+
+The wall-clock win was bigger than expected because numpy abu also
+runs every time `plc.get_congestion_cost()` is called outside 2-opt
+(noise restarts, cong-grad iters), and those add up across the 17
+benchmarks.
+
+### Phase 4+ — full per-net routing incremental (DEFERRED)
+
+The big-leverage piece (~5-7ms savings on the congestion 9.76ms total)
+remains the per-net incremental routing. Requires:
+- Cache per-pin gcell positions at committed state.
+- Refactor `_vectorized_get_routing` to support `net_subset` + `weight_mult`.
+- IncrementalScorer subtracts OLD contribution (subset, w=-1) using
+  cached gcells, applies set_pos, adds NEW contribution (subset, w=+1).
+- Macro routing also gets incremental treatment.
+
+Implementation: 1000+ lines, careful testing. Deferred until other
+score-improvement avenues (A3, A6) explored.
+
+---
+
+## B3 — Original problem statement (kept for reference)
 
 **Where:** would touch `_exact_proxy` + `_score` callers; new code path.
 Phase 1 (position cache) is shipped — see status block above. The
