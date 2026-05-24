@@ -720,209 +720,6 @@ def _patch_plc_wirelength(plc) -> None:
     plc._wl_vec_installed = True
 
 
-def _build_soft_resnap_cache(plc, benchmark: Benchmark):
-    """One-time cache for the analytic soft-macro re-snap pass.
-
-    Soft macros are stand-in stdcell clusters. Leaving them at initial.plc
-    positions when hard macros move significantly (e.g., DREAMPlace global
-    re-place, cong-grad large displacement) creates phantom wirelength and
-    density spikes — CLAUDE.md flags this explicitly.
-
-    The re-snap maps each soft macro to a weighted centroid of its
-    NET-CONNECTED anchor pins (hard macros + ports). Anchors are static
-    relative to placement (hard positions come from the caller's hard array,
-    port positions are immutable). Other softs in the same net are excluded
-    from anchor sets to avoid moving-target instability across iterations.
-
-    Cache layout (per plc):
-      anchor_*: flat per-anchor-pin arrays (net_id, kind=0 hard / 1 port,
-                local index into that kind, x_off, y_off).
-      soft_*:   flat per-(soft, net) membership pairs (deduped if a soft has
-                multiple pins in the same net).
-      net_weights, port_positions (static), initial_soft_pos, soft_half_*.
-    """
-    if hasattr(plc, "_soft_resnap_cache"):
-        return plc._soft_resnap_cache
-
-    n_hard = benchmark.num_hard_macros
-    n_soft = benchmark.num_soft_macros
-    if n_soft == 0:
-        plc._soft_resnap_cache = {"empty": True}
-        return plc._soft_resnap_cache
-
-    wl_cache = _build_wl_cache(plc)
-    n_nets = wl_cache["n_nets"]
-    n_pins = wl_cache["n_pins"]
-    if n_nets == 0:
-        plc._soft_resnap_cache = {"empty": True}
-        return plc._soft_resnap_cache
-
-    ref_idx_arr = wl_cache["ref_idx"]
-    x_off = wl_cache["x_off"]
-    y_off = wl_cache["y_off"]
-    net_starts = wl_cache["net_starts"]
-    net_weights = wl_cache["net_weights"]
-
-    hard_lookup = {int(idx): k for k, idx in enumerate(benchmark.hard_macro_indices)}
-    soft_lookup = {int(idx): k for k, idx in enumerate(benchmark.soft_macro_indices)}
-    port_lookup = {int(p_idx): k for k, p_idx in enumerate(plc.port_indices)}
-
-    port_positions = (
-        benchmark.port_positions.detach().cpu().numpy().astype(np.float64)
-        if benchmark.port_positions.numel() > 0
-        else np.zeros((0, 2), dtype=np.float64)
-    )
-
-    anchor_net_id: "list[int]" = []
-    anchor_kind: "list[int]" = []  # 0=hard, 1=port
-    anchor_local_idx: "list[int]" = []
-    anchor_x_off: "list[float]" = []
-    anchor_y_off: "list[float]" = []
-    soft_net_id: "list[int]" = []
-    soft_local: "list[int]" = []
-    # Per-net anchor counter to filter out nets with 0 anchors (no centroid).
-    per_net_anchor_count = [0] * n_nets
-
-    for net_id in range(n_nets):
-        start = int(net_starts[net_id])
-        end = int(net_starts[net_id + 1]) if net_id + 1 < n_nets else n_pins
-        softs_in_net: set = set()
-        for k in range(start, end):
-            ridx = int(ref_idx_arr[k])
-            h = hard_lookup.get(ridx)
-            if h is not None:
-                anchor_net_id.append(net_id)
-                anchor_kind.append(0)
-                anchor_local_idx.append(h)
-                anchor_x_off.append(float(x_off[k]))
-                anchor_y_off.append(float(y_off[k]))
-                per_net_anchor_count[net_id] += 1
-                continue
-            p = port_lookup.get(ridx)
-            if p is not None:
-                anchor_net_id.append(net_id)
-                anchor_kind.append(1)
-                anchor_local_idx.append(p)
-                anchor_x_off.append(float(x_off[k]))
-                anchor_y_off.append(float(y_off[k]))
-                per_net_anchor_count[net_id] += 1
-                continue
-            s = soft_lookup.get(ridx)
-            if s is not None:
-                softs_in_net.add(s)
-        if per_net_anchor_count[net_id] > 0:
-            for s_local in softs_in_net:
-                soft_net_id.append(net_id)
-                soft_local.append(s_local)
-
-    initial_soft_pos = (
-        benchmark.macro_positions[n_hard:].detach().cpu().numpy().astype(np.float64)
-    )
-
-    soft_half_w = np.empty(n_soft, dtype=np.float64)
-    soft_half_h = np.empty(n_soft, dtype=np.float64)
-    for k, idx in enumerate(benchmark.soft_macro_indices):
-        m = plc.modules_w_pins[idx]
-        soft_half_w[k] = float(m.get_width()) * 0.5
-        soft_half_h[k] = float(m.get_height()) * 0.5
-
-    cw, ch = plc.get_canvas_width_height()
-    cache = {
-        "empty": (len(soft_net_id) == 0 or len(anchor_net_id) == 0),
-        "n_nets": n_nets,
-        "n_soft": n_soft,
-        "anchor_net_id": np.asarray(anchor_net_id, dtype=np.int64),
-        "anchor_kind": np.asarray(anchor_kind, dtype=np.int8),
-        "anchor_local_idx": np.asarray(anchor_local_idx, dtype=np.int64),
-        "anchor_x_off": np.asarray(anchor_x_off, dtype=np.float64),
-        "anchor_y_off": np.asarray(anchor_y_off, dtype=np.float64),
-        "soft_net_id": np.asarray(soft_net_id, dtype=np.int64),
-        "soft_local": np.asarray(soft_local, dtype=np.int64),
-        "net_weights": np.asarray(net_weights, dtype=np.float64),
-        "port_positions": port_positions,
-        "initial_soft_pos": initial_soft_pos,
-        "soft_half_w": soft_half_w,
-        "soft_half_h": soft_half_h,
-        "cw": float(cw),
-        "ch": float(ch),
-    }
-    plc._soft_resnap_cache = cache
-    return cache
-
-
-def _resnap_soft_macros(placement_np: np.ndarray, plc, benchmark: Benchmark,
-                        blend: float = 1.0) -> np.ndarray:
-    """Analytic soft-macro re-snap: each soft → weighted centroid of its
-    connected anchor pins (hard macros + ports).
-
-    Returns new soft positions, shape [n_soft, 2], clipped to canvas. Softs
-    with no anchor connections retain their initial position. `blend` < 1.0
-    interpolates between initial (0.0) and new centroid (1.0); 1.0 = full
-    re-snap.
-    """
-    cache = _build_soft_resnap_cache(plc, benchmark)
-    if cache.get("empty", True):
-        n_hard = benchmark.num_hard_macros
-        return placement_np[n_hard:].copy()
-
-    a_net = cache["anchor_net_id"]
-    a_kind = cache["anchor_kind"]
-    a_local = cache["anchor_local_idx"]
-    a_xoff = cache["anchor_x_off"]
-    a_yoff = cache["anchor_y_off"]
-    n_nets = cache["n_nets"]
-    n_soft = cache["n_soft"]
-
-    # Anchor pin positions: parent (hard from placement_np, port from cache)
-    # + pin offset.
-    is_port = (a_kind == 1)
-    a_pos_x = np.empty(a_net.size, dtype=np.float64)
-    a_pos_y = np.empty(a_net.size, dtype=np.float64)
-    hard_mask = ~is_port
-    if hard_mask.any():
-        h_local = a_local[hard_mask]
-        a_pos_x[hard_mask] = placement_np[h_local, 0]
-        a_pos_y[hard_mask] = placement_np[h_local, 1]
-    if is_port.any():
-        p_local = a_local[is_port]
-        a_pos_x[is_port] = cache["port_positions"][p_local, 0]
-        a_pos_y[is_port] = cache["port_positions"][p_local, 1]
-    a_pos_x += a_xoff
-    a_pos_y += a_yoff
-
-    # Per-net anchor centroid (unweighted mean of pin positions).
-    net_sum_x = np.bincount(a_net, weights=a_pos_x, minlength=n_nets)
-    net_sum_y = np.bincount(a_net, weights=a_pos_y, minlength=n_nets)
-    net_count = np.bincount(a_net, minlength=n_nets).astype(np.float64)
-    np.maximum(net_count, 1.0, out=net_count)
-    net_cx = net_sum_x / net_count
-    net_cy = net_sum_y / net_count
-
-    # Per-soft weighted average over its nets.
-    s_net = cache["soft_net_id"]
-    s_local = cache["soft_local"]
-    s_weight = cache["net_weights"][s_net]
-    soft_acc_x = np.bincount(s_local, weights=s_weight * net_cx[s_net], minlength=n_soft)
-    soft_acc_y = np.bincount(s_local, weights=s_weight * net_cy[s_net], minlength=n_soft)
-    soft_wsum = np.bincount(s_local, weights=s_weight, minlength=n_soft)
-    has_anchor = soft_wsum > 0
-
-    new_soft = cache["initial_soft_pos"].copy()
-    new_soft[has_anchor, 0] = soft_acc_x[has_anchor] / soft_wsum[has_anchor]
-    new_soft[has_anchor, 1] = soft_acc_y[has_anchor] / soft_wsum[has_anchor]
-    if blend != 1.0:
-        new_soft = blend * new_soft + (1.0 - blend) * cache["initial_soft_pos"]
-
-    # Clip to canvas bounds (using soft half-sizes).
-    cw = cache["cw"]
-    ch = cache["ch"]
-    hw = cache["soft_half_w"]
-    hh = cache["soft_half_h"]
-    new_soft[:, 0] = np.clip(new_soft[:, 0], hw, cw - hw)
-    new_soft[:, 1] = np.clip(new_soft[:, 1], hh, ch - hh)
-    return new_soft
-
-
 def _build_density_cache(plc, benchmark: Benchmark):
     """One-time precomputation per plc for the vectorized density path.
 
@@ -3197,6 +2994,46 @@ class MacroPlacer:
                                      k=1 + directed_ran, allow_overrun=True):
                     break
                 directed_ran += 1
+
+        # Phase 9a (fine-noise from best_pl, A6 axis #3) was tested and
+        # REVERTED 2026-05-23. Added 4 Gaussian-perturb candidates from
+        # best_pl at frac=0.005-0.02. `--all` net result: 0 avg change
+        # (ibm14 −0.0005, ibm17 +0.0008, rest within ±0.0001). Small noise
+        # + greedy legalize converges back to the same basin most of the
+        # time; the pipeline's existing perturbations already cover the
+        # productive perturbation magnitudes.
+
+        # -- Phase 9: Random-tiebreak legalize order (A6 axis #4, 2026-05-23) -
+        # Default `_will_legalize` order is `sorted(range(n), key=-area)` —
+        # largest-area first with index-tied secondary key. For benchmarks
+        # with many similar-sized macros (ibm08/09/11/13), the deterministic
+        # tiebreaks may lock the placer into one specific legal arrangement.
+        # This phase tries N_TRIALS legalize orderings that keep the primary
+        # key (-area) but RANDOMIZE the secondary key.
+        #
+        # Distinct from the rejected "multi-order baseline" (smallest-area,
+        # tallest, widest) which changed the primary key — that regressed
+        # benchmarks where small-macro-first produced large-macro-trapped
+        # placements. Here the primary key is preserved.
+        N_ORDER_TRIALS = 3
+        area = sizes[:n, 0] * sizes[:n, 1]
+        for trial in range(N_ORDER_TRIALS):
+            remaining_p9 = (
+                effective_budget_s + BUDGET_OVERRUN_S
+            ) - (time.time() - t0)
+            if remaining_p9 < t_one_score * 1.3:
+                break
+            # np.lexsort: last key is primary. With (random_key, -area) the
+            # primary sort is by -area (largest first), tied entries broken
+            # by the uniform random key — different per trial.
+            random_key = rng_cong.random(n)
+            shuffled_order = np.lexsort((random_key, -area)).tolist()
+            if not _try_restart(f"random-order-legalize trial={trial}",
+                                 init_pos, k=1 + directed_ran,
+                                 allow_overrun=True,
+                                 order=shuffled_order):
+                break
+            directed_ran += 1
 
         # -- 2-opt swap on cong-grad winner (additive, after Phase 7) ---------
         # Proxy-driven (issue #1, 2026-05-23). Previously this used
