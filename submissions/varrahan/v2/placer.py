@@ -2197,6 +2197,7 @@ def _routing_congestion_perturb(
     movable: np.ndarray,
     frac: float = 0.04,
     rng: np.random.RandomState | None = None,
+    top_k: Optional[int] = None,
 ) -> np.ndarray:
     """
     Move macros away from high routing-congestion cells using the ACTUAL
@@ -2211,6 +2212,14 @@ def _routing_congestion_perturb(
 
     Uses a separate rng (not np.random) so the main random state is unchanged
     and subsequent noise restarts get identical draws to before.
+
+    top_k (A6 attack #1, 2026-05-23): if set, restrict perturbation to the
+    K movable macros with HIGHEST local congestion (out of all those above
+    `cong_threshold`). Original behavior (top_k=None) moves every qualifying
+    macro. Rationale per A3 diagnostic: DP loses uniformly on congestion by
+    ~+0.08 on average; our cong-grad currently spreads motion across all
+    congested macros, possibly blunting the gradient. TOP-K focuses motion
+    on the hottest cells where it should matter most.
     """
     if rng is None:
         rng = np.random.RandomState(42)
@@ -2254,6 +2263,19 @@ def _routing_congestion_perturb(
     perturbed = pos.copy()
     if not mask.any():
         return perturbed
+
+    # A6 attack #1 (2026-05-23): TOP-K filter. Of all qualifying macros,
+    # keep only the K with highest local congestion. Tested on top of the
+    # full-mask baseline as a NEW candidate (Phase 8); the default
+    # `top_k=None` preserves existing Phase 1/2/3/5b/5c/7 behavior.
+    if top_k is not None and int(mask.sum()) > top_k:
+        qual_indices = np.where(mask)[0]
+        qual_cong = local_cong_all[qual_indices]
+        # Negative for argpartition: pick the top_k LARGEST values.
+        top_pos_in_qual = np.argpartition(-qual_cong, top_k - 1)[:top_k]
+        focused_mask = np.zeros_like(mask)
+        focused_mask[qual_indices[top_pos_in_qual]] = True
+        mask = focused_mask
 
     r_idx = r_idx_all[mask]
     c_idx = c_idx_all[mask]
@@ -2511,13 +2533,15 @@ class MacroPlacer:
                 iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
                              / benchmark.name)
                 if iccad_dir.exists():
-                    # n>500 launch gate was tested 2026-05-23 (issue #6) and
-                    # REVERTED: A/B on ibm10 showed 1-DP=1.3891 vs 2-DP=1.3876
-                    # (−0.0015 score cost) AND 1-DP=85s vs 2-DP=71s (no
-                    # wall-clock saving). The existing Phase 5 wait logic
-                    # `max_wait = min(remaining - 3*t_one_score, 30)` already
-                    # adapts to tight budgets by killing the slower handle.
-                    # An explicit launch-side gate is redundant.
+                    # 2026-05-23 (post-A3 retest): keep BOTH handles. Initial
+                    # A3 analysis said "lo dominated by hi → drop lo" based on
+                    # raw DP candidate scores only. But the A5 Phase 7 audit
+                    # showed Phase 7 chains FROM lo win on ibm01/02/09/10 —
+                    # the lo DP's *plc-state-mutation* feeds different cong-
+                    # grad basins than hi. Single-bench test of "hi only"
+                    # regressed ibm10 from 1.3728 → 1.3811 (+0.008), so the
+                    # Phase 7 effect dominates the raw DP placement quality
+                    # for this handle. Conclusion: don't drop lo.
                     for tag, td, root in (
                         ("hi", 0.85, "/tmp/dreamplace_v1_hi"),
                         ("lo", 0.65, "/tmp/dreamplace_v1_lo"),
@@ -3146,6 +3170,33 @@ class MacroPlacer:
                 # Hard cap: don't exceed cap after this iter's scoring.
                 if time.time() - t0 > effective_budget_s + BUDGET_OVERRUN_S:
                     break
+
+        # -- Phase 8: TOP-K cong-grad from best_pl (A6 attack #1, 2026-05-23) -
+        # The A3 diagnostic showed DP loses on congestion by avg +0.08 vs our
+        # best. Phase 1/2/3/5/7 use the full-mask perturb (every macro in a
+        # congested cell moves), which may blunt the gradient on dense
+        # benchmarks. Phase 8 tries TOP-K (move only the K hottest macros)
+        # from best_pl with a few K values; preserves all prior wins because
+        # it runs LAST and only consumes leftover budget.
+        if cong_improved:
+            for top_k_val in (5, 10, 20):
+                remaining_p8 = (
+                    effective_budget_s + BUDGET_OVERRUN_S
+                ) - (time.time() - t0)
+                if remaining_p8 < t_one_score * 1.3:
+                    break
+                best_pos_now = np.stack(
+                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
+                )
+                p8_perturbed = _routing_congestion_perturb(
+                    best_pos_now, plc, benchmark, n, cw, ch, hw, hh, movable,
+                    frac=0.04, rng=rng_cong, top_k=top_k_val,
+                )
+                if not _try_restart(f"cong-grad-best TOP-{top_k_val} f=0.04",
+                                     p8_perturbed,
+                                     k=1 + directed_ran, allow_overrun=True):
+                    break
+                directed_ran += 1
 
         # -- 2-opt swap on cong-grad winner (additive, after Phase 7) ---------
         # Proxy-driven (issue #1, 2026-05-23). Previously this used

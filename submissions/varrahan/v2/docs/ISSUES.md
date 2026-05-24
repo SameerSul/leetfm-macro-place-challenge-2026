@@ -27,14 +27,16 @@ A6=#9 (score); B1=#6, B2=#4 (perf); C1=#5 (maint).
 | v2 + B1 + A1 (proxy 2-opt) | 1.4723 | −0.0059 | +1.0% | 542.79s |
 | v2 + B1 + A1 + B3-phase-1 (pos cache) | 1.4719 | −0.0004 | +1.0% | 506.89s |
 | v2 + B1 + A1 + B3-phase-1+2 (per-net HPWL incr) | 1.4714 | −0.0005 | +0.9% | 502.06s |
-| v2 + B1 + A1 + B3-phase-1+2+3 (numpy abu) | **1.4711** | −0.0003 | **+0.9%** | **460.85s** |
+| v2 + B1 + A1 + B3-phase-1+2+3 (numpy abu) | 1.4711 | −0.0003 | +0.9% | 460.85s |
+| v2 + B1 + A1 + B3 + A6 Phase 8 (TOP-K cong-grad) | **1.4701** | −0.0010 | **+0.8%** | **469.62s** |
 
-**Combined session progress: 1.4854 → 1.4711 = −0.0143 in 2026-05-23.**
+**Combined session progress: 1.4854 → 1.4701 = −0.0153 in 2026-05-23.**
 
-Wall-clock dropped from ~3360s (B1) to 460.85s (placer time, B3p3).
+Wall-clock dropped from ~3360s (B1) to 469.62s (placer time, A6 Phase 8).
 Most of the savings came from the B3 series — phase 1's get_pos
 elimination (~36s), phase 2's per-net HPWL (~5s), and phase 3's numpy
-abu + .tolist removal (~42s).
+abu + .tolist removal (~42s). Phase 8 added back ~9s for the extra
+TOP-K candidates.
 
 ---
 
@@ -52,6 +54,16 @@ abu + .tolist removal (~42s).
   Eliminated get_pos Python loops; per-score cost 22.5ms → 15.4ms
   (1.46×). `--all` avg 1.4723 → 1.4719 (−0.0004), `--all` wall-clock
   542s → 507s. Bit-equivalence verified.
+- **B3 phase 2 — per-net HPWL incremental** (**RESOLVED 2026-05-23**).
+  IncrementalScorer with macro→nets index; touched-nets reduceat.
+  --all avg 1.4719 → 1.4714 (−0.0005). Bit-equivalent verified.
+- **B3 phase 3 — numpy abu** (**RESOLVED 2026-05-23**). Skip .tolist()
+  + np.partition top-5%. --all avg 1.4714 → 1.4711 (−0.0003);
+  wall-clock 502s → 461s (−41s).
+- **A3 + A6 axis #1 — TOP-K cong-grad (Phase 8)** (**RESOLVED
+  2026-05-23**). DP diagnostic showed congestion gap +0.08 avg; TOP-K
+  perturb from best_pl as Phase 8. --all avg 1.4711 → **1.4701
+  (−0.0010)**; wins on ibm02/03/04/06/16. Gap to RePlAce now +0.8%.
 
 ### Tier 2 — VALIDATED, NO ACTION NEEDED
 
@@ -301,7 +313,41 @@ revisit if wall-clock pressure increases after B3.
 
 ---
 
-## A6. Score ceiling on hard-to-improve benchmarks (PARTIALLY RESOLVED 2026-05-23)
+## A6. Score ceiling on hard-to-improve benchmarks (axis #1 shipped 2026-05-23)
+
+**A3 + A6 axis #1 (TOP-K cong-grad / Phase 8) — SHIPPED 2026-05-23.**
+
+A3 diagnostic finding: DP loses uniformly on congestion (avg +0.08 vs
+our best). Hypothesis: our full-mask `_routing_congestion_perturb`
+moves every macro in a congested cell, blunting the gradient. TOP-K
+restricts motion to the K hottest macros.
+
+Implementation: `top_k` parameter on `_routing_congestion_perturb`
+(default None preserves all existing Phase 1/2/3/5b/5c/7 calls). New
+Phase 8 (after Phase 7) runs three TOP-K candidates (k=5/10/20) from
+best_pl when `cong_improved=True` and budget allows.
+
+`--all` validation:
+- avg 1.4711 → **1.4701 (−0.0010)**.
+- Biggest wins on dense benchmarks where cong-grad is active:
+  ibm03 −0.0062, ibm02 −0.0036, ibm06 −0.0034, ibm04 −0.0025,
+  ibm16 −0.0007. Smaller wins on ibm12/14/17. No regressions
+  (ibm09 +0.0002 within variance).
+- Wall-clock 460.85s → 469.62s (+9s for the Phase 8 candidates).
+
+The diagnostic dC of +0.08 wasn't fully closed (Phase 8 ~−0.001 to
+−0.006 per affected benchmark), but the direction was right.
+Remaining axes (#2 lo-handle drop, #3 fine-noise from best, #4
+order-randomization) still open.
+
+A4 attempt (drop lo handle, 2026-05-23): rejected. The A3 diagnostic
+showed raw lo loses on all benchmarks, but the A5 Phase 7 audit
+showed Phase 7 chains from lo win on ibm01/02/09/10. Removing lo
+regressed ibm10 by +0.008 in single-bench test. Both handles kept.
+
+---
+
+## A6 — Original framing (kept for reference)
 
 **Status: original framing ("9/17 benchmarks have no improvement over
 v12") is no longer accurate.** After A1 (proxy 2-opt), **all 17
