@@ -17,26 +17,30 @@ A6=#9 (score); B1=#6, B2=#4 (perf); C1=#5 (maint).
 
 ---
 
-## Current headline (2026-05-23 EOD)
+## Current headline (2026-05-24 EOD)
 
 | Milestone | --all avg | Δ from prior | Gap vs RePlAce 1.4578 | --all wall-clock |
 |---|---|---|---|---|
 | v12 confirmed (baseline) | 1.4854 | — | +1.9% | — |
 | v15 partial (ibm17 timed out) | 1.4804 | −0.0050 | +1.6% | (no run) |
 | v2 + B1 (cumulative guard) | 1.4782 | −0.0022 | +1.4% | ~3360s |
-| v2 + B1 + A1 (proxy 2-opt) | 1.4723 | −0.0059 | +1.0% | 542.79s |
-| v2 + B1 + A1 + B3-phase-1 (pos cache) | 1.4719 | −0.0004 | +1.0% | 506.89s |
-| v2 + B1 + A1 + B3-phase-1+2 (per-net HPWL incr) | 1.4714 | −0.0005 | +0.9% | 502.06s |
-| v2 + B1 + A1 + B3-phase-1+2+3 (numpy abu) | 1.4711 | −0.0003 | +0.9% | 460.85s |
-| v2 + B1 + A1 + B3 + A6 Phase 8 (TOP-K cong-grad) | **1.4701** | −0.0010 | **+0.8%** | **469.62s** |
+| + A1 (proxy 2-opt) | 1.4723 | −0.0059 | +1.0% | 542.79s |
+| + B3 phase 1 (pos cache) | 1.4719 | −0.0004 | +1.0% | 506.89s |
+| + B3 phase 2 (per-net HPWL incr) | 1.4714 | −0.0005 | +0.9% | 502.06s |
+| + B3 phase 3 (numpy abu) | 1.4711 | −0.0003 | +0.9% | 460.85s |
+| + A6 Phase 8 (TOP-K cong-grad) | 1.4701 | −0.0010 | +0.8% | 469.62s |
+| + Phase 9 random-order legalize | 1.4698 | −0.0003 | +0.8% | 525.19s |
+| + B4 dispatch cache | 1.4698 | 0 | +0.8% | (similar) |
+| + B3 phase 4 (per-net incremental routing) | 1.4690 | −0.0008 | +0.8% | **387.21s** |
+| + k_neighbors=10 + max_iters=6 + Phase 8 chains | **1.4647** | **−0.0043** | **+0.5%** | 481.37s |
 
-**Combined session progress: 1.4854 → 1.4701 = −0.0153 in 2026-05-23.**
+**Combined session progress: 1.4854 → 1.4647 = −0.0207 (2026-05-23 → 2026-05-24).**
+**Gap to RePlAce shrunk from +1.9% to +0.5% — all 17 benchmarks improved in the final combined run.**
 
-Wall-clock dropped from ~3360s (B1) to 469.62s (placer time, A6 Phase 8).
-Most of the savings came from the B3 series — phase 1's get_pos
-elimination (~36s), phase 2's per-net HPWL (~5s), and phase 3's numpy
-abu + .tolist removal (~42s). Phase 8 added back ~9s for the extra
-TOP-K candidates.
+Wall-clock dropped from ~3360s (B1) to 481.37s. B3 phase 4 alone took
+wall-clock from 469s → 387s (−82s); the final k=10 / max_iters=6 / Phase 8
+chains additions added back ~94s (since they consume the freed budget on
+extra 2-opt iterations and Phase 8 chain candidates).
 
 ---
 
