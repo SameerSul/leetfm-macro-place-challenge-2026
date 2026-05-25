@@ -106,7 +106,7 @@ def _will_legalize(
 
     order: list of macro indices defining placement sequence. Default (None)
     uses largest-area-first. Different orders explore different legal arrangements.
-    deadline: optional wall-clock time.time() value; remaining macros keep pos[].
+    deadline: optional wall-clock time.monotonic() value; remaining macros keep pos[].
 
     Spiral search is vectorized: per ring we build all K candidate positions at
     once and run a single [K, P] conflict matrix against the P already-placed
@@ -125,7 +125,7 @@ def _will_legalize(
     EPS = 0.05  # separation tolerance, mirrors the original `+ 0.05` constant
 
     for idx in order:
-        if deadline is not None and time.time() > deadline:
+        if deadline is not None and time.monotonic() > deadline:
             break
         if not movable[idx]:
             placed[idx] = True
@@ -244,7 +244,7 @@ def _two_opt_swap(
 
     swap_count = 0
     for it in range(max_iters):
-        if deadline is not None and time.time() > deadline:
+        if deadline is not None and time.monotonic() > deadline:
             break
         improved_any = False
 
@@ -270,7 +270,7 @@ def _two_opt_swap(
         for i in range(n):
             if not movable[i]:
                 continue
-            if deadline is not None and time.time() > deadline:
+            if deadline is not None and time.monotonic() > deadline:
                 break
             for j in neighbors[i]:
                 if not movable[j] or i == j:
@@ -406,7 +406,7 @@ def _two_opt_proxy_swap(
 
     it = 0
     while it < effective_max_iters:
-        if deadline is not None and time.time() > deadline:
+        if deadline is not None and time.monotonic() > deadline:
             break
         improved_any = False
         iter_accepts = 0
@@ -437,12 +437,12 @@ def _two_opt_proxy_swap(
         for i in range(n):
             if not movable[i]:
                 continue
-            if deadline is not None and time.time() > deadline:
+            if deadline is not None and time.monotonic() > deadline:
                 break
             for j in neighbors[i]:
                 if not movable[j] or i == j:
                     continue
-                if deadline is not None and time.time() > deadline:
+                if deadline is not None and time.monotonic() > deadline:
                     break
 
                 new_ix, new_iy = pos[j, 0], pos[j, 1]
@@ -728,6 +728,7 @@ def _build_wl_cache(plc):
     net_ends[:-1] = net_starts_arr[1:]
     net_ends[-1] = cursor
     net_lengths = (net_ends - net_starts_arr).astype(np.int64)
+
 
     cache = {
         "ref_idx": ref_idx_arr,
@@ -2698,7 +2699,7 @@ class MacroPlacer:
         np.random.seed(self.seed)
         random.seed(self.seed)
 
-        t0 = time.time()
+        t0 = time.monotonic()
         n = benchmark.num_hard_macros
         cw, ch = benchmark.canvas_width, benchmark.canvas_height
         sizes = benchmark.macro_sizes[:n].numpy().astype(np.float64)
@@ -2875,9 +2876,9 @@ class MacroPlacer:
 
         # -- Restart 0: Baseline ----------------------------------------------
         _log(f"  Restart 0 (baseline)...")
-        t1 = time.time()
+        t1 = time.monotonic()
         baseline_pos = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
-        _log(f"    Legalized in {time.time()-t1:.1f}s")
+        _log(f"    Legalized in {time.monotonic()-t1:.1f}s")
 
         # 2-opt on the baseline causes subtle Phase 1 trajectory changes that
         # can BREAK the existing wins. Tested 2026-05-19: baseline 2-opt
@@ -2916,12 +2917,12 @@ class MacroPlacer:
         # baseline-only branch: no cong-grad pipeline to interfere with. Tested
         # gain is small (~−0.0005 per benchmark on n>400 baseline-only set).
         if not use_exact:
-            t_2opt = time.time()
+            t_2opt = time.monotonic()
             opt_pos, swap_count = _two_opt_swap(
                 baseline_pos, init_pos, sizes, hw, hh, cw, ch, movable, n,
                 k_neighbors=5, max_iters=3, deadline=t_2opt + 30.0,
             )
-            _log(f"  2-opt: {swap_count} swaps in {time.time()-t_2opt:.1f}s")
+            _log(f"  2-opt: {swap_count} swaps in {time.monotonic()-t_2opt:.1f}s")
             if swap_count > 0:
                 pl_scratch[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
                 pl_scratch[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
@@ -2953,10 +2954,10 @@ class MacroPlacer:
                     pass
             if plc is not None and dp_handle is not None:
                 large_dp_budget = effective_budget_s + 60.0  # mirrors BUDGET_OVERRUN_S below
-                t_base_score_start = time.time()
+                t_base_score_start = time.monotonic()
                 try:
                     base_score = float(_exact_proxy(pl_scratch, benchmark, plc))
-                    t_base_score = time.time() - t_base_score_start
+                    t_base_score = time.monotonic() - t_base_score_start
                     _log(f"  [large-DP] baseline exact proxy={base_score:.4f}  "
                          f"(scored in {t_base_score:.1f}s)")
                     # 130s threshold (vs the 100s SLOW_SCORE_THRESHOLD_S used in
@@ -2968,7 +2969,7 @@ class MacroPlacer:
                     if t_base_score < 130.0:
                         # Wait for DP up to remaining budget minus reserved
                         # legalize+score window (~2*t_base_score).
-                        remaining = large_dp_budget - (time.time() - t0)
+                        remaining = large_dp_budget - (time.monotonic() - t0)
                         max_wait = max(0.0, remaining - 2.0 * t_base_score - 5.0)
                         dp_full_large = dp_handle.wait_for_result_full(
                             max_wait_s=min(max_wait, 60.0)
@@ -2978,7 +2979,7 @@ class MacroPlacer:
                             dp_hard_l_clip = dp_hard_l.copy()
                             dp_hard_l_clip[:, 0] = np.clip(dp_hard_l_clip[:, 0], hw, cw - hw)
                             dp_hard_l_clip[:, 1] = np.clip(dp_hard_l_clip[:, 1], hh, ch - hh)
-                            t_dp_leg = time.time()
+                            t_dp_leg = time.monotonic()
                             dp_leg_large = _will_legalize(
                                 dp_hard_l_clip, movable, sizes, hw, hh, cw, ch, n,
                                 deadline=t_dp_leg + 60.0,
@@ -2998,15 +2999,15 @@ class MacroPlacer:
                                 dp_pl_large[n:n + n_soft_l, 1] = torch.tensor(
                                     dp_soft_l[:n_soft_l, 1], dtype=torch.float32
                                 )
-                            t_dp_score_start = time.time()
+                            t_dp_score_start = time.monotonic()
                             dp_score_large = float(_exact_proxy(dp_pl_large, benchmark, plc))
-                            t_dp_score_large = time.time() - t_dp_score_start
+                            t_dp_score_large = time.monotonic() - t_dp_score_start
                             _log(f"  [large-DP] dreamplace exact proxy={dp_score_large:.4f}  "
-                                 f"(leg+score {time.time()-t_dp_leg:.1f}s)")
+                                 f"(leg+score {time.monotonic()-t_dp_leg:.1f}s)")
                             if dp_score_large < base_score:
                                 _log(f"  [large-DP] DP wins ({dp_score_large:.4f} < "
                                      f"{base_score:.4f}); returning DP placement")
-                                _log(f"  total={time.time()-t0:.1f}s")
+                                _log(f"  total={time.monotonic()-t0:.1f}s")
                                 self._benchmarks_done += 1
                                 return dp_pl_large
                             else:
@@ -3029,7 +3030,7 @@ class MacroPlacer:
                         except Exception:
                             pass
 
-            _log(f"  total={time.time()-t0:.1f}s")
+            _log(f"  total={time.monotonic()-t0:.1f}s")
             self._benchmarks_done += 1
             return pl_scratch  # safe: no more in-place writes will happen
 
@@ -3039,7 +3040,7 @@ class MacroPlacer:
         # cumulative budget that single score would blow the cap. Threshold is
         # effective_budget_s < 60s (one safe score) OR cumulative elapsed has
         # consumed >= 95% of HARNESS_TOTAL_BUDGET_S.
-        cumulative_now = time.time() - self._first_place_call_time
+        cumulative_now = time.monotonic() - self._first_place_call_time
         if (effective_budget_s < 60.0 or
                 cumulative_now > self.HARNESS_TOTAL_BUDGET_S * 0.95):
             _log(f"  [--all guard] tight budget "
@@ -3050,13 +3051,13 @@ class MacroPlacer:
                     _h.kill()
                 except Exception:
                     pass
-            _log(f"  total={time.time()-t0:.1f}s")
+            _log(f"  total={time.monotonic()-t0:.1f}s")
             self._benchmarks_done += 1
             return pl_scratch
 
-        t_score0 = time.time()
+        t_score0 = time.monotonic()
         best_score = float(_exact_proxy(pl_scratch, benchmark, plc))
-        t_one_score = time.time() - t_score0
+        t_one_score = time.monotonic() - t_score0
         best_pl = pl_scratch.clone()
         _log(f"  Candidate 0: proxy={best_score:.4f}  (scored in {t_one_score:.1f}s)")
 
@@ -3074,7 +3075,7 @@ class MacroPlacer:
                     _h.kill()
                 except Exception:
                     pass
-            _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
+            _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
             self._benchmarks_done += 1
             return best_pl
 
@@ -3098,7 +3099,7 @@ class MacroPlacer:
             same starting positions.
             """
             nonlocal best_score, best_pl, t_one_score
-            elapsed = time.time() - t0
+            elapsed = time.monotonic() - t0
             cap = effective_budget_s + (BUDGET_OVERRUN_S if allow_overrun else 0.0)
             remaining = cap - elapsed
             # t_one_score is a running max over observed scoring times (initialized
@@ -3117,11 +3118,11 @@ class MacroPlacer:
                      f"need ~{estimated_cost:.0f}s)")
                 return False  # signal: stop further restarts
 
-            t1 = time.time()
+            t1 = time.monotonic()
             leg_deadline = t1 + 60.0  # cap spiral search; timed-out macros keep pos value
             leg = _will_legalize(perturbed_init, movable, sizes, hw, hh, cw, ch, n,
                                  deadline=leg_deadline, order=order)
-            t_leg = time.time() - t1
+            t_leg = time.monotonic() - t1
             _log(f"  Restart {k} ({label}) legalized in {t_leg:.1f}s")
 
             # 2-opt-everywhere tested 2026-05-19, REJECTED. Applied to each
@@ -3138,9 +3139,9 @@ class MacroPlacer:
             # 2-opt is still applied to BASELINE legalize (outside this function)
             # where there's no cong-grad trajectory to disrupt.
 
-            t_score_start = time.time()
+            t_score_start = time.monotonic()
             score = _score(leg)
-            t_score_observed = time.time() - t_score_start
+            t_score_observed = time.monotonic() - t_score_start
             if t_score_observed > t_one_score:
                 t_one_score = t_score_observed
             _log(f"  Candidate {k}: proxy={score:.4f}")
@@ -3150,8 +3151,8 @@ class MacroPlacer:
 
             # Safety: if scoring overran the (possibly relaxed) cap, stop immediately
             # rather than launching another restart that would push time further over.
-            if time.time() - t0 > cap:
-                _log(f"  Over budget after scoring ({time.time()-t0:.0f}s, cap={cap:.0f}s); stopping")
+            if time.monotonic() - t0 > cap:
+                _log(f"  Over budget after scoring ({time.monotonic()-t0:.0f}s, cap={cap:.0f}s); stopping")
                 return False
 
             return True
@@ -3181,7 +3182,7 @@ class MacroPlacer:
             if cong_iter > 0:
                 # Use relaxed cap (matches _try_restart's allow_overrun=True path)
                 # so a transient spike on iter=0 doesn't block the whole loop.
-                remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+                remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
                 # Larger factor for full-frac iters (reserve for Phase 2 + noise).
                 # Smaller factor for adaptive halved-frac retries (only 1 eval needed).
                 budget_factor = 3.0 if cong_frac >= 0.04 else 1.5
@@ -3220,7 +3221,7 @@ class MacroPlacer:
         if cong_improved:
             for wide_frac in [0.08, 0.12]:
                 # Use relaxed cap so Phase 2 still fires after a Phase 1 spike.
-                remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+                remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
                 if remaining < t_one_score * 1.3:
                     break
                 cong_wide = _routing_congestion_perturb(
@@ -3255,7 +3256,7 @@ class MacroPlacer:
         if cong_improved:
             # Use relaxed cap so Phase 3 fires after a Phase 1 spike — this is
             # where ibm04's 1.3316 win lives.
-            remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+            remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if remaining >= t_one_score * 1.3:
                 best_pos_now = np.stack(
                     [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
@@ -3277,7 +3278,7 @@ class MacroPlacer:
         # cong-grad as additive tail after the noise loop).
         dp_placements: list[tuple[str, float, torch.Tensor]] = []
         for tag, td, h in dp_handles:
-            remaining_dp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+            remaining_dp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             # 3*t_one_score reserve covers Phase 5b + at least one noise score.
             max_wait = max(0.0, min(remaining_dp - 3.0 * t_one_score, 30.0))
             dp_full = h.wait_for_result_full(max_wait_s=max_wait)
@@ -3293,7 +3294,7 @@ class MacroPlacer:
             # Legalize hard macros (DREAMPlace's NLP may leave overlaps).
             # Clip out-of-canvas first: DREAMPlace's macro_place_flag stage
             # can produce positions slightly past canvas.
-            t_dp = time.time()
+            t_dp = time.monotonic()
             dp_leg_deadline = t_dp + 60.0
             dp_hard_clip = dp_hard.copy()
             dp_hard_clip[:, 0] = np.clip(dp_hard_clip[:, 0], hw, cw - hw)
@@ -3313,14 +3314,14 @@ class MacroPlacer:
                 dp_pl[n:n + n_soft_dp, 1] = torch.tensor(
                     dp_soft[:n_soft_dp, 1], dtype=torch.float32
                 )
-            t_dp_score_start = time.time()
+            t_dp_score_start = time.monotonic()
             dp_score = float(_exact_proxy(dp_pl, benchmark, plc))
-            t_dp_score = time.time() - t_dp_score_start
+            t_dp_score = time.monotonic() - t_dp_score_start
             if t_dp_score > t_one_score:
                 t_one_score = t_dp_score
             directed_ran += 1
             _log(f"  Candidate {directed_ran} (dreamplace[{tag}] hard+soft): "
-                 f"proxy={dp_score:.4f}  (leg+score {time.time()-t_dp:.1f}s)")
+                 f"proxy={dp_score:.4f}  (leg+score {time.monotonic()-t_dp:.1f}s)")
             # Analytic soft re-snap as a +resnap candidate tested 2026-05-22.
             # Result: consistently regressed on both ibm04 (+0.003) and ibm10
             # (+0.002) at every blend factor tried (1.0, 0.2, 0.05). Root cause:
@@ -3340,7 +3341,7 @@ class MacroPlacer:
         # baseline). Perturbing best_pl with this gradient explores basins
         # the original-baseline plc state alone couldn't reach.
         if dp_placements:
-            remaining_5b = (effective_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+            remaining_5b = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if remaining_5b >= t_one_score * 1.3:
                 best_pos_now = np.stack(
                     [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
@@ -3368,7 +3369,7 @@ class MacroPlacer:
         # affected. Noise loop uses np.random directly (not rng_cong), so the
         # extra rng_cong draw here doesn't perturb noise restarts.
         if cong_improved:
-            remaining_5c = (effective_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+            remaining_5c = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if remaining_5c >= t_one_score * 1.3:
                 best_pos_5c = np.stack(
                     [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
@@ -3432,25 +3433,25 @@ class MacroPlacer:
             for it in range(1, MAX_P7_ITERS + 1):
                 remaining_p7 = (
                     effective_budget_s + BUDGET_OVERRUN_S
-                ) - (time.time() - t0)
+                ) - (time.monotonic() - t0)
                 if remaining_p7 < t_one_score * 1.3:
                     break
                 rescue_perturbed = _routing_congestion_perturb(
                     current_pos, plc, benchmark, n, cw, ch, hw, hh, movable,
                     frac=0.04, rng=rng_cong,
                 )
-                t1 = time.time()
+                t1 = time.monotonic()
                 leg = _will_legalize(
                     rescue_perturbed, movable, sizes, hw, hh, cw, ch, n,
                     deadline=t1 + 60.0,
                 )
-                t_leg = time.time() - t1
+                t_leg = time.monotonic() - t1
                 directed_ran += 1
                 _log(f"  Restart {directed_ran} (cong-grad from-dp[{tag}] "
                      f"iter={it} f=0.04) legalized in {t_leg:.1f}s")
-                t_score_start = time.time()
+                t_score_start = time.monotonic()
                 score = _score(leg)
-                t_score_observed = time.time() - t_score_start
+                t_score_observed = time.monotonic() - t_score_start
                 if t_score_observed > t_one_score:
                     t_one_score = t_score_observed
                 _log(f"  Candidate {directed_ran}: proxy={score:.4f}")
@@ -3464,7 +3465,7 @@ class MacroPlacer:
                 prev_iter_score = score
                 current_pos = leg
                 # Hard cap: don't exceed cap after this iter's scoring.
-                if time.time() - t0 > effective_budget_s + BUDGET_OVERRUN_S:
+                if time.monotonic() - t0 > effective_budget_s + BUDGET_OVERRUN_S:
                     break
 
         # -- Phase 8: TOP-K cong-grad from best_pl (A6 attack #1, 2026-05-23) -
@@ -3487,7 +3488,7 @@ class MacroPlacer:
                 for chain_iter in range(MAX_P8_ITERS):
                     remaining_p8 = (
                         effective_budget_s + BUDGET_OVERRUN_S
-                    ) - (time.time() - t0)
+                    ) - (time.monotonic() - t0)
                     if remaining_p8 < t_one_score * 1.3:
                         break
                     best_pos_now = np.stack(
@@ -3533,7 +3534,7 @@ class MacroPlacer:
         for trial in range(N_ORDER_TRIALS):
             remaining_p9 = (
                 effective_budget_s + BUDGET_OVERRUN_S
-            ) - (time.time() - t0)
+            ) - (time.monotonic() - t0)
             if remaining_p9 < t_one_score * 1.3:
                 break
             # np.lexsort: last key is primary. With (random_key, -area) the
@@ -3557,9 +3558,9 @@ class MacroPlacer:
         # post-vectorization, scoring each candidate swap directly is
         # affordable. Cheap bounds + conflict checks remain as a free
         # filter so most candidates skip the score call.
-        remaining_2opt = (effective_budget_s + BUDGET_OVERRUN_S) - (time.time() - t0)
+        remaining_2opt = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
         if remaining_2opt >= t_one_score + 15.0:
-            t_2opt = time.time()
+            t_2opt = time.monotonic()
             best_hard_pos = np.stack(
                 [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
             ).astype(np.float64)
@@ -3604,13 +3605,13 @@ class MacroPlacer:
             scorer_tag = "incr" if incremental_scorer is not None else "full"
             _log(f"  2-opt-on-winner (proxy/{scorer_tag}): {accept_count} accepts / "
                  f"{score_calls} scores, final={final_score:.4f} "
-                 f"(was {best_score:.4f}) in {time.time()-t_2opt:.1f}s")
+                 f"(was {best_score:.4f}) in {time.monotonic()-t_2opt:.1f}s")
             if accept_count > 0 and final_score < best_score:
                 best_score = final_score
                 best_pl = best_pl.clone()
                 best_pl[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
                 best_pl[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
 
-        _log(f"  Best proxy={best_score:.4f}  total={time.time()-t0:.1f}s")
+        _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
         self._benchmarks_done += 1
         return best_pl
