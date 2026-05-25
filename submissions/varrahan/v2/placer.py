@@ -397,6 +397,11 @@ def _two_opt_proxy_swap(
     # ways. Disabled until the regression mechanism is understood.
     swap_score_cache: "dict[frozenset, float]" = {}
     cache_hits = 0
+    # B7 (cache) tested again 2026-05-24 post-B3p4. Result: ibm01 +0.0002,
+    # ibm04 0, ibm10 +0.0006 — small regression. The frozenset construction
+    # + dict lookup overhead exceeds the saved score time at ~3ms/score.
+    # With incremental scoring this fast, the cache is no longer profitable.
+    # Disabled.
     B7_CACHE_ENABLED = False
 
     it = 0
@@ -421,14 +426,13 @@ def _two_opt_proxy_swap(
             break
         neighbors = np.argpartition(d_pair, k_eff, axis=1)[:, :k_eff]
 
-        # B9 (smarter ordering): tentative — DISABLED for now. Sort by
-        # distance descending changes the greedy 2-opt accept sequence;
-        # ibm01 regressed +0.0029 in the first test. Possibly we need
-        # ASCENDING (small swaps first) or no sort. Keep argpartition's
-        # native order until proper A/B.
-        # nbr_dists = np.take_along_axis(d_pair, neighbors, axis=1)
-        # nbr_sort = np.argsort(-nbr_dists, axis=1)
-        # neighbors = np.take_along_axis(neighbors, nbr_sort, axis=1)
+        # B9 (smarter ordering) tested twice and REVERTED 2026-05-24:
+        #   - DESCENDING by distance: ibm01 +0.003 regression (greedy path).
+        #   - ASCENDING by distance: --all 1.4647 → 1.4647 (zero change), but
+        #     wall-clock +42s (no benefit, slight cost). The candidate pool
+        #     is exhausted within deadline at k=10/max_iters=6, so order
+        #     doesn't matter on these benchmarks.
+        # Keep argpartition's native order.
 
         for i in range(n):
             if not movable[i]:
@@ -2819,35 +2823,30 @@ class MacroPlacer:
                 iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
                              / benchmark.name)
                 if iccad_dir.exists():
-                    # 2026-05-23 (post-A3 retest): keep BOTH handles. Initial
-                    # A3 analysis said "lo dominated by hi → drop lo" based on
-                    # raw DP candidate scores only. But the A5 Phase 7 audit
-                    # showed Phase 7 chains FROM lo win on ibm01/02/09/10 —
-                    # the lo DP's *plc-state-mutation* feeds different cong-
-                    # grad basins than hi. Single-bench test of "hi only"
-                    # regressed ibm10 from 1.3728 → 1.3811 (+0.008), so the
-                    # Phase 7 effect dominates the raw DP placement quality
-                    # for this handle. Conclusion: don't drop lo.
-                    for tag, td, root in (
-                        ("hi", 0.85, "/tmp/dreamplace_v1_hi"),
-                        ("lo", 0.65, "/tmp/dreamplace_v1_lo"),
+                    # A2 retry refined 2026-05-24: 2-DP setup diversifying on
+                    # soft_movable (was: diversifying on target_density 0.85/0.65).
+                    # A3 diagnostic already showed hi/lo target_density
+                    # mostly converged to similar congestion (lo's plc-state
+                    # mutation was the real value, not its placement quality).
+                    # A2 --all then showed soft_macros_movable=True is a big
+                    # win on most benchmarks (ibm03 −0.10, ibm06 −0.12) but
+                    # regresses on ibm01/ibm09/ibm13 where initial.plc was
+                    # already dense (D > 0.87) → DP NLP compacts softs further
+                    # → density spikes. Solution: launch BOTH soft_movable
+                    # variants at same target_density. Best-of-both per
+                    # benchmark. Tag "fixed"/"movable" for clarity.
+                    for tag, td, root, soft_mv in (
+                        ("fixed",   0.85, "/tmp/dreamplace_v1_fixed",   False),
+                        ("movable", 0.85, "/tmp/dreamplace_v1_movable", True),
                     ):
                         try:
-                            # soft_macros_movable kept False here on purpose
-                            # (2026-05-22). Flipping it to True regressed ibm04
-                            # 1.3079 → 1.3209 because cong-grad-from-DP
-                            # candidates use pl_scratch's initial soft positions
-                            # while DP's NLP optimized hards under its own soft
-                            # positions — a mismatch the cong-grad couldn't
-                            # recover. Soft re-snap (analytic centroid follow)
-                            # is the right path; see _resnap_soft_macros.
                             h = launch_dreamplace_async(
                                 str(iccad_dir), plc=plc,
                                 scratch_root=root,
                                 timeout_s=120.0,
                                 iterations=300,
                                 num_threads=1,
-                                soft_macros_movable=False,
+                                soft_macros_movable=soft_mv,
                                 target_density=td,
                             )
                             dp_handles.append((tag, td, h))
