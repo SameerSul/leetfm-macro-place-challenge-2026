@@ -34,10 +34,11 @@ A6=#9 (score); B1=#6, B2=#4 (perf); C1=#5 (maint).
 | + B3 phase 4 (per-net incremental routing) | 1.4690 | −0.0008 | +0.8% | **387.21s** |
 | + k_neighbors=10 + max_iters=6 + Phase 8 chains | 1.4647 | −0.0043 | +0.5% | 481.37s |
 | + A2 soft_macros_movable=True (single DP variant) | 1.4525 | −0.0122 | **−0.4%** | (clock-anomaly run) |
-| + A2 best-of-both DPs (fixed + movable, this commit) | **1.4486** | **−0.0039** | **−0.6%** | (clock-anomaly run) |
+| + A2 best-of-both DPs (hi-fix + hi-mov) | 1.4486 | −0.0039 | −0.6% | (clock-anomaly run) |
+| + A2 (lo-fix + hi-mov, this commit) | **1.4474** | **−0.0012** | **−0.7%** | 720.69s |
 
-**Combined session progress: 1.4854 → 1.4486 = −0.0368 (2026-05-23 → 2026-05-24).**
-**Gap to RePlAce: +1.9% → −0.6% — WE BEAT RePlAce by 0.0092.**
+**Combined session progress: 1.4854 → 1.4474 = −0.0380 (2026-05-23 → 2026-05-24).**
+**Gap to RePlAce: +1.9% → −0.7% — WE BEAT RePlAce by 0.0104.**
 
 Wall-clock dropped from ~3360s (B1) to 481.37s. B3 phase 4 alone took
 wall-clock from 469s → 387s (−82s); the final k=10 / max_iters=6 / Phase 8
