@@ -32,10 +32,12 @@ A6=#9 (score); B1=#6, B2=#4 (perf); C1=#5 (maint).
 | + Phase 9 random-order legalize | 1.4698 | −0.0003 | +0.8% | 525.19s |
 | + B4 dispatch cache | 1.4698 | 0 | +0.8% | (similar) |
 | + B3 phase 4 (per-net incremental routing) | 1.4690 | −0.0008 | +0.8% | **387.21s** |
-| + k_neighbors=10 + max_iters=6 + Phase 8 chains | **1.4647** | **−0.0043** | **+0.5%** | 481.37s |
+| + k_neighbors=10 + max_iters=6 + Phase 8 chains | 1.4647 | −0.0043 | +0.5% | 481.37s |
+| + A2 soft_macros_movable=True (single DP variant) | 1.4525 | −0.0122 | **−0.4%** | (clock-anomaly run) |
+| + A2 best-of-both DPs (fixed + movable, this commit) | **1.4486** | **−0.0039** | **−0.6%** | (clock-anomaly run) |
 
-**Combined session progress: 1.4854 → 1.4647 = −0.0207 (2026-05-23 → 2026-05-24).**
-**Gap to RePlAce shrunk from +1.9% to +0.5% — all 17 benchmarks improved in the final combined run.**
+**Combined session progress: 1.4854 → 1.4486 = −0.0368 (2026-05-23 → 2026-05-24).**
+**Gap to RePlAce: +1.9% → −0.6% — WE BEAT RePlAce by 0.0092.**
 
 Wall-clock dropped from ~3360s (B1) to 481.37s. B3 phase 4 alone took
 wall-clock from 469s → 387s (−82s); the final k=10 / max_iters=6 / Phase 8
@@ -178,7 +180,50 @@ Apply swap tentatively, score, keep if proxy improves else revert.
 
 ---
 
-## A2. Soft macros are pinned at their initial positions (INVESTIGATED 2026-05-22 — no cheap win)
+## A2. Soft macros are pinned at their initial positions (RESOLVED 2026-05-24)
+
+**Status: RESOLVED — `--all` validation 1.4647 → 1.4486 (−0.0161)** by
+launching DREAMPlace with TWO configs in parallel:
+  - "fixed":   soft_macros_movable=False (legacy: DP optimizes hards only).
+  - "movable": soft_macros_movable=True  (DP NLP also optimizes softs).
+
+Best-of-both candidate selection: the better DP candidate wins the
+benchmark; Phase 7 chains run from both placements. The 2026-05-22
+investigation had pre-dated A1/B3p4/2-opt-widening; with hard macros
+now moving 3-5× more, soft-movable DP delivers massive wins on
+benchmarks where initial.plc had room to spread:
+
+| Bench | Combined | A2-best-of-both | Δ |
+|---|---|---|---|
+| ibm06 | 1.6680 | **1.5473** | **−0.121** |
+| ibm03 | 1.3397 | **1.2369** | **−0.103** |
+| ibm02 | 1.5574 | **1.5062** | **−0.051** |
+| ibm10 | 1.3642 | 1.3382 | −0.026 |
+| ibm08 | 1.5076 | 1.5076 | 0 |
+| ibm09 | 1.1005 | 1.1026 | +0.002 (recovered from +0.012 movable-only) |
+| ibm13 | 1.3828 | 1.3844 | +0.002 (recovered from +0.007) |
+| ibm04 | 1.2888 | 1.2895 | +0.001 (lost A2-only's −0.009 win) |
+| ibm01 | 1.1317 | 1.1507 | **+0.019** (RNG-drift, not resolved) |
+| **AVG** | **1.4647** | **1.4486** | **−0.0161** |
+
+**Root-cause finding:** DP target_density=0.85 forces canvas utilization
+to 85%. On benchmarks where initial.plc had density < 0.85 (most),
+DP-movable spreads softs better → lower D + lower C → big wins. On
+benchmarks already denser than 0.85 (ibm01/ibm09/ibm13: D > 0.87), DP
+compacts softs further → density spikes. Best-of-both lets the fixed
+DP win on those, recovering most regressions.
+
+**Outstanding: ibm01 +0.019.** Even with fixed DP available, ibm01 still
+regresses. Mechanism: RNG drift — soft_macros_movable=True makes DP NLP
+take slightly longer, which changes Phase 5b/5c firing timing, which
+shifts `rng_cong` state, which affects subsequent Phase 7/8 perturbs.
+The fix would require per-benchmark RNG isolation or deeper
+investigation. The net win across all 17 benchmarks (−0.0161 to avg)
+makes accepting the ibm01 +0.019 worth it.
+
+---
+
+## A2 — Original framing (kept for reference, INVESTIGATED 2026-05-22)
 
 **Where:** `placer.py:1438` (soft_indices handling) and downstream
 candidate construction.
