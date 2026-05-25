@@ -2835,9 +2835,20 @@ class MacroPlacer:
                     # → density spikes. Solution: launch BOTH soft_movable
                     # variants at same target_density. Best-of-both per
                     # benchmark. Tag "fixed"/"movable" for clarity.
+                    # A2 refined 2026-05-24: 2-DP setup diversifying on BOTH
+                    # target_density AND soft_macros_movable. The earlier
+                    # 2-DP attempts each diversified only ONE axis:
+                    #   - (hi=fix, lo=fix):     missed soft-movable wins (ibm03 −0.10).
+                    #   - (hi=fix, hi=mov):     missed lo-td win (ibm01 stayed +0.019).
+                    # Single-bench isolation found ibm01 benefits from
+                    # td=0.65 spreading (DP candidate 1.1505 vs 1.2241 at
+                    # td=0.85). ibm03/06/10 benefit from soft_movable=True.
+                    # Combining lo-fix + hi-mov covers both regimes.
+                    #   lo-fix: td=0.65, soft_movable=False (ibm01 dense-init win)
+                    #   hi-mov: td=0.85, soft_movable=True  (ibm03/06/10 wins)
                     for tag, td, root, soft_mv in (
-                        ("fixed",   0.85, "/tmp/dreamplace_v1_fixed",   False),
-                        ("movable", 0.85, "/tmp/dreamplace_v1_movable", True),
+                        ("lo-fix",  0.65, "/tmp/dreamplace_v1_lofix",   False),
+                        ("hi-mov",  0.85, "/tmp/dreamplace_v1_himov",   True),
                     ):
                         try:
                             h = launch_dreamplace_async(
