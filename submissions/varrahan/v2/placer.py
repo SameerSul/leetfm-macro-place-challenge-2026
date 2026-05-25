@@ -3452,12 +3452,32 @@ class MacroPlacer:
         # Phase 6 (2026-05-20) ran similar multi-iter BEFORE the noise loop
         # and was rejected for displacing noise winners. Phase 7 runs AFTER
         # noise — purely additive, only consumes leftover budget.
+        # Phase 7 retro-eval 2026-05-25 (90-iter sample, monotonic-clock
+        # --all log): 7 wins / 90 iters = 7.8% hit rate. Big wins on
+        # ibm02 (−0.060 at hi-mov iter 3) and ibm10 (−0.07 across lo-fix
+        # chain). 13 of 17 benchmarks contribute 0 wins. Iter-1-margin
+        # gate (threshold 0.06) abandons chains where iter 1 is far
+        # worse than pre-P7 best; preserves all 7 wins (largest winning
+        # iter-1 margin was 0.0555) while gating ~14 zero-win chains.
+        #
+        # RNG isolation 2026-05-25: snapshot rng_cong before Phase 7 and
+        # restore after. Without this, the variable-length Phase 7 chains
+        # (greedy break, iter-1-margin gate, MAX_P7_ITERS cap) consume
+        # rng_cong by different amounts across benchmarks, causing the
+        # downstream Phase 8/9 perturbations to diverge — initial gate
+        # test showed ibm10 regressed +0.0193 purely from this RNG drift.
+        # The isolation makes Phase 7 a closed compartment w.r.t. rng_cong,
+        # so changes to Phase 7's internal logic (gating, chain length,
+        # adding/removing DPs) no longer affect downstream phases.
+        rng_cong_pre_p7 = rng_cong.get_state()
+        P7_ITER1_MARGIN_GATE = 0.06  # tested 2026-05-25, see ISSUES.md A5
         MAX_P7_ITERS = 3
         for tag, _dp_score_unused, dp_pl_saved in dp_placements:
             current_pos = np.stack(
                 [dp_pl_saved[:n, 0].numpy(), dp_pl_saved[:n, 1].numpy()], axis=1
             ).astype(np.float64)
             prev_iter_score = float("inf")
+            pre_chain_best = best_score
             for it in range(1, MAX_P7_ITERS + 1):
                 remaining_p7 = (
                     effective_budget_s + BUDGET_OVERRUN_S
@@ -3486,6 +3506,11 @@ class MacroPlacer:
                 if score < best_score:
                     best_score = score
                     best_pl = pl_scratch.clone()
+                # Iter-1 margin gate: abandon chain if iter 1 score is
+                # far above pre-chain best — empirically those chains
+                # don't recover (per Phase 7 retro-eval 2026-05-25).
+                if it == 1 and (score - pre_chain_best) > P7_ITER1_MARGIN_GATE:
+                    break
                 # Greedy descent: stop chain if this iter didn't strictly
                 # improve over previous iter's score.
                 if score >= prev_iter_score - 1e-4:
@@ -3495,6 +3520,12 @@ class MacroPlacer:
                 # Hard cap: don't exceed cap after this iter's scoring.
                 if time.monotonic() - t0 > effective_budget_s + BUDGET_OVERRUN_S:
                     break
+
+        # RNG isolation (2026-05-25): restore rng_cong to pre-Phase-7 state
+        # so Phase 8/9 perturbations are deterministic regardless of how
+        # many Phase 7 chain iters fired (iter-1-margin gate, greedy break,
+        # MAX_P7_ITERS cap all cause irregular consumption).
+        rng_cong.set_state(rng_cong_pre_p7)
 
         # -- Phase 8: TOP-K cong-grad from best_pl (A6 attack #1, 2026-05-23) -
         # The A3 diagnostic showed DP loses on congestion by avg +0.08 vs our
