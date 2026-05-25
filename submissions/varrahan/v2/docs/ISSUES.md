@@ -256,9 +256,11 @@ Cheap analytic re-snap **consistently regresses** at every blend factor
 on every benchmark. Root cause: initial.plc's hand-tuned spread is more
 valuable for congestion than connection alignment.
 
-**What's kept:** `_build_soft_resnap_cache` and `_resnap_soft_macros`
-remain in `placer.py` (~200 lines) for future exploration, NOT wired
-into the pipeline.
+**Code state:** `_build_soft_resnap_cache` and `_resnap_soft_macros`
+were never carried forward to v2 — they existed only in v1's placer.
+The original A2-investigation note "kept for future exploration" was
+stale (was tracking v1's code). v2 resolved this differently via DP
+soft_movable=True (see RESOLVED section above).
 
 **Real paths if revisited:**
 - Force-directed with explicit soft-soft repulsion.
@@ -882,7 +884,7 @@ which targets the 2-opt path where it matters most).
   bit-equivalence verified.
 - **`MaskRegulate` comment in PAPERS_NOTES.md** — code is right, doc
   is wrong; PAPERS_NOTES.md is read-only.
-- **Dead soft-resnap code** (`_build_soft_resnap_cache`,
-  `_resnap_soft_macros`) — ~200 lines, not wired in. Kept per A2 "for
-  future exploration"; not a score issue but worth removing if no
-  force-directed / quadratic variant is planned.
+- **Dead soft-resnap code** — turned out to be stale notes. Those
+  helpers never made it into v2 (only existed in v1). Comments in
+  placer.py + A2 sections updated 2026-05-25 to reflect that A2's
+  DP soft_movable=True solved the soft mismatch directly.

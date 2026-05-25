@@ -2083,13 +2083,12 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
     _patch_plc_congestion(plc, benchmark)
     _patch_plc_density(plc, benchmark)
     placement_np = placement.cpu().numpy()
-    # Soft-macro re-snap (issue 2) is INTENTIONALLY NOT applied here.
-    # Tested 2026-05-22 with blend=1.0 unconditionally → ibm04 regressed
-    # 1.3079 → 1.6465 (congestion 1.62 → 2.21). The naive centroid
-    # clusters softs around their net anchors, destroying initial.plc's
-    # hand-tuned spread (per CLAUDE.md: "do not destroy that spread").
-    # Re-snap is applied selectively at the DP candidate path where the
-    # initial spread is no longer the right reference; see _resnap_dp_softs.
+    # Soft macros stay at the positions in `placement` (typically
+    # initial.plc) — naive centroid re-snap was tested 2026-05-22 and
+    # rejected (ibm04 1.3079 → 1.6465 with blend=1.0). The right approach
+    # is A2 (2026-05-24): DREAMPlace soft_movable=True is enabled in the
+    # DP launch, so DP-optimized soft positions are carried in dp_pl[n:]
+    # for the DP candidate path; non-DP candidates keep initial softs.
     _fast_set_placement(plc, placement_np, benchmark)
     wl = plc.get_cost()
     dens = plc.get_density_cost()
@@ -3322,15 +3321,13 @@ class MacroPlacer:
             directed_ran += 1
             _log(f"  Candidate {directed_ran} (dreamplace[{tag}] hard+soft): "
                  f"proxy={dp_score:.4f}  (leg+score {time.monotonic()-t_dp:.1f}s)")
-            # Analytic soft re-snap as a +resnap candidate tested 2026-05-22.
-            # Result: consistently regressed on both ibm04 (+0.003) and ibm10
-            # (+0.002) at every blend factor tried (1.0, 0.2, 0.05). Root cause:
-            # initial.plc's hand-tuned soft spread is more valuable for
-            # congestion than connection alignment, even after DREAMPlace
-            # moves hards far from initial. _resnap_soft_macros / its cache
-            # are kept in placer.py for future exploration (force-directed
-            # with repulsion, or solver-based quadratic placement) but the
-            # current naive centroid form is NOT wired into the pipeline.
+            # The 2026-05-22 "analytic soft re-snap" experiment (centroid-
+            # follow blend on DP candidate softs) was rejected: regressed
+            # ibm04 +0.003 and ibm10 +0.002 at every blend factor. Resolved
+            # 2026-05-24 by A2: launching DP with soft_movable=True lets
+            # DREAMPlace's NLP optimize softs directly (better than analytic
+            # post-hoc re-snap). The helpers _build_soft_resnap_cache and
+            # _resnap_soft_macros were never copied forward to v2.
             if dp_score < best_score:
                 best_score = dp_score
                 best_pl = dp_pl.clone()
