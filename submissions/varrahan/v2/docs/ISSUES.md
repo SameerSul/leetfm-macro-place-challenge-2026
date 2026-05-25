@@ -1,890 +1,303 @@
-# Open issues — v2 placer (audits 2026-05-22, 2026-05-23)
+# Open issues — v2 placer (last revised 2026-05-25)
 
-This file lists glaring, actionable issues. Split 2026-05-23 into two
-parts:
-
-- **Part A — Score improvement issues** (directly affect proxy cost).
-- **Part B — Performance / speedup issues** (affect wall-clock and
-  throughput; speedups also unlock more score work, e.g. more 2-opt
-  candidates per budget).
-
-History audit dates: original 1-5 from 2026-05-22 vectorization sweep;
-6-9 from 2026-05-23 end-to-end review; B3-B9 added 2026-05-23 after
-issue #1 proxy 2-opt result reframed speedups as score-enabling.
-
-Cross-reference to old numbering: A1=#1, A2=#2, A3=#3, A4=#7, A5=#8,
-A6=#9 (score); B1=#6, B2=#4 (perf); C1=#5 (maint).
+This is a **clean rewrite**. All issues that have been resolved or
+rejected have been removed; their findings are captured in commit
+messages and in PROGRESS.md. This file now tracks **only what's
+open**: known gaps in the current placer, speculative score ideas that
+haven't been tried, and follow-up work that's been queued but not
+started.
 
 ---
 
-## Current headline (2026-05-24 EOD)
+## Current state (headline)
 
-| Milestone | --all avg | Δ from prior | Gap vs RePlAce 1.4578 | --all wall-clock |
-|---|---|---|---|---|
-| v12 confirmed (baseline) | 1.4854 | — | +1.9% | — |
-| v15 partial (ibm17 timed out) | 1.4804 | −0.0050 | +1.6% | (no run) |
-| v2 + B1 (cumulative guard) | 1.4782 | −0.0022 | +1.4% | ~3360s |
-| + A1 (proxy 2-opt) | 1.4723 | −0.0059 | +1.0% | 542.79s |
-| + B3 phase 1 (pos cache) | 1.4719 | −0.0004 | +1.0% | 506.89s |
-| + B3 phase 2 (per-net HPWL incr) | 1.4714 | −0.0005 | +0.9% | 502.06s |
-| + B3 phase 3 (numpy abu) | 1.4711 | −0.0003 | +0.9% | 460.85s |
-| + A6 Phase 8 (TOP-K cong-grad) | 1.4701 | −0.0010 | +0.8% | 469.62s |
-| + Phase 9 random-order legalize | 1.4698 | −0.0003 | +0.8% | 525.19s |
-| + B4 dispatch cache | 1.4698 | 0 | +0.8% | (similar) |
-| + B3 phase 4 (per-net incremental routing) | 1.4690 | −0.0008 | +0.8% | **387.21s** |
-| + k_neighbors=10 + max_iters=6 + Phase 8 chains | 1.4647 | −0.0043 | +0.5% | 481.37s |
-| + A2 soft_macros_movable=True (single DP variant) | 1.4525 | −0.0122 | **−0.4%** | (clock-anomaly run) |
-| + A2 best-of-both DPs (hi-fix + hi-mov) | 1.4486 | −0.0039 | −0.6% | (clock-anomaly run) |
-| + A2 (lo-fix + hi-mov, this commit) | **1.4474** | **−0.0012** | **−0.7%** | 720.69s |
+| Metric | Value |
+|---|---|
+| Best `--all` avg | **1.4471** (3-DP) |
+| RePlAce target | 1.4578 |
+| **Gap to RePlAce** | **−0.7% (beat by 0.0107)** |
+| DREAMPlace leaderboard | 1.4076 (UT Austin) |
+| **Gap to leaderboard** | **+2.7%** (~0.040 absolute) |
+| NG45 (Tier 2) avg | 0.7830 |
+| `--all` wall-clock | ~628s (3-DP) / ~525s (2-DP) |
 
-**Combined session progress: 1.4854 → 1.4474 = −0.0380 (2026-05-23 → 2026-05-24).**
-**Gap to RePlAce: +1.9% → −0.7% — WE BEAT RePlAce by 0.0104.**
-
-Wall-clock dropped from ~3360s (B1) to 481.37s. B3 phase 4 alone took
-wall-clock from 469s → 387s (−82s); the final k=10 / max_iters=6 / Phase 8
-chains additions added back ~94s (since they consume the freed budget on
-extra 2-opt iterations and Phase 8 chain candidates).
+All 17 IBM benchmarks improved vs v12 baseline. The remaining headroom
+(~0.040 to leaderboard) is the focus of the open work below.
 
 ---
 
-## Priority order (2026-05-23 evening)
+## Open issues
 
-### Tier 1 — RESOLVED THIS SESSION
+### O1. ibm09 / ibm13 small regressions vs the v2-combined baseline (RESOLVED 2026-05-25 — kept 3-DP)
 
-- **B1 — `--all` wall-clock timeout** (**RESOLVED 2026-05-23**).
-  Cumulative-budget guard ensures `--all` completes under the 3600s
-  harness cap. ibm17 timeout eliminated. Committed in 1c0f319.
-- **A1 — 2-opt-on-winner uses displacement, not proxy** (**RESOLVED
-  2026-05-23**). All 17 benchmarks improved; avg −0.0059. Committed
-  in 1c0f319.
-- **B3 phase 1 — global position cache** (**RESOLVED 2026-05-23**).
-  Eliminated get_pos Python loops; per-score cost 22.5ms → 15.4ms
-  (1.46×). `--all` avg 1.4723 → 1.4719 (−0.0004), `--all` wall-clock
-  542s → 507s. Bit-equivalence verified.
-- **B3 phase 2 — per-net HPWL incremental** (**RESOLVED 2026-05-23**).
-  IncrementalScorer with macro→nets index; touched-nets reduceat.
-  --all avg 1.4719 → 1.4714 (−0.0005). Bit-equivalent verified.
-- **B3 phase 3 — numpy abu** (**RESOLVED 2026-05-23**). Skip .tolist()
-  + np.partition top-5%. --all avg 1.4714 → 1.4711 (−0.0003);
-  wall-clock 502s → 461s (−41s).
-- **A3 + A6 axis #1 — TOP-K cong-grad (Phase 8)** (**RESOLVED
-  2026-05-23**). DP diagnostic showed congestion gap +0.08 avg; TOP-K
-  perturb from best_pl as Phase 8. --all avg 1.4711 → **1.4701
-  (−0.0010)**; wins on ibm02/03/04/06/16. Gap to RePlAce now +0.8%.
+**Status: 3-DP shipped.** `--all` avg 1.4475 → 1.4471 (−0.0004).
+Adding `hi-fix` as a 3rd DP (target_density=0.85, soft_movable=False)
+recovered the ibm09/ibm13 regressions:
 
-### Tier 2 — VALIDATED, NO ACTION NEEDED
-
-- **A5 — Phase 7 (DP-rescue chain) contribution** (**VALIDATED, KEEP
-  2026-05-23**). Phase 7 contributes 16 wins / 85 iters (19% rate)
-  including ibm10 −0.045, ibm02 −0.035, ibm04 −0.018. Without it the
-  avg would be ~+0.006 worse.
-
-### Tier 3 — REMAINING PERFORMANCE OPPORTUNITIES
-
-- **B3 phase 2 — per-net HPWL incremental** (~−2ms per score on top
-  of phase 1). Touched-nets-only HPWL update via macro→nets index.
-  Estimated additional 1.2× speedup on the 2-opt path.
-- **B3 phase 3 — congestion incremental** (highest remaining leverage:
-  congestion is 9.76ms / ~63% of post-phase-1 cost). Complex —
-  per-net routing footprint cache + smoothing pass changes. Estimated
-  2-3× speedup on congestion alone.
-- **B4 — `_vectorized_get_routing` dispatch overhead profiling**
-  (complementary to B3 phase 3).
-
-### Tier 4 — MEDIUM IMPACT, LOW WORK (diagnostic, unlocks Tier 5)
-
-- **A3 — Re-run `_dp_diagnostic.py` with the fixed bridge**.
-
-### Tier 5 — HIGHEST CEILING, HIGH WORK (the score floor)
-
-- **A6 — 9/17 benchmarks have no improvement over the v12 floor**.
-  Note: A1 has CLOSED THIS GAP — all 17 benchmarks now improve vs v12.
-  This issue is partially resolved but the orthogonal-search ceiling
-  question (cong-grad local minima escape) remains.
-
-### Tier 6 — DEPRIORITIZED / INVESTIGATED / BLOCKED
-
-- **A4 — DP launch displaces noise winner on ibm07** (**DEPRIORITIZED
-  2026-05-23**). Original ibm07 +0.003 regression gone after A1
-  (ibm07 now 1.4866, vs v12 1.4924).
-- **A2 — Soft macros pinned at initial positions**. Investigated; no
-  cheap path.
-- **C1 — Stale failing test in `test/`**. `test/` is read-only.
-- **B2 — `_smooth_routing_cong_vec` Python loop** (fixed 2026-05-22).
-
-### Speculative / supporting performance ideas (B5-B9)
-
-Listed in Part B below. Lower-priority than B3 phases 2-3 but cheap
-to try.
-
----
-
-# Part A — Score improvement issues
-
-## A1. 2-opt accepts swaps on the wrong cost function (RESOLVED 2026-05-23)
-
-**Status: RESOLVED — `--all` validation passed.**
-
-**`--all` avg: 1.4782 → 1.4723 (−0.0059). All 17 benchmarks improved.**
-Gap to RePlAce shrunk from +1.4% to +1.0%.
-
-| Benchmark | v2+#6 | v2+#6+#1 | Δ |
+| Bench | 2-DP | 3-DP | Δ |
 |---|---|---|---|
-| ibm01 | 1.1505 | 1.1352 | −0.0153 |
-| ibm02 | 1.5800 | 1.5713 | −0.0087 |
-| ibm03 | 1.3593 | 1.3532 | −0.0061 |
-| ibm04 | 1.3079 | 1.2971 | −0.0108 |
-| ibm06 | 1.6790 | 1.6744 | −0.0046 |
-| ibm07 | 1.4924 | 1.4866 | −0.0058 |
-| ibm08 | 1.5189 | 1.5142 | −0.0047 |
-| ibm09 | 1.1139 | 1.1037 | −0.0102 |
-| ibm10 | 1.3876 | 1.3821 | −0.0055 |
-| ibm11 | 1.2326 | 1.2292 | −0.0034 |
-| ibm12 | 1.6506 | 1.6482 | −0.0024 |
-| ibm13 | 1.3955 | 1.3907 | −0.0048 |
-| ibm14 | 1.5956 | 1.5906 | −0.0050 |
-| ibm15 | 1.6060 | 1.6045 | −0.0015 |
-| ibm16 | 1.5225 | 1.5181 | −0.0044 |
-| ibm17 | 1.7437 | 1.7425 | −0.0012 |
-| ibm18 | 1.7941 | 1.7870 | −0.0071 |
-| **AVG** | **1.4782** | **1.4723** | **−0.0059** |
+| ibm09 | 1.1116 | **1.1035** | **−0.0081** ✓ |
+| ibm13 | 1.3890 | **1.3828** | **−0.0062** ✓ |
+| ibm08 | 1.5076 | 1.5019 | −0.0057 ✓ (bonus) |
+| ibm17 | 1.7372 | 1.7359 | −0.0013 ✓ |
+| ibm04 | 1.2797 | 1.2899 | **+0.0102** ⚠ (see O2) |
+| ibm10 | 1.3378 | 1.3416 | +0.0038 |
+| ibm15/ibm16 | (same) | +0.0007 each | small |
 
-Wall-clock cost: 437s → 543s placer time (~+105s of 2-opt scoring,
-runs within budget on every benchmark, no timeouts).
+Net cumulative across 17: −0.0070, avg delta −0.0004. Wall-clock
++102s (526s → 628s) for the third DP. The +0.010 ibm04 regression
+is a path-dependency issue tracked separately in O2.
 
-**Where:** `placer.py` `_two_opt_proxy_swap` and call site at the end of
-`place()`.
+Phase 7 RNG isolation (in commit adaf693) was a prerequisite for this
+fix — the original 3-DP attempt 2026-05-24 had to be reverted because
+adding a third Phase 7 chain caused rng_cong drift that regressed
+ibm10 +0.036. Now with isolation, ibm10 only sees +0.004.
 
-**What was wrong:** `_two_opt_swap` accepted a swap iff per-pair
-displacement-from-init decreased
-(`d_i_new + d_j_new < disp_sq[i] + disp_sq[j]`). That criterion has no
-direct relation to proxy cost, which is congestion-dominated. As a
-result, 2-opt "improved" the swap count but routinely made proxy worse:
+### O2. ibm04 path-dependency under multi-DP
 
-| Benchmark | Best proxy | 2-opt result (displacement) | Δ |
-|---|---|---|---|
-| ibm01 | 1.1505 | 1.1603 | +0.0098 (worse) |
-| ibm04 | 1.3159 | 1.3210 | +0.0051 (worse) |
-| ibm10 | 1.3866 | 1.3945 | +0.0079 (worse) |
-| ibm12 | 1.6506 | 1.6506 | tied |
+**New issue surfaced 2026-05-25.** ibm04's 2-opt starting point is
+chosen via best_pl propagation through Phase 5b / Phase 7 / Phase 8.
+Adding a new DP candidate that happens to score better than the
+existing best at that point HIJACKS the trajectory.
 
-The placer guarded with `if opt_score < best_score:`, so this wasn't a
-correctness bug — but the 15s budget was wasted.
+For ibm04 specifically:
+  - 2-DP (lo-fix + hi-mov): best DP candidate = lo-fix at 1.3X (some
+    value where 2-opt then reaches 1.2797).
+  - 3-DP (+hi-fix): hi-fix DP scores 1.3210 — becomes new best_pl
+    earlier, displacing whatever trajectory got 2-opt to 1.2797.
+  - 2-opt then reaches only 1.2899 from the hi-fix-derived starting
+    point.
 
-**Why it persisted:** displacement-from-init was a fast surrogate when
-`_exact_proxy` cost 450ms/call. With ~5-50ms scoring, real proxy-driven
-2-opt is feasible.
+**Fix candidates:**
+  1. Cherry-pick: only let a DP candidate become best_pl if it improves
+     by more than some threshold over previous best.
+  2. Track multiple "best" placements (top-K), run 2-opt from each.
+  3. Per-DP Phase 7 chain isolation (rng_cong is isolated; this would
+     also isolate best_pl propagation — much more invasive).
 
-**Fix:** `_two_opt_proxy_swap` scores each candidate swap via
-`_exact_proxy`. Cheap bounds + conflict checks remain as a free filter.
-Apply swap tentatively, score, keep if proxy improves else revert.
+### O3. Soft macros are still pinned during non-DP candidates
 
----
+**Partial resolution via A2:** DP-launched-with-soft_movable=True gives
+DP-optimized softs on the DP candidate. But the rest of the pipeline
+(noise restarts, cong-grad, 2-opt, Phase 7/8) operates on pl_scratch
+which has softs from initial.plc throughout.
 
-## A2. Soft macros are pinned at their initial positions (RESOLVED 2026-05-24)
+**Estimated remaining cost:** ~0.01-0.02 of the gap to leaderboard
+(per the 2026-05-20 decomposition: soft mismatch ~0.05 at large hard
+displacement, but our actual displacement is smaller after refinement).
 
-**Status: RESOLVED — `--all` validation 1.4647 → 1.4486 (−0.0161)** by
-launching DREAMPlace with TWO configs in parallel:
-  - "fixed":   soft_macros_movable=False (legacy: DP optimizes hards only).
-  - "movable": soft_macros_movable=True  (DP NLP also optimizes softs).
+**Implementation options (multi-hour each):**
+- **Force-directed soft placement** with explicit soft-soft repulsion.
+  Run as a post-2-opt pass: project softs to new positions that
+  minimize per-net spring force + density-bin repulsion.
+- **Quadratic placement** via `scipy.sparse.linalg.spsolve` treating
+  softs as variables in `min Σ w_n · ||soft − centroid_n||²`. Closed
+  form, preserves spread via L2 objective. Needs density
+  regularization.
+- **Vectorized `PlacementCost.optimize_stdcells` rewrite** — the
+  academic FD method. Tested 2026-05-20: 126s per call in Python with
+  +0.13 regression at default params. Multi-day vectorized rewrite.
 
-Best-of-both candidate selection: the better DP candidate wins the
-benchmark; Phase 7 chains run from both placements. The 2026-05-22
-investigation had pre-dated A1/B3p4/2-opt-widening; with hard macros
-now moving 3-5× more, soft-movable DP delivers massive wins on
-benchmarks where initial.plc had room to spread:
+### O4. The pre-flight skip guard occasionally fires on benign WSL2 clock drift
 
-| Bench | Combined | A2-best-of-both | Δ |
-|---|---|---|---|
-| ibm06 | 1.6680 | **1.5473** | **−0.121** |
-| ibm03 | 1.3397 | **1.2369** | **−0.103** |
-| ibm02 | 1.5574 | **1.5062** | **−0.051** |
-| ibm10 | 1.3642 | 1.3382 | −0.026 |
-| ibm08 | 1.5076 | 1.5076 | 0 |
-| ibm09 | 1.1005 | 1.1026 | +0.002 (recovered from +0.012 movable-only) |
-| ibm13 | 1.3828 | 1.3844 | +0.002 (recovered from +0.007) |
-| ibm04 | 1.2888 | 1.2895 | +0.001 (lost A2-only's −0.009 win) |
-| ibm01 | 1.1317 | 1.1507 | **+0.019** (RNG-drift, not resolved) |
-| **AVG** | **1.4647** | **1.4486** | **−0.0161** |
+`time.monotonic()` covers the inside-the-placer paths but the
+harness's own `time.time()` reporting (in `evaluate.py`) still
+occasionally shows wall-clocks of 36000+ seconds. The harness's
+3600s cap uses host wall-clock, so a single Windows-host suspend
+during a real submission run could blow the cap.
 
-**Root-cause finding:** DP target_density=0.85 forces canvas utilization
-to 85%. On benchmarks where initial.plc had density < 0.85 (most),
-DP-movable spreads softs better → lower D + lower C → big wins. On
-benchmarks already denser than 0.85 (ibm01/ibm09/ibm13: D > 0.87), DP
-compacts softs further → density spikes. Best-of-both lets the fixed
-DP win on those, recovering most regressions.
+**Mitigation options:**
+- Wrap the harness call with a wrapper that uses a Linux clock that
+  pauses during suspend (e.g., `CLOCK_MONOTONIC` not just for the
+  placer but for the cap timer).
+- File a bug / patch against the harness.
+- Run inside a container that has reliable wall-clock under suspend.
 
-**Outstanding: ibm01 +0.019.** Even with fixed DP available, ibm01 still
-regresses. Mechanism: RNG drift — soft_macros_movable=True makes DP NLP
-take slightly longer, which changes Phase 5b/5c firing timing, which
-shifts `rng_cong` state, which affects subsequent Phase 7/8 perturbs.
-The fix would require per-benchmark RNG isolation or deeper
-investigation. The net win across all 17 benchmarks (−0.0161 to avg)
-makes accepting the ibm01 +0.019 worth it.
+Not blocking; submission should run on a non-WSL Linux box where this
+doesn't manifest.
 
 ---
 
-## A2 — Original framing (kept for reference, INVESTIGATED 2026-05-22)
+## Speculative score improvements (not started)
 
-**Where:** `placer.py:1438` (soft_indices handling) and downstream
-candidate construction.
+### S1. Multi-pass 2-opt with budget partitioning
 
-**What's wrong:** CLAUDE.md flags this explicitly:
+**Idea:** instead of one 15s 2-opt-on-winner at the end, run 3 passes
+of 5s each, interleaved with one cong-grad iter between them. The
+cong-grad in the middle can escape local minima that 2-opt is stuck
+in.
 
-> Soft macros must be repositioned when hard macros move significantly.
-> The current placers leave soft macros at their initial positions —
-> acceptable for small perturbations, problematic for large
-> displacements (e.g., DREAMPlace-style global re-placement).
+**Cost:** ~30 lines. RNG-isolated.
+**Expected gain:** −0.001 to −0.005 (speculative).
 
-When DREAMPlace's NLP moves hard macros far from initial, the soft
-macros (stdcell clusters in the proxy model) stay rooted at original
-locations → phantom wirelength + density spikes around stranded
-clusters.
+### S2. Wider 2-opt k_neighbors (15 or 20)
 
-**Investigation 2026-05-22 — results:**
+Current k=10. With B3p4's ~3ms scoring, we still aren't always
+candidate-bound on small benchmarks. k=15 doubles candidate pool with
+small extra cost.
 
-| Approach | ibm04 | ibm10 | Conclusion |
-|---|---|---|---|
-| Initial soft (baseline) | 1.3079 | 1.3866 | reference |
-| `soft_macros_movable=True` in DP bridge | 1.3209 (+0.013) | (n/a) | DP's NLP softs misalign with subsequent cong-grad-from-DP |
-| Unconditional analytic re-snap | 1.6465 (+0.34) | n/a | naive centroid clusters softs; congestion 1.62 → 2.21 |
-| DP-only +resnap candidate, blend=1.0 | 1.6506 (+0.34) | (n/a) | same clustering |
-| DP-only +resnap candidate, blend=0.2 | 1.3656 (+0.05) | (n/a) | still net-negative |
-| DP-only +resnap candidate, blend=0.05 | 1.3220 (+0.014) | 1.3906 (+0.002) | net-negative + burns 15s budget |
+**Cost:** 1-line change.
+**Expected gain:** small, depends on which benchmarks are
+candidate-bound.
 
-Cheap analytic re-snap **consistently regresses** at every blend factor
-on every benchmark. Root cause: initial.plc's hand-tuned spread is more
-valuable for congestion than connection alignment.
+### S3. Phase 8 with extended TOP-K set ({3, 5, 7, 10, 15, 20, 30, 50})
 
-**Code state:** `_build_soft_resnap_cache` and `_resnap_soft_macros`
-were never carried forward to v2 — they existed only in v1's placer.
-The original A2-investigation note "kept for future exploration" was
-stale (was tracking v1's code). v2 resolved this differently via DP
-soft_movable=True (see RESOLVED section above).
+Currently k ∈ {5, 10, 20}. Some benchmarks may benefit from finer
+gradations.
 
-**Real paths if revisited:**
-- Force-directed with explicit soft-soft repulsion.
-- Solver-based quadratic placement (scipy.sparse.linalg).
-- Vectorized rewrite of `PlacementCost.optimize_stdcells`.
+**Cost:** ~10 lines (extend the for-loop).
+**Risk:** budget displacement.
 
-None fit on remaining timeline relative to A6 leverage axes.
+### S4. 2-opt from multiple seed placements
 
----
+Currently 2-opt runs once from best_pl. With B3p4's faster scoring,
+we could:
+  - Run 2-opt from best_pl (current).
+  - ALSO run 2-opt from baseline_pos.
+  - ALSO run 2-opt from each DP candidate.
+  - Pick the lowest-proxy result.
 
-## A3. DREAMPlace's actual contribution to best-of is unclear
+This adds 3-5× the 2-opt budget but only if those paths actually find
+different basins.
 
-**Where:** async DREAMPlace launch and result merge in `place()`.
+**Cost:** moderate (~50 lines).
+**Expected gain:** −0.001 to −0.010 (highly speculative).
 
-**What's wrong:** UT Austin's DREAMPlace pipeline holds leaderboard #1
-at 1.4076. v2 imports the v1 bridge, launches 2 target_density
-candidates (0.85 and 0.65). Yet v2 lands around 1.478 avg — a 0.07 gap.
-DREAMPlace's NLP solution is either (a) not actually winning many
-benchmarks, or (b) being destroyed by the post-NLP legalizer.
+### S5. Cong-grad with adaptive frac per cell
 
-**How to apply:** re-run `_dp_diagnostic.py` (in
-`tests/dreamplace/_dp_diagnostic.py`) with the bridge architecture fix
-applied. Log raw-DP proxy vs post-legalize proxy vs cong-grad proxy on
-a few benchmarks. If raw-DP is close to leaderboard and post-legalize
-is far, the legalizer is the culprit (A2 contributes). If raw-DP is
-already far, DREAMPlace isn't the win path it appears to be.
+Currently `frac=0.04` is a single global parameter. Per-cell
+adaptive perturbation magnitude based on local congestion ratio
+could provide more targeted moves.
 
----
+**Cost:** modify `_routing_congestion_perturb`.
+**Expected gain:** small, depends on whether the simple linear
+`move_scale = scale * local_cong` (already present) captures most
+of the benefit.
 
-## A4. DREAMPlace launch unconditionally displaces noise winners on tight budgets (DEPRIORITIZED 2026-05-23)
+### S6. Phase 7 starting from best_pl alternatives
 
-**Status: original premise no longer holds post-A1.**
+Currently Phase 7 chains start from each DP placement. Phase 8 chains
+start from best_pl. Could try Phase 7 starting from:
+  - Each DP candidate (current).
+  - Each noise restart in the top-K by score.
+  - baseline_pos with cong-grad applied N times beforehand.
 
-The +0.003 ibm07 regression documented in PROGRESS.md v15 is gone. The
-2026-05-23 `--all` run reports ibm07=1.4866 (vs v12 1.4924, vs v15
-partial 1.4954). Proxy 2-opt (A1) rescued the ibm07 score on its own.
+**Cost:** moderate.
+**Risk:** budget displacement.
 
-Wall-clock pressure that originally motivated A4 is also no longer a
-problem: B1's cumulative-budget guard ensures --all finishes in
-~3360s under the 3600s harness cap, even on the slow-load benchmarks.
+### S7. Acceptance criterion for DP candidates
 
-**Where it might still help:** if a future change reintroduces DP/noise
-budget pressure (e.g., adding incremental scoring B3 makes 2-opt
-consume more budget overall). Re-evaluate then.
+Per O2's analysis, DP candidates blindly become best_pl when they
+beat current best. Could require a more conservative margin (e.g.,
+"DP candidate becomes best_pl only if it beats current best by more
+than 0.005") to prevent shifting downstream trajectories on
+small-margin wins.
 
-**Original problem statement** (kept for reference):
-> The two async DREAMPlace handles launch at every place() entry, and
-> Phase 5 waits up to ~30s per handle then spends ~60s legalizing+
-> scoring each. On benchmarks where DP loses cleanly, this consumes
-> budget that would have reached the winning noise restart.
+**Cost:** ~5 lines.
+**Risk:** lose legitimate DP wins.
 
-**Original proposed fixes** (not implemented; revisit if needed):
-- Generic gate: skip Phase 5 wait if `cong_improved=True` AND noise
-  hasn't been fully explored AND remaining < 3 * t_one_score.
-- Cap Phase 5 DP wait at `min(remaining * 0.3, 30s)`.
+### S8. Phase 9 random-order: increase trial count
+
+Currently N=3 random-tiebreak trials. With B3p4 + 2-opt widening,
+budget is freed; more trials might find better legalizations on
+benchmarks with many same-area macros.
+
+**Cost:** 1 line.
+**Expected gain:** small.
 
 ---
 
-## A5. Phase 7 (DP-rescue cong-grad chain) contribution is VALIDATED (KEEP, optional gate)
+## Speculative performance ideas (not started)
 
-**Status: VALIDATED 2026-05-23 via log analysis of the A1 --all run.**
-Phase 7 found **16 wins across 85 iters (19% win rate)** with several
-critical large-improvement chains. Do NOT delete.
+### P1. B5 GIL-aware parallel scoring
 
-**Per-benchmark wins (Phase 7 candidate beat pre-Phase-7 best):**
+**Untested.** If `plc.get_*_cost` C++ paths release the GIL,
+ThreadPoolExecutor with 2-4 workers could double or quadruple score
+throughput. Currently single-threaded.
 
-| Benchmark | hi chain | lo chain | Total wins | pre-P7 → P7 best |
-|---|---|---|---|---|
-| ibm01 | 1.2495→1.2470→1.2645 (0) | 1.1955→1.1800→1.2253 (1) | 1 | 1.1854 → 1.1800 |
-| ibm02 | 1.5947→1.5825→1.6029 (3) | 1.6336→1.6123→1.5991 (2) | 5 | 1.6173 → 1.5825 |
-| ibm04 | 1.3207→1.3103→1.3079 (3) | 1.4090→... (0) | 3 | 1.3258 → 1.3079 |
-| ibm09 | 1.1272→1.1444 (1) | 1.1722→1.1300→... (1) | 2 | 1.1304 → 1.1272 |
-| ibm10 | 1.5299→1.5525 (0) | 1.3876→1.4034 (2) | 2 | 1.4329 → 1.3876 |
-| ibm18 | 1.7884→1.7876→1.7884 (3) | 1.7925→... (0) | 3 | 1.7894 → 1.7876 |
-| ibm03/06/07/08/11/12/13/14/15/16/17 | varies | varies | 0 each | no movement |
+**Verification first:** spawn 2 threads each calling `_exact_proxy`
+on the same plc. If wall-clock ≈ 50% of single-thread, GIL releases.
 
-**Headline contributions:** Phase 7 closes ibm10 by **−0.045**, ibm02
-by **−0.035**, ibm04 by **−0.018**, ibm09 by **−0.003**, ibm01 by
-**−0.005**, ibm18 by **−0.002**. Without Phase 7, the avg would be
-roughly +0.006 worse.
+**Implementation if it works:** 2-opt could try 2-4 swap candidates
+in parallel, score each, accept the best improvement. Requires
+careful synchronization since accept changes shared state.
 
-**Remaining waste:** 11/17 benchmarks find 0 Phase 7 wins. Greedy
-break-on-no-improvement already trims most of these chains to 2 iters
-(rather than the cap of 3). Estimated remaining waste: ~67 iters × ~10s
-each = ~670s across the 11 zero-win benchmarks.
+**Expected gain:** doubles or quadruples 2-opt accept rate, may
+translate to small score improvement on candidate-bound benchmarks.
 
-**Optional optimization — iter-1-margin gate** (NOT IMPLEMENTED):
-abandon a chain after iter 1 if `iter_1_score - pre_p7_best > 0.05`.
-Would save iter 2 on:
-- ibm06 hi (margin 0.073)
-- ibm08 hi/lo (margins 0.083/0.079)
-- ibm12 hi (margin 0.209)
-- ibm14 hi/lo (margins 0.033/0.032 — borderline)
-- ibm17 hi (margin 0.016 — keep)
+### P2. B6 batched `_fast_set_placement`
 
-But would preserve all real wins (iter-1 lost but later won) because
-their margins are smaller (ibm01 lo: 0.010, ibm02 lo: 0.016, ibm09 lo:
-0.042). Net savings ~100-200s wall-clock with no score regression.
+Currently Python loop calls `set_pos` per-macro. With ~1500 macros
+on large benchmarks, iteration overhead is ~2ms per call. Multiple
+candidates per score → potentially 5-10ms per benchmark per `--all`.
 
-**Recommendation:** keep Phase 7. The iter-1-margin gate is optional;
-revisit if wall-clock pressure increases after B3.
+**Status:** plc may not have a batched API. Worst case requires a
+binding contribution.
+**Expected gain:** small wall-clock save.
 
----
+### P3. Per-net incremental DENSITY (parallel to B3p4 for cong)
 
-## A6. Score ceiling on hard-to-improve benchmarks (axis #1 shipped 2026-05-23)
+B3 phase 4 made congestion routing incremental. Density is still
+recomputed in full each score (via `plc.get_density_cost`). On a
+2-opt swap, only 2 macros' cells change density — could be
+incremental.
 
-**A3 + A6 axis #1 (TOP-K cong-grad / Phase 8) — SHIPPED 2026-05-23.**
+**Cost:** moderate (similar in scope to B3p4 but for density).
+**Expected gain:** ~1-2ms per score on top of B3p4.
 
-A3 diagnostic finding: DP loses uniformly on congestion (avg +0.08 vs
-our best). Hypothesis: our full-mask `_routing_congestion_perturb`
-moves every macro in a congested cell, blunting the gradient. TOP-K
-restricts motion to the K hottest macros.
+### P4. Skip `_routing_congestion_perturb` on Phase 9 trials
 
-Implementation: `top_k` parameter on `_routing_congestion_perturb`
-(default None preserves all existing Phase 1/2/3/5b/5c/7 calls). New
-Phase 8 (after Phase 7) runs three TOP-K candidates (k=5/10/20) from
-best_pl when `cong_improved=True` and budget allows.
+Phase 9 (random-order legalize) doesn't use congestion gradient —
+it just legalizes from init_pos with a shuffled order. The
+`_routing_congestion_perturb` calls in Phase 1/2/3/5b/5c/7/8 are
+needed for cong-grad. Phase 9 trials currently don't call
+_routing_congestion_perturb (correct), but verify no redundant
+state computation.
 
-`--all` validation:
-- avg 1.4711 → **1.4701 (−0.0010)**.
-- Biggest wins on dense benchmarks where cong-grad is active:
-  ibm03 −0.0062, ibm02 −0.0036, ibm06 −0.0034, ibm04 −0.0025,
-  ibm16 −0.0007. Smaller wins on ibm12/14/17. No regressions
-  (ibm09 +0.0002 within variance).
-- Wall-clock 460.85s → 469.62s (+9s for the Phase 8 candidates).
-
-The diagnostic dC of +0.08 wasn't fully closed (Phase 8 ~−0.001 to
-−0.006 per affected benchmark), but the direction was right.
-Remaining axes (#2 lo-handle drop, #3 fine-noise from best, #4
-order-randomization) still open.
-
-A4 attempt (drop lo handle, 2026-05-23): rejected. The A3 diagnostic
-showed raw lo loses on all benchmarks, but the A5 Phase 7 audit
-showed Phase 7 chains from lo win on ibm01/02/09/10. Removing lo
-regressed ibm10 by +0.008 in single-bench test. Both handles kept.
+**Status:** likely a no-op fix; flagged for completeness.
 
 ---
 
-## A6 — Original framing (kept for reference)
+## Maintenance items
 
-**Status: original framing ("9/17 benchmarks have no improvement over
-v12") is no longer accurate.** After A1 (proxy 2-opt), **all 17
-benchmarks improved vs v12**. The "stuck at v12 floor" set is empty.
+### M1. Stale failing test in `test/test_varrahan_v2_congestion.py`
 
-The deeper question — whether cong-grad has converged to a true local
-minimum on certain benchmarks or whether orthogonal search primitives
-could find better basins — remains open. The ceiling question is now
-about closing the +1.0% gap vs RePlAce on the avg.
-
-**Per-benchmark progress vs v12 baseline (post-A1):**
-
-| Benchmark | v12 | Post-A1 | Δ |
-|---|---|---|---|
-| ibm01 | 1.1860 | 1.1352 | −0.0508 |
-| ibm02 | 1.5923 | 1.5713 | −0.0210 |
-| ibm03 | 1.3603 | 1.3532 | −0.0071 |
-| ibm04 | 1.3316 | 1.2971 | −0.0345 |
-| ibm06 | 1.6684 | 1.6744 | +0.0060 (regression vs v12) |
-| ibm07 | 1.4924 | 1.4866 | −0.0058 |
-| ibm08 | 1.5251 | 1.5142 | −0.0109 |
-| ibm09 | 1.1304 | 1.1037 | −0.0267 |
-| ibm10 | 1.4037 | 1.3821 | −0.0216 |
-| ibm11 | 1.2354 | 1.2292 | −0.0062 |
-| ibm12 | 1.6507 | 1.6482 | −0.0025 |
-| ibm13 | 1.4011 | 1.3907 | −0.0104 |
-| ibm14 | 1.6033 | 1.5906 | −0.0127 |
-| ibm15 | 1.6061 | 1.6045 | −0.0016 |
-| ibm16 | 1.5323 | 1.5181 | −0.0142 |
-| ibm17 | 1.7437 | 1.7425 | −0.0012 |
-| ibm18 | 1.7896 | 1.7870 | −0.0026 |
-
-Single regression: **ibm06 +0.0060**. v12's ibm06=1.6684 came from a
-specific stale-plc-after-Phase-2 path that the current v2 pipeline
-doesn't reproduce (likely due to floats / runtime ordering changes).
-This is the only benchmark where v2 hasn't improved on v12.
-
-**Remaining ceiling — closing the 0.0145 gap to RePlAce (1.4578):**
-
-Per-benchmark gap to RePlAce shows where score remains farthest:
-
-| Benchmark | Gap vs RePlAce | Status |
-|---|---|---|
-| ibm02 | +14.5% | Mostly congestion-bound |
-| ibm10 | +7.9% | Recent B3 win |
-| ibm12 | +4.5% | Baseline-only fallback |
-| ibm09 | +1.4% | Cong-grad converged |
-| ibm04 | +0.4% | Near parity |
-| (others) | −0.8% to −6.0% | We beat RePlAce |
-
-**Concrete unexplored leverage axes (unchanged from original A6):**
-1. **Multi-restart from `best_pl`** (fine-noise tail).
-2. **Per-macro selective perturbation** (TOP-K congested).
-3. **Order-randomization in `_will_legalize`**.
-4. **`_dp_diagnostic.py` re-run** (A3): tells us which benchmarks
-   still have DP headroom.
-
-**Recommendation:** A3 first (cheap diagnostic), then axis #1 (fine-noise
-from best, lowest risk). The ibm06 regression should also be
-investigated — possibly a small ordering change can recover the 1.6684
-basin.
-
----
-
-# Part B — Performance / speedup issues
-
-## B1. `--all` wall-clock timeout makes the 1.4804 headline unverified (RESOLVED 2026-05-23)
-
-**Status: RESOLVED.** Three defensive changes applied; `--all`
-validation completed successfully (run before A1):
-
-- avg = **1.4782** (vs v15 partial 1.4804, −0.0022).
-- All 17 benchmarks VALID, 0 overlaps.
-- Wall-clock ~3360s under harness 3600s cap.
-- ibm18 returned baseline (cumulative=3352s triggered pre-flight guard).
-
-Subsequent `--all` runs (A1, B3) have all completed under the cap;
-B1 protection holds. Committed in 1c0f319.
-
-**Changes applied:**
-1. **Cross-benchmark cumulative tracking** (`MacroPlacer.__init__`,
-   `_first_place_call_time` + `_benchmarks_done`). Computes
-   `adaptive_cap = (3300 - cumulative) / (17 - done) * 0.9`, uses
-   `effective_budget_s = min(time_budget_s, max(30s, adaptive_cap))`
-   throughout the 12 budget-check sites in `place()`.
-2. **Pre-baseline-score skip guard** — if `effective_budget_s < 60s`
-   OR `cumulative > 0.95 * HARNESS_TOTAL_BUDGET_S`, return baseline
-   immediately.
-3. **`SLOW_SCORE_THRESHOLD_S` tightened 100s → 80s**.
-
-**Tested and reverted:**
-- `n>500` DP launch gate. A/B on ibm10: 1-DP=1.3891 vs 2-DP=1.3876
-  (−0.0015 score, no wall-clock saving). Reverted.
-
-**Original problem statement** (kept for reference):
-> v4 and v5 `--all` runs both timed out at ibm17 at the 3600s
-> cumulative cap. The 1.4804 avg was a partial-run extrapolation, not
-> a measured headline.
-
-| Benchmark | Time | Source |
-|---|---|---|
-| ibm15 | 239s | baseline scoring + cong-grad |
-| ibm16 | 170s | baseline-only after slow-score skip |
-| ibm17 | >300s | baseline scoring alone |
-
-The cumulative-tracking fix means even when the harness adds large
-overhead between benchmarks (observed 2270s gap between ibm16 and
-ibm17 in the validation run), the placer adapts and returns baseline
-for late benchmarks rather than timing out the whole run.
-
----
-
-## B2. `_smooth_routing_cong_vec` had a per-row/col Python loop (FIXED 2026-05-22)
-
-**Where:** `placer.py` (`_smooth_routing_cong_vec`).
-
-**What was wrong:** the smoothing function used a Python `for r in
-range(grid_row)` loop that did a numpy add per row. For ibm10
-(grid_row=41, grid_col=55) that was ~96 iterations × small numpy op —
-roughly 1–3ms per `get_routing()` call.
-
-**Fix:** replaced with `np.add.at` on flattened/broadcast indices.
-For `axis_h=True` the call becomes `np.add.at(events, lp, weighted)`.
-For `axis_h=False`, uses tuple-of-arrays advanced indexing.
-
-**Result:** 1–3ms → 0.2ms per get_routing call (~10× speedup on
-smoothing). End-to-end ibm04 dropped 1.3159 → 1.3079; ibm01 unchanged.
-Bit-equivalent vs scalar verified.
-
----
-
-## B3. Incremental scoring for 2-opt (PHASE 1 SHIPPED 2026-05-23)
-
-**Status: Phase 1 (position-cache) shipped and validated.** Eliminates
-get_pos Python loops in `_vectorized_wirelength` / `_vectorized_get_grid_cells_density`
-/ `_vectorized_get_routing`. **Per-score cost on ibm10: 22.5ms → 15.4ms
-(1.46× speedup).**
-
-Per-component breakdown on ibm10:
-
-| Stage | Pre-B3 | Post-B3 | Speedup |
-|---|---|---|---|
-| `_vectorized_wirelength` | 4.83ms | 2.75ms | 1.76× |
-| `get_density_cost` (dirty) | 1.78ms | 0.97ms | 1.84× |
-| `get_congestion_cost` (dirty) | 12.80ms | 9.76ms | 1.31× |
-| Full `_exact_proxy` (1 macro change) | 22.56ms | 15.42ms | 1.46× |
-
-Single-benchmark direct effect on 2-opt: ibm10 went from 549 scores /
-202 accepts / final 1.3876 → **955 scores / 302 accepts / final 1.3808
-(−0.0068)**.
-
-**`--all` validation (COMPLETE 2026-05-23):**
-
-| Bench | A1 result | B3 phase 1 | Δ |
-|---|---|---|---|
-| ibm01 | 1.1352 | 1.1352 | 0 |
-| ibm02 | 1.5713 | 1.5712 | −0.0001 |
-| ibm03 | 1.3532 | 1.3531 | −0.0001 |
-| ibm04 | 1.2971 | 1.2969 | −0.0002 |
-| ibm06 | 1.6744 | 1.6744 | 0 |
-| ibm07 | 1.4866 | 1.4855 | −0.0011 |
-| ibm08 | 1.5142 | 1.5142 | 0 |
-| ibm09 | 1.1037 | 1.1037 | 0 |
-| ibm10 | 1.3821 | 1.3800 | −0.0021 |
-| ibm11 | 1.2292 | 1.2286 | −0.0006 |
-| ibm12 | 1.6482 | 1.6480 | −0.0002 |
-| ibm13 | 1.3907 | 1.3902 | −0.0005 |
-| ibm14 | 1.5906 | 1.5897 | −0.0009 |
-| ibm15 | 1.6045 | 1.6044 | −0.0001 |
-| ibm16 | 1.5181 | 1.5181 | 0 |
-| ibm17 | 1.7425 | 1.7422 | −0.0003 |
-| ibm18 | 1.7870 | 1.7870 | 0 |
-| **AVG** | **1.4723** | **1.4719** | **−0.0004** |
-
-**Pattern confirmed:** B3 helps benchmarks that were score-bound
-(couldn't exhaust 2-opt candidate budget). ibm07 / ibm10 / ibm11 /
-ibm13 / ibm14 see new improvements. Benchmarks where 2-opt already
-exhausted candidates (ibm01, ibm06, ibm08, ibm09, ibm16, ibm18) see
-zero change — the extra speedup buys nothing if there's nothing left
-to find.
-
-The −0.0004 avg gain is small but came essentially for free (1.46×
-faster scoring with bit-equivalent results, also cut --all wall-clock
-by ~36s). Pays bigger dividends if B3 phase 2/3 also ship.
-
-**Implementation:** `_ensure_pos_cache(plc)` returns a `(n_modules, 2)`
-numpy array maintained in sync with `plc.modules_w_pins[i].set_pos`
-calls (updated inside `_fast_set_placement`). The three vectorized
-scoring functions now read positions via fancy indexing
-(`pos_cache[unique_ref, 0]`) instead of looping `mods[idx].get_pos()`
-~1500 times per call.
-
-Bit-equivalence verified: ibm10 baseline scored 1.339672 pre-B3,
-1.339672 post-B3 (delta < 1e-12, float64 noise).
-
-### Phase 2 — per-net HPWL incremental (SHIPPED 2026-05-23)
-
-`IncrementalScorer` class added. Tracks committed positions + per-net
-HPWL cache + macro→nets index. On a 2-opt swap:
-- `touched_nets = macro_to_nets[i] ∪ macro_to_nets[j]` (~50-200 of 28k).
-- Recompute HPWL for touched nets only via masked reduceat.
-- delta_wl = sum((new − old) × weights) for touched.
-- new_total_wl_raw = total_wl_raw + delta_wl.
-- Density / congestion still go through plc's full recompute.
-
-`--all` validation:
-- avg 1.4719 → **1.4714 (−0.0005)**.
-- ibm10 was the biggest win: 1.3800 → 1.3749 (−0.0051) — went from
-  955 scores / 302 accepts (B3p1) to deeper search.
-- Bit-equivalent verified via `_verify_incremental_scorer.py` across
-  ibm01/ibm04/ibm10 (12 trials + 4 commits each, Δ=0.00e+00).
-- `--all` wall-clock 506.89s → 502.06s.
-
-### Phase 3 — numpy-fast congestion cost path (SHIPPED 2026-05-23)
-
-Originally planned as "per-net routing incremental" — would have
-required reproducing ~250 lines of dispatch logic (length-2/3/≥4
-buckets, 3-pin steiner cases). Estimated 1000+ lines new code, high
-bug risk. **Scoped down to the numpy-fast cost path:**
-
-1. `_vectorized_get_routing` stores `V_routing_cong` / `H_routing_cong`
-   as numpy arrays directly (skipped 4× `.tolist()` calls, ~2ms saved).
-2. `_vectorized_get_congestion_cost` replaces plc's Python-list-based
-   abu (sorted + sum) with `np.partition` (top-5% mean).
-3. `_patch_plc_congestion` now also binds `plc.get_congestion_cost`.
-
-Microbenchmark on 4510-element array:
-- Python `sorted` + slice + sum: 0.525 ms
-- `np.partition + sum`: 0.014 ms (37× faster)
-- Plus the .tolist() savings: ~2ms
-
-`--all` validation (2026-05-23):
-- avg 1.4714 → **1.4711 (−0.0003)**.
-- Wall-clock 502.06s → **460.85s (−41s, 8% faster)**.
-- ibm10 picked up another −0.0021 (1.3749 → 1.3728) from the extra
-  budget freed.
-
-The wall-clock win was bigger than expected because numpy abu also
-runs every time `plc.get_congestion_cost()` is called outside 2-opt
-(noise restarts, cong-grad iters), and those add up across the 17
-benchmarks.
-
-### Phase 4+ — full per-net routing incremental (DEFERRED)
-
-The big-leverage piece (~5-7ms savings on the congestion 9.76ms total)
-remains the per-net incremental routing. Requires:
-- Cache per-pin gcell positions at committed state.
-- Refactor `_vectorized_get_routing` to support `net_subset` + `weight_mult`.
-- IncrementalScorer subtracts OLD contribution (subset, w=-1) using
-  cached gcells, applies set_pos, adds NEW contribution (subset, w=+1).
-- Macro routing also gets incremental treatment.
-
-Implementation: 1000+ lines, careful testing. Deferred until other
-score-improvement avenues (A3, A6) explored.
-
----
-
-## B3 — Original problem statement (kept for reference)
-
-**Where:** would touch `_exact_proxy` + `_score` callers; new code path.
-Phase 1 (position cache) is shipped — see status block above. The
-phases below are NOT YET IMPLEMENTED.
-
-**Why it matters:** A1's proxy-2-opt found 137 swaps in 1706 scores on
-ibm01 (12s), 274 swaps in 1714 scores on ibm04 (15s), 202 swaps in 549
-scores on ibm10 (15s — score-bound). **Speedup directly buys more
-2-opt accepts.** ibm10 found ~37% accept rate but ran out of budget at
-549 scores; with 2× faster scoring, ~1100 scores → ~400 accepts → much
-larger −Δproxy. (Phase 1 result confirms: 1.74× more scores fit, gained
-−0.0068 on ibm10 alone.)
-
-**What's wrong:** a 2-opt swap moves only 2 macros, but `_exact_proxy`
-recomputes:
-- All net HPWLs (most don't touch macros i,j).
-- All grid-cell densities (most cells don't contain macros i,j).
-- All grid-cell routing congestion (most cells don't change).
-
-The bulk of the work is rescoring the *same* state.
-
-**How to apply:**
-- Build an inverse index: net → macros, macro → nets (cached once per
-  benchmark).
-- For a candidate swap (i, j): compute the set of touched nets =
-  `nets_of(i) ∪ nets_of(j)`. Rescore only those nets for HPWL.
-- For density: macros i and j occupy old + new cells. Subtract old
-  contribution, add new. Re-sort top-10% only when the changed set
-  affects the top-10% boundary (rare).
-- For congestion: harder — the smoothing kernel makes per-cell changes
-  ripple. Best path: cache the routing field's per-net contributions,
-  recompute only touched nets' contributions, re-smooth.
-
-**Expected gain:** 5-20× speedup on the 2-opt path. End-to-end:
-ibm10's 2-opt could go from −0.0035 → ~−0.012 (more candidates fit).
-
-**Risk:** correctness drift from incremental updates accumulating
-numerical error. Mitigate with periodic full rescore (every 50 swaps)
-to catch drift.
-
----
-
-## B4. `_vectorized_get_routing` dispatch overhead (17ms/call, ~half of per-score cost)
-
-**Where:** `placer.py` `_vectorized_get_routing` (~line 1362).
-
-**What's wrong:** the per-call score-cost breakdown attributes 17ms to
-`_vectorized_get_routing`, with the comment "dispatch + lexsort
-overhead dominates". This means the math is already vectorized, but
-the Python-side glue (calls into vectorized helpers, lexsort to
-order pin events, etc.) eats 17ms.
-
-**How to apply:**
-- Profile with cProfile / line_profiler to identify the specific lines.
-- Common Python overhead sources to check:
-  - `np.lexsort` on large arrays (lexsort is O(n log n) and allocates).
-  - Repeated `np.asarray` calls (each one validates and may copy).
-  - Dictionary lookups in hot loops.
-- Possible fix patterns:
-  - Cache the lexsort result if pin positions are net-stable.
-  - Pre-sort pins at cache-build time so per-call order is fixed.
-  - Replace lexsort with a single integer composite key.
-
-**Expected gain:** 17ms → ~5ms (3× speedup on this stage, ~25%
-total-score speedup).
-
----
-
-## B5. GIL-aware score parallelism (speculative)
-
-**Where:** would wrap the score function in a `ThreadPoolExecutor` or
-multiprocess pool.
-
-**What's wrong (or could be improved):** scoring is sequential. If
-`plc`'s C++ scoring path releases the GIL on long ops (the v15
-DREAMPlace async architecture implicitly assumed this), Python
-threads can score multiple candidates concurrently.
-
-**How to verify:** before implementing, write a benchmark: spawn two
-threads each calling `_exact_proxy` repeatedly on the same plc. If
-wall-clock for 100 scores per thread ≈ 100 × single-thread score time,
-plc holds the GIL (parallel won't help). If wall-clock ≈ 50% of that,
-the GIL releases (parallel will help).
-
-**Risk:** plc may hold internal state that's not thread-safe (caches,
-last-scored-placement). Need separate `plc` instances per thread, which
-costs memory but doesn't change correctness.
-
-**Expected gain:** 2× score throughput → applies to all paths
-(2-opt, noise restarts, cong-grad). Highest impact on 2-opt (A1) but
-helps Phase 1/3 cong-grad iters too.
-
----
-
-## B6. Batch `_fast_set_placement` (5ms/call)
-
-**Where:** `placer.py` `_fast_set_placement` (~line 1631).
-
-**What's wrong:** per-macro `set_pos` is the cost. For n=760 macros,
-that's 760 Python→C++ calls per score (5ms total).
-
-**How to apply:**
-- Check if `plc` has a batched API (e.g., `set_positions` taking an
-  N×2 array). If yes, switch.
-- If no, check whether `plc_client_os.py` exposes the underlying data
-  array directly (some C++ bindings let you write into a buffer).
-- Worst case: contribute a batched API to the bridge.
-
-**Expected gain:** 5ms → ~0.5ms (10× speedup on this stage, ~14%
-total-score speedup).
-
----
-
-## B7. Cache score results during 2-opt (cheap insurance)
-
-**Where:** A1's `_two_opt_proxy_swap`.
-
-**What's wrong (or could be improved):** during 2-opt iteration, if
-the search loops back to a previously seen placement (e.g., a swap
-reverts a prior accept), we rescore. Likely rare but free to guard.
-
-**How to apply:**
-- Add an `lru_cache`-style dict keyed by
-  `(min(i,j), max(i,j), pos[i].tobytes(), pos[j].tobytes())`.
-- Cache stores the proxy result for that specific swap configuration.
-
-**Expected gain:** small (~1-5% of score calls likely repeat) but
-deterministic when it does fire.
-
----
-
-## B8. Adaptive `max_iters` in 2-opt
-
-**Where:** A1's `_two_opt_proxy_swap` (currently `max_iters=3`).
-
-**What's wrong (or could be improved):** if outer iter 1 finds many
-accepts (e.g., 100+ on ibm04), iter 2 likely also has high yield
-(positions changed substantially). If iter 1 finds few accepts (e.g.,
-5 on ibm15), iter 2 will likely find even fewer — wasted time.
-
-**How to apply:**
-- After iter 1, measure `accepts_per_score = accept_count /
-  score_calls`. If < 0.05, stop. If > 0.15, allow 4-5 outer iters
-  (current cap is 3).
-
-**Expected gain:** small. Frees budget on low-yield benchmarks for
-other work; allows more accepts on high-yield ones.
-
----
-
-## B9. Smarter candidate ordering in 2-opt
-
-**Where:** A1's `_two_opt_proxy_swap` (currently lex-ordered by i,j
-via kNN order).
-
-**What's wrong (or could be improved):** all candidates are
-score-tested in the same order regardless of likely impact. Swaps with
-large displacement (likely to change WL/cong significantly) are
-intermixed with near-trivial micro-swaps. Higher-impact swaps tested
-first → more accepts in fixed budget.
-
-**How to apply:**
-- Sort candidate (i, j) pairs by `dx_ij² + dy_ij²` descending before
-  scoring.
-- Or by `displacement_change_estimate(i, j)` — analytic estimate of
-  how much WL changes (cheap to compute given net adjacency).
-
-**Expected gain:** small but free (no extra work, just different
-order). Likely improves accept rate by 5-15%.
-
----
-
-# Part C — Maintenance / blocked
-
-## C1. Pre-existing failing congestion-perturb test (formerly #5)
-
-**Where:** `test/test_varrahan_v2_congestion.py:65`.
-
-**What's wrong:** the test asserts H+V combined perturb behavior, but
+The test asserts H+V combined-perturb behavior, but
 `_routing_congestion_perturb` uses `max(H, V)` per a documented A/B
-test on ibm03/ibm07. The test failure is unrelated to any recent
-change; it was authored when the code briefly used H+V and never
-re-synced after the switch.
+test. The actual code is correct; the test was authored when the
+code briefly used H+V and never re-synced.
 
-**Constraint:** `test/` is read-only per CLAUDE.md. Requires user
-permission to fix.
+**Constraint:** `test/` is read-only per CLAUDE.md. Requires user to
+update the test or grant write permission.
 
-**How to apply:** either update the test to construct a placement
-where max(H, V) makes a definite-direction prediction, or surface to
-the user. The actual code is correct.
+### M2. Harness `time.time()` exposure (see O4)
 
----
-
-## Per-call score-cost breakdown (ibm10, after vectorization sweep)
-
-For reference when picking the next speedup target:
-
-| Stage | Cost | Notes |
-|---|---|---|
-| `_vectorized_get_routing` (congestion) | 17ms | dispatch + lexsort overhead dominates (B4) |
-| `get_density_cost` | 4ms | top-10% sort, fully vectorized |
-| `_vectorized_get_grid_cells_density` | 4ms | batched bincount |
-| `_apply_3pin_routing_vec` | 4ms | batched 4-branch dispatch |
-| `_apply_h/v_strips_batch` | 3ms each | difference-array prefix-sum |
-| `_apply_2pin_routing` | 1ms | thin wrapper over strip batch |
-| `_apply_macro_routing` | 1ms | batched rectangle expansion |
-| `_vectorized_wirelength` | <1ms | reduceat per-net HPWL |
-| `_fast_set_placement` | 5ms | per-macro `set_pos` (B6) |
-
-Total per-call: ~34ms (from 450ms baseline before vectorization).
-
-After B3 + B4 + B6 (the three concrete speedup targets), expected per-
-call: ~10ms (3× total improvement, dominantly from incremental scoring
-which targets the 2-opt path where it matters most).
+Cosmetic but confusing — the harness's "Total runtime" output
+sometimes shows 36000+ seconds while actual elapsed is <600s. Caused
+by WSL2 wall-clock drift in the harness's own timing (which we don't
+control).
 
 ---
 
-## What is NOT in this list (intentionally)
+## What's NOT in this list (resolved or rejected — see commits)
 
-- **Density-score fallback anti-correlation** — known, CLAUDE.md flags
-  it, current thresholds handle it correctly.
-- **CPU contention slowdown** — environmental, not a code issue.
-- **PARTIAL_OVERLAP correction in vectorized macro routing** —
-  bit-equivalence verified.
-- **`MaskRegulate` comment in PAPERS_NOTES.md** — code is right, doc
-  is wrong; PAPERS_NOTES.md is read-only.
-- **Dead soft-resnap code** — turned out to be stale notes. Those
-  helpers never made it into v2 (only existed in v1). Comments in
-  placer.py + A2 sections updated 2026-05-25 to reflect that A2's
-  DP soft_movable=True solved the soft mismatch directly.
+The session 2026-05-23 → 2026-05-25 closed the following. They're
+documented in the commit messages; no need to track them here.
+
+- B1 — `--all` wall-clock timeout (cumulative-budget guard).
+- A1 — 2-opt-on-winner uses displacement, not proxy (proxy 2-opt shipped).
+- B3 phases 1-4 — incremental scoring (position cache, per-net HPWL,
+  numpy abu, per-net routing).
+- B4 — `_vectorized_get_routing` dispatch cache.
+- A3 — DREAMPlace diagnostic re-run.
+- A6 axis #1 (TOP-K cong-grad / Phase 8) and axis #4 (random-order /
+  Phase 9).
+- 2-opt widening (k_neighbors=10, max_iters=6, Phase 8 multi-iter chains).
+- A2 — DP soft_macros_movable diversification (lo-fix + hi-mov).
+- WSL2 clock-drift hardening (`time.monotonic()` throughout).
+- NG45 design disambiguation in `_load_plc`.
+- A5 — Phase 7 retro-eval (gate + RNG isolation, bit-stable).
+- Rejected: A4 (DP gating), A6 axes #2 (drop lo) and #3 (fine-noise
+  from best), B7 (score cache), B8 (adaptive max_iters), B9 (smart
+  ordering), 2-opt cache memoization, stale soft-resnap helpers (only
+  in v1).

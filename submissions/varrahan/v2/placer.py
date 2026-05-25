@@ -2866,20 +2866,27 @@ class MacroPlacer:
                     # → density spikes. Solution: launch BOTH soft_movable
                     # variants at same target_density. Best-of-both per
                     # benchmark. Tag "fixed"/"movable" for clarity.
-                    # A2 refined 2026-05-24: 2-DP setup diversifying on BOTH
-                    # target_density AND soft_macros_movable. The earlier
-                    # 2-DP attempts each diversified only ONE axis:
-                    #   - (hi=fix, lo=fix):     missed soft-movable wins (ibm03 −0.10).
-                    #   - (hi=fix, hi=mov):     missed lo-td win (ibm01 stayed +0.019).
-                    # Single-bench isolation found ibm01 benefits from
-                    # td=0.65 spreading (DP candidate 1.1505 vs 1.2241 at
-                    # td=0.85). ibm03/06/10 benefit from soft_movable=True.
-                    # Combining lo-fix + hi-mov covers both regimes.
-                    #   lo-fix: td=0.65, soft_movable=False (ibm01 dense-init win)
-                    #   hi-mov: td=0.85, soft_movable=True  (ibm03/06/10 wins)
+                    # A2 refined 2026-05-25: 3-DP setup diversifying across
+                    # both target_density and soft_movable axes. Phase 7
+                    # RNG isolation (commit adaf693) made adding a 3rd DP
+                    # safe — the original 3-DP attempt 2026-05-24 had to
+                    # be reverted because the extra Phase 7 chain caused
+                    # rng_cong drift, regressing ibm10 +0.036. Isolation
+                    # now contains those effects.
+                    #
+                    # DP roles:
+                    #   lo-fix: td=0.65, soft_movable=False
+                    #     - ibm01 dense-init benefits from lo-td spreading.
+                    #   hi-mov: td=0.85, soft_movable=True
+                    #     - ibm03/06/10 wins via DP-optimized softs.
+                    #   hi-fix: td=0.85, soft_movable=False
+                    #     - ibm09/13 — need fixed softs at hi-td. Was
+                    #       missing from the 2-DP setup, causing those
+                    #       benchmarks to regress by +0.007 to +0.012.
                     for tag, td, root, soft_mv in (
                         ("lo-fix",  0.65, "/tmp/dreamplace_v1_lofix",   False),
                         ("hi-mov",  0.85, "/tmp/dreamplace_v1_himov",   True),
+                        ("hi-fix",  0.85, "/tmp/dreamplace_v1_hifix",   False),
                     ):
                         try:
                             h = launch_dreamplace_async(

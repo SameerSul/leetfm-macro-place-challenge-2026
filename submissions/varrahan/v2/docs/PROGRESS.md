@@ -3,11 +3,15 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Note (2026-05-20):** This is varrahan/v1's local copy of the team's `PROGRESS.md`,
-> updated with v12 → v14 findings. The team copy at `/PROGRESS.md` is read-only for this
-> submission slot — apply the edits there manually if you want them in the team log.
-> Most recent: v14 (Tier 3 vectorize legalize + 2-opt baseline-only + running-max + async
-> DREAMPlace integration in progress).
+> **Status (2026-05-25):** v2 submission complete. **Avg 1.4475 — beats
+> RePlAce by 0.0103 (−0.7%).** All 17 IBM benchmarks improved vs v12.
+> See "v2 — Submission state" section below for headlines.
+>
+> History notes (2026-05-20): this file started as v1's local copy of
+> the team's PROGRESS.md, updated through v14. The "Iteration Log"
+> section below tracks the v1-era progression (v1 → v14). The v2
+> session (2026-05-23 → 2026-05-25) is summarized in the new section
+> immediately after the Baselines table.
 
 ---
 
@@ -20,6 +24,110 @@ Target: beat RePlAce avg of 1.4578.
 | sameer_v1 leg-only | 1.5062 | our legalize-only, confirmed |
 | RePlAce | 1.4578 | Grand Prize target |
 | UT Austin (DREAMPlace) | 1.4076 | leaderboard #1 |
+| **v2 (this submission)** | **1.4475** | **BEATS RePlAce by 0.0103 (−0.7%)** |
+
+---
+
+## v2 — Submission state (2026-05-25)
+
+### Headline
+
+| Metric | Value |
+|---|---|
+| 17 IBM benchmarks avg | **1.4475** |
+| RePlAce target | 1.4578 |
+| **Gap to RePlAce** | **−0.7% (beat by 0.0103)** |
+| v12 starting point | 1.4854 |
+| **Total v2 improvement** | **−0.0379** |
+| `--all` wall-clock | ~525s (well under 3600s cap) |
+| NG45 avg (Tier 2) | 0.7830 |
+
+### Per-benchmark results (v2 final vs v12)
+
+| Bench | v12 | v2 | Δ |
+|---|---|---|---|
+| ibm01 | 1.1860 | 1.1317 | −0.054 |
+| ibm02 | 1.5923 | 1.5062 | **−0.086** |
+| ibm03 | 1.3603 | **1.2369** | **−0.123** |
+| ibm04 | 1.3316 | 1.2797 | −0.052 |
+| ibm06 | 1.6684 | **1.5473** | **−0.121** |
+| ibm07 | 1.4924 | 1.4812 | −0.011 |
+| ibm08 | 1.5251 | 1.5076 | −0.018 |
+| ibm09 | 1.1304 | 1.1109 | −0.020 |
+| ibm10 | 1.4037 | 1.3388 | −0.065 |
+| ibm11 | 1.2354 | 1.2215 | −0.014 |
+| ibm12 | 1.6507 | 1.6414 | −0.009 |
+| ibm13 | 1.4011 | 1.3899 | −0.011 |
+| ibm14 | 1.6033 | 1.5835 | −0.020 |
+| ibm15 | 1.6061 | 1.5996 | −0.007 |
+| ibm16 | 1.5323 | 1.5099 | −0.022 |
+| ibm17 | 1.7437 | 1.7358 | −0.008 |
+| ibm18 | 1.7896 | 1.7848 | −0.005 |
+| **AVG** | **1.4854** | **1.4475** | **−0.038** |
+
+**All 17 benchmarks improved.** No regressions vs v12.
+
+### Architecture changes vs v1
+
+1. **`MacroPlacer.__init__` cross-benchmark state** (B1) — tracks
+   cumulative wall-clock with `time.monotonic()` for adaptive
+   per-benchmark budget under `--all`'s 3600s harness cap.
+2. **Proxy-driven 2-opt-on-winner** (A1) — `_two_opt_proxy_swap` uses
+   `_exact_proxy` rescoring per swap (was: displacement-from-init,
+   anti-correlated with proxy).
+3. **B3 incremental scoring** (4 phases) —
+   - Phase 1: global position cache eliminates per-call get_pos loops.
+   - Phase 2: per-net HPWL incremental via macro→nets index.
+   - Phase 3: numpy abu (np.partition) replaces Python sorted +
+     .tolist() conversions.
+   - Phase 4: per-net incremental ROUTING via subset dispatch
+     helpers (`_apply_net_routing_subset`, `_apply_macro_routing_subset`).
+     Per-score on ibm10 dropped 22.5ms → ~3ms (7.5× faster).
+4. **B4 dispatch cache** — pre-compute topology-fixed index arrays in
+   `_build_cong_cache` (idx2/idx3/idx_big/net_local_ids/global_pin_idx).
+5. **A6 axis #1: Phase 8 TOP-K cong-grad** with multi-iter chains —
+   restrict cong-grad to K hottest macros; chain up to 3 iters per K
+   in {5, 10, 20}.
+6. **A6 axis #4: Phase 9 random-tiebreak legalize order** — N=3
+   variant orderings of `_will_legalize` with random secondary sort
+   key (primary key −area preserved).
+7. **2-opt widening** — k_neighbors 5 → 10, max_iters 3 → 6.
+8. **A2 DREAMPlace soft_movable diversification** — 2-DP launch:
+   lo-fix (td=0.65, soft_movable=False) + hi-mov (td=0.85,
+   soft_movable=True). Best-of-both candidate per benchmark.
+9. **WSL2 clock-drift hardening** — all 56 `time.time()` calls
+   replaced with `time.monotonic()` to prevent host-suspend-induced
+   wall-clock jumps from corrupting deadlines / budgets.
+10. **NG45 disambiguation** — `_load_plc` matches NG45 designs by
+    canvas dimensions when `benchmark.name == "output_CT_Grouping"`
+    (all 4 NG45 designs share that name due to load_benchmark's
+    basename logic).
+
+### Reproducibility
+
+Multiple `--all` runs confirmed avg 1.4475 ± noise (typically
+≤ 0.001 per-benchmark variance). Largest run-to-run swing observed:
+ibm10 ±0.0024 due to non-deterministic CPU scheduling affecting
+2-opt deadline-bound decisions.
+
+### Headline progression through the v2 session (2026-05-23 → 2026-05-25)
+
+| Milestone | Avg | Δ from prior | Gap vs RePlAce 1.4578 |
+|---|---|---|---|
+| v12 (session start) | 1.4854 | — | +1.9% |
+| + B1 cumulative-budget guard | 1.4782 | −0.0072 | +1.4% |
+| + A1 proxy 2-opt | 1.4723 | −0.0059 | +1.0% |
+| + B3 phase 1 (pos cache) | 1.4719 | −0.0004 | +1.0% |
+| + B3 phase 2 (per-net HPWL incr) | 1.4714 | −0.0005 | +0.9% |
+| + B3 phase 3 (numpy abu) | 1.4711 | −0.0003 | +0.9% |
+| + A6 Phase 8 (TOP-K cong-grad) | 1.4701 | −0.0010 | +0.8% |
+| + Phase 9 (random-order legalize) | 1.4698 | −0.0003 | +0.8% |
+| + B4 dispatch cache | 1.4698 | 0 | +0.8% |
+| + B3 phase 4 (per-net cong incr) | 1.4690 | −0.0008 | +0.8% |
+| + 2-opt widening (k=10, iters=6) + Phase 8 chains | 1.4647 | −0.0043 | +0.5% |
+| + A2 (DP soft_movable best-of-both) | 1.4486 | −0.0161 | **−0.6%** |
+| + A2 refined (lo-fix + hi-mov) | **1.4475** | **−0.0011** | **−0.7%** |
+| (+ WSL2 monotonic clock fix — no score Δ, ↓ wall-clock 720s → 526s) | | | |
 
 ---
 
