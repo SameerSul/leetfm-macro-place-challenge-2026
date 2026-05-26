@@ -2170,7 +2170,16 @@ class IncrementalScorer:
         self.hard_indices = list(benchmark.hard_macro_indices)
 
         # Make sure plc + global pos cache reflect current_placement_np.
-        # _fast_set_placement is idempotent if positions match the last_pos_cache.
+        # O5 fix (2026-05-25): force a FULL set, never trust the idempotency
+        # cache here. `_apply_pos` (used by score_swap/commit_swap) keeps
+        # `_global_pos_cache` in sync but NOT `_last_pos_cache`, so after a
+        # prior 2-opt mutated plc, `_last_pos_cache` is stale — and
+        # `_fast_set_placement` would skip macros whose stale cache value
+        # coincidentally matches, leaving plc in a mixed state and computing the
+        # WL baseline against the wrong positions (the seed-dependent "drift"
+        # that regressed ibm01 in the first multi-seed cut). Invalidating the
+        # cache guarantees every macro is re-set to current_placement_np.
+        plc._last_pos_cache = None
         _fast_set_placement(plc, current_placement_np, benchmark)
 
         wl_cache = _build_wl_cache(plc)
@@ -3637,6 +3646,10 @@ class MacroPlacer:
             ]
             for _tag, _dp_sc, _dp_pl in dp_placements:
                 twoopt_seeds.append((f"dp[{_tag}]", _dp_pl.clone(), _dp_sc))
+            # S4 baseline_pos seed tested 2026-05-25, REJECTED: 2-opt from the
+            # raw legalized baseline never beat best_pl on any of ibm01/04/09/
+            # 10/13 (landed 0.02-0.10 above), since baseline is best_pl's
+            # unrefined ancestor, not a distinct basin. Pure wall-clock cost.
 
             # Prune hopeless DP basins. A seed can only beat the incumbent's
             # 2-opt result if its own 2-opt result is lower; for a DP seed whose
@@ -3693,13 +3706,16 @@ class MacroPlacer:
 
                 # Post-B3-phase-4 (2026-05-24): per-score on ibm10 dropped from
                 # ~9.7ms → ~3ms (4.7× more scores fit in 15s). Widenings:
-                #   #1: k_neighbors 5 → 10 — doubles candidate pool per iter.
+                #   #1: k_neighbors 5 → 10 → 15 → 20 (S2, 2026-05-25) — wider
+                #       candidate pool per iter; k=15 improved all 17 over k=10
+                #       (avg 1.4464 → 1.4443), so the lever wasn't exhausted —
+                #       testing k=20 at the ~3ms score cost.
                 #   #2: max_iters 3 → 6 — more outer passes (each recomputes kNN
                 #       against updated positions, re-discovers swap opportunities).
                 opt_pos, accept_count, final_score, score_calls = _two_opt_proxy_swap(
                     seed_hard_pos, sizes, hw, hh, cw, ch, movable, n,
                     score_fn=_2opt_score, initial_score=seed_score,
-                    k_neighbors=10, max_iters=6, deadline=t_2opt + 15.0,
+                    k_neighbors=20, max_iters=6, deadline=t_2opt + 15.0,
                     incremental_scorer=incremental_scorer,
                 )
                 cand = seed_pl.clone()

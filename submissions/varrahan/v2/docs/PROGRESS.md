@@ -3,13 +3,14 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-25):** v2 submission complete. **Avg 1.4464 — beats
-> RePlAce by 0.0114 (−0.8%).** All 17 IBM benchmarks improved vs v12.
-> Latest change: multi-seed 2-opt-on-winner (O2 candidate #2) — the
+> **Status (2026-05-26):** v2 submission complete. **Avg 1.4435 — beats
+> RePlAce by 0.0143 (−1.0%).** All 17 IBM benchmarks improved vs v12.
+> Latest changes: (1) multi-seed 2-opt-on-winner (O2 candidate #2) — the
 > final 2-opt runs from each DP basin, not just best_pl, recovering the
-> ibm04 3-DP regression (1.2899 → 1.2797) and a small ibm09 win
-> (1.1035 → 1.1026). Pruning (window 0.02) keeps `--all` at ~722s.
-> See "v2 — Submission state" section below for headlines.
+> ibm04 3-DP regression; (2) 2-opt k_neighbors 10 → 20 (S2) — broad win,
+> ibm04 −0.0096 cumulative; (3) IncrementalScorer clean-init fix (O5) —
+> eliminates seed-dependent score drift. Pruning (window 0.02) keeps
+> `--all` ~826s. See "v2 — Submission state" section below for headlines.
 >
 > History notes (2026-05-20): this file started as v1's local copy of
 > the team's PROGRESS.md, updated through v14. The "Iteration Log"
@@ -28,7 +29,7 @@ Target: beat RePlAce avg of 1.4578.
 | sameer_v1 leg-only | 1.5062 | our legalize-only, confirmed |
 | RePlAce | 1.4578 | Grand Prize target |
 | UT Austin (DREAMPlace) | 1.4076 | leaderboard #1 |
-| **v2 (this submission)** | **1.4464** | **BEATS RePlAce by 0.0114 (−0.8%)** |
+| **v2 (this submission)** | **1.4435** | **BEATS RePlAce by 0.0143 (−1.0%)** |
 
 ---
 
@@ -38,39 +39,40 @@ Target: beat RePlAce avg of 1.4578.
 
 | Metric | Value |
 |---|---|
-| 17 IBM benchmarks avg | **1.4464** |
+| 17 IBM benchmarks avg | **1.4435** |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−0.8% (beat by 0.0114)** |
+| **Gap to RePlAce** | **−1.0% (beat by 0.0143)** |
 | v12 starting point | 1.4854 |
-| **Total v2 improvement** | **−0.0390** |
-| `--all` wall-clock | ~722s (multi-seed 2-opt + prune; under 3600s cap) |
+| **Total v2 improvement** | **−0.0419** |
+| `--all` wall-clock | ~826s (multi-seed 2-opt k=20 + prune; under 3600s cap) |
 | NG45 avg (Tier 2) | 0.7830 |
 
 ### Per-benchmark results (v2 final vs v12)
 
 | Bench | v12 | v2 | Δ |
 |---|---|---|---|
-| ibm01 | 1.1860 | 1.1317 | −0.054 |
-| ibm02 | 1.5923 | 1.5062 | **−0.086** |
-| ibm03 | 1.3603 | **1.2369** | **−0.123** |
-| ibm04 | 1.3316 | 1.2797 | −0.052 |
-| ibm06 | 1.6684 | **1.5473** | **−0.121** |
-| ibm07 | 1.4924 | 1.4806 | −0.012 |
-| ibm08 | 1.5251 | 1.5019 | −0.023 |
-| ibm09 | 1.1304 | 1.1026 | −0.028 |
-| ibm10 | 1.4037 | 1.3413 | −0.062 |
-| ibm11 | 1.2354 | 1.2230 | −0.012 |
-| ibm12 | 1.6507 | 1.6404 | −0.010 |
-| ibm13 | 1.4011 | 1.3828 | −0.018 |
-| ibm14 | 1.6033 | 1.5822 | −0.021 |
-| ibm15 | 1.6061 | 1.6012 | −0.005 |
-| ibm16 | 1.5323 | 1.5096 | −0.023 |
-| ibm17 | 1.7437 | 1.7359 | −0.008 |
-| ibm18 | 1.7896 | 1.7852 | −0.004 |
-| **AVG** | **1.4854** | **1.4464** | **−0.039** |
+| ibm01 | 1.1860 | 1.1276 | −0.058 |
+| ibm02 | 1.5923 | 1.5029 | **−0.089** |
+| ibm03 | 1.3603 | **1.2339** | **−0.126** |
+| ibm04 | 1.3316 | 1.2701 | −0.062 |
+| ibm06 | 1.6684 | **1.5413** | **−0.127** |
+| ibm07 | 1.4924 | 1.4781 | −0.014 |
+| ibm08 | 1.5251 | 1.4979 | −0.027 |
+| ibm09 | 1.1304 | 1.1019 | −0.028 |
+| ibm10 | 1.4037 | 1.3381 | −0.066 |
+| ibm11 | 1.2354 | 1.2215 | −0.014 |
+| ibm12 | 1.6507 | 1.6390 | −0.012 |
+| ibm13 | 1.4011 | 1.3802 | −0.021 |
+| ibm14 | 1.6033 | 1.5808 | −0.023 |
+| ibm15 | 1.6061 | 1.5999 | −0.006 |
+| ibm16 | 1.5323 | 1.5057 | −0.027 |
+| ibm17 | 1.7437 | 1.7351 | −0.009 |
+| ibm18 | 1.7896 | 1.7850 | −0.005 |
+| **AVG** | **1.4854** | **1.4435** | **−0.042** |
 
-(v2 column = `--all` 2026-05-25 with multi-seed 2-opt-on-winner +
-window=0.02 pruning. Total runtime 722s, all 17 VALID / 0 overlaps.)
+(v2 column = `--all` 2026-05-26 with multi-seed 2-opt-on-winner (k=20) +
+window=0.02 pruning + O5 clean-init fix. Total runtime 826s, all 17
+VALID / 0 overlaps.)
 
 **All 17 benchmarks improved.** No regressions vs v12.
 

@@ -13,13 +13,13 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.4464** (3-DP + multi-seed 2-opt) |
+| Best `--all` avg | **1.4435** (3-DP + multi-seed 2-opt + k=20) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−0.8% (beat by 0.0114)** |
+| **Gap to RePlAce** | **−1.0% (beat by 0.0143)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **+2.7%** (~0.039 absolute) |
+| **Gap to leaderboard** | **+2.5%** (~0.036 absolute) |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | ~722s (3-DP + multi-seed, window=0.02) |
+| `--all` wall-clock | ~826s (3-DP + multi-seed k=20, window=0.02) |
 
 All 17 IBM benchmarks improved vs v12 baseline. The remaining headroom
 (~0.040 to leaderboard) is the focus of the open work below.
@@ -144,6 +144,38 @@ during a real submission run could blow the cap.
 Not blocking; submission should run on a non-WSL Linux box where this
 doesn't manifest.
 
+### O5. IncrementalScorer relies on clean plc state at init (RESOLVED 2026-05-26)
+
+**Status: fixed.** `IncrementalScorer.__init__` now sets
+`plc._last_pos_cache = None` before `_fast_set_placement`, forcing a full
+re-set of every macro. After the fix every seed's internal `final_score`
+equals the true `_exact_proxy` (`incr==true` across the spot set), so the
+seed-dependent drift is structurally gone, not just worked around. The
+multi-seed path's true-rescore selection is retained as defence-in-depth.
+Root cause and original analysis below.
+
+**Surfaced 2026-05-25 during O2 candidate #2.** `IncrementalScorer.__init__`
+calls `_fast_set_placement(plc, current_placement_np)`, which is
+"idempotent if positions match `last_pos_cache`". When a second scorer is
+built right after a prior 2-opt has mutated plc (the multi-seed case),
+the idempotency cache can skip setting some positions, so the WL baseline
+(`_compute_per_net_hpwl_full`) is computed against a mismatched plc state.
+Result: the scorer's `final_score` drifts from the true `_exact_proxy`
+(ibm01 dp[lo-fix]: internal 1.1309 vs true 1.1506).
+
+**Currently mitigated, not fixed.** O2's multi-seed path works around it by
+calling `_exact_proxy` (a clean full set) between seeds and selecting on
+the true proxy, never the internal score. The single-seed path was never
+affected (one scorer, built from a clean-enough state — ibm01 matched).
+
+**Robust fix (~5 lines, defensive):** force a full placement set in
+`IncrementalScorer.__init__` (bypass / invalidate the idempotency cache)
+so the scorer's baseline is always self-consistent regardless of prior plc
+state. Removes the implicit "caller must hand me a clean plc" contract and
+unblocks any future code that builds multiple scorers.
+
+**Risk:** low. Worst case is one redundant full set (~ms) at init.
+
 ---
 
 ## Speculative score improvements (not started)
@@ -158,15 +190,18 @@ in.
 **Cost:** ~30 lines. RNG-isolated.
 **Expected gain:** −0.001 to −0.005 (speculative).
 
-### S2. Wider 2-opt k_neighbors (15 or 20)
+### S2. Wider 2-opt k_neighbors (SHIPPED 2026-05-26 — k=20)
 
-Current k=10. With B3p4's ~3ms scoring, we still aren't always
-candidate-bound on small benchmarks. k=15 doubles candidate pool with
-small extra cost.
-
-**Cost:** 1-line change.
-**Expected gain:** small, depends on which benchmarks are
-candidate-bound.
+k_neighbors 10 → 15 → 20 in the multi-seed 2-opt-on-winner.
+  - k=10 → 15: all 17 improved, avg 1.4464 → 1.4443 (−0.0021).
+  - k=15 → 20: avg 1.4443 → **1.4435** (−0.0008), 15/17 improved. The two
+    regressions (ibm13 +0.0004, ibm14 +0.0003) are deadline-bound — wider
+    k means fewer total passes fit the 15s budget on large benchmarks — but
+    noise-level and outweighed by broad small gains (ibm04 −0.0040).
+Wall-clock ~826s. k=25+ not pursued: the deadline-bound regime is
+expanding, so further widening likely hurts large benchmarks more than it
+helps small ones. An adaptive-k (wider on fast benchmarks) is the next
+lever if this is revisited.
 
 ### S3. Phase 8 with extended TOP-K set ({3, 5, 7, 10, 15, 20, 30, 50})
 
@@ -176,20 +211,20 @@ gradations.
 **Cost:** ~10 lines (extend the for-loop).
 **Risk:** budget displacement.
 
-### S4. 2-opt from multiple seed placements
+### S4. 2-opt from multiple seed placements (PARTIALLY SHIPPED — see O2)
 
-Currently 2-opt runs once from best_pl. With B3p4's faster scoring,
-we could:
-  - Run 2-opt from best_pl (current).
-  - ALSO run 2-opt from baseline_pos.
-  - ALSO run 2-opt from each DP candidate.
-  - Pick the lowest-proxy result.
+The multi-seed 2-opt framework shipped 2026-05-25 (O2 candidate #2):
+2-opt now runs from best_pl + each DP candidate basin, with true-proxy
+selection and window-0.02 pruning. Remaining cheap extensions, now that
+the framework + `twoopt_seeds` list exist (each is ~1-2 lines):
+  - **`baseline_pos` as a seed** — catches benchmarks where the refined
+    best_pl landed in a worse basin than the raw legalized baseline.
+  - **top-K noise restarts as seeds** — requires tracking the best few
+    noise placements (more state); defer unless baseline_pos pays off.
 
-This adds 3-5× the 2-opt budget but only if those paths actually find
-different basins.
-
-**Cost:** moderate (~50 lines).
-**Expected gain:** −0.001 to −0.010 (highly speculative).
+**Cost:** baseline_pos ~2 lines; noise restarts moderate.
+**Expected gain:** −0.001 to −0.010 (speculative); pruning keeps the
+cost near-zero on benchmarks where these can't win.
 
 ### S5. Cong-grad with adaptive frac per cell
 
