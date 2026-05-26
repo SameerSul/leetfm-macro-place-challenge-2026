@@ -3626,57 +3626,98 @@ class MacroPlacer:
         # filter so most candidates skip the score call.
         remaining_2opt = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
         if remaining_2opt >= t_one_score + 15.0:
-            t_2opt = time.monotonic()
-            best_hard_pos = np.stack(
-                [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
-            ).astype(np.float64)
-            # B3 phase 2 (2026-05-23): build an IncrementalScorer that
-            # recomputes WL incrementally (touched-nets only). Density and
-            # congestion still go through plc's full-recompute path; phase 3
-            # will tackle those.
-            #
-            # Seed the scorer from best_pl's full placement (hard + soft).
-            # plc state is mutated by the scorer's set_pos calls during
-            # trial swaps and reverted on reject. After 2-opt finishes, plc
-            # may have either the baseline state (all swaps rejected) or
-            # the post-final-accept state — either way, downstream code
-            # doesn't depend on plc state at this point (return path).
-            best_pl_np = best_pl.cpu().numpy().astype(np.float64)
-            try:
-                incremental_scorer = IncrementalScorer(plc, benchmark, best_pl_np)
-            except Exception as exc:
-                _log(f"  IncrementalScorer init failed: {type(exc).__name__}: {exc}; "
-                     f"falling back to full scoring")
-                incremental_scorer = None
+            # O2 candidate #2 (2026-05-25): run 2-opt from MULTIPLE basins, not
+            # just the single refined best_pl. Raw DP proxy is not predictive of
+            # the final 2-opt result (the O2-margin experiment showed keeping the
+            # "winning" basin as the only seed can converge worse), so try best_pl
+            # plus each DP candidate basin and keep the global minimum. Losing DP
+            # basins cost one 2-opt budget each but may 2-opt below the winner.
+            twoopt_seeds: list[tuple[str, torch.Tensor, float]] = [
+                ("best", best_pl.clone(), best_score)
+            ]
+            for _tag, _dp_sc, _dp_pl in dp_placements:
+                twoopt_seeds.append((f"dp[{_tag}]", _dp_pl.clone(), _dp_sc))
 
-            opt_scratch = best_pl.clone()
+            # Prune hopeless DP basins. A seed can only beat the incumbent's
+            # 2-opt result if its own 2-opt result is lower; for a DP seed whose
+            # raw proxy is > DP_SEED_2OPT_WINDOW above best_score, the 2-opt gain
+            # needed to catch up exceeds anything observed, so it isn't worth a
+            # 15s pass. Both observed basin wins sit well inside this window
+            # (ibm04 dp[hi-mov] +0.011, ibm09 dp[hi-fix] +0.002). The "best" seed
+            # is never pruned (it reproduces the committed single-seed 2-opt,
+            # keeping the change strictly additive).
+            DP_SEED_2OPT_WINDOW = 0.02
 
-            def _2opt_score(pos_arr: np.ndarray) -> float:
-                pos32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
-                opt_scratch[:n, 0] = pos32[:, 0]
-                opt_scratch[:n, 1] = pos32[:, 1]
-                return float(_exact_proxy(opt_scratch, benchmark, plc))
+            # Selection is by TRUE _exact_proxy, never the IncrementalScorer's
+            # final_score: the incremental WL drifts seed-dependently (ibm01
+            # dp[lo-fix] reported internal 1.1309 but true proxy 1.1506), so
+            # cross-seed comparison on the internal score picks phantom winners.
+            # The incremental scorer still guides which swaps to accept (speed);
+            # we just re-score each finalist exactly before comparing.
+            twoopt_best_pl = best_pl
+            twoopt_best_score = float(_exact_proxy(best_pl, benchmark, plc))
+            for seed_tag, seed_pl, seed_score in twoopt_seeds:
+                rem = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+                if rem < 2.0 * t_one_score + 15.0:
+                    _log(f"  2-opt seed {seed_tag}: skipped (budget {rem:.0f}s)")
+                    break
+                if seed_tag != "best" and seed_score > best_score + DP_SEED_2OPT_WINDOW:
+                    _log(f"  2-opt seed {seed_tag}: pruned "
+                         f"(raw {seed_score:.4f} > best {best_score:.4f} + "
+                         f"{DP_SEED_2OPT_WINDOW})")
+                    continue
+                t_2opt = time.monotonic()
+                seed_hard_pos = np.stack(
+                    [seed_pl[:n, 0].numpy(), seed_pl[:n, 1].numpy()], axis=1
+                ).astype(np.float64)
+                # B3 phase 2 (2026-05-23): IncrementalScorer recomputes WL
+                # incrementally (touched-nets only). Seed it from this basin's
+                # full placement (hard + soft). plc state is mutated during
+                # trial swaps and reverted on reject; re-init per seed resets it.
+                # Downstream (return path) doesn't depend on plc state here.
+                seed_pl_np = seed_pl.cpu().numpy().astype(np.float64)
+                try:
+                    incremental_scorer = IncrementalScorer(plc, benchmark, seed_pl_np)
+                except Exception as exc:
+                    _log(f"  IncrementalScorer init failed: {type(exc).__name__}: "
+                         f"{exc}; falling back to full scoring")
+                    incremental_scorer = None
 
-            # Post-B3-phase-4 (2026-05-24): per-score on ibm10 dropped from
-            # ~9.7ms → ~3ms (4.7× more scores fit in 15s). Two widenings:
-            #   #1: k_neighbors 5 → 10 — doubles candidate pool per iter.
-            #   #2: max_iters 3 → 6 — more outer passes (each iter recomputes
-            #       kNN against updated positions, can re-discover swap opportunities).
-            opt_pos, accept_count, final_score, score_calls = _two_opt_proxy_swap(
-                best_hard_pos, sizes, hw, hh, cw, ch, movable, n,
-                score_fn=_2opt_score, initial_score=best_score,
-                k_neighbors=10, max_iters=6, deadline=t_2opt + 15.0,
-                incremental_scorer=incremental_scorer,
-            )
-            scorer_tag = "incr" if incremental_scorer is not None else "full"
-            _log(f"  2-opt-on-winner (proxy/{scorer_tag}): {accept_count} accepts / "
-                 f"{score_calls} scores, final={final_score:.4f} "
-                 f"(was {best_score:.4f}) in {time.monotonic()-t_2opt:.1f}s")
-            if accept_count > 0 and final_score < best_score:
-                best_score = final_score
-                best_pl = best_pl.clone()
-                best_pl[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
-                best_pl[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
+                opt_scratch = seed_pl.clone()
+
+                def _2opt_score(pos_arr: np.ndarray) -> float:
+                    pos32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
+                    opt_scratch[:n, 0] = pos32[:, 0]
+                    opt_scratch[:n, 1] = pos32[:, 1]
+                    return float(_exact_proxy(opt_scratch, benchmark, plc))
+
+                # Post-B3-phase-4 (2026-05-24): per-score on ibm10 dropped from
+                # ~9.7ms → ~3ms (4.7× more scores fit in 15s). Widenings:
+                #   #1: k_neighbors 5 → 10 — doubles candidate pool per iter.
+                #   #2: max_iters 3 → 6 — more outer passes (each recomputes kNN
+                #       against updated positions, re-discovers swap opportunities).
+                opt_pos, accept_count, final_score, score_calls = _two_opt_proxy_swap(
+                    seed_hard_pos, sizes, hw, hh, cw, ch, movable, n,
+                    score_fn=_2opt_score, initial_score=seed_score,
+                    k_neighbors=10, max_iters=6, deadline=t_2opt + 15.0,
+                    incremental_scorer=incremental_scorer,
+                )
+                cand = seed_pl.clone()
+                cand[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
+                cand[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
+                true_final = float(_exact_proxy(cand, benchmark, plc))
+                scorer_tag = "incr" if incremental_scorer is not None else "full"
+                _log(f"  2-opt seed {seed_tag} (proxy/{scorer_tag}): {accept_count} "
+                     f"accepts / {score_calls} scores, incr={final_score:.4f} "
+                     f"true={true_final:.4f} (was {seed_score:.4f}) "
+                     f"in {time.monotonic()-t_2opt:.1f}s")
+                if true_final < twoopt_best_score:
+                    twoopt_best_score = true_final
+                    twoopt_best_pl = cand
+
+            if twoopt_best_score < best_score:
+                best_score = twoopt_best_score
+                best_pl = twoopt_best_pl
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
         self._benchmarks_done += 1

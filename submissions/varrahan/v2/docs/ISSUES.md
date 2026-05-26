@@ -13,13 +13,13 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.4471** (3-DP) |
+| Best `--all` avg | **1.4464** (3-DP + multi-seed 2-opt) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−0.7% (beat by 0.0107)** |
+| **Gap to RePlAce** | **−0.8% (beat by 0.0114)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **+2.7%** (~0.040 absolute) |
+| **Gap to leaderboard** | **+2.7%** (~0.039 absolute) |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | ~628s (3-DP) / ~525s (2-DP) |
+| `--all` wall-clock | ~722s (3-DP + multi-seed, window=0.02) |
 
 All 17 IBM benchmarks improved vs v12 baseline. The remaining headroom
 (~0.040 to leaderboard) is the focus of the open work below.
@@ -53,27 +53,55 @@ fix — the original 3-DP attempt 2026-05-24 had to be reverted because
 adding a third Phase 7 chain caused rng_cong drift that regressed
 ibm10 +0.036. Now with isolation, ibm10 only sees +0.004.
 
-### O2. ibm04 path-dependency under multi-DP
+### O2. ibm04 path-dependency under multi-DP (RESOLVED 2026-05-25 — candidate #2 shipped)
 
-**New issue surfaced 2026-05-25.** ibm04's 2-opt starting point is
-chosen via best_pl propagation through Phase 5b / Phase 7 / Phase 8.
-Adding a new DP candidate that happens to score better than the
-existing best at that point HIJACKS the trajectory.
+**Status: multi-seed 2-opt shipped.** ibm04 1.2899 → **1.2797**
+(−0.0102, fully recovering the 3-DP regression). `--all` avg
+1.4471 → **1.4464**.
 
-For ibm04 specifically:
-  - 2-DP (lo-fix + hi-mov): best DP candidate = lo-fix at 1.3X (some
-    value where 2-opt then reaches 1.2797).
-  - 3-DP (+hi-fix): hi-fix DP scores 1.3210 — becomes new best_pl
-    earlier, displacing whatever trajectory got 2-opt to 1.2797.
-  - 2-opt then reaches only 1.2899 from the hi-fix-derived starting
-    point.
+The fix is candidate #2 below (run the final 2-opt from each DP basin,
+keep the global minimum). Two corrections to the original analysis,
+both established empirically this session:
 
-**Fix candidates:**
-  1. Cherry-pick: only let a DP candidate become best_pl if it improves
-     by more than some threshold over previous best.
-  2. Track multiple "best" placements (top-K), run 2-opt from each.
-  3. Per-DP Phase 7 chain isolation (rng_cong is isolated; this would
-     also isolate best_pl propagation — much more invasive).
+  - **The tags were muddled.** Real ibm04 DP proxies are lo-fix 1.3588,
+    hi-mov 1.3210, hi-fix 1.3188. The 2-DP winner was **hi-mov** (1.3210),
+    and the 3-DP hijacker was **hi-fix** (1.3188), beating hi-mov by only
+    0.0022.
+  - **Fix candidate #1 (margin gate) was DISPROVEN.** Adding a 0.005
+    acceptance margin so hi-fix can't displace hi-mov as best_pl gave
+    1.2913 — *worse* than 3-DP's 1.2899, and nowhere near 1.2797. The
+    1.2797 was never a property of the best_pl seed; it was a property
+    of the whole 2-DP configuration. Even with hi-mov kept as best_pl,
+    the mere presence of the hi-fix candidate perturbs plc state (Phase
+    5b uses the last-scored plc state) and adds a Phase 7 chain. So a
+    best_pl gate alone (== S7) cannot reproduce the 2-DP trajectory.
+
+**What shipped (candidate #2):** the final 2-opt now runs from `best_pl`
+PLUS each DP candidate basin in `dp_placements`, keeping the lowest
+result. hi-mov's basin 2-opts to 1.2797 even though it lost the best_pl
+race. The win generalizes — ibm09 also improved (1.1035 → 1.1026, via
+the dp[hi-fix] basin). Implementation notes:
+
+  - **Selection is by a fresh `_exact_proxy`, never the
+    IncrementalScorer's `final_score`.** The incremental WL drifts
+    seed-dependently (ibm01 dp[lo-fix]: internal 1.1309 vs true 1.1506).
+    A first cut that compared internal scores picked a phantom winner
+    and regressed ibm01 1.1317 → 1.1506. Re-scoring each finalist
+    exactly fixed it (and incidentally cleaned up the cross-seed plc
+    state leakage). The change is strictly additive: the `best` seed
+    reproduces the committed single-seed 2-opt, and a seed is kept only
+    if its true proxy beats the true-scored incumbent.
+  - **Pruning (`DP_SEED_2OPT_WINDOW = 0.02`):** a DP seed whose raw
+    proxy is > 0.02 above best_score can't catch up (max observed 2-opt
+    gain ~0.04; both wins sit at +0.011 / +0.002), so it's skipped. This
+    is provably score-neutral and cut `--all` wall-clock from ~1198s
+    (no prune) back to ~722s (committed 3-DP was ~628s). 35 seeds pruned
+    across the suite.
+
+**Remaining (not pursued):** candidate #3 (full per-DP plc-state +
+best_pl isolation) would let the pipeline reproduce each DP's standalone
+trajectory, possibly squeezing a bit more, but it's much more invasive
+and the cheap candidate #2 already recovered the regression.
 
 ### O3. Soft macros are still pinned during non-DP candidates
 
@@ -185,16 +213,12 @@ start from best_pl. Could try Phase 7 starting from:
 **Cost:** moderate.
 **Risk:** budget displacement.
 
-### S7. Acceptance criterion for DP candidates
+### S7. Acceptance criterion for DP candidates (DISPROVEN 2026-05-25 — see O2)
 
-Per O2's analysis, DP candidates blindly become best_pl when they
-beat current best. Could require a more conservative margin (e.g.,
-"DP candidate becomes best_pl only if it beats current best by more
-than 0.005") to prevent shifting downstream trajectories on
-small-margin wins.
-
-**Cost:** ~5 lines.
-**Risk:** lose legitimate DP wins.
+Tested: a 0.005 best_pl acceptance margin on ibm04 gave 1.2913, *worse*
+than 3-DP's 1.2899. The path-dependency isn't in the seed choice (plc
+state + Phase 7 chain count also shift), so a best_pl gate can't help.
+Superseded by O2's candidate #2 (multi-seed 2-opt), which shipped.
 
 ### S8. Phase 9 random-order: increase trial count
 
