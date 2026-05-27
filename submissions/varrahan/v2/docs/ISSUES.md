@@ -103,28 +103,36 @@ best_pl isolation) would let the pipeline reproduce each DP's standalone
 trajectory, possibly squeezing a bit more, but it's much more invasive
 and the cheap candidate #2 already recovered the regression.
 
-### O3. Soft macros are still pinned during non-DP candidates
+### O3. Soft-macro repositioning (CLOSED 2026-05-26 — confirmed dead lever)
 
-**Partial resolution via A2:** DP-launched-with-soft_movable=True gives
-DP-optimized softs on the DP candidate. But the rest of the pipeline
-(noise restarts, cong-grad, 2-opt, Phase 7/8) operates on pl_scratch
-which has softs from initial.plc throughout.
+**Status: closed, no headroom.** Soft macros stay at `initial.plc`
+throughout the non-DP pipeline; the earlier estimate was ~0.01-0.02 of
+recoverable proxy. A measure-first investigation
+(`test/diagnostic/_soft_headroom.py`) closed it: `initial.plc` soft
+positions sit at a robust local proxy optimum, and every repositioning
+method tested makes proxy equal-or-worse.
 
-**Estimated remaining cost:** ~0.01-0.02 of the gap to leaderboard
-(per the 2026-05-20 decomposition: soft mismatch ~0.05 at large hard
-displacement, but our actual displacement is smaller after refinement).
+| Method (probe) | targets | result on stale-soft benches |
+|---|---|---|
+| WL net-centroid blend (a sweep) | wirelength | best ~−0.002 (a≈0.05), often 0 |
+| congestion-gradient bulk soft move | congestion | strictly worse |
+| density-spread bulk soft move | density | strictly worse |
 
-**Implementation options (multi-hour each):**
-- **Force-directed soft placement** with explicit soft-soft repulsion.
-  Run as a post-2-opt pass: project softs to new positions that
-  minimize per-net spring force + density-bin repulsion.
-- **Quadratic placement** via `scipy.sparse.linalg.spsolve` treating
-  softs as variables in `min Σ w_n · ||soft − centroid_n||²`. Closed
-  form, preserves spread via L2 objective. Needs density
-  regularization.
-- **Vectorized `PlacementCost.optimize_stdcells` rewrite** — the
-  academic FD method. Tested 2026-05-20: 126s per call in Python with
-  +0.13 regression at default params. Multi-day vectorized rewrite.
+Why: wirelength is only ~5% of proxy and the entire soft-WL swing is
+~0.005; the dominant density+congestion terms are driven by HARD
+placement + net routing, not soft positions. Clustering softs (WL min)
+spikes density; spreading them spikes WL + congestion; moving them down
+the congestion gradient just relocates congestion. The `initial.plc`
+spread (from the prior EDA flow) already balances all three.
+
+Seed analysis (`--all` run4): 15/17 win via the `best` seed and 4 large
+benches (ibm08/10/12/16) have NO DP candidate → their softs are
+definitely `initial.plc` — yet even those showed zero headroom. So this
+isn't a "softs happen to be good on DP benches" artifact; it's structural.
+
+**Do not revisit** without a fundamentally different objective (e.g. a
+soft model that DREAMPlace's density-aware NLP optimizes jointly with
+hard — but that's the DP path we already have, and DP only wins 2/17).
 
 ### O4. The pre-flight skip guard occasionally fires on benign WSL2 clock drift
 
@@ -180,15 +188,38 @@ unblocks any future code that builds multiple scorers.
 
 ## Speculative score improvements (not started)
 
-### S1. Multi-pass 2-opt with budget partitioning
+### S1. Basin-hopping 2-opt — cong-grad kick between passes (IMPLEMENTED, DORMANT pending P3)
 
-**Idea:** instead of one 15s 2-opt-on-winner at the end, run 3 passes
-of 5s each, interleaved with one cong-grad iter between them. The
-cong-grad in the middle can escape local minima that 2-opt is stuck
-in.
+**Idea:** 2-opt only PERMUTES existing macro slots — it can never reach a
+position no macro occupies. After a pass converges to a swap-only local
+min, inject a `_routing_congestion_perturb` KICK (continuous move of the
+hottest macros against the live congestion field), legalize, and run 2-opt
+again to clean up. Accept-on-true-proxy, keeping the running best across
+passes. Per seed: up to `S1_MAX_KICKS+1` passes of `S1_PASS_BUDGET`=5s each
+within the same 15s/seed envelope.
 
-**Cost:** ~30 lines. RNG-isolated.
-**Expected gain:** −0.001 to −0.005 (speculative).
+**Implemented** in the multi-seed 2-opt loop (basin-hop while-loop, RNG-
+isolated via a local RandomState). Currently `S1_MAX_KICKS=0` (DORMANT) =
+single full-15s pass = byte-identical to the committed single-pass code, so
+P3 can be measured without S1 confounding.
+
+**Key finding (2026-05-26):** the original "kick only on early convergence"
+trigger never fired — at k=20/iters=6 the 2-opt is deadline-bound (uses the
+full 15s without converging) on *every* benchmark, even small ones. So a
+full-deadline pass leaves no budget to kick. Two consequences:
+  1. Slicing (5s passes) is required to make kicks fire. An early sliced test
+     on ibm04 showed the kick genuinely surfaces NEW improving swaps (accepts
+     671→1072), but single-benchmark proxy is too noisy to judge (ibm04 swings
+     ~0.05 run-to-run because the deadline-bound greedy path is CPU-load
+     sensitive — 1.2293 vs 1.2846 on identical-algorithm reruns).
+  2. **P3 changes the regime:** with ~25% faster scoring, small/mid benchmarks
+     now converge before 15s (ibm04 12.8–14.3s), freeing budget for kicks.
+     So S1 should be re-enabled (`S1_MAX_KICKS=2`) and --all-tested *after*
+     P3 lands — it's P3 that makes S1 viable.
+
+**Cost:** ~60 lines (shipped). RNG-isolated.
+**Expected gain:** unknown until tested on top of P3; the accept-count jump
+is suggestive but noise-dominated at the single-benchmark level.
 
 ### S2. Wider 2-opt k_neighbors (SHIPPED 2026-05-26 — k=20)
 
@@ -294,15 +325,34 @@ candidates per score → potentially 5-10ms per benchmark per `--all`.
 binding contribution.
 **Expected gain:** small wall-clock save.
 
-### P3. Per-net incremental DENSITY (parallel to B3p4 for cong)
+### P3. Per-net incremental DENSITY (IMPLEMENTED 2026-05-26 — verifying via --all)
 
-B3 phase 4 made congestion routing incremental. Density is still
-recomputed in full each score (via `plc.get_density_cost`). On a
-2-opt swap, only 2 macros' cells change density — could be
-incremental.
+B3 phase 4 made congestion routing incremental. Density was the last
+full-recompute in `score_swap` (`plc.get_density_cost` scatters ALL
+soft+hard macros into the occupancy grid each call). On a 2-opt swap
+only macros i, j move, so the occupancy delta is a handful of cells.
 
-**Cost:** moderate (similar in scope to B3p4 but for density).
-**Expected gain:** ~1-2ms per score on top of B3p4.
+`IncrementalScorer` now maintains `grid_occupied` as state:
+`score_swap` subtracts i,j's OLD footprints + adds NEW (via
+`_macro_occ`, an exact per-macro replica of the full overlap math),
+takes top-10% over the grid, then reverts the touched cells;
+`commit_swap` persists the delta. `_compute_density_cost` mirrors
+`get_density_cost` (0.5 × mean of top floor(0.1·n_cells) nonzero cells).
+
+**Verified:** `_verify_incremental_scorer.py` — score_swap (incl. density)
+matches `_exact_proxy` to ≤4.4e-16 (machine eps) on ibm01/04/10, both
+trial swaps and sequential commits (no drift).
+**Measured speedup** (`_profile_density.py`): score_swap −22% to −29%
+(ibm01 1.77→1.36ms, ibm04 1.46→1.14ms, ibm10 2.03→1.44ms, ibm16
+1.99→1.47ms). Translates to ~40–56% more 2-opt scores in the 15s
+deadline (ibm04 7914→11058; ibm10 4784→7482).
+
+**Why it matters:** the 2-opt is deadline-bound on large benchmarks
+(ibm10/12/16 use the full 15s), so more-scores-per-second converts
+directly to more accepts → lower proxy on the congestion-heavy
+benchmarks that dominate the --all average. On small/mid benchmarks
+(ibm01/04) the speedup lets 2-opt *converge* before 15s — which is the
+budget S1 needs to fire (see S1).
 
 ### P4. Skip `_routing_congestion_perturb` on Phase 9 trials
 
