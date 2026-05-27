@@ -3,14 +3,17 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-26):** v2 submission complete. **Avg 1.4435 — beats
-> RePlAce by 0.0143 (−1.0%).** All 17 IBM benchmarks improved vs v12.
-> Latest changes: (1) multi-seed 2-opt-on-winner (O2 candidate #2) — the
-> final 2-opt runs from each DP basin, not just best_pl, recovering the
-> ibm04 3-DP regression; (2) 2-opt k_neighbors 10 → 20 (S2) — broad win,
-> ibm04 −0.0096 cumulative; (3) IncrementalScorer clean-init fix (O5) —
-> eliminates seed-dependent score drift. Pruning (window 0.02) keeps
-> `--all` ~826s. See "v2 — Submission state" section below for headlines.
+> **Status (2026-05-26):** **Avg 1.4424 — beats RePlAce by 0.0154 (−1.1%).**
+> Latest change: **P3 incremental density** — `IncrementalScorer` now keeps
+> the occupancy grid as state and updates only the 2 swapped macros' cells
+> per score (verified bit-exact vs full recompute, ≤4.4e-16). score_swap is
+> −22% to −29% faster → +40–56% more 2-opt scores fit the 15s deadline →
+> avg 1.4435 → **1.4424** (the gain lands on the deadline-bound large
+> benchmarks: ibm10 1.3381→1.3346, ibm16 1.5057→1.5041). `--all` 979s
+> (WSL-inflated). S1 (basin-hopping 2-opt) is implemented but DORMANT pending
+> its own --all (P3 now makes small benchmarks converge early, freeing kick
+> budget). Prior changes: multi-seed 2-opt-on-winner (O2), k=20 (S2),
+> IncrementalScorer clean-init (O5). See section below for headlines.
 >
 > History notes (2026-05-20): this file started as v1's local copy of
 > the team's PROGRESS.md, updated through v14. The "Iteration Log"
@@ -29,7 +32,7 @@ Target: beat RePlAce avg of 1.4578.
 | sameer_v1 leg-only | 1.5062 | our legalize-only, confirmed |
 | RePlAce | 1.4578 | Grand Prize target |
 | UT Austin (DREAMPlace) | 1.4076 | leaderboard #1 |
-| **v2 (this submission)** | **1.4435** | **BEATS RePlAce by 0.0143 (−1.0%)** |
+| **v2 (this submission)** | **1.4424** | **BEATS RePlAce by 0.0154 (−1.1%)** (P3 incremental density) |
 
 ---
 

@@ -2253,6 +2253,89 @@ class IncrementalScorer:
             int(m): k for k, m in enumerate(cong_cache["hard_indices"])
         }
 
+        # ---- P3 (2026-05-26): incremental density state. ----
+        # Density was the last full-recompute in score_swap (~28-36% of its time
+        # per _profile_density.py): it scatters ALL soft+hard macros into the
+        # occupancy grid every call. But a 2-opt swap moves only macros i, j —
+        # all soft + other-hard occupancy is invariant. So maintain `grid_occupied`
+        # as state; per swap subtract i,j's old footprints and add their new ones
+        # (a handful of cells each), then take the top-10% over the full grid.
+        dens_cache = _build_density_cache(plc, benchmark)
+        self.dens_grid_col = int(plc.grid_col)
+        self.dens_grid_row = int(plc.grid_row)
+        self.dens_grid_w = float(plc.width / self.dens_grid_col)
+        self.dens_grid_h = float(plc.height / self.dens_grid_row)
+        self.dens_grid_area = self.dens_grid_w * self.dens_grid_h
+        self.dens_n_cells = self.dens_grid_col * self.dens_grid_row
+        self.dens_density_cnt = int(np.floor(self.dens_n_cells * 0.1))
+        # Per hard-macro module → (half_w, half_h) for footprint expansion.
+        # density_cache stores half sizes in soft-then-hard module order.
+        self._dens_half: "dict[int, tuple[float, float]]" = {
+            int(m): (float(dens_cache["half_w"][k]), float(dens_cache["half_h"][k]))
+            for k, m in enumerate(dens_cache["macro_indices"])
+        }
+        # Initial occupancy (full scatter, one-time). Reuse the vectorized full
+        # path so the baseline grid_occupied is bit-identical to get_density_cost.
+        _vectorized_get_grid_cells_density(plc)
+        self.grid_occupied = np.asarray(plc.grid_occupied, dtype=np.float64)
+        self._dens_empty_idx = np.empty(0, dtype=np.int64)
+        self._dens_empty_area = np.empty(0, dtype=np.float64)
+
+    def _macro_occ(self, module_idx: int, cx: float, cy: float):
+        """Per-cell occupancy-area contribution of one macro centered at (cx, cy).
+
+        Returns (flat_cell_indices, areas), mirroring the per-macro overlap math
+        in `_vectorized_get_grid_cells_density` exactly (floor → bounds skip →
+        clip → per-cell intersection area). The footprint is small (~1-9 cells),
+        so this is a tiny outer-product, not a grid-wide scatter.
+        """
+        hw_, hh_ = self._dens_half[int(module_idx)]
+        gw, gh = self.dens_grid_w, self.dens_grid_h
+        gcol, grow = self.dens_grid_col, self.dens_grid_row
+        x_min = cx - hw_
+        x_max = cx + hw_
+        y_min = cy - hh_
+        y_max = cy + hh_
+        bl_col = int(np.floor(x_min / gw))
+        bl_row = int(np.floor(y_min / gh))
+        ur_col = int(np.floor(x_max / gw))
+        ur_row = int(np.floor(y_max / gh))
+        # OOB skip (matches the in_bounds mask in the full path).
+        if not (ur_row >= 0 and ur_col >= 0 and bl_row <= grow - 1 and bl_col <= gcol - 1):
+            return self._dens_empty_idx, self._dens_empty_area
+        bl_col = min(max(bl_col, 0), gcol - 1)
+        ur_col = min(max(ur_col, 0), gcol - 1)
+        bl_row = min(max(bl_row, 0), grow - 1)
+        ur_row = min(max(ur_row, 0), grow - 1)
+        cols = np.arange(bl_col, ur_col + 1)
+        rows = np.arange(bl_row, ur_row + 1)
+        ox = np.minimum(gw * (cols + 1), x_max) - np.maximum(gw * cols, x_min)
+        oy = np.minimum(gh * (rows + 1), y_max) - np.maximum(gh * rows, y_min)
+        np.maximum(ox, 0.0, out=ox)
+        np.maximum(oy, 0.0, out=oy)
+        area = np.outer(oy, ox).ravel()
+        flat = (rows[:, None] * gcol + cols[None, :]).ravel()
+        return flat, area
+
+    def _compute_density_cost(self) -> float:
+        """Density cost from the maintained `grid_occupied` (P3).
+
+        Mirrors PlacementCost.get_density_cost: 0.5 × mean of the top-10% (by
+        count = floor(n_cells·0.1)) densest NONZERO grid cells. grid_cells =
+        grid_occupied / grid_area is a monotone scaling, so the top-k set is the
+        same; we scale at the end.
+        """
+        cnt = self.dens_density_cnt
+        go = self.grid_occupied
+        nz = go[go != 0.0]
+        if nz.size == 0:
+            return 0.0
+        if self.dens_n_cells < 10:
+            return 0.5 * float(nz.mean() / self.dens_grid_area)
+        k = min(cnt, nz.size)
+        top = np.partition(nz, nz.size - k)[nz.size - k:]
+        return 0.5 * float(top.sum() / self.dens_grid_area / cnt)
+
     def _compute_cong_cost(self) -> float:
         """B3 phase 4: compute congestion cost from current H_flat / V_flat /
         H_macro_flat / V_macro_flat (RAW pre-normalization). Mirrors the
@@ -2444,12 +2527,34 @@ class IncrementalScorer:
         # 5. Compute congestion from our maintained flats (no plc call).
         cong = self._compute_cong_cost()
 
-        # 6. Density via plc (still full recompute).
-        dens = self.plc.get_density_cost()
+        # 6. Density incremental (P3): subtract i,j OLD footprints, add NEW,
+        #    take top-10% over the grid, then revert the few touched cells.
+        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
+        oj_idx, oj_area = self._macro_occ(j_module, old_jx, old_jy)
+        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
+        nj_idx, nj_area = self._macro_occ(j_module, new_jx, new_jy)
+        go = self.grid_occupied
+        if oi_idx.size:
+            np.subtract.at(go, oi_idx, oi_area)
+        if oj_idx.size:
+            np.subtract.at(go, oj_idx, oj_area)
+        if ni_idx.size:
+            np.add.at(go, ni_idx, ni_area)
+        if nj_idx.size:
+            np.add.at(go, nj_idx, nj_area)
+        dens = self._compute_density_cost()
 
         score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
 
-        # 7. Revert: positions + raw routing flats.
+        # 7. Revert: density cells, positions, raw routing flats.
+        if ni_idx.size:
+            np.subtract.at(go, ni_idx, ni_area)
+        if nj_idx.size:
+            np.subtract.at(go, nj_idx, nj_area)
+        if oi_idx.size:
+            np.add.at(go, oi_idx, oi_area)
+        if oj_idx.size:
+            np.add.at(go, oj_idx, oj_area)
         self._apply_pos(i_module, old_ix, old_iy)
         self._apply_pos(j_module, old_jx, old_jy)
         self.H_flat[:] = H_snap
@@ -2468,6 +2573,13 @@ class IncrementalScorer:
         j_module = self.hard_indices[j_hard]
         i_slot = self._module_to_hard_slot.get(int(i_module))
         j_slot = self._module_to_hard_slot.get(int(j_module))
+
+        # OLD committed positions (needed for the persistent density delta below,
+        # read before committed_hard_pos is overwritten).
+        old_ix = float(self.committed_hard_pos[i_hard, 0])
+        old_iy = float(self.committed_hard_pos[i_hard, 1])
+        old_jx = float(self.committed_hard_pos[j_hard, 0])
+        old_jy = float(self.committed_hard_pos[j_hard, 1])
 
         touched = self._touched_nets(i_module, j_module)
         macro_subset = np.array(
@@ -2490,6 +2602,22 @@ class IncrementalScorer:
         new_jx, new_jy = float(new_j_xy[0]), float(new_j_xy[1])
         self._apply_pos(i_module, new_ix, new_iy)
         self._apply_pos(j_module, new_jx, new_jy)
+
+        # P3: persist the density occupancy delta (subtract old footprints,
+        # add new) so subsequent score_swap calls see the committed grid.
+        go = self.grid_occupied
+        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
+        oj_idx, oj_area = self._macro_occ(j_module, old_jx, old_jy)
+        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
+        nj_idx, nj_area = self._macro_occ(j_module, new_jx, new_jy)
+        if oi_idx.size:
+            np.subtract.at(go, oi_idx, oi_area)
+        if oj_idx.size:
+            np.subtract.at(go, oj_idx, oj_area)
+        if ni_idx.size:
+            np.add.at(go, ni_idx, ni_area)
+        if nj_idx.size:
+            np.add.at(go, nj_idx, nj_area)
 
         # Add NEW routing contributions.
         if len(touched) > 0:
@@ -3680,51 +3808,127 @@ class MacroPlacer:
                          f"{DP_SEED_2OPT_WINDOW})")
                     continue
                 t_2opt = time.monotonic()
-                seed_hard_pos = np.stack(
+                # S1 (2026-05-26): basin-hopping 2-opt. The 2-opt search only
+                # PERMUTES existing macro slots — it can never reach a position
+                # no macro currently occupies. After a pass converges to a swap-
+                # only local minimum, inject a congestion-gradient KICK (the same
+                # _routing_congestion_perturb the cong-grad phases use) to move
+                # the hottest macros to NEW continuous positions against the live
+                # congestion field, legalize, then run 2-opt again to clean up.
+                # Accept-on-true-proxy, keeping the running best across passes.
+                #
+                # Budget-safe by construction: each pass gets the FULL remaining
+                # 15s deadline, and 2-opt returns early only when it converges.
+                # On deadline-bound large benchmarks (ibm10/12/16) the first pass
+                # eats the whole 15s → no time to kick → behavior is byte-identical
+                # to the prior single-pass code. The kicks only fill the otherwise-
+                # idle remainder on benchmarks where 2-opt exhausts its candidate
+                # pool early.
+                # Slice the 15s into passes so 2-opt yields its low-yield tail
+                # to a kick + fresh search. Empirically the 2-opt never reaches a
+                # local minimum within a full 15s on these benchmarks (always
+                # deadline-bound), so a "kick only on early convergence" trigger
+                # never fires — slicing is what makes the interleave happen.
+                S1_PASS_BUDGET = 5.0      # seconds per 2-opt pass before a kick
+                # S1 DORMANT (max_kicks=0) while P3 lands: a single full-15s pass
+                # reproduces the committed single-pass behavior exactly, so P3's
+                # speedup is measured without S1 confounding it. Re-enable (=2)
+                # after P3 — faster scoring should let 2-opt converge and free
+                # budget for kicks to actually help.
+                S1_MAX_KICKS = 0          # → up to (this+1) passes of ~5s each
+                S1_KICK_FRAC = 0.03       # kick magnitude (refinement-scale)
+                S1_MIN_REM = 3.0          # need >=this much budget to bother kicking
+                global_2opt_deadline = t_2opt + 15.0
+                s1_rng = np.random.RandomState(20260526)
+
+                work_pl = seed_pl.clone()
+                work_hard = np.stack(
                     [seed_pl[:n, 0].numpy(), seed_pl[:n, 1].numpy()], axis=1
                 ).astype(np.float64)
-                # B3 phase 2 (2026-05-23): IncrementalScorer recomputes WL
-                # incrementally (touched-nets only). Seed it from this basin's
-                # full placement (hard + soft). plc state is mutated during
-                # trial swaps and reverted on reject; re-init per seed resets it.
-                # Downstream (return path) doesn't depend on plc state here.
-                seed_pl_np = seed_pl.cpu().numpy().astype(np.float64)
-                try:
-                    incremental_scorer = IncrementalScorer(plc, benchmark, seed_pl_np)
-                except Exception as exc:
-                    _log(f"  IncrementalScorer init failed: {type(exc).__name__}: "
-                         f"{exc}; falling back to full scoring")
-                    incremental_scorer = None
+                work_score = seed_score
+                seed_best_pl = seed_pl.clone()
+                seed_best_score = float("inf")
+                accept_count = 0
+                score_calls = 0
+                final_score = work_score
+                n_kicks = 0
+                while True:
+                    # B3 phase 2/4 IncrementalScorer: incremental WL + congestion.
+                    # Re-init per pass from the current working placement (kick
+                    # moved positions non-swap-wise, so the prior scorer state is
+                    # stale). Init cost is ~3-10ms, negligible vs the 15s budget.
+                    try:
+                        incremental_scorer = IncrementalScorer(
+                            plc, benchmark, work_pl.cpu().numpy().astype(np.float64)
+                        )
+                    except Exception as exc:
+                        _log(f"  IncrementalScorer init failed: {type(exc).__name__}: "
+                             f"{exc}; falling back to full scoring")
+                        incremental_scorer = None
 
-                opt_scratch = seed_pl.clone()
+                    opt_scratch = work_pl.clone()
 
-                def _2opt_score(pos_arr: np.ndarray) -> float:
-                    pos32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
-                    opt_scratch[:n, 0] = pos32[:, 0]
-                    opt_scratch[:n, 1] = pos32[:, 1]
-                    return float(_exact_proxy(opt_scratch, benchmark, plc))
+                    def _2opt_score(pos_arr: np.ndarray, _scr=opt_scratch) -> float:
+                        pos32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
+                        _scr[:n, 0] = pos32[:, 0]
+                        _scr[:n, 1] = pos32[:, 1]
+                        return float(_exact_proxy(_scr, benchmark, plc))
 
-                # Post-B3-phase-4 (2026-05-24): per-score on ibm10 dropped from
-                # ~9.7ms → ~3ms (4.7× more scores fit in 15s). Widenings:
-                #   #1: k_neighbors 5 → 10 → 15 → 20 (S2, 2026-05-25) — wider
-                #       candidate pool per iter; k=15 improved all 17 over k=10
-                #       (avg 1.4464 → 1.4443), so the lever wasn't exhausted —
-                #       testing k=20 at the ~3ms score cost.
-                #   #2: max_iters 3 → 6 — more outer passes (each recomputes kNN
-                #       against updated positions, re-discovers swap opportunities).
-                opt_pos, accept_count, final_score, score_calls = _two_opt_proxy_swap(
-                    seed_hard_pos, sizes, hw, hh, cw, ch, movable, n,
-                    score_fn=_2opt_score, initial_score=seed_score,
-                    k_neighbors=20, max_iters=6, deadline=t_2opt + 15.0,
-                    incremental_scorer=incremental_scorer,
-                )
-                cand = seed_pl.clone()
-                cand[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
-                cand[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
-                true_final = float(_exact_proxy(cand, benchmark, plc))
+                    # k_neighbors=20 / max_iters=6 (S2, 2026-05-25): per-score
+                    # ~3ms post-B3-phase-4, so a wide candidate pool fits. Each
+                    # pass is bounded by a time slice (S1_PASS_BUDGET) AND the
+                    # global 15s deadline, whichever is sooner.
+                    pass_deadline = global_2opt_deadline if S1_MAX_KICKS == 0 else min(
+                        global_2opt_deadline, time.monotonic() + S1_PASS_BUDGET
+                    )
+                    opt_pos, ac, fs, sc = _two_opt_proxy_swap(
+                        work_hard, sizes, hw, hh, cw, ch, movable, n,
+                        score_fn=_2opt_score, initial_score=work_score,
+                        k_neighbors=20, max_iters=6, deadline=pass_deadline,
+                        incremental_scorer=incremental_scorer,
+                    )
+                    accept_count += ac
+                    score_calls += sc
+                    final_score = fs
+
+                    cand = work_pl.clone()
+                    cand[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
+                    cand[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
+                    # _exact_proxy also repopulates plc's routing-congestion map,
+                    # which the kick below reads to build its gradient.
+                    cand_true = float(_exact_proxy(cand, benchmark, plc))
+                    if cand_true < seed_best_score:
+                        seed_best_score = cand_true
+                        seed_best_pl = cand
+
+                    rem = global_2opt_deadline - time.monotonic()
+                    if n_kicks >= S1_MAX_KICKS or rem < S1_MIN_REM:
+                        break
+
+                    # Congestion-gradient kick from the just-scored 2-opt result
+                    # (plc reflects `cand`), then legalize the perturbed hard
+                    # macros. Feed the kicked layout into the next 2-opt pass even
+                    # if it scores worse — escaping the swap-only basin is the
+                    # whole point; seed_best_pl preserves the best seen so far.
+                    kicked = _routing_congestion_perturb(
+                        opt_pos, plc, benchmark, n, cw, ch, hw, hh, movable,
+                        frac=S1_KICK_FRAC, rng=s1_rng,
+                    )
+                    kicked_leg = _will_legalize(
+                        kicked, movable, sizes, hw, hh, cw, ch, n
+                    )
+                    work_pl = cand.clone()
+                    work_pl[:n, 0] = torch.tensor(kicked_leg[:, 0], dtype=torch.float32)
+                    work_pl[:n, 1] = torch.tensor(kicked_leg[:, 1], dtype=torch.float32)
+                    work_hard = kicked_leg.astype(np.float64)
+                    work_score = float(_exact_proxy(work_pl, benchmark, plc))
+                    n_kicks += 1
+
+                cand = seed_best_pl
+                true_final = seed_best_score
                 scorer_tag = "incr" if incremental_scorer is not None else "full"
                 _log(f"  2-opt seed {seed_tag} (proxy/{scorer_tag}): {accept_count} "
-                     f"accepts / {score_calls} scores, incr={final_score:.4f} "
+                     f"accepts / {score_calls} scores, {n_kicks} kicks, "
                      f"true={true_final:.4f} (was {seed_score:.4f}) "
                      f"in {time.monotonic()-t_2opt:.1f}s")
                 if true_final < twoopt_best_score:
