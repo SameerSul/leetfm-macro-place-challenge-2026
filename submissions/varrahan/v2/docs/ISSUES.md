@@ -13,21 +13,48 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.4422** (P3 incremental density + S9 cong-aware 2-opt) |
+| Best `--all` avg | **1.4326** (P3 + S9 + R1 congestion-directed relocation) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−1.1% (beat by 0.0156)** |
+| **Gap to RePlAce** | **−1.7% (beat by 0.0252)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **+2.5%** (~0.035 absolute) |
+| **Gap to leaderboard** | **+1.8%** (~0.025 absolute) |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | ~1439s (WSL-inflated; real ≪3600s cap) |
+| `--all` wall-clock | ~751s (≪3600s cap) |
 
-All 17 IBM benchmarks improved vs v12 baseline. The remaining headroom
-(~0.035 to leaderboard) is the focus of the open work below — and the
-DP1 diagnostic (next) localizes it to a single term: congestion.
+All 17 IBM benchmarks improved vs v12 baseline. R1 (relocation moves) was the
+biggest single lever — all 17 improved, −0.0096 avg. The remaining headroom
+(~0.025 to leaderboard) is congestion (per the DP1 diagnostic below).
 
 ---
 
 ## Open issues
+
+### R1. Congestion-directed relocation moves (SHIPPED 2026-05-27 — 1.4422 → 1.4326)
+
+The single biggest lever of the session. The 2-opt search only EXCHANGES two
+macros' positions — it can never relocate a routing-heavy macro into an empty
+low-congestion gap (a swap would dump some other macro into the vacated hot
+spot). R1 adds that missing move: a post-2-opt pass (`_relocation_moves`) that,
+for the hottest macros (by live `max(H,V)` congestion), tries moving each into
+the nearest lower-congestion legal cell centers, accepting only on a strict
+true-proxy drop via the incremental scorer's new `score_move` (single-macro
+analogue of `score_swap`; verified bit-exact ≤6e-9, no drift, in
+`_verify_score_move.py`). Legality = in-bounds + no overlap with other HARD
+macros (softs may overlap). The proxy gate filters far moves that spike WL.
+
+**Result:** --all 1.4422 → **1.4326** (−0.0096), **ALL 17 improved** (ibm04
+−0.034, ibm02 −0.026, ibm01 −0.018, ibm15 −0.016, ibm10/13 −0.011), gain in the
+congestion term as designed, at ~0.1–0.2s/benchmark (~288 incremental score_move
+calls). Strictly non-regressing by construction (best_pl only updates on a true
+re-score improvement). RELOC_PROBE (env-gated) reproduces the per-benchmark
+measurement.
+
+**Why it worked where DP1 didn't:** R1 relieves congestion with a DIRECT,
+proxy-gated move on the placement we already have, rather than trying to fix
+DREAMPlace's congestion-blind global placement (which trades away its wl/den edge,
+DP1) or refine via swaps only (2-opt). Follow-ups worth trying: interleave
+relocation with 2-opt (alternate passes), or run relocation per-seed before
+selecting the best (not just on the winner).
 
 ### DP1. Congestion-aware DREAMPlace — the leaderboard gap is pure congestion (CLOSED 2026-05-27 — routopt can't move the proxy)
 

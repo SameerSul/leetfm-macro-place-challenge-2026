@@ -593,6 +593,114 @@ def _two_opt_proxy_swap(
     return pos, accept_count, best_score, score_calls
 
 
+def _relocation_moves(
+    pos: np.ndarray,
+    sizes: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    cw: float,
+    ch: float,
+    movable: np.ndarray,
+    n: int,
+    plc,
+    benchmark: "Benchmark",
+    incremental_scorer,
+    initial_score: float,
+    deadline: "float | None" = None,
+    top_hot: int = 24,
+    n_targets: int = 12,
+) -> "tuple[np.ndarray, int, float]":
+    """Congestion-directed single-macro RELOCATION pass (2026-05-27).
+
+    The 2-opt search only EXCHANGES two macros' positions — it can never relocate
+    a routing-heavy macro into an empty low-congestion gap (a swap would dump some
+    other macro into the vacated hot spot). This pass does exactly that: for the
+    hottest macros (by live routing congestion), try moving each into a handful of
+    the lowest-congestion legal cell centers, accept iff the true proxy (via the
+    incremental scorer's `score_move`) strictly drops, then `commit_move`.
+
+    Legality = in-bounds + no overlap with other HARD macros (soft macros may
+    overlap, so they're ignored). The proxy gate filters far moves that spike
+    wirelength, so only net-improving relocations stick. Returns (pos, accepts,
+    best_score).
+    """
+    nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    try:
+        h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
+        v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
+    except Exception:
+        return pos, 0, initial_score
+    if h_arr.size != nr * nc or v_arr.size != nr * nc:
+        return pos, 0, initial_score
+    cell_cong = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+    cell_w, cell_h = cw / nc, ch / nr
+
+    # Per-macro local congestion → pick the hottest movable macros to relocate.
+    ci_all = np.clip((pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
+    ri_all = np.clip((pos[:n, 1] / cell_h).astype(np.int64), 0, nr - 1)
+    local_cong = cell_cong[ri_all, ci_all]
+    mov_idx = np.where(movable)[0]
+    if mov_idx.size == 0:
+        return pos, 0, initial_score
+    hot = mov_idx[np.argsort(-local_cong[mov_idx])][:top_hot]
+
+    # Candidate target cells = the lowest-congestion cells; their centers are the
+    # relocation destinations. Pool a few × n_targets so per-macro legality
+    # filtering still leaves options.
+    flat = cell_cong.ravel()
+    pool = np.argsort(flat)[: max(n_targets * 4, n_targets)]
+    tgt_c = (pool % nc).astype(np.float64)
+    tgt_r = (pool // nc).astype(np.float64)
+    tgt_x = (tgt_c + 0.5) * cell_w
+    tgt_y = (tgt_r + 0.5) * cell_h
+    tgt_cong = flat[pool]
+
+    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
+    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    EPS = 0.05
+
+    best_score = initial_score
+    accepts = 0
+    all_idx = np.arange(n)
+    for i in hot:
+        i = int(i)
+        if deadline is not None and time.monotonic() > deadline:
+            break
+        if not movable[i]:
+            continue
+        # Only consider targets at lower congestion than the macro's current cell
+        # (relief), nearest-first among those, capped at n_targets.
+        cand = np.where(tgt_cong < local_cong[i] - 1e-9)[0]
+        if cand.size == 0:
+            continue
+        d2 = (tgt_x[cand] - pos[i, 0]) ** 2 + (tgt_y[cand] - pos[i, 1]) ** 2
+        cand = cand[np.argsort(d2)][:n_targets]
+
+        mask = all_idx != i
+        sxi = sep_x_mat[i, mask]
+        syi = sep_y_mat[i, mask]
+        ox = pos[mask, 0]
+        oy = pos[mask, 1]
+        best_i_xy = None
+        for t in cand:
+            nx, ny = float(tgt_x[t]), float(tgt_y[t])
+            if (nx - hw[i] < -EPS or nx + hw[i] > cw + EPS or
+                    ny - hh[i] < -EPS or ny + hh[i] > ch + EPS):
+                continue
+            # Overlap vs other HARD macros (vectorized).
+            if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
+                continue
+            s = incremental_scorer.score_move(i, (nx, ny))
+            if s < best_score - 1e-9:
+                best_score = s
+                best_i_xy = (nx, ny)
+        if best_i_xy is not None:
+            incremental_scorer.commit_move(i, best_i_xy)
+            pos[i, 0], pos[i, 1] = best_i_xy
+            accepts += 1
+    return pos, accepts, best_score
+
+
 # ---------------------------------------------------------------------------
 # Scoring utilities
 # ---------------------------------------------------------------------------
@@ -2774,6 +2882,119 @@ class IncrementalScorer:
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
 
+    def _macro_nets(self, i_module: int) -> np.ndarray:
+        a = self.macro_to_nets.get(i_module)
+        return a if a is not None else np.empty(0, dtype=np.int64)
+
+    def score_move(self, i_hard: int, new_xy) -> float:
+        """Trial: proxy as if hard macro i_hard RELOCATED to new_xy, then revert.
+
+        Single-macro analogue of score_swap (relocation, not exchange) — used by
+        the congestion-directed relocation pass. Only macro i's contributions
+        change: WL over i's touched nets, congestion over those nets + i's macro
+        routing slot, density over i's footprint cells.
+        """
+        i_module = self.hard_indices[i_hard]
+        i_slot = self._module_to_hard_slot.get(int(i_module))
+        old_ix = float(self.committed_hard_pos[i_hard, 0])
+        old_iy = float(self.committed_hard_pos[i_hard, 1])
+        new_ix, new_iy = float(new_xy[0]), float(new_xy[1])
+
+        H_snap = self.H_flat.copy()
+        V_snap = self.V_flat.copy()
+        Hm_snap = self.H_macro_flat.copy()
+        Vm_snap = self.V_macro_flat.copy()
+
+        touched = self._macro_nets(i_module)
+        macro_subset = (np.array([i_slot], dtype=np.int64)
+                        if i_slot is not None else np.empty(0, dtype=np.int64))
+
+        if len(touched) > 0:
+            _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(self.plc, macro_subset, -1.0,
+                                        self.V_macro_flat, self.H_macro_flat)
+        self._apply_pos(i_module, new_ix, new_iy)
+        if len(touched) > 0:
+            _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
+                                        self.V_macro_flat, self.H_macro_flat)
+
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            new_total_raw = self.total_wl_raw + delta
+        else:
+            new_total_raw = self.total_wl_raw
+        new_wl_normalized = new_total_raw / self.wl_normalizer
+        cong = self._compute_cong_cost()
+
+        o_idx, o_area = self._macro_occ(i_module, old_ix, old_iy)
+        n_idx, n_area = self._macro_occ(i_module, new_ix, new_iy)
+        go = self.grid_occupied
+        if o_idx.size:
+            np.subtract.at(go, o_idx, o_area)
+        if n_idx.size:
+            np.add.at(go, n_idx, n_area)
+        dens = self._compute_density_cost()
+
+        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
+
+        # Revert: density cells, position, raw routing flats.
+        if n_idx.size:
+            np.subtract.at(go, n_idx, n_area)
+        if o_idx.size:
+            np.add.at(go, o_idx, o_area)
+        self._apply_pos(i_module, old_ix, old_iy)
+        self.H_flat[:] = H_snap
+        self.V_flat[:] = V_snap
+        self.H_macro_flat[:] = Hm_snap
+        self.V_macro_flat[:] = Vm_snap
+        return score
+
+    def commit_move(self, i_hard: int, new_xy) -> None:
+        """Persist a relocation: update positions, routing flats, density grid,
+        and per-net HPWL so subsequent score_* calls see the new state."""
+        i_module = self.hard_indices[i_hard]
+        i_slot = self._module_to_hard_slot.get(int(i_module))
+        old_ix = float(self.committed_hard_pos[i_hard, 0])
+        old_iy = float(self.committed_hard_pos[i_hard, 1])
+        new_ix, new_iy = float(new_xy[0]), float(new_xy[1])
+
+        touched = self._macro_nets(i_module)
+        macro_subset = (np.array([i_slot], dtype=np.int64)
+                        if i_slot is not None else np.empty(0, dtype=np.int64))
+
+        if len(touched) > 0:
+            _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(self.plc, macro_subset, -1.0,
+                                        self.V_macro_flat, self.H_macro_flat)
+        self._apply_pos(i_module, new_ix, new_iy)
+
+        go = self.grid_occupied
+        o_idx, o_area = self._macro_occ(i_module, old_ix, old_iy)
+        n_idx, n_area = self._macro_occ(i_module, new_ix, new_iy)
+        if o_idx.size:
+            np.subtract.at(go, o_idx, o_area)
+        if n_idx.size:
+            np.add.at(go, n_idx, n_area)
+
+        if len(touched) > 0:
+            _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
+                                        self.V_macro_flat, self.H_macro_flat)
+
+        self.committed_hard_pos[i_hard, 0] = new_ix
+        self.committed_hard_pos[i_hard, 1] = new_iy
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            self.per_net_hpwl[touched] = new_per_net
+            self.total_wl_raw += delta
+
 
 def _routing_congestion_perturb(
     pos: np.ndarray,
@@ -4119,6 +4340,45 @@ class MacroPlacer:
                 best_score = twoopt_best_score
                 best_pl = twoopt_best_pl
 
+        # -- Congestion-directed relocation pass (R1, 2026-05-27) -------------
+        # The 2-opt above only EXCHANGES macro positions; it can't relocate a
+        # routing-heavy macro into an empty low-congestion gap (a swap would dump
+        # another macro into the vacated hot spot). This pass does exactly that:
+        # move the hottest macros into the lowest-congestion legal cells, accept
+        # only on a strict true-proxy drop (via the incremental scorer's verified
+        # score_move). The RELOC_PROBE measured this beating the 2-opt best on
+        # ibm04 −0.032, ibm10 −0.011, ibm12 −0.006 — gain in the congestion term,
+        # in ~0.3s. Cheap and additive by construction.
+        rem_reloc = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+        if rem_reloc >= 2.0 * t_one_score + 2.0:
+            t_reloc = time.monotonic()
+            try:
+                base_reloc = float(_exact_proxy(best_pl, benchmark, plc))
+                reloc_scorer = IncrementalScorer(
+                    plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
+                )
+                reloc_pos = np.stack(
+                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
+                ).astype(np.float64)
+                reloc_pos, reloc_acc, _reloc_incr = _relocation_moves(
+                    reloc_pos, sizes, hw, hh, cw, ch, movable, n, plc, benchmark,
+                    reloc_scorer, base_reloc,
+                    deadline=t_reloc + min(rem_reloc - t_one_score, 15.0),
+                )
+                if reloc_acc > 0:
+                    reloc_cand = best_pl.clone()
+                    reloc_cand[:n, 0] = torch.tensor(reloc_pos[:, 0], dtype=torch.float32)
+                    reloc_cand[:n, 1] = torch.tensor(reloc_pos[:, 1], dtype=torch.float32)
+                    reloc_true = float(_exact_proxy(reloc_cand, benchmark, plc))
+                    _log(f"  Relocation pass: {reloc_acc} moves, "
+                         f"{base_reloc:.4f} → {reloc_true:.4f} "
+                         f"in {time.monotonic()-t_reloc:.1f}s")
+                    if reloc_true < best_score:
+                        best_score = reloc_true
+                        best_pl = reloc_cand
+            except Exception as exc:
+                _log(f"  Relocation pass failed: {type(exc).__name__}: {exc}")
+
         # DP_DIAG (2026-05-26): decompose where the DP basin loses to "best".
         # Logs the WEIGHTED proxy split (wl, 0.5*den, 0.5*cong) for each raw DP
         # candidate, each cong-grad+2-opt-from-seed result, and the final best.
@@ -4144,6 +4404,34 @@ class MacroPlacer:
                 dp_placements, best_score, n, cw, ch, hw, hh, sizes,
                 movable, plc, benchmark,
             )
+
+        # RELOC_PROBE (2026-05-27): congestion-directed relocation moves on the
+        # final best_pl. Builds a fresh scorer, runs _relocation_moves, reports
+        # the true proxy delta + decomposition. Diagnostic only (no production
+        # change) — measure whether relocations beat the 2-opt result.
+        if os.environ.get("RELOC_PROBE"):
+            try:
+                t_rp = time.monotonic()
+                base = float(_exact_proxy(best_pl, benchmark, plc))
+                bw = float(plc.get_cost()); bd = 0.5 * float(plc.get_density_cost())
+                bc = 0.5 * float(plc.get_congestion_cost())
+                rscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                rpos = np.stack([best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1).astype(np.float64)
+                rpos, racc, rsc = _relocation_moves(
+                    rpos, sizes, hw, hh, cw, ch, movable, n, plc, benchmark,
+                    rscorer, base, deadline=t_rp + 20.0,
+                )
+                rcand = best_pl.clone()
+                rcand[:n, 0] = torch.tensor(rpos[:, 0], dtype=torch.float32)
+                rcand[:n, 1] = torch.tensor(rpos[:, 1], dtype=torch.float32)
+                rp, rw, rd, rc = _proxy_decomp(rcand, benchmark, plc)
+                verdict = "BEATS best" if rp < base - 1e-4 else "no gain"
+                _log(f"  [RELOC_PROBE] base={base:.4f} (wl={bw:.4f} den={bd:.4f} "
+                     f"cong={bc:.4f}) -> {racc} relocs -> proxy={rp:.4f} "
+                     f"(wl={rw:.4f} den={rd:.4f} cong={rc:.4f}) {verdict} "
+                     f"in {time.monotonic()-t_rp:.1f}s")
+            except Exception as exc:
+                _log(f"  [RELOC_PROBE] failed: {type(exc).__name__}: {exc}")
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
         self._benchmarks_done += 1
