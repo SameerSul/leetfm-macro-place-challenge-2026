@@ -29,7 +29,7 @@ DP1 diagnostic (next) localizes it to a single term: congestion.
 
 ## Open issues
 
-### DP1. Congestion-aware DREAMPlace — the leaderboard gap is pure congestion (IN PROGRESS 2026-05-27)
+### DP1. Congestion-aware DREAMPlace — the leaderboard gap is pure congestion (CLOSED 2026-05-27 — routopt can't move the proxy)
 
 **Diagnosis (DP_DIAG, env-gated logging in `place()`).** Our DREAMPlace (DP)
 candidates lose to the cong-grad "best" seed 15/17. Decomposing why, on the
@@ -64,19 +64,39 @@ spreads cells out of routing hotspots. This is congestion *in the global
 objective*. Our bridge currently leaves it OFF (`_default_dreamplace_config`
 defaults `routability_opt_flag=0`).
 
-**Plan / open questions:**
-  - Add a routability-optimized DP variant in the bridge (enable the flags;
-    set sane `route_num_bins_x/y` ≈ benchmark routing grid, not the 512 default;
-    calibrate `unit_horizontal/vertical/pin_capacity` against the ICCAD04
-    routes-per-micron, or sweep). No `.route` file is emitted by the converter,
-    so capacity comes purely from these config params.
-  - **Key risk:** DREAMPlace's RUDY congestion ≠ TILOS proxy congestion
-    (correlated, not identical). Enabling routopt reduces DREAMPlace's *estimate*;
-    must verify it reduces the *proxy* cong term. Measure with DP_DIAG: does the
-    routopt DP candidate's proxy cong drop vs plain DP, keeping its wl/den edge?
-  - If yes → routopt DP candidate feeds the existing seed/2-opt machinery and
-    should beat best on congestion-heavy benchmarks. If the RUDY/proxy
-    correlation is too weak → fall back to a custom congestion penalty map.
+**Result: routopt CANNOT move the TILOS proxy congestion — CLOSED.** Enabling
+DREAMPlace's `routability_opt_flag` required two fixes first: a dead-code bug in
+`_default_dreamplace_config` (the routability keys were appended after `return`),
+and a crash in `PlaceObj.build_nctugr_congestion_map` (it needs per-layer
+`unit_horizontal_capacities`, which are None for Bookshelf inputs — patched both
+`dreamplace_src` and `dreamplace_build/install` to build the NCTUgr map only when
+`adjust_nctugr_area_flag` is set; RUDY is used otherwise, so safe). With routopt
+genuinely firing, on ibm10 (`_routopt_poc.py`, `_routopt_calib.py`):
+
+| config | proxy | cong |
+|---|---|---|
+| routopt OFF | 1.3891 | 0.9543 |
+| ON, bins=64, default caps | 1.4109 | 0.9658 (worse) |
+| ON, bins=grid(55×41), caps physical×{1,4,16,64} | 1.3891 (all) | 0.9543 (no effect) |
+
+Across a 64× capacity sweep (both directions) + grid-matched route bins, routopt
+is either a **no-op or a regression** — it never lowers the proxy congestion. Why:
+routopt spreads *movable* cells out of RUDY hotspots, but with
+`soft_macros_movable=False` the only movable objects are the hard macros (few,
+large, density-dominated) so area inflation barely moves them; and when it does
+engage (bins=64) RUDY relieves cells that aren't the TILOS proxy's hotspots
+(RUDY ≠ TILOS congestion), with a density headwind. The 0.064 congestion gap to
+best is **not closable** via the built-in routability opt.
+
+**Kept (gated off, no pipeline change):** the bridge `routability_opt` knob +
+calibration params (default off), the NCTUgr-guard source patch (genuine bug
+fix), and the diagnostics (`_routopt_poc`, `_routopt_calib`, `DP_DIAG`/`DP_PROBE`).
+v2 stays at **1.4422**.
+
+**Not pursued (low EV / big build):** `soft_macros_movable=True` + routopt (the
+`hi-mov` base is already 1.92, far above best); a custom congestion penalty map
+fed from the *TILOS* field rather than RUDY (higher ceiling, substantial
+DREAMPlace-source build with a per-iteration feedback loop).
 
 
 ### O1. ibm09 / ibm13 small regressions vs the v2-combined baseline (RESOLVED 2026-05-25 — kept 3-DP)
