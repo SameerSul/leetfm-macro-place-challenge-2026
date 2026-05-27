@@ -351,6 +351,9 @@ def _two_opt_proxy_swap(
     max_iters: int = 3,
     deadline: float | None = None,
     incremental_scorer=None,
+    macro_cong: "np.ndarray | None" = None,
+    cong_hot_k: int = 20,
+    cong_cold_k: int = 8,
 ) -> "tuple[np.ndarray, int, float, int]":
     """Proxy-driven 2-opt swap pass (issue #1, 2026-05-23).
 
@@ -380,6 +383,40 @@ def _two_opt_proxy_swap(
     best_score = initial_score
     accept_count = 0
     score_calls = 0
+
+    # S9 (2026-05-26): congestion-aware candidate selection. When `macro_cong`
+    # (per-macro local routing congestion, snapshot at seed time) is supplied:
+    #   * Variant 1 — OUTER ORDERING: iterate macros hot→cold instead of by
+    #     index. On deadline-bound benchmarks the swaps evaluated before the
+    #     budget runs out are then the ones touching congestion hotspots — the
+    #     dominant proxy term. (Pure budget reallocation; can't exceed the
+    #     deadline-free convergence point.)
+    #   * Variant 2 — NEIGHBOR AUGMENTATION: spatial kNN can only ever swap
+    #     nearby macros, so a routing-heavy macro can never relocate across the
+    #     chip to a cold region (the intermediate local swaps would all be
+    #     rejected). For the `cong_hot_k` hottest macros, append the
+    #     `cong_cold_k` coldest macros as extra swap candidates — a "teleport"
+    #     edge no sequence of local swaps can synthesize, expanding the reachable
+    #     placement set. Size-incompatible teleports fail the free conflict
+    #     check before scoring, so most cost nothing.
+    # The proxy gate still validates every swap, so this only changes WHICH
+    # candidates are tried, never accepts a worse placement. macro_cong=None
+    # reproduces the prior index-order / spatial-only behavior exactly.
+    cong_aware = macro_cong is not None and n > 1
+    if cong_aware:
+        mc = np.asarray(macro_cong, dtype=np.float64)
+        mov_idx = np.where(movable)[0]
+        # Outer order: movable macros sorted hottest-first (stale-but-fine).
+        outer_order = mov_idx[np.argsort(-mc[mov_idx], kind="stable")]
+        # Hot set (rows that get augmented) and cold pool (teleport targets).
+        n_hot = min(cong_hot_k, mov_idx.size)
+        hot_rows = set(int(x) for x in outer_order[:n_hot])
+        n_cold = min(cong_cold_k, mov_idx.size)
+        cold_pool = mov_idx[np.argsort(mc[mov_idx], kind="stable")][:n_cold]
+    else:
+        outer_order = np.arange(n)
+        hot_rows = set()
+        cold_pool = np.empty(0, dtype=np.int64)
 
     # B8 (adaptive max_iters, 2026-05-24): the caller-provided max_iters is
     # treated as the BASELINE. After iter 1 we measure the accept ratio:
@@ -434,12 +471,22 @@ def _two_opt_proxy_swap(
         #     doesn't matter on these benchmarks.
         # Keep argpartition's native order.
 
-        for i in range(n):
+        for i in outer_order:
+            i = int(i)
             if not movable[i]:
                 continue
             if deadline is not None and time.monotonic() > deadline:
                 break
-            for j in neighbors[i]:
+            # Candidate j's: spatial kNN, plus the cold-region teleport pool for
+            # hot macros (S9 variant 2). Dedupe the pool against the spatial set
+            # so a cold macro that's already a near neighbor isn't scored twice.
+            if cong_aware and i in hot_rows and cold_pool.size:
+                extra = cold_pool[~np.isin(cold_pool, neighbors[i])]
+                cand_js = np.concatenate([neighbors[i], extra]) if extra.size else neighbors[i]
+            else:
+                cand_js = neighbors[i]
+            for j in cand_js:
+                j = int(j)
                 if not movable[j] or i == j:
                     continue
                 if deadline is not None and time.monotonic() > deadline:
@@ -3830,11 +3877,14 @@ class MacroPlacer:
                 # deadline-bound), so a "kick only on early convergence" trigger
                 # never fires — slicing is what makes the interleave happen.
                 S1_PASS_BUDGET = 5.0      # seconds per 2-opt pass before a kick
-                # S1 DORMANT (max_kicks=0) while P3 lands: a single full-15s pass
-                # reproduces the committed single-pass behavior exactly, so P3's
-                # speedup is measured without S1 confounding it. Re-enable (=2)
-                # after P3 — faster scoring should let 2-opt converge and free
-                # budget for kicks to actually help.
+                # S1 DORMANT (max_kicks=0). DISPROVEN 2026-05-26: enabling sliced
+                # basin-hopping (5s passes + cong-grad kick, max_kicks=2) regressed
+                # --all on 6/7 benchmarks before the run was stopped (ibm01 +0.0037,
+                # ibm04 +0.0091, ibm08 +0.0045; cumulative +0.025/7). Slicing starves
+                # the productive deadline-bound 2-opt search, and the kicks perturb
+                # away from the optimum without recovering. The earlier "more accepts"
+                # signal (671→1072 on ibm04) was misleading — the extra accepts were
+                # repairing kick damage, not net-improving. Code kept for reference.
                 S1_MAX_KICKS = 0          # → up to (this+1) passes of ~5s each
                 S1_KICK_FRAC = 0.03       # kick magnitude (refinement-scale)
                 S1_MIN_REM = 3.0          # need >=this much budget to bother kicking
@@ -3874,6 +3924,36 @@ class MacroPlacer:
                         _scr[:n, 1] = pos32[:, 1]
                         return float(_exact_proxy(_scr, benchmark, plc))
 
+                    # S9 (2026-05-26): per-macro local congestion snapshot for
+                    # congestion-aware 2-opt (hot-first ordering + cold-region
+                    # teleport augmentation). The IncrementalScorer init above
+                    # called plc.get_congestion_cost() on work_pl, so plc's
+                    # routing map reflects the current placement. cell field is
+                    # max(H,V), matching _routing_congestion_perturb.
+                    macro_cong = None
+                    try:
+                        nr_g, nc_g = benchmark.grid_rows, benchmark.grid_cols
+                        h_arr = np.asarray(
+                            plc.get_horizontal_routing_congestion(), dtype=np.float64
+                        )
+                        v_arr = np.asarray(
+                            plc.get_vertical_routing_congestion(), dtype=np.float64
+                        )
+                        if h_arr.size == nr_g * nc_g and v_arr.size == nr_g * nc_g:
+                            cell_cong = np.maximum(
+                                h_arr.reshape(nr_g, nc_g), v_arr.reshape(nr_g, nc_g)
+                            )
+                            cwc, chc = cw / nc_g, ch / nr_g
+                            ci = np.clip(
+                                (work_hard[:, 0] / cwc).astype(np.int64), 0, nc_g - 1
+                            )
+                            ri = np.clip(
+                                (work_hard[:, 1] / chc).astype(np.int64), 0, nr_g - 1
+                            )
+                            macro_cong = cell_cong[ri, ci]
+                    except Exception:
+                        macro_cong = None
+
                     # k_neighbors=20 / max_iters=6 (S2, 2026-05-25): per-score
                     # ~3ms post-B3-phase-4, so a wide candidate pool fits. Each
                     # pass is bounded by a time slice (S1_PASS_BUDGET) AND the
@@ -3886,6 +3966,7 @@ class MacroPlacer:
                         score_fn=_2opt_score, initial_score=work_score,
                         k_neighbors=20, max_iters=6, deadline=pass_deadline,
                         incremental_scorer=incremental_scorer,
+                        macro_cong=macro_cong,
                     )
                     accept_count += ac
                     score_calls += sc
