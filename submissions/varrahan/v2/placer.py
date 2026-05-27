@@ -38,6 +38,7 @@ Baselines (full --all average over 17 IBM ICCAD04 benchmarks):
   UT Austin DREAMPlace  1.4076   leaderboard #1 (GPU)
 """
 
+import os
 import random
 import time
 from pathlib import Path
@@ -2174,6 +2175,90 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
     return float(wl + 0.5 * dens + 0.5 * cong)
 
 
+def _proxy_decomp(placement: torch.Tensor, benchmark: Benchmark, plc):
+    """(proxy, wl, 0.5*den, 0.5*cong) — the WEIGHTED proxy split. Re-scores the
+    placement (mutates plc state), so use only in diagnostic contexts."""
+    p = _exact_proxy(placement, benchmark, plc)
+    wl = float(plc.get_cost())
+    den = 0.5 * float(plc.get_density_cost())
+    cong = 0.5 * float(plc.get_congestion_cost())
+    return p, wl, den, cong
+
+
+def _dp_recoverability_probe(
+    dp_placements, best_score, n, cw, ch, hw, hh, sizes, movable, plc, benchmark
+):
+    """DP_PROBE ceiling test (2026-05-26): can a GENEROUS, ungated post-hoc
+    congestion treatment of the best DP basin beat the cong-grad-from-baseline
+    'best'? Phase 7 caps cong-grad-from-DP at 3 iters / frac=0.04 with abandon-
+    gates; here we remove all gates — a multi-frac descent (0.08/0.04/0.02, up
+    to 25 iters each, accept-on-proxy) followed by a full 20s 2-opt from the
+    relieved basin. If this still loses to best, post-hoc repair is empirically
+    ruled out (relieving DP's congestion trades away its wl/den edge faster than
+    it gains), which justifies fusing congestion INTO the DREAMPlace objective.
+    """
+    if not dp_placements:
+        _log("  [DP_PROBE] no DP candidates; skipping")
+        return
+    dp_tag, dp_raw, dp_pl0 = min(dp_placements, key=lambda e: e[1])
+    _log(f"  [DP_PROBE] seed=dp[{dp_tag}] raw={dp_raw:.4f}  best={best_score:.4f}")
+    rng = np.random.RandomState(777)
+    cur_pl = dp_pl0.clone()
+    cur_hard = np.stack(
+        [dp_pl0[:n, 0].numpy(), dp_pl0[:n, 1].numpy()], axis=1
+    ).astype(np.float64)
+    cur_score = float(_exact_proxy(cur_pl, benchmark, plc))
+    for frac in (0.08, 0.04, 0.02):
+        no_improve = 0
+        for _it in range(25):
+            # Re-score cur so plc's congestion map matches cur_hard before the
+            # gradient step (correct gradient, not stale).
+            _exact_proxy(cur_pl, benchmark, plc)
+            perturbed = _routing_congestion_perturb(
+                cur_hard, plc, benchmark, n, cw, ch, hw, hh, movable,
+                frac=frac, rng=rng,
+            )
+            leg = _will_legalize(perturbed, movable, sizes, hw, hh, cw, ch, n)
+            trial = cur_pl.clone()
+            trial[:n, 0] = torch.tensor(leg[:, 0], dtype=torch.float32)
+            trial[:n, 1] = torch.tensor(leg[:, 1], dtype=torch.float32)
+            s = float(_exact_proxy(trial, benchmark, plc))
+            if s < cur_score - 1e-5:
+                cur_score, cur_pl, cur_hard = s, trial, leg.astype(np.float64)
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= 4:
+                    break
+    _log(f"  [DP_PROBE] after multi-frac cong-grad descent: {cur_score:.4f}")
+    # Full 2-opt from the congestion-relieved DP basin.
+    try:
+        scorer = IncrementalScorer(plc, benchmark, cur_pl.cpu().numpy().astype(np.float64))
+    except Exception:
+        scorer = None
+    scratch = cur_pl.clone()
+
+    def _ps(pa, _s=scratch):
+        p32 = torch.from_numpy(np.ascontiguousarray(pa)).float()
+        _s[:n, 0] = p32[:, 0]
+        _s[:n, 1] = p32[:, 1]
+        return float(_exact_proxy(_s, benchmark, plc))
+
+    opt_pos, ac, fs, sc = _two_opt_proxy_swap(
+        cur_hard, sizes, hw, hh, cw, ch, movable, n,
+        score_fn=_ps, initial_score=cur_score, k_neighbors=20, max_iters=6,
+        deadline=time.monotonic() + 20.0, incremental_scorer=scorer,
+    )
+    final_pl = cur_pl.clone()
+    final_pl[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
+    final_pl[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
+    pf, wf, df, cf = _proxy_decomp(final_pl, benchmark, plc)
+    verdict = "BEATS best" if pf < best_score - 1e-4 else "LOSES to best"
+    _log(f"  [DP_PROBE] FINAL dp-basin post-hoc: proxy={pf:.4f} "
+         f"(wl={wf:.4f} den={df:.4f} cong={cf:.4f})  -> {verdict} "
+         f"(best={best_score:.4f}, {ac} 2opt accepts)")
+
+
 # ---------------------------------------------------------------------------
 # Incremental scorer for 2-opt (B3 phase 2, 2026-05-23)
 # ---------------------------------------------------------------------------
@@ -3808,6 +3893,17 @@ class MacroPlacer:
         # post-vectorization, scoring each candidate swap directly is
         # affordable. Cheap bounds + conflict checks remain as a free
         # filter so most candidates skip the score call.
+        # Phase 7b (DP-basin congestion relief) was prototyped 2026-05-26 and
+        # REVERTED — see ISSUES.md. The DP_PROBE ceiling test suggested the best
+        # raw DREAMPlace basin could 2-opt below best after a fuller cong-grad
+        # descent (ibm10 1.3279 vs 1.3337), but the production descent proved too
+        # budget-hungry (~30s/benchmark) AND high-variance — and not even
+        # reproducible at fixed seed (plc-state-dependent on where in the pipeline
+        # it runs: seed 777 gave 1.3639 post-pipeline but 1.3730 mid-pipeline). It
+        # captured zero net gain in-pipeline. The durable finding (DP loses purely
+        # on congestion; post-hoc repair can't fix it reliably) points instead at
+        # congestion-aware DREAMPlace (congestion in the global objective). The
+        # DP_DIAG/DP_PROBE diagnostics are retained (env-gated) to reproduce it.
         remaining_2opt = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
         if remaining_2opt >= t_one_score + 15.0:
             # O2 candidate #2 (2026-05-25): run 2-opt from MULTIPLE basins, not
@@ -3844,6 +3940,7 @@ class MacroPlacer:
             # we just re-score each finalist exactly before comparing.
             twoopt_best_pl = best_pl
             twoopt_best_score = float(_exact_proxy(best_pl, benchmark, plc))
+            _dp_diag_2opt = []  # (seed_tag, true_final, cand) when DP_DIAG set
             for seed_tag, seed_pl, seed_score in twoopt_seeds:
                 rem = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
                 if rem < 2.0 * t_one_score + 15.0:
@@ -4015,10 +4112,38 @@ class MacroPlacer:
                 if true_final < twoopt_best_score:
                     twoopt_best_score = true_final
                     twoopt_best_pl = cand
+                if os.environ.get("DP_DIAG"):
+                    _dp_diag_2opt.append((seed_tag, true_final, cand.clone()))
 
             if twoopt_best_score < best_score:
                 best_score = twoopt_best_score
                 best_pl = twoopt_best_pl
+
+        # DP_DIAG (2026-05-26): decompose where the DP basin loses to "best".
+        # Logs the WEIGHTED proxy split (wl, 0.5*den, 0.5*cong) for each raw DP
+        # candidate, each cong-grad+2-opt-from-seed result, and the final best.
+        # Re-scores placements (mutates plc), so done last, right before return.
+        if os.environ.get("DP_DIAG"):
+            _log("  [DP_DIAG] ---- raw DP candidates (pre cong-grad/2-opt) ----")
+            for _t, _sc, _pl in dp_placements:
+                p, w, d, c = _proxy_decomp(_pl, benchmark, plc)
+                _log(f"  [DP_DIAG] raw dp[{_t}]: proxy={p:.4f}  wl={w:.4f} "
+                     f"den={d:.4f} cong={c:.4f}")
+            if "_dp_diag_2opt" in locals():
+                _log("  [DP_DIAG] ---- after cong-grad+2-opt from each seed ----")
+                for _t, _tf, _pl in _dp_diag_2opt:
+                    p, w, d, c = _proxy_decomp(_pl, benchmark, plc)
+                    _log(f"  [DP_DIAG] 2opt[{_t}]: proxy={p:.4f}  wl={w:.4f} "
+                         f"den={d:.4f} cong={c:.4f}")
+            p, w, d, c = _proxy_decomp(best_pl, benchmark, plc)
+            _log(f"  [DP_DIAG] FINAL best: proxy={p:.4f}  wl={w:.4f} "
+                 f"den={d:.4f} cong={c:.4f}")
+
+        if os.environ.get("DP_PROBE"):
+            _dp_recoverability_probe(
+                dp_placements, best_score, n, cw, ch, hw, hh, sizes,
+                movable, plc, benchmark,
+            )
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
         self._benchmarks_done += 1
