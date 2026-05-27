@@ -188,7 +188,24 @@ unblocks any future code that builds multiple scorers.
 
 ## Speculative score improvements (not started)
 
-### S1. Basin-hopping 2-opt — cong-grad kick between passes (IMPLEMENTED, DORMANT pending P3)
+### S1. Basin-hopping 2-opt — cong-grad kick between passes (DISPROVEN 2026-05-26 — kept dormant)
+
+**Result:** enabling sliced basin-hopping (5s passes + cong-grad kick,
+`S1_MAX_KICKS=2`) on top of P3 regressed `--all`: 6/7 benchmarks worse, 1 tie,
+0 better before the run was stopped (ibm01 1.1269→1.1306, ibm04 1.2686→1.2777,
+ibm08 1.4978→1.5023; cumulative +0.025 over 7). **Slicing the 15s into 5s
+passes starves the productive deadline-bound 2-opt search**, and the kicks
+perturb away from the optimum without recovering. The "more accepts" signal
+that looked promising on a single ibm04 run (671→1072) was misleading — the
+extra accepts were repairing kick damage, not net-improving; and the one
+ibm04=1.2293 run was a lucky noise draw (ibm04 swings ~0.05 run-to-run).
+Even ibm01, which converges early (where S1 *should* help), regressed.
+**Kept dormant** (`S1_MAX_KICKS=0` = single full-15s pass); code retained for
+reference. A gentler non-sliced variant (full-deadline pass, kick only with
+leftover budget after early convergence) is low-EV: it fires only on small
+benchmarks with ~1-2s to spare and never on the large average-movers.
+
+**Original idea (for the record):**
 
 **Idea:** 2-opt only PERMUTES existing macro slots — it can never reach a
 position no macro occupies. After a pass converges to a swap-only local
@@ -294,6 +311,38 @@ benchmarks with many same-area macros.
 
 **Cost:** 1 line.
 **Expected gain:** small.
+
+### S9. Congestion-aware 2-opt candidate selection (SHIPPED 2026-05-26 — 1.4424 → 1.4422)
+
+Two layered changes inside `_two_opt_proxy_swap`, gated on a `macro_cong`
+(per-macro local `max(H,V)` snapshot taken at seed time):
+  - **Variant 1 — hot-first outer ordering.** Iterate macros by descending
+    local congestion instead of by index. On deadline-bound benchmarks the
+    swaps evaluated before the budget expires are then the hotspot ones —
+    the dominant proxy term. Pure budget reallocation (can't beat the
+    deadline-free convergence point).
+  - **Variant 2 — cold-region teleport augmentation.** Spatial kNN can only
+    swap nearby macros, so a routing-heavy macro can never relocate across
+    the chip (intermediate local swaps all reject). For the `cong_hot_k`=20
+    hottest macros, append the `cong_cold_k`=8 coldest as extra candidates —
+    a long-range edge that expands the reachable placement set. Size-
+    incompatible teleports fail the free conflict check before scoring.
+
+The proxy gate validates every swap, so this only changes WHICH candidates
+are tried, never accepts a worse placement. `macro_cong=None` reproduces the
+prior index-order / spatial-only behavior exactly.
+
+**Result:** --all 1.4424 → **1.4422** (−0.0002). 12/17 improved, 5 slightly
+worse, cumulative −0.0042 (ibm06 −0.0023, ibm14 −0.0011 the standouts; ibm01
++0.0015 the worst). 12/17 same-direction is ≈7% by chance, so likely-real but
+**marginal — edge-of-noise.** All 17 VALID / 0 overlaps; teleports confirmed
+firing (ibm10 accepts 1168→1327). Theoretically the higher-ceiling of the two
+candidate-selection variants (expands reachability vs reorders a fixed set);
+kept because it's net-positive, consistent-direction, and correctness-safe.
+
+**Theory note (vs S1):** unlike S1 (which sliced the budget and starved the
+search → regressed), S9 keeps the full pass and only changes candidate choice
+— every accepted teleport strictly lowers proxy, so no budget-waste damage.
 
 ---
 

@@ -3,8 +3,14 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-26):** **Avg 1.4424 — beats RePlAce by 0.0154 (−1.1%).**
-> Latest change: **P3 incremental density** — `IncrementalScorer` now keeps
+> **Status (2026-05-26):** **Avg 1.4422 — beats RePlAce by 0.0156 (−1.1%).**
+> Latest change: **S9 congestion-aware 2-opt** — the 2-opt now (1) iterates
+> macros hot→cold so the deadline-bound budget is spent on hotspot swaps
+> first, and (2) augments the 20 hottest macros' candidate sets with the 8
+> coldest macros ("teleport" edges spatial kNN can't reach). Proxy-gated, so
+> only changes WHICH swaps are tried. --all 1.4424 → **1.4422** (12/17
+> improved, cumulative −0.0042; marginal, edge-of-noise but consistent
+> direction). Prior change: **P3 incremental density** — `IncrementalScorer` now keeps
 > the occupancy grid as state and updates only the 2 swapped macros' cells
 > per score (verified bit-exact vs full recompute, ≤4.4e-16). score_swap is
 > −22% to −29% faster → +40–56% more 2-opt scores fit the 15s deadline →
@@ -32,7 +38,7 @@ Target: beat RePlAce avg of 1.4578.
 | sameer_v1 leg-only | 1.5062 | our legalize-only, confirmed |
 | RePlAce | 1.4578 | Grand Prize target |
 | UT Austin (DREAMPlace) | 1.4076 | leaderboard #1 |
-| **v2 (this submission)** | **1.4424** | **BEATS RePlAce by 0.0154 (−1.1%)** (P3 incremental density) |
+| **v2 (this submission)** | **1.4422** | **BEATS RePlAce by 0.0156 (−1.1%)** (S9 cong-aware 2-opt + P3) |
 
 ---
 
