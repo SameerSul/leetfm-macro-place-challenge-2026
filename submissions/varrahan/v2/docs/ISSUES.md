@@ -13,20 +13,71 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.4435** (3-DP + multi-seed 2-opt + k=20) |
+| Best `--all` avg | **1.4422** (P3 incremental density + S9 cong-aware 2-opt) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−1.0% (beat by 0.0143)** |
+| **Gap to RePlAce** | **−1.1% (beat by 0.0156)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **+2.5%** (~0.036 absolute) |
+| **Gap to leaderboard** | **+2.5%** (~0.035 absolute) |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | ~826s (3-DP + multi-seed k=20, window=0.02) |
+| `--all` wall-clock | ~1439s (WSL-inflated; real ≪3600s cap) |
 
 All 17 IBM benchmarks improved vs v12 baseline. The remaining headroom
-(~0.040 to leaderboard) is the focus of the open work below.
+(~0.035 to leaderboard) is the focus of the open work below — and the
+DP1 diagnostic (next) localizes it to a single term: congestion.
 
 ---
 
 ## Open issues
+
+### DP1. Congestion-aware DREAMPlace — the leaderboard gap is pure congestion (IN PROGRESS 2026-05-27)
+
+**Diagnosis (DP_DIAG, env-gated logging in `place()`).** Our DREAMPlace (DP)
+candidates lose to the cong-grad "best" seed 15/17. Decomposing why, on the
+congestion-heavy benchmarks, shows the loss is **entirely congestion** —
+DREAMPlace is *better* on wirelength and density (it optimizes those) and only
+loses on the term it can't see:
+
+| | wl | den | cong | proxy |
+|---|----|----|------|-------|
+| ibm10 raw dp[hi-fix] | 0.0574 | 0.3774 | **0.9543** | 1.3891 |
+| ibm10 final best | 0.0636 | 0.3804 | **0.8904** | 1.3344 |
+| Δ (dp − best) | −0.006 | −0.003 | **+0.064** | +0.055 |
+| ibm12 raw dp[hi-fix] | 0.0626 | 0.3968 | **1.2497** | 1.7090 |
+| ibm12 final best | 0.0608 | 0.4017 | **1.1749** | 1.6375 |
+| Δ (dp − best) | +0.002 | −0.005 | **+0.075** | +0.071 |
+
+**Post-hoc repair ruled out (mostly).** DP_PROBE (env-gated ceiling test) ran a
+generous ungated cong-grad descent + 2-opt on the raw DP basin. ibm10 *did*
+recover below best (1.3279 vs 1.3337) — but the production realization (Phase 7b)
+was REVERTED: the descent is budget-hungry (~30s/bench), high-variance, and not
+even reproducible at fixed seed (plc-state-dependent on pipeline position — seed
+777 gave 1.3639 post-pipeline vs 1.3730 mid-pipeline). Captured zero net gain
+in-pipeline. Relieving DP's congestion by moving macros *afterward* trades away
+its wl/den edge as fast as it gains — the trade-off must be resolved *inside* the
+global placement, not after.
+
+**The lever: enable DREAMPlace's built-in routability optimization.** DREAMPlace
+has `routability_opt_flag` + `adjust_rudy_area_flag` (params.json) — it computes
+a RUDY/RISA routing-congestion map mid-placement and inflates node areas in
+congested regions (≤`max_num_area_adjust`=3 times), so the density penalty
+spreads cells out of routing hotspots. This is congestion *in the global
+objective*. Our bridge currently leaves it OFF (`_default_dreamplace_config`
+defaults `routability_opt_flag=0`).
+
+**Plan / open questions:**
+  - Add a routability-optimized DP variant in the bridge (enable the flags;
+    set sane `route_num_bins_x/y` ≈ benchmark routing grid, not the 512 default;
+    calibrate `unit_horizontal/vertical/pin_capacity` against the ICCAD04
+    routes-per-micron, or sweep). No `.route` file is emitted by the converter,
+    so capacity comes purely from these config params.
+  - **Key risk:** DREAMPlace's RUDY congestion ≠ TILOS proxy congestion
+    (correlated, not identical). Enabling routopt reduces DREAMPlace's *estimate*;
+    must verify it reduces the *proxy* cong term. Measure with DP_DIAG: does the
+    routopt DP candidate's proxy cong drop vs plain DP, keeping its wl/den edge?
+  - If yes → routopt DP candidate feeds the existing seed/2-opt machinery and
+    should beat best on congestion-heavy benchmarks. If the RUDY/proxy
+    correlation is too weak → fall back to a custom congestion penalty map.
+
 
 ### O1. ibm09 / ibm13 small regressions vs the v2-combined baseline (RESOLVED 2026-05-25 — kept 3-DP)
 
