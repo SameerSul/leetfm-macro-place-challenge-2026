@@ -13,17 +13,18 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.4243** (P3 + S9 + R1 + R2 interleaved relocation⇄2-opt) |
+| Best `--all` avg | **1.4216** (P3 + S9 + R1 + R2 interleaved relocation⇄2-opt) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−2.3% (beat by 0.0335)** |
+| **Gap to RePlAce** | **−2.5% (beat by 0.0362)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **+1.2%** (~0.017 absolute) |
+| **Gap to leaderboard** | **+1.0%** (~0.014 absolute) |
 | NG45 (Tier 2) avg | 0.7830 |
 | `--all` wall-clock | ~1502s (≪3600s cap) |
 
-All 17 IBM benchmarks improved vs v12 baseline. The relocation family (R1+R2)
-was the biggest lever of the session — R1 −0.0096, R2 interleave another
-−0.0083. `_reloc_leverage.py` shows the per-benchmark gain is driven by
+All 17 IBM benchmarks improved vs v12 baseline. The relocation family was the
+biggest lever of the session — R1 −0.0096, R2 interleave another −0.0083, R2b
+(widened candidate set, top_hot 24→48) another −0.0027.
+`_reloc_leverage.py` shows the per-benchmark gain is driven by
 **hard-macro utilization × congestion headroom**: relocation helps where hard
 macros occupy enough canvas to drive congestion AND there's congestion above the
 floor. Low-hard-util benchmarks (ibm17/18, util 0.09–0.17) barely move — their
@@ -59,7 +60,7 @@ proxy-gated move on the placement we already have, rather than trying to fix
 DREAMPlace's congestion-blind global placement (which trades away its wl/den edge,
 DP1) or refine via swaps only (2-opt).
 
-### R2. Interleaved relocation ⇄ 2-opt (SHIPPED 2026-05-27 — 1.4326 → 1.4243)
+### R2. Interleaved relocation ⇄ 2-opt (SHIPPED 2026-05-27 — 1.4326 → 1.4243 → 1.4216)
 
 R1 ran relocation once, after 2-opt. R2 ALTERNATES a relocation pass and a 2-opt
 cleanup pass (≤6 rounds, budget-gated, break on no-improvement): each relocation
@@ -69,7 +70,16 @@ multi-seed block already 2-opt-converged best_pl). --all 1.4326 → **1.4243**
 (−0.0083), ALL 17 improved (ibm04 −0.043, ibm10 −0.022, ibm02 −0.015, ibm12
 −0.011); per-benchmark the interleave roughly doubled R1's single-pass gain on
 the high-leverage benchmarks (ibm04 walked 1.27→1.19 over 4–6 rounds, monotonic).
-1502s.
+
+**R2b — widened relocation candidate set (top_hot 24→48, n_targets 12→16).**
+"Squeeze R2" follow-up: raising the round cap (6→10) was tapped (rounds 7+ below
+the noise floor), but the binding limit on large benchmarks was top_hot per
+round — at 24 it covered only ~3% of ibm10's 786 macros/round. Widening to 48/16
+relieves more hot macros per round (and converges in fewer rounds, so it's also
+*faster* on the large benchmarks). --all 1.4243 → **1.4216** (−0.0027), all
+improved-or-flat; broader than expected (ibm12 −0.008, ibm16 −0.0065, ibm11
+−0.006, not just the largest). 1518s. Beats RePlAce by 2.5%; leaderboard gap
+~0.014.
 
 **Leverage analysis (`_reloc_leverage.py`):** gain correlates with hard-macro
 utilization (canvas fraction occupied by hard macros) gated by congestion
