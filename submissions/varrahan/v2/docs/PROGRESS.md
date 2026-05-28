@@ -3,18 +3,18 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-27):** **Avg 1.4326 — beats RePlAce by 0.0252 (−1.7%).**
-> Latest change: **R1 congestion-directed relocation moves** — a post-2-opt
+> **Status (2026-05-27):** **Avg 1.4243 — beats RePlAce by 0.0335 (−2.3%).**
+> Latest change: **R2 interleaved relocation ⇄ 2-opt** — alternate the R1
+> relocation pass and a 2-opt cleanup pass (each opens new moves for the other)
+> until neither improves, up to 6 rounds, budget-gated. Both accept-on-true-proxy
+> so strictly non-regressing. --all 1.4326 → **1.4243** (ALL 17 improved;
+> ibm04 −0.043, ibm10 −0.022, ibm02 −0.015, ibm12 −0.011). `--all` 1502s.
+> Prior change: **R1 congestion-directed relocation moves** — a post-2-opt
 > pass that RELOCATES the hottest macros into empty low-congestion legal gaps
-> (a move the swap-only 2-opt can't make: a swap would dump another macro into
-> the vacated hot spot). Uses the incremental scorer's new `score_move`
-> (verified bit-exact, ≤6e-9, no drift); accept-on-true-proxy so strictly
-> non-regressing. --all 1.4422 → **1.4326** (ALL 17 improved, cumulative
-> −0.163; ibm04 −0.034, ibm02 −0.026, ibm01 −0.018, ibm15 −0.016, ibm10/13
-> −0.011), in ~0.1-0.2s/benchmark. The gain lands in the congestion term, as
-> designed. Biggest single lever of the session (~10× P3/S9). `--all` 751s.
-> Prior change: **S9 congestion-aware 2-opt** (hot-first ordering + cold
-> teleport augmentation), 1.4424 → 1.4422. Before that: **P3 incremental
+> (a move the swap-only 2-opt can't make). Uses the incremental scorer's new
+> `score_move` (verified bit-exact, ≤6e-9). --all 1.4422 → 1.4326 (all 17
+> improved). Before that: **S9 congestion-aware 2-opt** (hot-first ordering +
+> cold teleport augmentation), 1.4424 → 1.4422; and **P3 incremental
 > density** — `IncrementalScorer` now keeps
 > the occupancy grid as state and updates only the 2 swapped macros' cells
 > per score (verified bit-exact vs full recompute, ≤4.4e-16). score_swap is
@@ -43,7 +43,7 @@ Target: beat RePlAce avg of 1.4578.
 | sameer_v1 leg-only | 1.5062 | our legalize-only, confirmed |
 | RePlAce | 1.4578 | Grand Prize target |
 | UT Austin (DREAMPlace) | 1.4076 | leaderboard #1 |
-| **v2 (this submission)** | **1.4326** | **BEATS RePlAce by 0.0252 (−1.7%)** (R1 relocation + S9 + P3) |
+| **v2 (this submission)** | **1.4243** | **BEATS RePlAce by 0.0335 (−2.3%)** (R2 interleave + R1 + S9 + P3) |
 
 ---
 
@@ -53,37 +53,37 @@ Target: beat RePlAce avg of 1.4578.
 
 | Metric | Value |
 |---|---|
-| 17 IBM benchmarks avg | **1.4326** |
+| 17 IBM benchmarks avg | **1.4243** |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−1.7% (beat by 0.0252)** |
+| **Gap to RePlAce** | **−2.3% (beat by 0.0335)** |
 | v12 starting point | 1.4854 |
-| **Total v2 improvement** | **−0.0528** |
-| DREAMPlace leaderboard | 1.4076 (gap now ~0.025) |
-| `--all` wall-clock | ~751s (under 3600s cap) |
+| **Total v2 improvement** | **−0.0611** |
+| DREAMPlace leaderboard | 1.4076 (gap now ~0.017) |
+| `--all` wall-clock | ~1502s (under 3600s cap) |
 | NG45 avg (Tier 2) | 0.7830 |
 
-### Per-benchmark results (v12 → 1.4435 → R1 1.4326)
+### Per-benchmark results (v12 → R2 1.4243)
 
-| Bench | v12 | R1 (1.4326) | Δ vs v12 |
+| Bench | v12 | R2 (1.4243) | Δ vs v12 |
 |---|---|---|---|
-| ibm01 | 1.1860 | 1.1107 | −0.075 |
-| ibm02 | 1.5923 | 1.4759 | **−0.116** |
-| ibm03 | 1.3603 | 1.2297 | **−0.131** |
-| ibm04 | 1.3316 | 1.2349 | −0.097 |
-| ibm06 | 1.6684 | 1.5354 | **−0.133** |
-| ibm07 | 1.4924 | 1.4733 | −0.019 |
-| ibm08 | 1.5251 | 1.4859 | −0.039 |
-| ibm09 | 1.1304 | 1.1005 | −0.030 |
-| ibm10 | 1.4037 | 1.3231 | −0.081 |
-| ibm11 | 1.2354 | 1.2166 | −0.019 |
-| ibm12 | 1.6507 | 1.6309 | −0.020 |
-| ibm13 | 1.4011 | 1.3673 | −0.034 |
-| ibm14 | 1.6033 | 1.5706 | −0.033 |
-| ibm15 | 1.6061 | 1.5826 | −0.024 |
-| ibm16 | 1.5323 | 1.5009 | −0.031 |
-| ibm17 | 1.7437 | 1.7320 | −0.012 |
-| ibm18 | 1.7896 | 1.7837 | −0.006 |
-| **AVG** | **1.4854** | **1.4326** | **−0.053** |
+| ibm01 | 1.1860 | 1.1098 | −0.076 |
+| ibm02 | 1.5923 | 1.4612 | −0.131 |
+| ibm03 | 1.3603 | 1.2246 | −0.136 |
+| ibm04 | 1.3316 | 1.1923 | −0.139 |
+| ibm06 | 1.6684 | 1.5331 | −0.135 |
+| ibm07 | 1.4924 | 1.4701 | −0.022 |
+| ibm08 | 1.5251 | 1.4823 | −0.043 |
+| ibm09 | 1.1304 | 1.0997 | −0.031 |
+| ibm10 | 1.4037 | 1.3007 | −0.103 |
+| ibm11 | 1.2354 | 1.2091 | −0.026 |
+| ibm12 | 1.6507 | 1.6202 | −0.030 |
+| ibm13 | 1.4011 | 1.3604 | −0.041 |
+| ibm14 | 1.6033 | 1.5649 | −0.038 |
+| ibm15 | 1.6061 | 1.5790 | −0.027 |
+| ibm16 | 1.5323 | 1.4944 | −0.038 |
+| ibm17 | 1.7437 | 1.7274 | −0.016 |
+| ibm18 | 1.7896 | 1.7836 | −0.006 |
+| **AVG** | **1.4854** | **1.4243** | **−0.061** |
 
 (R1 column = `--all` 2026-05-27: P3 incremental density + S9 cong-aware 2-opt +
 R1 congestion-directed relocation. ALL 17 improved vs the prior 1.4435; R1's
