@@ -4351,7 +4351,14 @@ class MacroPlacer:
         # converged best_pl, so a fresh 2-opt finds nothing until relocation moves
         # something). Budget-gated; a round needs slack for a relocation (~cheap)
         # + a short 2-opt pass.
-        R2_MAX_ROUNDS = 6  # budget-guarded; converges + breaks on no-improvement
+        R2_MAX_ROUNDS = 6  # budget-guarded; converges + breaks on no-improvement.
+        # (Tested 6→10: rounds 7+ are below the run-to-run noise floor (~-0.001
+        # total) and cost real time on large benchmarks — kept at 6. The binding
+        # limit on large benchmarks is top_hot per round, not round count.)
+        # R2_HOT/R2_TGT widen the relocation candidate set per round so large
+        # benchmarks (ibm10 786 macros) relieve more than ~3% of hot macros/round.
+        R2_HOT = 48
+        R2_TGT = 16
         R2_2OPT_SLICE = 8.0
 
         def _hard_xy(_pl):
@@ -4391,6 +4398,7 @@ class MacroPlacer:
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
                     benchmark, rel_scorer, base_rel,
                     deadline=t_rel + min(rem_r2 - t_one_score, 15.0),
+                    top_hot=R2_HOT, n_targets=R2_TGT,
                 )
                 if rel_acc > 0:
                     cand = best_pl.clone()

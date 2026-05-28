@@ -3,12 +3,15 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-27):** **Avg 1.4243 — beats RePlAce by 0.0335 (−2.3%).**
+> **Status (2026-05-28):** **Avg 1.4216 — beats RePlAce by 0.0362 (−2.5%).**
 > Latest change: **R2 interleaved relocation ⇄ 2-opt** — alternate the R1
 > relocation pass and a 2-opt cleanup pass (each opens new moves for the other)
 > until neither improves, up to 6 rounds, budget-gated. Both accept-on-true-proxy
 > so strictly non-regressing. --all 1.4326 → **1.4243** (ALL 17 improved;
-> ibm04 −0.043, ibm10 −0.022, ibm02 −0.015, ibm12 −0.011). `--all` 1502s.
+> ibm04 −0.043, ibm10 −0.022). Then **R2b** widened the relocation candidate set
+> (top_hot 24→48, n_targets 12→16 — covers more hot macros/round on large
+> benchmarks where 24 reached only ~3%): 1.4243 → **1.4216**, faster too.
+> `--all` 1518s.
 > Prior change: **R1 congestion-directed relocation moves** — a post-2-opt
 > pass that RELOCATES the hottest macros into empty low-congestion legal gaps
 > (a move the swap-only 2-opt can't make). Uses the incremental scorer's new
@@ -43,7 +46,7 @@ Target: beat RePlAce avg of 1.4578.
 | sameer_v1 leg-only | 1.5062 | our legalize-only, confirmed |
 | RePlAce | 1.4578 | Grand Prize target |
 | UT Austin (DREAMPlace) | 1.4076 | leaderboard #1 |
-| **v2 (this submission)** | **1.4243** | **BEATS RePlAce by 0.0335 (−2.3%)** (R2 interleave + R1 + S9 + P3) |
+| **v2 (this submission)** | **1.4216** | **BEATS RePlAce by 0.0362 (−2.5%)** (R2 interleave + R1 + S9 + P3) |
 
 ---
 
@@ -53,18 +56,18 @@ Target: beat RePlAce avg of 1.4578.
 
 | Metric | Value |
 |---|---|
-| 17 IBM benchmarks avg | **1.4243** |
+| 17 IBM benchmarks avg | **1.4216** |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−2.3% (beat by 0.0335)** |
+| **Gap to RePlAce** | **−2.5% (beat by 0.0362)** |
 | v12 starting point | 1.4854 |
 | **Total v2 improvement** | **−0.0611** |
-| DREAMPlace leaderboard | 1.4076 (gap now ~0.017) |
+| DREAMPlace leaderboard | 1.4076 (gap now ~0.014) |
 | `--all` wall-clock | ~1502s (under 3600s cap) |
 | NG45 avg (Tier 2) | 0.7830 |
 
-### Per-benchmark results (v12 → R2 1.4243)
+### Per-benchmark results (v12 → R2 1.4216)
 
-| Bench | v12 | R2 (1.4243) | Δ vs v12 |
+| Bench | v12 | R2 (1.4216) | Δ vs v12 |
 |---|---|---|---|
 | ibm01 | 1.1860 | 1.1098 | −0.076 |
 | ibm02 | 1.5923 | 1.4612 | −0.131 |
@@ -83,7 +86,7 @@ Target: beat RePlAce avg of 1.4578.
 | ibm16 | 1.5323 | 1.4944 | −0.038 |
 | ibm17 | 1.7437 | 1.7274 | −0.016 |
 | ibm18 | 1.7896 | 1.7836 | −0.006 |
-| **AVG** | **1.4854** | **1.4243** | **−0.061** |
+| **AVG** | **1.4854** | **1.4216** | **−0.061** |
 
 (R1 column = `--all` 2026-05-27: P3 incremental density + S9 cong-aware 2-opt +
 R1 congestion-directed relocation. ALL 17 improved vs the prior 1.4435; R1's
