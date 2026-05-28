@@ -13,17 +13,22 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.4326** (P3 + S9 + R1 congestion-directed relocation) |
+| Best `--all` avg | **1.4243** (P3 + S9 + R1 + R2 interleaved relocation⇄2-opt) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−1.7% (beat by 0.0252)** |
+| **Gap to RePlAce** | **−2.3% (beat by 0.0335)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **+1.8%** (~0.025 absolute) |
+| **Gap to leaderboard** | **+1.2%** (~0.017 absolute) |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | ~751s (≪3600s cap) |
+| `--all` wall-clock | ~1502s (≪3600s cap) |
 
-All 17 IBM benchmarks improved vs v12 baseline. R1 (relocation moves) was the
-biggest single lever — all 17 improved, −0.0096 avg. The remaining headroom
-(~0.025 to leaderboard) is congestion (per the DP1 diagnostic below).
+All 17 IBM benchmarks improved vs v12 baseline. The relocation family (R1+R2)
+was the biggest lever of the session — R1 −0.0096, R2 interleave another
+−0.0083. `_reloc_leverage.py` shows the per-benchmark gain is driven by
+**hard-macro utilization × congestion headroom**: relocation helps where hard
+macros occupy enough canvas to drive congestion AND there's congestion above the
+floor. Low-hard-util benchmarks (ibm17/18, util 0.09–0.17) barely move — their
+congestion is soft/net-dominated, pointing at soft-macro relocation as the next
+lever for them.
 
 ---
 
@@ -52,9 +57,31 @@ measurement.
 **Why it worked where DP1 didn't:** R1 relieves congestion with a DIRECT,
 proxy-gated move on the placement we already have, rather than trying to fix
 DREAMPlace's congestion-blind global placement (which trades away its wl/den edge,
-DP1) or refine via swaps only (2-opt). Follow-ups worth trying: interleave
-relocation with 2-opt (alternate passes), or run relocation per-seed before
-selecting the best (not just on the winner).
+DP1) or refine via swaps only (2-opt).
+
+### R2. Interleaved relocation ⇄ 2-opt (SHIPPED 2026-05-27 — 1.4326 → 1.4243)
+
+R1 ran relocation once, after 2-opt. R2 ALTERNATES a relocation pass and a 2-opt
+cleanup pass (≤6 rounds, budget-gated, break on no-improvement): each relocation
+opens new swap opportunities and vice versa, so they compound. Both accept-on-
+true-proxy → strictly non-regressing. Relocation runs first each round (the
+multi-seed block already 2-opt-converged best_pl). --all 1.4326 → **1.4243**
+(−0.0083), ALL 17 improved (ibm04 −0.043, ibm10 −0.022, ibm02 −0.015, ibm12
+−0.011); per-benchmark the interleave roughly doubled R1's single-pass gain on
+the high-leverage benchmarks (ibm04 walked 1.27→1.19 over 4–6 rounds, monotonic).
+1502s.
+
+**Leverage analysis (`_reloc_leverage.py`):** gain correlates with hard-macro
+utilization (canvas fraction occupied by hard macros) gated by congestion
+headroom — NOT with macro dominance or open space (both hypotheses refuted:
+ibm15 has the most-dominant macro but small gain; ibm18 has the most open space
+but the smallest gain). Big gainers (ibm04/10/02/12) have util 0.42–0.60 + cong
+above the floor; the two lowest-congestion benchmarks (ibm01/09) and the lowest-
+hard-util ones (ibm17/18) barely move.
+
+**Follow-ups:** soft-macro relocation (for the soft/net-dominated low-hard-util
+benchmarks ibm17/18 — see option 2 in the alternatives menu); more rounds /
+larger 2-opt slice on benchmarks that hit the round cap with budget to spare.
 
 ### DP1. Congestion-aware DREAMPlace — the leaderboard gap is pure congestion (CLOSED 2026-05-27 — routopt can't move the proxy)
 
