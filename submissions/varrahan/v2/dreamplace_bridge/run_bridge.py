@@ -58,7 +58,8 @@ def _file_fingerprint(p: Path) -> str:
 
 def _cache_key(benchmark_dir: Path, iterations: int, random_seed: int,
                num_threads: int, soft_macros_movable: bool,
-               random_center_init: bool) -> str:
+               random_center_init: bool, routability_opt: bool = False,
+               routopt_sig: str = "") -> str:
     netlist_fp = _file_fingerprint(benchmark_dir / "netlist.pb.txt")
     init_fp = _file_fingerprint(benchmark_dir / "initial.plc")
     raw = (
@@ -67,6 +68,10 @@ def _cache_key(benchmark_dir: Path, iterations: int, random_seed: int,
         f"threads={num_threads}|soft={int(soft_macros_movable)}|"
         f"rci={int(random_center_init)}"
     )
+    # Append only when set, so existing (non-routopt) cache keys are unchanged.
+    # routopt_sig encodes the calibration knobs so swept configs don't collide.
+    if routability_opt:
+        raw += f"|ro=1|{routopt_sig}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -123,7 +128,15 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
                                 iterations: int = 200,
                                 num_threads: int = 4,
                                 random_center_init: bool = False,
-                                target_density: float = 0.75) -> dict:
+                                target_density: float = 0.75,
+                                routability_opt: bool = False,
+                                route_num_bins: int = 64,
+                                route_num_bins_x: "int | None" = None,
+                                route_num_bins_y: "int | None" = None,
+                                unit_h_cap: "float | None" = None,
+                                unit_v_cap: "float | None" = None,
+                                max_route_opt_adjust_rate: float = 2.0,
+                                max_num_area_adjust: int = 3) -> dict:
     """Single CPU-only global-placement stage. Tuned to be fast: 200 iters,
     64x64 density bins. No legalization or detailed placement (we do those
     in our own pipeline).
@@ -135,7 +148,7 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
     random_center_init=True: cold-start from canvas center; produces a
     fundamentally different placement. Useful for exploring entirely new
     basins, but soft macros end up mismatched (high congestion penalty)."""
-    return {
+    cfg = {
         "aux_input": aux_input,
         "gpu": 0,
         "num_bins_x": 64,
@@ -171,6 +184,38 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
         "use_bb": 1,
         "result_dir": result_dir,
     }
+    if routability_opt:
+        # DP1 (2026-05-27): congestion-aware global placement. DREAMPlace
+        # computes a RUDY/RISA routing-congestion map mid-placement (once
+        # overflow drops below node_area_adjust_overflow) and inflates node
+        # areas in congested regions, so the density penalty spreads cells out
+        # of routing hotspots. This bakes congestion INTO the global objective —
+        # the DP_DIAG diagnostic showed our DP candidates lose to best purely on
+        # congestion, and post-hoc repair can't fix it (trades away DP's wl/den
+        # edge). route_num_bins is coarser than DREAMPlace's 512 default to
+        # roughly match the ICCAD04 routing grids (~35-55 cols). Unit capacities
+        # are left at DREAMPlace defaults for the first cut — to be calibrated
+        # against the ICCAD04 routes-per-micron if the proxy-cong signal is weak.
+        cfg.update({
+            "routability_opt_flag": 1,
+            "route_num_bins_x": route_num_bins_x or route_num_bins,
+            "route_num_bins_y": route_num_bins_y or route_num_bins,
+            "adjust_rudy_area_flag": 1,
+            "adjust_pin_area_flag": 1,
+            "adjust_nctugr_area_flag": 0,
+            "node_area_adjust_overflow": 0.15,
+            "max_num_area_adjust": max_num_area_adjust,
+            "max_route_opt_adjust_rate": max_route_opt_adjust_rate,
+            "route_opt_adjust_exponent": 2.0,
+        })
+        # Per-tech routing capacity (tracks per unit distance, DREAMPlace coords).
+        # RUDY utilization = demand / (bin_area * unit_capacity); a larger
+        # capacity lowers perceived congestion → gentler area inflation.
+        if unit_h_cap is not None:
+            cfg["unit_horizontal_capacity"] = unit_h_cap
+        if unit_v_cap is not None:
+            cfg["unit_vertical_capacity"] = unit_v_cap
+    return cfg
 
 
 def is_available() -> bool:
@@ -190,6 +235,8 @@ def run_dreamplace(
     random_center_init: bool = False,
     keep_log: bool = False,
     target_density: float = 0.75,
+    routability_opt: bool = False,
+    route_num_bins: int = 64,
 ) -> np.ndarray:
     """Run the full DREAMPlace pipeline on a benchmark.
 
@@ -236,7 +283,7 @@ def run_dreamplace(
     # Disk-cache fast path (same fingerprint scheme as the async launcher).
     cache_key = _cache_key(
         benchmark_dir, iterations, random_seed, num_threads,
-        soft_macros_movable, random_center_init,
+        soft_macros_movable, random_center_init, routability_opt,
     )
     cached = _try_load_cache(work_dir, cache_key)
     if cached is not None:
@@ -260,6 +307,8 @@ def run_dreamplace(
         num_threads=num_threads,
         random_center_init=random_center_init,
         target_density=target_density,
+        routability_opt=routability_opt,
+        route_num_bins=route_num_bins,
     )
     cfg_path = work_dir / f"{design}.json"
     cfg_path.write_text(json.dumps(cfg, indent=2))
@@ -526,6 +575,14 @@ def launch_dreamplace_async(
     soft_macros_movable: bool = False,
     random_center_init: bool = False,
     target_density: float = 0.75,
+    routability_opt: bool = False,
+    route_num_bins: int = 64,
+    route_num_bins_x: "int | None" = None,
+    route_num_bins_y: "int | None" = None,
+    unit_h_cap: "float | None" = None,
+    unit_v_cap: "float | None" = None,
+    max_route_opt_adjust_rate: float = 2.0,
+    max_num_area_adjust: int = 3,
 ) -> AsyncDreamplaceHandle:
     """Launch DREAMPlace as a non-blocking subprocess. Returns immediately
     with a handle for polling.
@@ -557,9 +614,14 @@ def launch_dreamplace_async(
     # (input files + iterations + seed + threads + softs + rci). If we have
     # a matching .npz, skip the whole subprocess pipeline and return a stub
     # handle that produces the cached arrays immediately.
+    routopt_sig = (
+        f"rb={route_num_bins_x or route_num_bins}x{route_num_bins_y or route_num_bins}"
+        f"|uh={unit_h_cap}|uv={unit_v_cap}|rate={max_route_opt_adjust_rate}"
+        f"|adj={max_num_area_adjust}|td={target_density:.3f}"
+    ) if routability_opt else ""
     cache_key = _cache_key(
         benchmark_dir_p, iterations, random_seed, num_threads,
-        soft_macros_movable, random_center_init,
+        soft_macros_movable, random_center_init, routability_opt, routopt_sig,
     )
     cached = _try_load_cache(work_dir, cache_key)
     if cached is not None:
@@ -580,6 +642,14 @@ def launch_dreamplace_async(
         num_threads=num_threads,
         random_center_init=random_center_init,
         target_density=target_density,
+        routability_opt=routability_opt,
+        route_num_bins=route_num_bins,
+        route_num_bins_x=route_num_bins_x,
+        route_num_bins_y=route_num_bins_y,
+        unit_h_cap=unit_h_cap,
+        unit_v_cap=unit_v_cap,
+        max_route_opt_adjust_rate=max_route_opt_adjust_rate,
+        max_num_area_adjust=max_num_area_adjust,
     )
     cfg_path = work_dir / f"{design}.json"
     cfg_path.write_text(json.dumps(cfg, indent=2))
