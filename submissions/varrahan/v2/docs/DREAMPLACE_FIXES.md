@@ -264,3 +264,35 @@ Recommended order:
 5. **If standalone DP proxy < Phase 3 win on ≥3 benchmarks**: apply Fix 3 (DP as primary). This is where the −0.020+ gain materializes.
 
 If only one fix is feasible: **NEITHER alone works**. Skip the integration entirely and revert to v14 (current pre-DP state). The cleanup is one line: set `dp_handle = None` unconditionally in `place()`.
+
+---
+
+## Patch (2026-05-27, DP1): NCTUgr-map guard for routability opt on Bookshelf inputs
+
+**Lives in gitignored vendor trees — recorded here so it can be reapplied after
+a rebuild.** Files (both, identical edit):
+- `submissions/varrahan/dreamplace_src/dreamplace/PlaceObj.py`
+- `submissions/varrahan/dreamplace_build/install/dreamplace/PlaceObj.py`
+
+**Problem:** enabling `routability_opt_flag=1` crashes immediately:
+`PlaceObj.build_nctugr_congestion_map` does `placedb.unit_horizontal_capacities * ...`
+where `unit_horizontal_capacities` (per-routing-layer array) is `None` for
+Bookshelf inputs (it's only populated from LEF/DEF). DREAMPlace builds all three
+congestion maps (RUDY, pin, NCTUgr) unconditionally when routability is on.
+
+**Fix:** in `PlaceObj.__init__`, gate the NCTUgr build on its flag — it's only
+consumed at runtime when `adjust_nctugr_area_flag` is set (NonLinearPlace uses the
+RUDY `route_utilization_map_op` otherwise), so building it when unused is both
+wasteful and the crash:
+
+```python
+            if params.adjust_nctugr_area_flag:
+                self.op_collections.nctugr_congestion_map_op = self.build_nctugr_congestion_map(
+                    params, placedb, self.data_collections)
+```
+
+**Status:** routability opt now runs without crashing, but **DP1 closed it as
+ineffective** — routopt cannot move the TILOS proxy congestion (no-op or worse
+across a 64× capacity sweep + grid-matched bins). See ISSUES.md DP1. The patch is
+retained only so future routopt experiments don't re-hit the crash; the bridge
+`routability_opt` knob defaults OFF, so the production pipeline is unaffected.
