@@ -4340,44 +4340,109 @@ class MacroPlacer:
                 best_score = twoopt_best_score
                 best_pl = twoopt_best_pl
 
-        # -- Congestion-directed relocation pass (R1, 2026-05-27) -------------
-        # The 2-opt above only EXCHANGES macro positions; it can't relocate a
-        # routing-heavy macro into an empty low-congestion gap (a swap would dump
-        # another macro into the vacated hot spot). This pass does exactly that:
-        # move the hottest macros into the lowest-congestion legal cells, accept
-        # only on a strict true-proxy drop (via the incremental scorer's verified
-        # score_move). The RELOC_PROBE measured this beating the 2-opt best on
-        # ibm04 −0.032, ibm10 −0.011, ibm12 −0.006 — gain in the congestion term,
-        # in ~0.3s. Cheap and additive by construction.
-        rem_reloc = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-        if rem_reloc >= 2.0 * t_one_score + 2.0:
-            t_reloc = time.monotonic()
+        # -- Interleaved relocation ⇄ 2-opt (R2, 2026-05-27) ------------------
+        # R1 (relocation: move the hottest macros into empty low-congestion legal
+        # gaps — a move the swap-only 2-opt can't make) landed −0.0096 as a single
+        # post-2-opt pass. R2 ALTERNATES relocation and 2-opt until neither
+        # improves: each relocation opens new swap opportunities (and vice versa),
+        # so the two compound. Both reuse the fast incremental scorer and accept
+        # only on a strict TRUE-proxy drop, so the loop is strictly non-regressing.
+        # Relocation runs first each round (the multi-seed block already 2-opt-
+        # converged best_pl, so a fresh 2-opt finds nothing until relocation moves
+        # something). Budget-gated; a round needs slack for a relocation (~cheap)
+        # + a short 2-opt pass.
+        R2_MAX_ROUNDS = 6  # budget-guarded; converges + breaks on no-improvement
+        R2_2OPT_SLICE = 8.0
+
+        def _hard_xy(_pl):
+            return np.stack([_pl[:n, 0].numpy(), _pl[:n, 1].numpy()], axis=1).astype(np.float64)
+
+        def _macro_cong_now():
+            # Per-macro local max(H,V) from plc's current routing map (set by the
+            # IncrementalScorer init / last _exact_proxy on best_pl).
             try:
-                base_reloc = float(_exact_proxy(best_pl, benchmark, plc))
-                reloc_scorer = IncrementalScorer(
+                nr_g, nc_g = benchmark.grid_rows, benchmark.grid_cols
+                ha = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
+                va = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
+                if ha.size != nr_g * nc_g or va.size != nr_g * nc_g:
+                    return None
+                cc = np.maximum(ha.reshape(nr_g, nc_g), va.reshape(nr_g, nc_g))
+                cwc, chc = cw / nc_g, ch / nr_g
+                ci = np.clip((best_pl[:n, 0].numpy() / cwc).astype(np.int64), 0, nc_g - 1)
+                ri = np.clip((best_pl[:n, 1].numpy() / chc).astype(np.int64), 0, nr_g - 1)
+                return cc[ri, ci]
+            except Exception:
+                return None
+
+        for _r2 in range(R2_MAX_ROUNDS):
+            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+            if rem_r2 < 3.0 * t_one_score + 3.0:
+                break
+            round_improved = False
+
+            # --- relocation pass (hot → cold gaps) ---
+            try:
+                t_rel = time.monotonic()
+                base_rel = float(_exact_proxy(best_pl, benchmark, plc))
+                rel_scorer = IncrementalScorer(
                     plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
                 )
-                reloc_pos = np.stack(
-                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
-                ).astype(np.float64)
-                reloc_pos, reloc_acc, _reloc_incr = _relocation_moves(
-                    reloc_pos, sizes, hw, hh, cw, ch, movable, n, plc, benchmark,
-                    reloc_scorer, base_reloc,
-                    deadline=t_reloc + min(rem_reloc - t_one_score, 15.0),
+                rel_pos, rel_acc, _ = _relocation_moves(
+                    _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
+                    benchmark, rel_scorer, base_rel,
+                    deadline=t_rel + min(rem_r2 - t_one_score, 15.0),
                 )
-                if reloc_acc > 0:
-                    reloc_cand = best_pl.clone()
-                    reloc_cand[:n, 0] = torch.tensor(reloc_pos[:, 0], dtype=torch.float32)
-                    reloc_cand[:n, 1] = torch.tensor(reloc_pos[:, 1], dtype=torch.float32)
-                    reloc_true = float(_exact_proxy(reloc_cand, benchmark, plc))
-                    _log(f"  Relocation pass: {reloc_acc} moves, "
-                         f"{base_reloc:.4f} → {reloc_true:.4f} "
-                         f"in {time.monotonic()-t_reloc:.1f}s")
-                    if reloc_true < best_score:
-                        best_score = reloc_true
-                        best_pl = reloc_cand
+                if rel_acc > 0:
+                    cand = best_pl.clone()
+                    cand[:n, 0] = torch.tensor(rel_pos[:, 0], dtype=torch.float32)
+                    cand[:n, 1] = torch.tensor(rel_pos[:, 1], dtype=torch.float32)
+                    rel_true = float(_exact_proxy(cand, benchmark, plc))
+                    if rel_true < best_score - 1e-6:
+                        _log(f"  R2 round {_r2+1} reloc: {rel_acc} moves, "
+                             f"{best_score:.4f} → {rel_true:.4f}")
+                        best_score, best_pl, round_improved = rel_true, cand, True
             except Exception as exc:
-                _log(f"  Relocation pass failed: {type(exc).__name__}: {exc}")
+                _log(f"  R2 relocation failed: {type(exc).__name__}: {exc}")
+
+            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+            if rem_r2 < 2.0 * t_one_score + 2.0:
+                break
+
+            # --- 2-opt cleanup pass (swaps around the relocated macros) ---
+            try:
+                t_2o = time.monotonic()
+                base_2o = float(_exact_proxy(best_pl, benchmark, plc))
+                o_scorer = IncrementalScorer(
+                    plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
+                )
+                o_scratch = best_pl.clone()
+
+                def _r2_score(pos_arr, _scr=o_scratch):
+                    p32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
+                    _scr[:n, 0] = p32[:, 0]
+                    _scr[:n, 1] = p32[:, 1]
+                    return float(_exact_proxy(_scr, benchmark, plc))
+
+                o_pos, o_acc, _o_fs, _o_sc = _two_opt_proxy_swap(
+                    _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n,
+                    score_fn=_r2_score, initial_score=base_2o, k_neighbors=20,
+                    max_iters=6, deadline=t_2o + min(rem_r2 - t_one_score, R2_2OPT_SLICE),
+                    incremental_scorer=o_scorer, macro_cong=_macro_cong_now(),
+                )
+                if o_acc > 0:
+                    cand = best_pl.clone()
+                    cand[:n, 0] = torch.tensor(o_pos[:, 0], dtype=torch.float32)
+                    cand[:n, 1] = torch.tensor(o_pos[:, 1], dtype=torch.float32)
+                    o_true = float(_exact_proxy(cand, benchmark, plc))
+                    if o_true < best_score - 1e-6:
+                        _log(f"  R2 round {_r2+1} 2-opt: {o_acc} swaps, "
+                             f"{best_score:.4f} → {o_true:.4f}")
+                        best_score, best_pl, round_improved = o_true, cand, True
+            except Exception as exc:
+                _log(f"  R2 2-opt failed: {type(exc).__name__}: {exc}")
+
+            if not round_improved:
+                break
 
         # DP_DIAG (2026-05-26): decompose where the DP basin loses to "best".
         # Logs the WEIGHTED proxy split (wl, 0.5*den, 0.5*cong) for each raw DP
