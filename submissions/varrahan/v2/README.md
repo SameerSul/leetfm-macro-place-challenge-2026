@@ -5,12 +5,20 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-05-29): avg `1.2799`** — beats the RePlAce target
-(`1.4578`) by **12.2%**, all 17 IBM benchmarks VALID / 0 overlaps, 2639s wall
-(< 3600s cap). **Beats the #1 leaderboard** (UT Austin DREAMPlace, `1.4076`) by
-**0.128 (−9.1%)**. Driven by the **relocation family**, above all **R5 soft
-density relocation** (see below). *(Budget margin under official-eval CPU
-contention is the one open risk — a speedup pass is queued; see docs/ISSUES.md.)*
+**Headline (`--all`, 2026-05-29 — combined stack): avg `1.2755`** — beats the
+RePlAce target (`1.4578`) by **12.5%**, all 17 IBM benchmarks VALID / 0
+overlaps. **Beats the #1 leaderboard** (UT Austin DREAMPlace, `1.4076`) by
+**0.132 (−9.4%)**. Driven by the **relocation family** (R1/R2/R3/R5) plus a
+**bit-exact scoring-speedup stack**: (i) **incremental congestion cost** (cache
+the smoothed normalized H/V; re-smooth only the touched-net bbox per move,
+bit-identical), (ii) **#1 subset-cumsum strip-batch** (cumsum only the touched
+rows/cols), (iii) **#2 topology-struct cache** for the routing apply (the
+position-independent gather is built once per macro and reused across moves and
+the −1/+1 applies), (iv) a **floor-reservation budget allocator** (every
+benchmark in `--all` is guaranteed ≥110 s — no last-benchmark starvation), and
+(v) a **round-3 cong cap + density `top_hot=192` boost** (cong soft-pass
+saturates by round 3 — reclaim those cycles for more density attempts).
+Prior milestone (R5 alone): 1.2799; incremental cong cost alone: 1.2767.
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
 > open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches
