@@ -3,24 +3,35 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-29):** **Avg 1.2799 — beats RePlAce (1.4578) by 0.178
-> (−12.2%), and beats the UT Austin DREAMPlace leaderboard (1.4076) by 0.128
-> (−9.1%).** All 17 VALID / 0 overlaps, Total runtime 2639s (< 3600s cap).
-> Latest changes (stacked): **R3b** widened soft candidate set (top_hot 48→128);
-> **R5 soft DENSITY relocation** — a second soft pass per interleave round that
-> targets the DENSITY field (densest cells) instead of congestion. Softs are the
-> bulk of BOTH terms; the cong soft pass converges, then the density pass finds
-> 22–68 more moves it missed (DENS_SOFT_PROBE confirmed). Interleaved (hard reloc
-> ⇄ soft-cong ⇄ soft-density ⇄ 2-opt) it compounds: --all 1.3764 → **1.2799**
-> (−0.0965, ALL 17 improved: ibm13 −0.122, ibm02 −0.122, ibm08 −0.122, ibm18
-> −0.20). The dominant lever of the whole effort. **Budget note:** fits at 2639s
-> on a clean machine but ibm09 overshot the 200s soft per-bench limit (307s); a
-> speedup pass is queued for margin against CPU contention in the official eval.
-> A profile (`_profile_move.py`, 2026-05-29) re-pointed it: the per-move
-> congestion cost is only ~20% of a trial (density ~0.7%), so the lever is the
-> **shared scorer** (eliminate ~24 full IncrementalScorer re-inits + per-pass
-> base re-scores/benchmark, ~60–75s each), NOT the originally-planned incremental
-> smoothing. See ISSUES.md P5. **Disproven:** R4 WL-aware hard
+> **Status (2026-05-29 — combined-stack `--all`):** **Avg 1.2755 — beats
+> RePlAce (1.4578) by 0.182 (−12.5%), and beats the UT Austin DREAMPlace
+> leaderboard (1.4076) by 0.132 (−9.4%).** All 17 VALID / 0 overlaps.
+> **Latest changes stacked this session** (each one bit-exact-verified before
+> the next): (1) **Incremental congestion cost** — `IncrementalScorer` caches
+> the smoothed normalized H/V and per move re-smooths only the touched-net
+> bbox from raw flats (bit-identical to a full re-smooth; swap Δ≤4.4e-16);
+> isolated `--all` 1.2799 → **1.2767**. (2) **Idea #1 subset-cumsum strip-batch**
+> (only the unique touched rows/cols are cumsummed). (3) **Idea #2 topology-
+> struct cache** for the routing apply (position-independent gather + 2/3/≥4-pin
+> classification built once per macro, reused across the −1/+1 applies and
+> across moves; the position-dependent fill is still recomputed → bit-exact).
+> (4) **Floor-reservation budget allocator** — closes the ibm18-starvation bug:
+> reserve `(110+60)·remaining` for every other remaining benchmark plus 60s of
+> own-overrun slack so the last benchmark always gets ≥110s. Worst-case
+> simulation: all 17 ≥110s, cumulative ends at 3300. (5) **A: cong soft-pass
+> hard-cap at round 3 + C: density `top_hot` boost 128→192 on rounds 4–6** —
+> cong saturates by round 3 (ibm09 round 4+ accepts ≤2 moves, ~zero gain);
+> skip it and spend the freed ~4–5s/round on density. Combined `--all`:
+> 1.2767 → **1.2755** (−0.0012; 12/17 wins vs the cong-only baseline). **ibm18
+> = 1.5787** (vs the floor-res-only run's starved 1.7941 — confirms the
+> allocator works). Biggest movers: ibm17 −0.034, ibm16 −0.019, ibm07 −0.015.
+> (Wall-time reported 3860s under WSL host-suspend inflation; the placer's
+> `monotonic` budget held — no benchmark returned baseline.)
+>
+> **Disproven this session:** the "shared scorer" lever — measure-first
+> profile (`_profile_init.py`) showed the per-pass fixed overhead is only
+> ~0.1–0.28s/round (not the projected 60–75s), so a shared-scorer refactor
+> would save <1.7s/benchmark and risk correctness. NOT implemented. **Disproven:** R4 WL-aware hard
 > relocation (net-centroid target bias) — slightly worse, reverted (scaffolding
 > kept). Prior: **R3** soft cong relocation 1.4216→1.3764; **R2/R2b** 1.4326→
 > 1.4216; **R1** 1.4422→1.4326; **S9/P3** before that.
