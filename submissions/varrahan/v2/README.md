@@ -55,7 +55,7 @@ congestion optimization**, and WL-only optimization reliably makes proxy *worse*
 All candidates legalized then scored via exact `PlacementCost` proxy; lowest
 wins. Adaptive 200s + 60s-overrun per-benchmark budget; thresholds admit all 17.
 
-## The two things that make v2 ≫ v1 (1.4854 → 1.2799)
+## The three things that make v2 ≫ v1 (1.4854 → 1.2755)
 
 ### 1. Fully-incremental proxy scorer (`IncrementalScorer`)
 
@@ -96,20 +96,16 @@ into the vacated hot spot). Relocation adds exactly that missing move:
   no legality check since softs may overlap), as a third move type in the loop,
   compounds: **`1.4216 → 1.3764`**, all 17 improved. Corrects O3 (which only
   tested *bulk* soft moves).
-- **R3b / R5 — soft DENSITY relocation (the dominant win).** Softs are the bulk of
-  the *density* term too (and may overlap, so the cong pass can pile them). A
-  second soft pass targeting the **density** field (`use_density`) finds moves the
-  cong pass can't (`DENS_SOFT_PROBE`: cong-converged best_pl still yields 22–68
-  density moves). Interleaved (hard ⇄ soft-cong ⇄ soft-density ⇄ 2-opt) + widened
-  candidates (top_hot 128): **`1.3764 → 1.2799`**, all 17 improved (ibm13/02/08
-  −0.122, ibm18 −0.21). Beats the leaderboard by 9.1%.
+- **R3b / R5 — soft DENSITY relocation (the dominant win of the relocation family).**
+  Softs are the bulk of the *density* term too (and may overlap, so the cong pass
+  can pile them). A second soft pass targeting the **density** field
+  (`use_density`) finds moves the cong pass can't (`DENS_SOFT_PROBE`: cong-converged
+  best_pl still yields 22–68 density moves). Interleaved (hard ⇄ soft-cong ⇄
+  soft-density ⇄ 2-opt) + widened candidates (top_hot 128): **`1.3764 → 1.2799`**,
+  all 17 improved (ibm13/02/08 −0.122, ibm18 −0.21).
 
 All moves are accept-on-true-proxy, so the whole local search is **strictly
-non-regressing by construction**. (Open: budget margin under contention — R5 fits
-at 2639s clean but ibm09 hit 307s; a speedup pass is queued. See ISSUES.md.)
-
-Disproven: **R4** (WL-aware hard-relocation targeting toward net centroids) —
-slightly worse, reverted; scaffolding kept inert.
+non-regressing by construction**.
 
 **Leverage** (`test/diagnostic/_reloc_leverage.py`): per-benchmark gain is driven
 by **hard-macro utilization × congestion headroom** — relocation helps where hard
@@ -118,6 +114,61 @@ AND there's congestion above the floor. Low-hard-util benchmarks (ibm17/18) are
 soft/net-dominated and barely move → soft-macro relocation is the flagged next
 lever.
 
+### 3. Bit-exact scoring-speedup stack (1.2799 → 1.2755)
+
+Five mutually compounding changes, each *bit-exact* (every accept-on-true-proxy
+guarantee preserved; every change passes the same scorer verifiers as the base):
+
+- **Incremental congestion cost.** `_compute_cong_cost` used to full-re-smooth the
+  whole grid and full-partition every move (~17% of a trial). The smoother is a
+  separable box filter — H per column, V per row, each independent — so the scorer
+  now **caches the smoothed normalized H/V** as 2D state and per move re-smooths
+  only the touched-net pin-bbox columns/rows *from raw flats* (recomputing from
+  raw, not accumulating deltas, keeps it bit-identical to a full re-smooth with
+  no drift). All six move paths thread the bbox through `_resmooth_bbox`. Swap
+  Δ stays at machine eps (≤4.4e-16); hard/soft move ≤1.8e-9.
+  Isolated `--all`: **1.2799 → 1.2767**.
+- **Idea #1 subset-cumsum strip-batch.** `_apply_h/v_strips_batch` was the
+  inner-inner-loop of the 67% routing-apply path — it allocated a full
+  `(grid_row, grid_col+1)` diff array, scattered with `np.add.at`, then
+  cumsummed *every row*. The diff-array cumsum is per-row independent, so
+  unique-ing the touched rows and cumsumming only those is bit-identical, and
+  cuts both the alloc and the cumsum to the touched subset.
+- **Idea #2 topology-struct cache.** The routing apply mixes **placement-
+  independent bookkeeping** (which pins, lengths, 2/3/≥4-pin classification,
+  ≥4-pin sink index layout) with the **position-dependent fill** (gcell
+  extraction + dispatch). Split into `_build_net_routing_struct` (cacheable per
+  macro) + `_apply_net_routing_struct`; the scorer keeps a per-module struct
+  cache so single-macro paths build the structure *once per macro* and reuse it
+  across every candidate target and across the −1 / +1 applies. Swap builds
+  once per call. Init path keeps the original `_apply_net_routing_subset`
+  (additive — the full-build path is unchanged).
+- **Floor-reservation budget allocator.** Closes the ibm18-starvation bug: in
+  the old fair-share allocator a few large benchmarks' overruns ate the tail's
+  budget, and the guard returned baseline whenever `cumulative > 95%·3300`. The
+  new allocator reserves `(PER_BENCH_FLOOR_S=110 + BUDGET_OVERRUN_S=60)·(remaining−1) + 60`
+  for the others' overrun + own overrun, clamps to a 3540 s hard-cap headroom,
+  and floors at 110 s. Worst-case simulation (every benchmark overruns by 60 s)
+  has all 17 benchmarks at ≥110 s and cumulative ending exactly at 3300. The
+  guard reduces to `eff < 45 s → baseline` (only fires on genuine exhaustion).
+- **A: round-3 cong cap + C: density `top_hot` boost.** The cong soft-pass
+  saturates by round 3 (ibm09: round 4+ accepts ≤2 moves, ~zero gain) while
+  density keeps finding moves through round 6. Skip cong on `_r2 ≥ 3` (A) and
+  bump density's candidate set 128 → 192 on those rounds (C) so the freed
+  ~4–5 s/round is spent on more density attempts. Combined with the speedup
+  stack: `--all` **1.2767 → 1.2755**.
+
+The whole stack is **strictly bit-exact** (verified by the three move-path
+verifiers: `_verify_incremental_scorer.py`, `_verify_score_move.py`,
+`_verify_score_move_soft.py`) and **strictly non-regressing** (accept-on-true-
+proxy is preserved end-to-end). Diagnostics that produced and constrained the
+plan: `_profile_init.py` (retired the shared-scorer refactor — per-pass fixed
+overhead is 0.1–0.28 s/round, not the 60–75 s estimated), `_profile_move.py`
+and `_profile_move_internals.py` (cong cost 17%, density 0.7%, routing-apply
+67% → the latter two are where the speedups were targeted), and
+`_profile_move_realistic.py` (isolates the topology-struct cache benefit by A/B-ing
+the same-macro / nearby pattern vs the cache-defeating random-k pattern).
+
 ## Closed dead-ends (don't re-run without a specific reason — see ISSUES.md)
 
 | Direction | Outcome |
@@ -125,7 +176,9 @@ lever.
 | **DP1** congestion-aware DREAMPlace (`routability_opt`) | CLOSED — DREAMPlace's RUDY congestion ≠ TILOS proxy; no-op or worse across a 64× capacity sweep. (Required a real bug-fix to even run: NCTUgr-map guard, see DREAMPLACE_FIXES.md.) |
 | **Phase 7b** post-hoc DP-basin repair | REVERTED — recoverable in a probe but budget-hungry, high-variance, not reproducible at fixed seed. |
 | **S1** basin-hopping 2-opt (cong-grad kick) | DISPROVEN — slicing the budget starves the deadline-bound search; 6/7 worse. |
-| **O3** soft-macro repositioning (bulk/gradient) | CLOSED for bulk methods (R1-style discrete *soft* relocation is the open follow-up). |
+| **O3** soft-macro repositioning (bulk/gradient) | CLOSED for bulk methods — R5 discrete soft relocation is what works. |
+| **R4** WL-aware hard-relocation (net-centroid target bias) | DISPROVEN — slightly worse than nearest-to-current; scaffolding kept inert (`wl_blend`, `hard_net_centroids()`, `WLAWARE_PROBE`). |
+| **Shared-scorer interleave refactor** (the original P5 plan) | RETIRED — `_profile_init.py` measured the per-pass fixed overhead at 0.1–0.28 s/round (not the projected 60–75 s), so the refactor would save <1.7 s/benchmark and risk the bit-exact core. Replaced by the incremental-cong-cost + #1 + #2 stack above. |
 
 ## File / docs index
 
