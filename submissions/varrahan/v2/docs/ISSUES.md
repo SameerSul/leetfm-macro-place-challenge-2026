@@ -31,11 +31,14 @@ is where the win lives.
 
 **Open: budget margin.** R5 fits at 2639s on a clean machine, but ibm09 overshot
 the 200s soft per-bench limit (307s); under official-eval CPU contention (3–5×
-scoring slowdown) it could threaten the 3600s hard cap. A speedup pass
-(incremental `_compute_cong_cost` — full re-smooth/partition per trial move is
-the hot path — + a shared scorer across interleave passes, eliminating ~23 full
-re-inits/benchmark) is queued to buy that margin. Budget guard stays as the last
-stand.
+scoring slowdown) it could threaten the 3600s hard cap. A speedup pass is queued
+to buy that margin — and a profile (`_profile_move.py`, 2026-05-29) **re-pointed
+it**: the per-trial-move cost is NOT dominated by `_compute_cong_cost` (only
+~18–21% of a move; density ~0.7%), so the original "incremental smoothing"
+target is low-leverage. The real fixed overhead is the **~24 redundant full
+`IncrementalScorer` re-inits + per-pass base re-scores per benchmark** (each does
+a full routing build + density scatter + full WL) → the **shared scorer** is the
+lever. See P5. Budget guard stays as the last stand.
 
 ---
 
@@ -85,10 +88,10 @@ interleave compounds it (single density pass −0.011/−0.020 on best_pl → �
 the loop → −0.097 across the full pipeline). Also folds in **R3b** (soft top_hot
 48→128). Beats RePlAce by 12.2%, leaderboard by 9.1%.
 
-**Open follow-up — budget margin / speedup** (see headline note): fits at 2639s
-clean but ibm09 = 307s; queued speedup is incremental `_compute_cong_cost` (the
-per-trial-move full re-smooth + top-k partition over all cells is the hot path)
-and a shared scorer across interleave passes.
+**Open follow-up — budget margin / speedup** (see headline note + P5): fits at
+2639s clean but ibm09 = 307s; the queued speedup is the **shared scorer** across
+interleave passes (the `_profile_move.py` profile retired the earlier
+"incremental `_compute_cong_cost`" plan — smoothing is only ~20% of a move).
 
 ### R4. WL-aware HARD relocation targeting (DISPROVEN 2026-05-29)
 
@@ -618,6 +621,45 @@ _routing_congestion_perturb (correct), but verify no redundant
 state computation.
 
 **Status:** likely a no-op fix; flagged for completeness.
+
+### P5. Interleave speedup — shared scorer (PROFILED 2026-05-29, not yet implemented)
+
+The R5 interleave (hard reloc ⇄ soft-cong ⇄ soft-density ⇄ 2-opt, ≤6 rounds)
+fits in 2639s clean but ibm09 hit 307s — thin under official-eval CPU contention.
+A speedup pass is queued; `_profile_move.py` (env-free, run on ibm15/17/10)
+**measured where the time goes and corrected the plan**:
+
+| bench | grid | `score_move_soft` | `_compute_cong_cost` | smoothing | `_compute_density_cost` |
+|---|---|---|---|---|---|
+| ibm15 | 2166 | 1.54 ms | 0.30 ms (20%) | 18% | 0.01 ms (0.7%) |
+| ibm17 | 2244 | 1.35 ms | 0.27 ms (20%) | 21% | 0.01 ms (0.7%) |
+| ibm10 | 2255 | 1.27 ms | 0.28 ms (22%) | 20% | 0.01 ms (0.7%) |
+
+**Finding:** the per-move congestion cost (re-smooth + top-5% partition) is only
+~20% of a trial, and density is ~0.7%. So **incremental `_compute_cong_cost`
+(the original speedup target) is low-leverage** — it could shave ≤0.3 ms of
+1.4 ms, and per-move cost is only part of the interleave time. The other ~78% of
+a move is the touched-net routing apply + WL subset + flat snapshot/restore
+(already incremental).
+
+**Revised target — the shared scorer.** The dominant *fixed* overhead is that the
+interleave rebuilds a fresh `IncrementalScorer` ~24×/benchmark (each = full
+routing build + full density scatter + full WL, ~1–3 s each) plus a per-pass
+`_exact_proxy` base re-score. Keeping **one** scorer for the whole interleave —
+committing moves to it across passes and deriving `best_pl` from its committed
+state — eliminates that, est. ~60–75 s/benchmark (ibm09 ~307 s → ~180 s).
+
+**Key enabler / the one subtlety:** the relocation passes currently read their
+hot/cold field from `plc.get_*_routing_congestion()`, which is only fresh because
+each per-pass rebuild calls `plc.get_congestion_cost()`. A shared scorer must
+instead build that field from the scorer's **maintained `H_flat`/`V_flat`** (the
+same flats `_compute_cong_cost` already uses — current after every commit, no
+recompute). That removes the only thing forcing a rebuild between passes.
+
+**Risk:** real refactor of the core interleave loop (cross-pass move-state
+sharing + field-source change). Backstopped by the verified bit-exact incremental
+proxy (no drift over commits) and a confirming `--all` to prove 1.2799 holds.
+Budget guard stays as the last stand regardless.
 
 ---
 
