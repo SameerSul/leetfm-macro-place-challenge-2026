@@ -13,23 +13,20 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.4216** (P3 + S9 + R1 + R2 interleaved relocation⇄2-opt) |
+| Best `--all` avg | **1.3764** (P3 + S9 + R1 + R2 interleaved relocation⇄2-opt) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−2.5% (beat by 0.0362)** |
+| **Gap to RePlAce** | **−5.6% (beat by 0.0814)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **+1.0%** (~0.014 absolute) |
+| **Gap to leaderboard** | **−2.2% (BEATS by ~0.031)** |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | ~1502s (≪3600s cap) |
+| `--all` wall-clock | ~2350s (≪3600s cap) |
 
 All 17 IBM benchmarks improved vs v12 baseline. The relocation family was the
-biggest lever of the session — R1 −0.0096, R2 interleave another −0.0083, R2b
-(widened candidate set, top_hot 24→48) another −0.0027.
-`_reloc_leverage.py` shows the per-benchmark gain is driven by
-**hard-macro utilization × congestion headroom**: relocation helps where hard
-macros occupy enough canvas to drive congestion AND there's congestion above the
-floor. Low-hard-util benchmarks (ibm17/18, util 0.09–0.17) barely move — their
-congestion is soft/net-dominated, pointing at soft-macro relocation as the next
-lever for them.
+biggest lever of the session: R1 −0.0096, R2 interleave −0.0083, R2b (top_hot
+24→48) −0.0027, and **R3 soft-macro relocation −0.0452** — the dominant win, and
+it pushed v2 **below the leaderboard** (1.3764 < 1.4076). The original prediction
+(from `_reloc_leverage.py`: hard relocation can't help the soft/net-dominated
+benchmarks ibm17/18) was the seed for R3 — applying the same move to softs.
 
 ---
 
@@ -60,6 +57,35 @@ proxy-gated move on the placement we already have, rather than trying to fix
 DREAMPlace's congestion-blind global placement (which trades away its wl/den edge,
 DP1) or refine via swaps only (2-opt).
 
+### R3. Soft-macro relocation (SHIPPED 2026-05-28 — 1.4216 → 1.3764, BEATS leaderboard)
+
+**The dominant lever of the whole effort — −0.0452, all 17 improved, and it put
+v2 below the UT Austin DREAMPlace leaderboard (1.3764 < 1.4076).** Soft macros
+(std-cell-cluster stand-ins) are the **bulk of the routing demand**, and every
+prior placer froze them at `initial.plc`. R3 applies the R1 relocation move to
+SOFT macros: relocate the hottest soft clusters (by live `max(H,V)`) into low-
+congestion cells, accept-on-true-proxy via the scorer's new `score_move_soft`
+(softs touch WL + net-routing congestion + density, NOT macro blockage — no
+legality check since softs may overlap; verified bit-exact in
+`_verify_score_move_soft.py`). Wired as a **third move type in the R2 interleave
+loop** (hard reloc ⇄ soft reloc ⇄ 2-opt), so it compounds round-over-round.
+
+**Result:** --all 1.4216 → **1.3764** (−0.0452), ALL 17 improved, gain in the
+congestion term: ibm06 −0.102, ibm07 −0.080, ibm03 −0.067, ibm12/14 −0.062,
+ibm17 −0.061. All VALID / 0 overlaps (softs are movable — 0 fixed softs on IBM,
+confirmed; a `soft_movable` guard defends NG45/other inputs). 2350s. The
+interleave makes the gain 2–4× a single soft pass (each soft move opens new
+hard/2-opt moves). `SOFT_RELOC_PROBE` (env-gated) reproduces the single-pass
+measurement.
+
+**This corrects O3.** O3 closed soft-repositioning, but only tested *bulk* moves
+(WL-centroid blends, gradient spreads). Discrete, proxy-gated, R1-style soft
+relocation is a different operator and it is the biggest win we found.
+
+**Follow-ups:** confirmation re-run (the −0.0452 jump is large; all 17 improved
+far above the noise floor so it's robust, but a second --all is cheap insurance);
+tune soft `top_hot`/`n_targets`; soft 2-opt swaps (exchange two soft clusters).
+
 ### R2. Interleaved relocation ⇄ 2-opt (SHIPPED 2026-05-27 — 1.4326 → 1.4243 → 1.4216)
 
 R1 ran relocation once, after 2-opt. R2 ALTERNATES a relocation pass and a 2-opt
@@ -78,8 +104,7 @@ round — at 24 it covered only ~3% of ibm10's 786 macros/round. Widening to 48/
 relieves more hot macros per round (and converges in fewer rounds, so it's also
 *faster* on the large benchmarks). --all 1.4243 → **1.4216** (−0.0027), all
 improved-or-flat; broader than expected (ibm12 −0.008, ibm16 −0.0065, ibm11
-−0.006, not just the largest). 1518s. Beats RePlAce by 2.5%; leaderboard gap
-~0.014.
+−0.006, not just the largest). 1518s.
 
 **Leverage analysis (`_reloc_leverage.py`):** gain correlates with hard-macro
 utilization (canvas fraction occupied by hard macros) gated by congestion

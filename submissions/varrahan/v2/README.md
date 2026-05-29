@@ -5,10 +5,10 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-05-28): avg `1.4216`** — beats the RePlAce target
-(`1.4578`) by **2.5%**, all 17 IBM benchmarks VALID / 0 overlaps, ~1518s wall
-(well under the 3600s cap). Gap to the leaderboard (UT Austin DREAMPlace,
-`1.4076`) is ~0.014.
+**Headline (`--all`, 2026-05-28): avg `1.3764`** — beats the RePlAce target
+(`1.4578`) by **5.6%**, all 17 IBM benchmarks VALID / 0 overlaps, ~2350s wall
+(well under the 3600s cap). **Beats the leaderboard** (UT Austin DREAMPlace,
+`1.4076`) by ~0.031. Driven by **R3 soft-macro relocation** (see below).
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
 > open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches
@@ -45,7 +45,7 @@ congestion optimization**, and WL-only optimization reliably makes proxy *worse*
 All candidates legalized then scored via exact `PlacementCost` proxy; lowest
 wins. Adaptive 200s + 60s-overrun per-benchmark budget; thresholds admit all 17.
 
-## The two things that make v2 ≫ v1 (1.4854 → 1.4216)
+## The two things that make v2 ≫ v1 (1.4854 → 1.3764)
 
 ### 1. Fully-incremental proxy scorer (`IncrementalScorer`)
 
@@ -65,24 +65,30 @@ Net: **~1.4 ms/move-eval** (vs full recompute scattering all ~1100–2800 macros
 Δ ≤ 1e-8, no drift over sequential commits). This speed is what makes the
 move-based local search affordable.
 
-### 2. Congestion-directed relocation (R1 / R2 / R2b — the session's biggest lever)
+### 2. Congestion-directed relocation (R1 / R2 / R2b / R3 — the dominant lever)
 
 2-opt only *exchanges* two macros' positions — it can **never relocate a routing-
 heavy macro into empty low-congestion space** (a swap would dump some other macro
 into the vacated hot spot). Relocation adds exactly that missing move:
 
-- **R1** — a post-2-opt pass that moves the hottest macros (by live `max(H,V)`
-  congestion) into the nearest low-congestion legal cells, accepting only on a
-  strict true-proxy drop. Legality = in-bounds + no overlap with other *hard*
-  macros (softs may overlap). `--all 1.4422 → 1.4326`, all 17 improved.
+- **R1** — a post-2-opt pass that moves the hottest *hard* macros (by live
+  `max(H,V)` congestion) into the nearest low-congestion legal cells, accept-on-
+  true-proxy. Legality = in-bounds + no overlap with other hard macros (softs may
+  overlap). `--all 1.4422 → 1.4326`, all 17 improved.
 - **R2** — *interleave* relocation ⇄ 2-opt: each relocation opens new swaps and
-  vice versa, so they compound over ≤6 rounds (monotonic, accept-on-proxy).
-  `1.4326 → 1.4243`.
+  vice versa, compounding over ≤6 rounds. `1.4326 → 1.4243`.
 - **R2b** — widen the per-round candidate set (`top_hot` 24→48, `n_targets`
-  12→16) so large benchmarks relieve more than ~3% of their hot macros/round.
-  `1.4243 → 1.4216`, and faster (fewer rounds to converge).
+  12→16) so large benchmarks relieve >3% of their hot macros/round.
+  `1.4243 → 1.4216`, and faster.
+- **R3 — soft-macro relocation (the dominant win).** Soft macros are the bulk of
+  the routing demand and were frozen at `initial.plc` by every prior placer.
+  Relocating the hottest soft clusters into low-congestion space (`score_move_soft`,
+  verified bit-exact; no legality check since softs may overlap), as a **third
+  move type in the interleave loop**, compounds hugely: **`1.4216 → 1.3764`**,
+  all 17 improved (ibm06 −0.102, ibm07 −0.080, ibm03 −0.067). This put v2 **below
+  the leaderboard** and corrects O3 (which only tested *bulk* soft moves).
 
-Both moves are accept-on-true-proxy, so the whole local search is **strictly
+All moves are accept-on-true-proxy, so the whole local search is **strictly
 non-regressing by construction**.
 
 **Leverage** (`test/diagnostic/_reloc_leverage.py`): per-benchmark gain is driven
