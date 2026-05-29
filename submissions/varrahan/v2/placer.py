@@ -609,8 +609,18 @@ def _relocation_moves(
     deadline: "float | None" = None,
     top_hot: int = 24,
     n_targets: int = 12,
+    net_centroid: "np.ndarray | None" = None,
+    wl_blend: float = 0.0,
 ) -> "tuple[np.ndarray, int, float]":
     """Congestion-directed single-macro RELOCATION pass (2026-05-27).
+
+    WL-aware target selection (R4, 2026-05-28): when `net_centroid` ([n,2], a
+    macro's WL anchor) is given with `wl_blend`>0, candidate cold cells are ranked
+    by a blend of distance-to-current and distance-to-WL-anchor:
+      key = (1-wl_blend)·||cell − cur||² + wl_blend·||cell − centroid||²
+    `wl_blend`=0 reproduces the original nearest-to-current behavior exactly.
+    Higher blend prefers cold cells toward the macro's connections, so the cong-
+    relieving move costs less (or saves) wirelength → more moves pass the gate.
 
     The 2-opt search only EXCHANGES two macros' positions — it can never relocate
     a routing-heavy macro into an empty low-congestion gap (a swap would dump some
@@ -674,6 +684,9 @@ def _relocation_moves(
         if cand.size == 0:
             continue
         d2 = (tgt_x[cand] - pos[i, 0]) ** 2 + (tgt_y[cand] - pos[i, 1]) ** 2
+        if wl_blend > 0.0 and net_centroid is not None:
+            d2c = (tgt_x[cand] - net_centroid[i, 0]) ** 2 + (tgt_y[cand] - net_centroid[i, 1]) ** 2
+            d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
         cand = cand[np.argsort(d2)][:n_targets]
 
         mask = all_idx != i
@@ -716,8 +729,16 @@ def _soft_relocation_moves(
     top_hot: int = 48,
     n_targets: int = 16,
     soft_movable: "np.ndarray | None" = None,
+    use_density: bool = False,
 ) -> "tuple[np.ndarray, int, float]":
     """Congestion-directed SOFT-macro relocation (probe of the R1 idea on softs).
+
+    `use_density=True` (R5 probe, 2026-05-28): select hot softs and cold targets
+    by the DENSITY field (occupancy grid) instead of routing congestion. Softs are
+    the bulk of the density term (~30% of proxy) and may overlap, so the cong pass
+    can pile them into low-cong cells without relieving density; a density-targeted
+    pass attacks the top-10% occupancy cells the density cost actually measures.
+    Same accept-on-true-proxy machinery; only the hot/cold field changes.
 
     The leverage analysis showed hard relocation can't help the soft/net-dominated
     benchmarks (ibm17/18). This relocates the hottest SOFT clusters into low-
@@ -731,19 +752,26 @@ def _soft_relocation_moves(
     if num_soft == 0:
         return soft_pos, 0, initial_score
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    try:
-        h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
-        v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
-    except Exception:
-        return soft_pos, 0, initial_score
-    if h_arr.size != nr * nc or v_arr.size != nr * nc:
-        return soft_pos, 0, initial_score
-    cell_cong = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+    if use_density:
+        # Density field = occupancy grid maintained by the scorer (same nr×nc grid).
+        go = getattr(incremental_scorer, "grid_occupied", None)
+        if go is None or go.size != nr * nc:
+            return soft_pos, 0, initial_score
+        cell_field = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
+    else:
+        try:
+            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
+            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
+        except Exception:
+            return soft_pos, 0, initial_score
+        if h_arr.size != nr * nc or v_arr.size != nr * nc:
+            return soft_pos, 0, initial_score
+        cell_field = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
     cell_w, cell_h = cw / nc, ch / nr
 
     ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
-    local_cong = cell_cong[ri, ci]
+    local_cong = cell_field[ri, ci]
     # Only relocate MOVABLE softs — fixed macros must stay put (contract). The
     # IBM benchmarks have 0 fixed softs (no-op here), but NG45/other inputs may.
     order = np.argsort(-local_cong)
@@ -752,7 +780,7 @@ def _soft_relocation_moves(
         order = order[sm[order]]
     hot = order[:top_hot]
 
-    flat = cell_cong.ravel()
+    flat = cell_field.ravel()
     pool = np.argsort(flat)[: max(n_targets * 4, n_targets)]
     tgt_x = ((pool % nc).astype(np.float64) + 0.5) * cell_w
     tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
@@ -2980,6 +3008,42 @@ class IncrementalScorer:
         a = self.macro_to_nets.get(i_module)
         return a if a is not None else np.empty(0, dtype=np.int64)
 
+    def hard_net_centroids(self) -> np.ndarray:
+        """[n_hard, 2] WL-anchor per hard macro = mean over its pins of the
+        centroid of that pin's net (net centroid = mean pin position). This is
+        roughly where the macro wants to sit to minimize its wirelength, used by
+        WL-aware relocation to pick cold cells that don't spike WL. Computed from
+        current committed positions. Macros with no pins get their current pos.
+        """
+        pos = _ensure_pos_cache(self.plc)
+        ref_idx = self.wl_cache["ref_idx"]
+        pin_to_net = self.wl_cache["pin_to_net"]
+        starts = self.net_starts
+        out = np.empty((self.n_hard, 2), dtype=np.float64)
+        for k in range(self.n_hard):
+            out[k, 0] = self.committed_hard_pos[k, 0]
+            out[k, 1] = self.committed_hard_pos[k, 1]
+        if ref_idx.size == 0 or starts.size == 0:
+            return out
+        pin_x = pos[ref_idx, 0] + self.x_off
+        pin_y = pos[ref_idx, 1] + self.y_off
+        counts = (self.net_ends - self.net_starts).astype(np.float64)
+        counts[counts == 0] = 1.0
+        net_cx = np.add.reduceat(pin_x, starts) / counts
+        net_cy = np.add.reduceat(pin_y, starts) / counts
+        n_mod = int(ref_idx.max()) + 1
+        msx = np.zeros(n_mod, dtype=np.float64)
+        msy = np.zeros(n_mod, dtype=np.float64)
+        mc = np.zeros(n_mod, dtype=np.float64)
+        np.add.at(msx, ref_idx, net_cx[pin_to_net])
+        np.add.at(msy, ref_idx, net_cy[pin_to_net])
+        np.add.at(mc, ref_idx, 1.0)
+        for k, m in enumerate(self.hard_indices):
+            if m < n_mod and mc[m] > 0:
+                out[k, 0] = msx[m] / mc[m]
+                out[k, 1] = msy[m] / mc[m]
+        return out
+
     def score_move(self, i_hard: int, new_xy) -> float:
         """Trial: proxy as if hard macro i_hard RELOCATED to new_xy, then revert.
 
@@ -4536,6 +4600,11 @@ class MacroPlacer:
         R2_HOT = 48
         R2_TGT = 16
         R2_2OPT_SLICE = 8.0
+        # R3b (2026-05-28): softs number 900-2000 but only R2_HOT were tried per
+        # round (~16% coverage over 6 rounds on ibm17), so the dominant lever was
+        # under-covered. Wider soft candidate set; budget-gated by the pass deadline.
+        R3_SOFT_HOT = 128
+        R3_SOFT_TGT = 24
         # Soft-macro half-sizes (for the soft relocation pass — R3, 2026-05-28).
         _n_soft = benchmark.num_soft_macros
         _soft_sizes = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
@@ -4576,6 +4645,12 @@ class MacroPlacer:
                 rel_scorer = IncrementalScorer(
                     plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
                 )
+                # R4 (WL-aware hard-relocation targeting) was DISPROVEN 2026-05-29:
+                # biasing targets toward the net centroid steered the interleave to
+                # a slightly WORSE local min (ibm03 +0.0015, ibm07 +0.0025) with no
+                # upside. Reverted to the nearest-to-current sort. The `wl_blend`
+                # option + `hard_net_centroids()` + `WLAWARE_PROBE` are kept as inert
+                # diagnostic scaffolding (see ISSUES.md).
                 rel_pos, rel_acc, _ = _relocation_moves(
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
                     benchmark, rel_scorer, base_rel,
@@ -4598,12 +4673,19 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # --- soft relocation pass (R3, 2026-05-28): hot soft clusters → cold
-            # cells. Softs drive the net congestion that hard relocation can't
-            # touch — SOFT_RELOC_PROBE beat best on all probed benchmarks (ibm17
-            # −0.024, ibm04 −0.020, ibm10 −0.009, ibm18 −0.007), gain in the cong
-            # term, ~1s. Softs may overlap → no legality check. Accept-on-proxy. ---
-            if _n_soft > 0:
+            # --- soft relocation passes: hot soft clusters → cold cells, by the
+            # CONGESTION field (R3, 2026-05-28) then the DENSITY field (R5,
+            # 2026-05-28). Softs are the bulk of BOTH the routing-congestion and
+            # density terms; the cong pass converges then the density pass finds
+            # MORE moves it missed (DENS_SOFT_PROBE on best_pl: cong=0 relocs, but
+            # density 22–68 relocs for −0.011 to −0.020, all in the density term).
+            # Softs may overlap → no legality check. Accept-on-true-proxy. ---
+            for _sfield, _use_d in (("cong", False), ("density", True)):
+                if _n_soft <= 0:
+                    break
+                rem_sr = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+                if rem_sr < 2.0 * t_one_score + 2.0:
+                    break
                 try:
                     t_sr = time.monotonic()
                     base_sr = float(_exact_proxy(best_pl, benchmark, plc))
@@ -4617,8 +4699,9 @@ class MacroPlacer:
                     sr_pos, sr_acc, _ = _soft_relocation_moves(
                         sr_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark,
                         sr_scorer, base_sr,
-                        deadline=t_sr + min(rem_r2 - t_one_score, 15.0),
-                        top_hot=R2_HOT, n_targets=R2_TGT, soft_movable=_soft_movable,
+                        deadline=t_sr + min(rem_sr - t_one_score, 15.0),
+                        top_hot=R3_SOFT_HOT, n_targets=R3_SOFT_TGT,
+                        soft_movable=_soft_movable, use_density=_use_d,
                     )
                     if sr_acc > 0:
                         cand = best_pl.clone()
@@ -4626,11 +4709,11 @@ class MacroPlacer:
                         cand[n:n + _n_soft, 1] = torch.tensor(sr_pos[:, 1], dtype=torch.float32)
                         sr_true = float(_exact_proxy(cand, benchmark, plc))
                         if sr_true < best_score - 1e-6:
-                            _log(f"  R2 round {_r2+1} soft-reloc: {sr_acc} moves, "
-                                 f"{best_score:.4f} → {sr_true:.4f}")
+                            _log(f"  R2 round {_r2+1} soft-reloc[{_sfield}]: {sr_acc} "
+                                 f"moves, {best_score:.4f} → {sr_true:.4f}")
                             best_score, best_pl, round_improved = sr_true, cand, True
                 except Exception as exc:
-                    _log(f"  R2 soft-reloc failed: {type(exc).__name__}: {exc}")
+                    _log(f"  R2 soft-reloc[{_sfield}] failed: {type(exc).__name__}: {exc}")
 
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 2.0 * t_one_score + 2.0:
@@ -4756,6 +4839,75 @@ class MacroPlacer:
             except Exception as exc:
                 import traceback
                 _log(f"  [SOFT_RELOC_PROBE] failed: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
+
+        # WLAWARE_PROBE (2026-05-28): A/B WL-aware HARD relocation target selection
+        # on best_pl. For each wl_blend, run one hard relocation pass from the SAME
+        # best_pl (fresh scorer) and report the resulting true proxy. blend=0 is the
+        # current nearest-to-current sort; >0 biases toward each macro's net
+        # centroid (WL anchor). Isolates the target-selection effect. Diagnostic.
+        if os.environ.get("WLAWARE_PROBE"):
+            try:
+                base = float(_exact_proxy(best_pl, benchmark, plc))
+                _log(f"  [WLAWARE_PROBE] base={base:.4f}")
+                for blend in (0.0, 0.5, 1.0):
+                    t_wp = time.monotonic()
+                    wscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                    cent = wscorer.hard_net_centroids()
+                    wpos = np.stack([best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1).astype(np.float64)
+                    wpos, wacc, _ = _relocation_moves(
+                        wpos, sizes, hw, hh, cw, ch, movable, n, plc, benchmark,
+                        wscorer, base, deadline=t_wp + 20.0, top_hot=48, n_targets=16,
+                        net_centroid=cent, wl_blend=blend,
+                    )
+                    wcand = best_pl.clone()
+                    wcand[:n, 0] = torch.tensor(wpos[:, 0], dtype=torch.float32)
+                    wcand[:n, 1] = torch.tensor(wpos[:, 1], dtype=torch.float32)
+                    wp, ww, wd, wc = _proxy_decomp(wcand, benchmark, plc)
+                    _log(f"  [WLAWARE_PROBE] blend={blend:.1f}: {wacc} relocs -> "
+                         f"proxy={wp:.4f} (wl={ww:.4f} den={wd:.4f} cong={wc:.4f}) "
+                         f"Δ={wp-base:+.4f} in {time.monotonic()-t_wp:.1f}s")
+            except Exception as exc:
+                import traceback
+                _log(f"  [WLAWARE_PROBE] failed: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
+
+        # DENS_SOFT_PROBE (R5, 2026-05-28): is there DENSITY headroom in the softs
+        # that the congestion-targeted soft pass (R3) missed? On best_pl (where the
+        # cong soft pass is already converged), run a DENSITY-targeted soft
+        # relocation (hot = softs in the densest cells, target = low-density cells)
+        # and report the true-proxy delta + decomposition. If it beats 0, a
+        # density-aware soft pass is worth adding to production. Diagnostic only.
+        if os.environ.get("DENS_SOFT_PROBE"):
+            try:
+                _n_soft = benchmark.num_soft_macros
+                if _n_soft > 0:
+                    base = float(_exact_proxy(best_pl, benchmark, plc))
+                    bw = float(plc.get_cost()); bd = 0.5 * float(plc.get_density_cost())
+                    bc = 0.5 * float(plc.get_congestion_cost())
+                    _ssz = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
+                    _smov = benchmark.get_movable_mask().numpy()[n:n + _n_soft]
+                    for tag, use_d in (("cong", False), ("density", True)):
+                        t_dp = time.monotonic()
+                        dscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                        dpos = np.stack([best_pl[n:n + _n_soft, 0].numpy(),
+                                         best_pl[n:n + _n_soft, 1].numpy()], axis=1).astype(np.float64)
+                        dpos, dacc, _ = _soft_relocation_moves(
+                            dpos, _ssz[:, 0] / 2, _ssz[:, 1] / 2, cw, ch, n, plc, benchmark,
+                            dscorer, base, deadline=t_dp + 30.0, top_hot=96, n_targets=24,
+                            soft_movable=_smov, use_density=use_d,
+                        )
+                        dcand = best_pl.clone()
+                        dcand[n:n + _n_soft, 0] = torch.tensor(dpos[:, 0], dtype=torch.float32)
+                        dcand[n:n + _n_soft, 1] = torch.tensor(dpos[:, 1], dtype=torch.float32)
+                        dp, dw, dd, dc = _proxy_decomp(dcand, benchmark, plc)
+                        _log(f"  [DENS_SOFT_PROBE] field={tag:7s}: {dacc} relocs -> "
+                             f"proxy={dp:.4f} (wl={dw:.4f} den={dd:.4f} cong={dc:.4f}) "
+                             f"Δ={dp-base:+.4f} in {time.monotonic()-t_dp:.1f}s")
+                    _log(f"  [DENS_SOFT_PROBE] base={base:.4f} (wl={bw:.4f} den={bd:.4f} cong={bc:.4f})")
+            except Exception as exc:
+                import traceback
+                _log(f"  [DENS_SOFT_PROBE] failed: {type(exc).__name__}: {exc}")
                 traceback.print_exc()
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
