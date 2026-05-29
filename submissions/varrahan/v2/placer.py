@@ -701,6 +701,89 @@ def _relocation_moves(
     return pos, accepts, best_score
 
 
+def _soft_relocation_moves(
+    soft_pos: np.ndarray,
+    soft_hw: np.ndarray,
+    soft_hh: np.ndarray,
+    cw: float,
+    ch: float,
+    n: int,
+    plc,
+    benchmark: "Benchmark",
+    incremental_scorer,
+    initial_score: float,
+    deadline: "float | None" = None,
+    top_hot: int = 48,
+    n_targets: int = 16,
+    soft_movable: "np.ndarray | None" = None,
+) -> "tuple[np.ndarray, int, float]":
+    """Congestion-directed SOFT-macro relocation (probe of the R1 idea on softs).
+
+    The leverage analysis showed hard relocation can't help the soft/net-dominated
+    benchmarks (ibm17/18). This relocates the hottest SOFT clusters into low-
+    congestion cells, accept-on-true-proxy via `score_move_soft`. Softs may
+    overlap, so there's NO legality/conflict check — only a half-size clip to keep
+    them in canvas bounds. Softs contribute to WL + net-routing congestion +
+    density (not macro blockage). `soft_pos` is [num_soft, 2] (canvas coords).
+    Returns (soft_pos, accepts, best_score).
+    """
+    num_soft = incremental_scorer.num_soft
+    if num_soft == 0:
+        return soft_pos, 0, initial_score
+    nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    try:
+        h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
+        v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
+    except Exception:
+        return soft_pos, 0, initial_score
+    if h_arr.size != nr * nc or v_arr.size != nr * nc:
+        return soft_pos, 0, initial_score
+    cell_cong = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+    cell_w, cell_h = cw / nc, ch / nr
+
+    ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
+    ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
+    local_cong = cell_cong[ri, ci]
+    # Only relocate MOVABLE softs — fixed macros must stay put (contract). The
+    # IBM benchmarks have 0 fixed softs (no-op here), but NG45/other inputs may.
+    order = np.argsort(-local_cong)
+    if soft_movable is not None:
+        sm = np.asarray(soft_movable, dtype=bool)
+        order = order[sm[order]]
+    hot = order[:top_hot]
+
+    flat = cell_cong.ravel()
+    pool = np.argsort(flat)[: max(n_targets * 4, n_targets)]
+    tgt_x = ((pool % nc).astype(np.float64) + 0.5) * cell_w
+    tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
+    tgt_cong = flat[pool]
+
+    best_score = initial_score
+    accepts = 0
+    for k in hot:
+        k = int(k)
+        if deadline is not None and time.monotonic() > deadline:
+            break
+        cand = np.where(tgt_cong < local_cong[k] - 1e-9)[0]
+        if cand.size == 0:
+            continue
+        d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
+        cand = cand[np.argsort(d2)][:n_targets]
+        best_k_xy = None
+        for t in cand:
+            nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
+            ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
+            s = incremental_scorer.score_move_soft(k, (nx, ny))
+            if s < best_score - 1e-9:
+                best_score = s
+                best_k_xy = (nx, ny)
+        if best_k_xy is not None:
+            incremental_scorer.commit_move_soft(k, best_k_xy)
+            soft_pos[k, 0], soft_pos[k, 1] = best_k_xy
+            accepts += 1
+    return soft_pos, accepts, best_score
+
+
 # ---------------------------------------------------------------------------
 # Scoring utilities
 # ---------------------------------------------------------------------------
@@ -2455,6 +2538,17 @@ class IncrementalScorer:
         # Committed hard-macro positions (only hard macros can swap).
         self.committed_hard_pos = current_placement_np[:self.n_hard].astype(np.float64).copy()
 
+        # Soft-macro state (for soft relocation). Softs occupy placement rows
+        # n_hard..; they contribute to WL + net-routing congestion + density, but
+        # NOT macro-routing blockage (only hard macros block). They may overlap,
+        # so soft relocation needs no legality check.
+        self.soft_indices = list(benchmark.soft_macro_indices)
+        self.num_soft = len(self.soft_indices)
+        self.committed_soft_pos = (
+            current_placement_np[self.n_hard:self.n_hard + self.num_soft]
+            .astype(np.float64).copy()
+        )
+
         # ---- B3 phase 4 (2026-05-24): congestion incremental state. ----
         cong_cache = plc._cong_cache
         self.grid_col = int(plc.grid_col)
@@ -2989,6 +3083,88 @@ class IncrementalScorer:
 
         self.committed_hard_pos[i_hard, 0] = new_ix
         self.committed_hard_pos[i_hard, 1] = new_iy
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            self.per_net_hpwl[touched] = new_per_net
+            self.total_wl_raw += delta
+
+    def score_move_soft(self, soft_k: int, new_xy) -> float:
+        """Trial: proxy as if SOFT macro `soft_k` (0..num_soft-1) relocated to
+        new_xy, then revert. Softs contribute to WL + net-routing congestion +
+        density, but NOT macro-routing blockage (only hard macros block) — so
+        there is no macro_subset term. No legality constraint (softs may overlap).
+        """
+        s_module = self.soft_indices[soft_k]
+        old_x = float(self.committed_soft_pos[soft_k, 0])
+        old_y = float(self.committed_soft_pos[soft_k, 1])
+        new_x, new_y = float(new_xy[0]), float(new_xy[1])
+
+        H_snap = self.H_flat.copy()
+        V_snap = self.V_flat.copy()
+        touched = self._macro_nets(s_module)
+
+        if len(touched) > 0:
+            _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        self._apply_pos(s_module, new_x, new_y)
+        if len(touched) > 0:
+            _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            new_total_raw = self.total_wl_raw + delta
+        else:
+            new_total_raw = self.total_wl_raw
+        new_wl_normalized = new_total_raw / self.wl_normalizer
+        cong = self._compute_cong_cost()
+
+        o_idx, o_area = self._macro_occ(s_module, old_x, old_y)
+        n_idx, n_area = self._macro_occ(s_module, new_x, new_y)
+        go = self.grid_occupied
+        if o_idx.size:
+            np.subtract.at(go, o_idx, o_area)
+        if n_idx.size:
+            np.add.at(go, n_idx, n_area)
+        dens = self._compute_density_cost()
+
+        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
+
+        # Revert: density cells, position, net-routing flats.
+        if n_idx.size:
+            np.subtract.at(go, n_idx, n_area)
+        if o_idx.size:
+            np.add.at(go, o_idx, o_area)
+        self._apply_pos(s_module, old_x, old_y)
+        self.H_flat[:] = H_snap
+        self.V_flat[:] = V_snap
+        return score
+
+    def commit_move_soft(self, soft_k: int, new_xy) -> None:
+        """Persist a soft relocation (net routing + density + per-net HPWL)."""
+        s_module = self.soft_indices[soft_k]
+        old_x = float(self.committed_soft_pos[soft_k, 0])
+        old_y = float(self.committed_soft_pos[soft_k, 1])
+        new_x, new_y = float(new_xy[0]), float(new_xy[1])
+        touched = self._macro_nets(s_module)
+
+        if len(touched) > 0:
+            _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        self._apply_pos(s_module, new_x, new_y)
+
+        go = self.grid_occupied
+        o_idx, o_area = self._macro_occ(s_module, old_x, old_y)
+        n_idx, n_area = self._macro_occ(s_module, new_x, new_y)
+        if o_idx.size:
+            np.subtract.at(go, o_idx, o_area)
+        if n_idx.size:
+            np.add.at(go, n_idx, n_area)
+
+        if len(touched) > 0:
+            _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+
+        self.committed_soft_pos[soft_k, 0] = new_x
+        self.committed_soft_pos[soft_k, 1] = new_y
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
             delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
@@ -4351,8 +4527,21 @@ class MacroPlacer:
         # converged best_pl, so a fresh 2-opt finds nothing until relocation moves
         # something). Budget-gated; a round needs slack for a relocation (~cheap)
         # + a short 2-opt pass.
-        R2_MAX_ROUNDS = 6  # budget-guarded; converges + breaks on no-improvement
+        R2_MAX_ROUNDS = 6  # budget-guarded; converges + breaks on no-improvement.
+        # (Tested 6→10: rounds 7+ are below the run-to-run noise floor (~-0.001
+        # total) and cost real time on large benchmarks — kept at 6. The binding
+        # limit on large benchmarks is top_hot per round, not round count.)
+        # R2_HOT/R2_TGT widen the relocation candidate set per round so large
+        # benchmarks (ibm10 786 macros) relieve more than ~3% of hot macros/round.
+        R2_HOT = 48
+        R2_TGT = 16
         R2_2OPT_SLICE = 8.0
+        # Soft-macro half-sizes (for the soft relocation pass — R3, 2026-05-28).
+        _n_soft = benchmark.num_soft_macros
+        _soft_sizes = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
+        soft_hw = _soft_sizes[:, 0] / 2
+        soft_hh = _soft_sizes[:, 1] / 2
+        _soft_movable = benchmark.get_movable_mask().numpy()[n:n + _n_soft]
 
         def _hard_xy(_pl):
             return np.stack([_pl[:n, 0].numpy(), _pl[:n, 1].numpy()], axis=1).astype(np.float64)
@@ -4391,6 +4580,7 @@ class MacroPlacer:
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
                     benchmark, rel_scorer, base_rel,
                     deadline=t_rel + min(rem_r2 - t_one_score, 15.0),
+                    top_hot=R2_HOT, n_targets=R2_TGT,
                 )
                 if rel_acc > 0:
                     cand = best_pl.clone()
@@ -4403,6 +4593,44 @@ class MacroPlacer:
                         best_score, best_pl, round_improved = rel_true, cand, True
             except Exception as exc:
                 _log(f"  R2 relocation failed: {type(exc).__name__}: {exc}")
+
+            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+            if rem_r2 < 2.0 * t_one_score + 2.0:
+                break
+
+            # --- soft relocation pass (R3, 2026-05-28): hot soft clusters → cold
+            # cells. Softs drive the net congestion that hard relocation can't
+            # touch — SOFT_RELOC_PROBE beat best on all probed benchmarks (ibm17
+            # −0.024, ibm04 −0.020, ibm10 −0.009, ibm18 −0.007), gain in the cong
+            # term, ~1s. Softs may overlap → no legality check. Accept-on-proxy. ---
+            if _n_soft > 0:
+                try:
+                    t_sr = time.monotonic()
+                    base_sr = float(_exact_proxy(best_pl, benchmark, plc))
+                    sr_scorer = IncrementalScorer(
+                        plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
+                    )
+                    sr_pos = np.stack(
+                        [best_pl[n:n + _n_soft, 0].numpy(),
+                         best_pl[n:n + _n_soft, 1].numpy()], axis=1
+                    ).astype(np.float64)
+                    sr_pos, sr_acc, _ = _soft_relocation_moves(
+                        sr_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark,
+                        sr_scorer, base_sr,
+                        deadline=t_sr + min(rem_r2 - t_one_score, 15.0),
+                        top_hot=R2_HOT, n_targets=R2_TGT, soft_movable=_soft_movable,
+                    )
+                    if sr_acc > 0:
+                        cand = best_pl.clone()
+                        cand[n:n + _n_soft, 0] = torch.tensor(sr_pos[:, 0], dtype=torch.float32)
+                        cand[n:n + _n_soft, 1] = torch.tensor(sr_pos[:, 1], dtype=torch.float32)
+                        sr_true = float(_exact_proxy(cand, benchmark, plc))
+                        if sr_true < best_score - 1e-6:
+                            _log(f"  R2 round {_r2+1} soft-reloc: {sr_acc} moves, "
+                                 f"{best_score:.4f} → {sr_true:.4f}")
+                            best_score, best_pl, round_improved = sr_true, cand, True
+                except Exception as exc:
+                    _log(f"  R2 soft-reloc failed: {type(exc).__name__}: {exc}")
 
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 2.0 * t_one_score + 2.0:
@@ -4497,6 +4725,38 @@ class MacroPlacer:
                      f"in {time.monotonic()-t_rp:.1f}s")
             except Exception as exc:
                 _log(f"  [RELOC_PROBE] failed: {type(exc).__name__}: {exc}")
+
+        # SOFT_RELOC_PROBE (2026-05-28): relocate hot SOFT clusters into low-
+        # congestion cells (R1 idea on softs). Targets the soft/net-dominated
+        # benchmarks (ibm17/18) that hard relocation can't help. Diagnostic only.
+        if os.environ.get("SOFT_RELOC_PROBE"):
+            try:
+                t_sp = time.monotonic()
+                n_soft = benchmark.num_soft_macros
+                base = float(_exact_proxy(best_pl, benchmark, plc))
+                bw = float(plc.get_cost()); bd = 0.5 * float(plc.get_density_cost())
+                bc = 0.5 * float(plc.get_congestion_cost())
+                sscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                spos = np.stack([best_pl[n:n + n_soft, 0].numpy(),
+                                 best_pl[n:n + n_soft, 1].numpy()], axis=1).astype(np.float64)
+                ssz = benchmark.macro_sizes[n:n + n_soft].numpy().astype(np.float64)
+                spos, sacc, _ssc = _soft_relocation_moves(
+                    spos, ssz[:, 0] / 2, ssz[:, 1] / 2, cw, ch, n, plc, benchmark,
+                    sscorer, base, deadline=t_sp + 30.0,
+                )
+                scand = best_pl.clone()
+                scand[n:n + n_soft, 0] = torch.tensor(spos[:, 0], dtype=torch.float32)
+                scand[n:n + n_soft, 1] = torch.tensor(spos[:, 1], dtype=torch.float32)
+                sp, sw, sd, sc = _proxy_decomp(scand, benchmark, plc)
+                verdict = "BEATS best" if sp < base - 1e-4 else "no gain"
+                _log(f"  [SOFT_RELOC_PROBE] base={base:.4f} (wl={bw:.4f} den={bd:.4f} "
+                     f"cong={bc:.4f}) -> {sacc} soft relocs -> proxy={sp:.4f} "
+                     f"(wl={sw:.4f} den={sd:.4f} cong={sc:.4f}) {verdict} "
+                     f"in {time.monotonic()-t_sp:.1f}s")
+            except Exception as exc:
+                import traceback
+                _log(f"  [SOFT_RELOC_PROBE] failed: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
         self._benchmarks_done += 1
