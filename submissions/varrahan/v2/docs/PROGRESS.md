@@ -3,17 +3,23 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-28):** **Avg 1.3764 — beats RePlAce by 0.0814 (−5.6%), and
-> beats the UT Austin DREAMPlace leaderboard (1.4076) by ~0.031.**
-> Latest change: **R3 soft-macro relocation** — relocate the hottest SOFT
-> clusters (the bulk of routing demand, frozen at initial.plc by prior placers)
-> into low-congestion cells, accept-on-true-proxy (`score_move_soft`, verified
-> bit-exact), wired as a third move type in the R2 interleave loop (hard reloc ⇄
-> soft reloc ⇄ 2-opt) so it compounds. --all 1.4216 → **1.3764** (−0.0452, ALL
-> 17 improved: ibm06 −0.102, ibm07 −0.080, ibm03 −0.067), all VALID/0 overlaps,
-> 2350s. The dominant lever of the effort; corrects O3 (which only tested bulk
-> soft moves). Prior: **R2/R2b** interleave + widened candidate set, 1.4326 →
-> 1.4216; **R1** relocation, 1.4422 → 1.4326; **S9/P3** before that.
+> **Status (2026-05-29):** **Avg 1.2799 — beats RePlAce (1.4578) by 0.178
+> (−12.2%), and beats the UT Austin DREAMPlace leaderboard (1.4076) by 0.128
+> (−9.1%).** All 17 VALID / 0 overlaps, Total runtime 2639s (< 3600s cap).
+> Latest changes (stacked): **R3b** widened soft candidate set (top_hot 48→128);
+> **R5 soft DENSITY relocation** — a second soft pass per interleave round that
+> targets the DENSITY field (densest cells) instead of congestion. Softs are the
+> bulk of BOTH terms; the cong soft pass converges, then the density pass finds
+> 22–68 more moves it missed (DENS_SOFT_PROBE confirmed). Interleaved (hard reloc
+> ⇄ soft-cong ⇄ soft-density ⇄ 2-opt) it compounds: --all 1.3764 → **1.2799**
+> (−0.0965, ALL 17 improved: ibm13 −0.122, ibm02 −0.122, ibm08 −0.122, ibm18
+> −0.20). The dominant lever of the whole effort. **Budget note:** fits at 2639s
+> on a clean machine but ibm09 overshot the 200s soft per-bench limit (307s); a
+> speedup pass (incremental congestion cost + shared scorer) is queued for margin
+> against CPU contention in the official eval. **Disproven:** R4 WL-aware hard
+> relocation (net-centroid target bias) — slightly worse, reverted (scaffolding
+> kept). Prior: **R3** soft cong relocation 1.4216→1.3764; **R2/R2b** 1.4326→
+> 1.4216; **R1** 1.4422→1.4326; **S9/P3** before that.
 > Earlier detail — **R1 congestion-directed relocation moves** — a post-2-opt
 > pass that RELOCATES the hottest macros into empty low-congestion legal gaps
 > (a move the swap-only 2-opt can't make). Uses the incremental scorer's new
@@ -48,7 +54,7 @@ Target: beat RePlAce avg of 1.4578.
 | sameer_v1 leg-only | 1.5062 | our legalize-only, confirmed |
 | RePlAce | 1.4578 | Grand Prize target |
 | UT Austin (DREAMPlace) | 1.4076 | leaderboard #1 |
-| **v2 (this submission)** | **1.3764** | **BEATS RePlAce by 0.0814 (−5.6%); below the 1.4076 leaderboard** (R3 soft relocation + R2 + R1 + S9 + P3) |
+| **v2 (this submission)** | **1.2799** | **BEATS RePlAce by 0.178 (−12.2%); below leaderboard 1.4076 by 0.128** (R5 soft density relocation + R3 + R2 + R1 + S9 + P3) |
 
 ---
 
@@ -58,37 +64,37 @@ Target: beat RePlAce avg of 1.4578.
 
 | Metric | Value |
 |---|---|
-| 17 IBM benchmarks avg | **1.3764** |
+| 17 IBM benchmarks avg | **1.2799** |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−5.6% (beat by 0.0814)** |
+| **Gap to RePlAce** | **−12.2% (beat by 0.178)** |
 | v12 starting point | 1.4854 |
 | **Total v2 improvement** | **−0.1090** |
-| DREAMPlace leaderboard | 1.4076 (now BEATS leaderboard by ~0.031) |
-| `--all` wall-clock | ~2350s (under 3600s cap) |
+| DREAMPlace leaderboard | 1.4076 — **v2 BEATS it by 0.128 (−9.1%)** |
+| `--all` wall-clock | 2639s (< 3600s cap) |
 | NG45 avg (Tier 2) | 0.7830 |
 
-### Per-benchmark results (v12 → R3 1.3764)
+### Per-benchmark results (v12 → R5 1.2799)
 
-| Bench | v12 | R3 (1.3764) | Δ vs v12 |
+| Bench | v12 | R5 (1.2799) | Δ vs v12 |
 |---|---|---|---|
-| ibm01 | 1.1860 | 1.0928 | −0.093 |
-| ibm02 | 1.5923 | 1.4523 | −0.140 |
-| ibm03 | 1.3603 | 1.1554 | −0.205 |
-| ibm04 | 1.3316 | 1.1538 | −0.178 |
-| ibm06 | 1.6684 | 1.4303 | −0.238 |
-| ibm07 | 1.4924 | 1.3864 | −0.106 |
-| ibm08 | 1.5251 | 1.4264 | −0.099 |
-| ibm09 | 1.1304 | 1.0886 | −0.042 |
-| ibm10 | 1.4037 | 1.2574 | −0.146 |
-| ibm11 | 1.2354 | 1.1660 | −0.069 |
-| ibm12 | 1.6507 | 1.5504 | −0.100 |
-| ibm13 | 1.4011 | 1.2993 | −0.102 |
-| ibm14 | 1.6033 | 1.5011 | −0.102 |
-| ibm15 | 1.6061 | 1.5298 | −0.076 |
-| ibm16 | 1.5323 | 1.4658 | −0.067 |
-| ibm17 | 1.7437 | 1.6667 | −0.077 |
-| ibm18 | 1.7896 | 1.7760 | −0.014 |
-| **AVG** | **1.4854** | **1.3764** | **−0.109** |
+| ibm01 | 1.1860 | 1.0544 | −0.132 |
+| ibm02 | 1.5923 | 1.3302 | −0.262 |
+| ibm03 | 1.3603 | 1.0787 | −0.282 |
+| ibm04 | 1.3316 | 1.0648 | −0.267 |
+| ibm06 | 1.6684 | 1.3104 | −0.358 |
+| ibm07 | 1.4924 | 1.2955 | −0.197 |
+| ibm08 | 1.5251 | 1.3048 | −0.220 |
+| ibm09 | 1.1304 | 0.9720 | −0.158 |
+| ibm10 | 1.4037 | 1.2071 | −0.197 |
+| ibm11 | 1.2354 | 1.0862 | −0.149 |
+| ibm12 | 1.6507 | 1.5127 | −0.138 |
+| ibm13 | 1.4011 | 1.1769 | −0.224 |
+| ibm14 | 1.6033 | 1.3945 | −0.209 |
+| ibm15 | 1.6061 | 1.4290 | −0.177 |
+| ibm16 | 1.5323 | 1.3494 | −0.183 |
+| ibm17 | 1.7437 | 1.6172 | −0.127 |
+| ibm18 | 1.7896 | 1.5754 | −0.214 |
+| **AVG** | **1.4854** | **1.2800** | **−0.205** |
 
 (R1 column = `--all` 2026-05-27: P3 incremental density + S9 cong-aware 2-opt +
 R1 congestion-directed relocation. ALL 17 improved vs the prior 1.4435; R1's

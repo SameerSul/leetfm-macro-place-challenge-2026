@@ -13,20 +13,29 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.3764** (P3 + S9 + R1 + R2 interleaved relocation⇄2-opt) |
+| Best `--all` avg | **1.2799** (P3 + S9 + R1 + R2/R2b + R3 + R5 relocation family) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−5.6% (beat by 0.0814)** |
+| **Gap to RePlAce** | **−12.2% (beat by 0.178)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−2.2% (BEATS by ~0.031)** |
+| **Gap to leaderboard** | **−9.1% (BEATS by 0.128)** |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | ~2350s (≪3600s cap) |
+| `--all` wall-clock | 2639s (< 3600s cap; see budget note) |
 
-All 17 IBM benchmarks improved vs v12 baseline. The relocation family was the
-biggest lever of the session: R1 −0.0096, R2 interleave −0.0083, R2b (top_hot
-24→48) −0.0027, and **R3 soft-macro relocation −0.0452** — the dominant win, and
-it pushed v2 **below the leaderboard** (1.3764 < 1.4076). The original prediction
-(from `_reloc_leverage.py`: hard relocation can't help the soft/net-dominated
-benchmarks ibm17/18) was the seed for R3 — applying the same move to softs.
+All 17 IBM benchmarks improved vs v12 baseline. The **relocation family** is the
+dominant lever of the effort: R1 −0.0096, R2 −0.0083, R2b −0.0027, R3 (soft cong
+relocation) −0.0452, **R5 (soft density relocation) −0.0965** → 1.2799, well below
+the leaderboard. The throughline: softs are the bulk of BOTH the congestion and
+density terms and were frozen at initial.plc by every prior placer; relocating
+them (cong-targeted then density-targeted, interleaved with hard reloc + 2-opt)
+is where the win lives.
+
+**Open: budget margin.** R5 fits at 2639s on a clean machine, but ibm09 overshot
+the 200s soft per-bench limit (307s); under official-eval CPU contention (3–5×
+scoring slowdown) it could threaten the 3600s hard cap. A speedup pass
+(incremental `_compute_cong_cost` — full re-smooth/partition per trial move is
+the hot path — + a shared scorer across interleave passes, eliminating ~23 full
+re-inits/benchmark) is queued to buy that margin. Budget guard stays as the last
+stand.
 
 ---
 
@@ -56,6 +65,42 @@ measurement.
 proxy-gated move on the placement we already have, rather than trying to fix
 DREAMPlace's congestion-blind global placement (which trades away its wl/den edge,
 DP1) or refine via swaps only (2-opt).
+
+### R5. Soft DENSITY relocation (SHIPPED 2026-05-29 — 1.3764 → 1.2799, the dominant lever)
+
+R3 relocated softs by the **congestion** field. R5 adds a second soft pass per
+interleave round that relocates by the **density** field (softs in the densest
+cells → low-density cells). Softs are the bulk of BOTH terms, and — since softs
+may overlap — the cong pass can pile them into low-cong cells without relieving
+density. `DENS_SOFT_PROBE` proved the headroom: on the (cong-converged) best_pl
+the cong field finds **0** more moves but the density field finds **22–68**, for
+−0.011 to −0.020, all in the density term. Implemented by adding `use_density` to
+`_soft_relocation_moves` (build the hot/cold field from the scorer's occupancy
+grid instead of the routing map) + `score_move_soft` already handles it; the R2
+soft pass became a two-field loop (`cong` then `density`).
+
+**Result:** --all 1.3764 → **1.2799** (−0.0965), ALL 17 improved (ibm13/02/08
+each −0.122, ibm06 −0.120, ibm18 −0.214), all VALID / 0 overlaps, 2639s. The
+interleave compounds it (single density pass −0.011/−0.020 on best_pl → −0.03 in
+the loop → −0.097 across the full pipeline). Also folds in **R3b** (soft top_hot
+48→128). Beats RePlAce by 12.2%, leaderboard by 9.1%.
+
+**Open follow-up — budget margin / speedup** (see headline note): fits at 2639s
+clean but ibm09 = 307s; queued speedup is incremental `_compute_cong_cost` (the
+per-trial-move full re-smooth + top-k partition over all cells is the hot path)
+and a shared scorer across interleave passes.
+
+### R4. WL-aware HARD relocation targeting (DISPROVEN 2026-05-29)
+
+Probe of biasing hard-relocation targets toward each macro's net centroid (`wl_blend`
+of distance-to-current vs distance-to-centroid) so cong relief costs less WL.
+Post-hoc on best_pl was a no-op (hard relocation already converged → 0–2 moves);
+the in-loop production A/B (`WL_AWARE=0.5`) was **slightly worse** (ibm03 +0.0015,
+ibm07 +0.0025) — the centroid bias steers the greedy interleave to a worse local
+min, no upside. Reverted the production gate. Kept inert: `hard_net_centroids()`,
+the `wl_blend` option (default 0), and the `WLAWARE_PROBE` diagnostic. (Consistent
+with O3's finding that the WL-centroid blend on *softs* gave ~0 — things sit near
+their centroids already.)
 
 ### R3. Soft-macro relocation (SHIPPED 2026-05-28 — 1.4216 → 1.3764, BEATS leaderboard)
 
