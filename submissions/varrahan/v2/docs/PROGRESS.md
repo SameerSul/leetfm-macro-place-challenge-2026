@@ -15,8 +15,12 @@ Target: beat RePlAce avg of 1.4578.
 > (−0.0965, ALL 17 improved: ibm13 −0.122, ibm02 −0.122, ibm08 −0.122, ibm18
 > −0.20). The dominant lever of the whole effort. **Budget note:** fits at 2639s
 > on a clean machine but ibm09 overshot the 200s soft per-bench limit (307s); a
-> speedup pass (incremental congestion cost + shared scorer) is queued for margin
-> against CPU contention in the official eval. **Disproven:** R4 WL-aware hard
+> speedup pass is queued for margin against CPU contention in the official eval.
+> A profile (`_profile_move.py`, 2026-05-29) re-pointed it: the per-move
+> congestion cost is only ~20% of a trial (density ~0.7%), so the lever is the
+> **shared scorer** (eliminate ~24 full IncrementalScorer re-inits + per-pass
+> base re-scores/benchmark, ~60–75s each), NOT the originally-planned incremental
+> smoothing. See ISSUES.md P5. **Disproven:** R4 WL-aware hard
 > relocation (net-centroid target bias) — slightly worse, reverted (scaffolding
 > kept). Prior: **R3** soft cong relocation 1.4216→1.3764; **R2/R2b** 1.4326→
 > 1.4216; **R1** 1.4422→1.4326; **S9/P3** before that.
