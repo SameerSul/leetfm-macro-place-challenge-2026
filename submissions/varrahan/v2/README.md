@@ -184,7 +184,8 @@ the same-macro / nearby pattern vs the cache-defeating random-k pattern).
 
 | Path | Purpose |
 |---|---|
-| `placer.py` | **The submission** (~4500 lines). Pipeline above + `IncrementalScorer` + `_two_opt_proxy_swap` + `_relocation_moves`. |
+| `placer.py` | **The submission** (~5000 lines). Pipeline above + `IncrementalScorer` + `_two_opt_proxy_swap` + `_relocation_moves`. |
+| `docs/ARCHITECTURE.md` | **Design overview + pipeline visualization + algorithm explanations** (incl. DREAMPlace integration). Start here for the "how it works" tour. |
 | `docs/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
 | `docs/ISSUES.md` | Open issues + closed dead-ends with evidence (R1/R2/DP1/S1/S9/O3/P3…). |
 | `docs/DREAMPLACE_FIXES.md` | DREAMPlace bridge/source patches (gitignored vendor trees → recorded here for reapply). |
