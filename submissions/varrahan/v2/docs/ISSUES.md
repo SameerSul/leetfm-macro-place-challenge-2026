@@ -13,11 +13,11 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.2433** (R3/R5 single-soft relocation + A1 soft-soft 2-opt + A3 net-centroid ordering + S1/S3 scoring speedups + #1+#2+inc cong + floor-res + A+C round budget) |
+| Best `--all` avg | **1.2195** (R3/R5 single-soft + A1 soft-2opt + A1b cong-field + A1c cold-teleport + A1×2 dual-field + H5 hard-density-reloc + A3 net-centroid ordering + S1/S3 scoring speedups + #1+#2+inc cong + floor-res + A+C round budget + Phase 9 parallel + DP×3 parallel) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−14.7% (beat by 0.215)** |
+| **Gap to RePlAce** | **−16.3% (beat by 0.238 — beats on every benchmark)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−11.7% (BEATS by 0.164)** |
+| **Gap to leaderboard** | **−13.4% (BEATS by 0.188)** |
 | NG45 (Tier 2) avg | 0.7830 |
 | `--all` wall-clock | clean ≤3300s monotonic; WSL run reported 3860s (host-suspend inflation, O4 — placer's monotonic budget held, no benchmark returned baseline) |
 

@@ -5,27 +5,30 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-05-29 — full stack): avg `1.2433`** — beats the
-RePlAce target (`1.4578`) by **14.7%**, all 17 IBM benchmarks VALID / 0
+**Headline (`--all`, 2026-05-30 — full stack): avg `1.2195`** — beats the
+RePlAce target (`1.4578`) by **16.3%**, all 17 IBM benchmarks VALID / 0
 overlaps. **Beats the #1 leaderboard** (UT Austin DREAMPlace, `1.4076`) by
-**0.164 (−11.7%)**. Driven by **two co-dominant algorithmic levers** plus a
-bit-exact scoring infrastructure. The dominant levers: (a) **single-soft
-relocation** (R3 cong-field + R5 density-field passes — 1.4216 → 1.2799 over
-R3 + R5 combined), and (b) **A1 soft-soft 2-opt** (pair-swap two softs'
-positions — the new dominant lever, 1.2737 → 1.2433, ALL 17 benchmarks
-improved). Layered on top: (i) **incremental congestion cost** (cache smoothed
+**0.188 (−13.4%)**. We now **beat RePlAce on every single benchmark** (ibm01
+flipped from +2.6% to −1.0%). Driven by a **family of dual-field soft + hard
+moves** (cong-field + density-field for every move type) plus a bit-exact
+scoring infrastructure and a parallelized pipeline. The dominant levers:
+(a) **single-soft relocation** R3 (cong) + R5 (density) — 1.4216 → 1.2799,
+(b) **A1 soft-soft 2-opt** + A1b cong-field + A1c cold-teleport — 1.2737
+→ 1.2195. Layered on top: (i) **incremental congestion cost** (cache smoothed
 H/V; re-smooth only the touched-net bbox per move), (ii) **#1 subset-cumsum
-strip-batch**, (iii) **#2 topology-struct cache** for the routing apply,
-(iv) a **floor-reservation budget allocator** (every benchmark in `--all` is
-guaranteed ≥110 s — no last-benchmark starvation), (v) a **round-3 cong cap
-+ density `top_hot=192` boost**, (vi) **S1 prep/trial/commit/revert + S3
-bincount strip-batch** (hoist the loop-invariant subtract-old out of the
-candidate inner loop — 25–43% faster per-trial in realistic relocation), and
-(vii) **A3 net-centroid candidate ordering** for soft passes. The entire chain
-is **bit-exact verified** (every new scoring path has its own verifier; Δ ≤
-machine eps).
+strip-batch**, (iii) **#2 topology-struct cache** for the routing apply, (iv)
+a **floor-reservation budget allocator** (every benchmark ≥110 s — no
+last-benchmark starvation), (v) **round-3 cong cap + density `top_hot=192`
+boost**, (vi) **S1 prep/trial/commit/revert + S3 bincount strip-batch** (hoist
+the loop-invariant subtract-old — 25–43% faster per-trial), (vii) **A3
+net-centroid candidate ordering** for soft passes, (viii) **H5 hard density
+relocation** (the R5-for-hards symmetry), and (ix) **Phase 9 + DREAMPlace ×3
+parallelization** plus drafted multi-seed 2-opt subprocess parallelization.
+The entire chain is **bit-exact verified** (every scoring path has its own
+verifier; Δ ≤ machine eps).
 Stacked progression: 1.4854 (v12) → 1.2799 (R5) → 1.2767 (inc cong) → 1.2755
-(+ #1+#2+floor-res+A+C) → 1.2737 (+ S1+S3) → **1.2433** (+ A1+A3, 17/17 wins).
+(+ #1+#2+floor-res+A+C) → 1.2737 (+ S1+S3) → 1.2433 (+ A1+A3) →
+**1.2195** (+ H5+A1b+A1c+A1×2+Phase9-parallel, 17/17 wins).
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
 > open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches
