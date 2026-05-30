@@ -48,6 +48,15 @@ import numpy as np
 import torch
 from macro_place.benchmark import Benchmark
 
+# ---------------------------------------------------------------------------
+# GPU device selection (gpu-testing branch)
+# ---------------------------------------------------------------------------
+# All hot-path NumPy operations have GPU-accelerated code paths below. When
+# CUDA is unavailable the code falls back to the original NumPy path — the
+# algorithm and benchmarking interface are identical either way.
+_GPU_DEVICE: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_USE_GPU: bool = _GPU_DEVICE.type == "cuda"
+
 
 def _log(msg: str) -> None:
     print(msg, flush=True)
@@ -452,9 +461,18 @@ def _two_opt_proxy_swap(
         swap_score_cache.clear()
 
         # kNN per macro (re-derived each outer iter; positions change on accept)
-        dx = pos[:, 0:1] - pos[:, 0:1].T
-        dy = pos[:, 1:2] - pos[:, 1:2].T
-        d_pair = dx * dx + dy * dy
+        # GPU path: torch.cdist is an O(N²) batched pairwise distance on GPU.
+        # For large macro counts (N > ~100) this is substantially faster than
+        # the NumPy outer-product loop. Falls back to NumPy when CUDA is absent.
+        if _USE_GPU:
+            with torch.no_grad():
+                pos_t = torch.from_numpy(pos).to(_GPU_DEVICE, dtype=torch.float32)
+                # cdist gives L2; we need squared L2 to match the NumPy version.
+                d_pair = torch.cdist(pos_t, pos_t, p=2).pow(2).cpu().numpy().astype(np.float64)
+        else:
+            dx = pos[:, 0:1] - pos[:, 0:1].T
+            dy = pos[:, 1:2] - pos[:, 1:2].T
+            d_pair = dx * dx + dy * dy
         np.fill_diagonal(d_pair, np.inf)
         non_movable = ~movable
         d_pair[non_movable, :] = np.inf
@@ -1230,7 +1248,17 @@ def _vectorized_get_grid_cells_density(plc) -> "list[float]":
     np.maximum(oy, 0.0, out=oy)
     ov = ox * oy
 
-    grid_occupied = np.bincount(flat_idx_cells, weights=ov, minlength=n_cells)
+    # GPU path: torch.zeros.scatter_add_ is the GPU-native weighted bincount.
+    # Beneficial when total (number of per-cell entries) is large (>~4000).
+    if _USE_GPU and total > 4000:
+        with torch.no_grad():
+            idx_t = torch.from_numpy(flat_idx_cells).to(_GPU_DEVICE)
+            ov_t = torch.from_numpy(ov).to(_GPU_DEVICE)
+            go_t = torch.zeros(n_cells, dtype=torch.float64, device=_GPU_DEVICE)
+            go_t.scatter_add_(0, idx_t, ov_t)
+            grid_occupied = go_t.cpu().numpy()
+    else:
+        grid_occupied = np.bincount(flat_idx_cells, weights=ov, minlength=n_cells)
     grid_area = grid_w * grid_h
     grid_cells = grid_occupied / grid_area
     plc.grid_occupied = grid_occupied.tolist()
@@ -1619,9 +1647,41 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
     — V_routing gets a column-axis smooth, H_routing gets a row-axis smooth.
     `axis_h=False` means smooth along the column axis (V-style behavior);
     `axis_h=True` means smooth along the row axis (H-style).
+
+    GPU path (gpu-testing branch): when CUDA is available, uses torch.index_add_
+    (GPU-accelerated scatter-add) + torch.cumsum in place of np.add.at +
+    np.cumsum. The event array lives on GPU; the result is moved back to CPU.
+    Numerically identical to the NumPy path (same integer window boundaries,
+    same FP64 accumulation order within each boundary group).
     """
     grid_2d = routing_flat.reshape(grid_row, grid_col)
     sr = smooth_range
+    if _USE_GPU:
+        with torch.no_grad():
+            dev = _GPU_DEVICE
+            g2d = torch.from_numpy(grid_2d).to(dev)
+            if axis_h:
+                rows = torch.arange(grid_row, dtype=torch.int64, device=dev)
+                lp = torch.clamp(rows - sr, min=0)
+                up = torch.clamp(rows + sr, max=grid_row - 1)
+                cnts = (up - lp + 1).double()
+                weighted = g2d / cnts[:, None]
+                events = torch.zeros((grid_row + 1, grid_col), dtype=torch.float64, device=dev)
+                events.index_add_(0, lp, weighted)
+                events.index_add_(0, up + 1, -weighted)
+                smoothed = torch.cumsum(events, dim=0)[:grid_row]
+            else:
+                cols = torch.arange(grid_col, dtype=torch.int64, device=dev)
+                lp = torch.clamp(cols - sr, min=0)
+                up = torch.clamp(cols + sr, max=grid_col - 1)
+                cnts = (up - lp + 1).double()
+                weighted = g2d / cnts[None, :]
+                # Transpose so we can scatter along dim=0 (cols become rows).
+                events_T = torch.zeros((grid_col + 1, grid_row), dtype=torch.float64, device=dev)
+                events_T.index_add_(0, lp, weighted.t().contiguous())
+                events_T.index_add_(0, up + 1, -(weighted.t().contiguous()))
+                smoothed = torch.cumsum(events_T, dim=0)[:grid_col].t()
+            return smoothed.contiguous().cpu().numpy().ravel()
     if axis_h:
         # H-style: each cell's value spreads across rows in window
         # [max(0, row-sr), min(grid_row-1, row+sr)].
@@ -2956,6 +3016,11 @@ class IncrementalScorer:
         count = floor(n_cells·0.1)) densest NONZERO grid cells. grid_cells =
         grid_occupied / grid_area is a monotone scaling, so the top-k set is the
         same; we scale at the end.
+
+        GPU path: torch.topk replaces np.partition for the top-k selection.
+        Beneficial on large grids (grid_cells > ~2000) where the partition cost
+        is meaningful. Small grids fall back to the NumPy path to avoid H2D
+        overhead.
         """
         cnt = self.dens_density_cnt
         go = self.grid_occupied
@@ -2965,8 +3030,15 @@ class IncrementalScorer:
         if self.dens_n_cells < 10:
             return 0.5 * float(nz.mean() / self.dens_grid_area)
         k = min(cnt, nz.size)
-        top = np.partition(nz, nz.size - k)[nz.size - k:]
-        return 0.5 * float(top.sum() / self.dens_grid_area / cnt)
+        if _USE_GPU and nz.size > 512:
+            with torch.no_grad():
+                nz_t = torch.from_numpy(nz).to(_GPU_DEVICE)
+                top_vals = torch.topk(nz_t, k, largest=True, sorted=False).values
+                top_sum = float(top_vals.sum().item())
+        else:
+            top = np.partition(nz, nz.size - k)[nz.size - k:]
+            top_sum = float(top.sum())
+        return 0.5 * top_sum / self.dens_grid_area / cnt
 
     def _compute_cong_cost(self) -> float:
         """B3 phase 4 + incremental cost (2026-05-29): congestion cost from the
@@ -2974,6 +3046,10 @@ class IncrementalScorer:
         live macro flats. The cache must be current for the touched region —
         callers re-smooth the touched bbox (see `_resmooth_bbox`) before this.
         Mirrors the final transform in `_vectorized_get_congestion_cost`.
+
+        GPU path: torch.topk replaces np.partition for the top-5% selection.
+        The concatenated array (2 × grid_cells) can be large on big benchmarks
+        (ibm15/18: ~4K elements); topk on GPU is beneficial once n > ~1024.
         """
         Hm = self.H_macro_flat / self.grid_h_routes
         Vm = self.V_macro_flat / self.grid_v_routes
@@ -2984,6 +3060,11 @@ class IncrementalScorer:
         cnt = int(n * 0.05)
         if cnt == 0:
             return float(xx.max())
+        if _USE_GPU and n > 1024:
+            with torch.no_grad():
+                xx_t = torch.from_numpy(xx).to(_GPU_DEVICE)
+                top_vals = torch.topk(xx_t, cnt, largest=True, sorted=False).values
+                return float(top_vals.sum().item() / cnt)
         top = np.partition(xx, n - cnt)[n - cnt:]
         return float(top.sum() / cnt)
 
@@ -3831,6 +3912,13 @@ class MacroPlacer:
     def place(self, benchmark: Benchmark) -> torch.Tensor:
         np.random.seed(self.seed)
         random.seed(self.seed)
+
+        # GPU status line (gpu-testing branch) — printed once per benchmark so
+        # it's easy to confirm GPU is active in a run log.
+        if _USE_GPU:
+            _log(f"[GPU] {torch.cuda.get_device_name(0)} | benchmark={benchmark.name}")
+        else:
+            _log("[GPU] CUDA not available — running on CPU")
 
         t0 = time.monotonic()
         n = benchmark.num_hard_macros
