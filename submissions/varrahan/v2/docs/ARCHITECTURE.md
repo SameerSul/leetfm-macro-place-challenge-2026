@@ -429,7 +429,9 @@ Cost computation from the maintained H/V flats:
    `mean(top)`.
 
 Steps 3 + 4 cost ~17% of a per-move trial. The smoother is a fixed-kernel
-convolution (`smooth_range=2`), and crucially, it's **separable**:
+convolution (kernel width `2·smooth_range + 1`, with `smooth_range` read from
+`plc.smooth_range` — 2 under the TILOS evaluator), and crucially, it's
+**separable**:
 
 - H is smoothed *along rows-within-a-column* (each column independent).
 - V is smoothed *along cols-within-a-row* (each row independent).
@@ -577,9 +579,9 @@ scorer's correctness. Every move-path is verified bit-exact against
 | `_verify_incremental_scorer.py` | swap | Δ ≤ 4.4e-16 (machine eps) | 0 |
 | `_verify_score_move.py` | hard move | Δ ≤ 1.8e-9 | stable |
 | `_verify_score_move_soft.py` | soft move | Δ ≤ 5e-10 | stable |
-| `_verify_subset_routing.py` | `_apply_net_routing_subset` vs full routing | bit-exact | — |
-| `_verify_congestion.py` | `_compute_cong_cost` vs `plc.get_congestion_cost` | bit-exact | — |
-| `_verify_density.py` | `_compute_density_cost` vs `plc.get_density_cost` | bit-exact | — |
+| `_verify_subset_routing.py` | `_apply_net_routing_subset` / `_apply_macro_routing_subset` vs full routing | bit-exact | — |
+| `_verify_congestion.py` | vectorized `_patch_plc_congestion` vs scalar `plc.get_congestion_cost` | bit-exact | — |
+| `_verify_density.py` | vectorized `_patch_plc_density` vs scalar `plc.get_density_cost` | bit-exact | — |
 | `_stress_verify.py` | Many sequential commits, observe drift | none over 1000s of moves | |
 
 Every speedup added to the scoring path must pass these verifiers before
