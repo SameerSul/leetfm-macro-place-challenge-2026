@@ -38,6 +38,7 @@ Baselines (full --all average over 17 IBM ICCAD04 benchmarks):
   UT Austin DREAMPlace  1.4076   leaderboard #1 (GPU)
 """
 
+import concurrent.futures
 import os
 import random
 import time
@@ -611,8 +612,17 @@ def _relocation_moves(
     n_targets: int = 12,
     net_centroid: "np.ndarray | None" = None,
     wl_blend: float = 0.0,
+    use_density: bool = False,
 ) -> "tuple[np.ndarray, int, float]":
     """Congestion-directed single-macro RELOCATION pass (2026-05-27).
+
+    H5 (2026-05-29): when `use_density=True`, the hot/cold field switches from
+    routing congestion (`max(H,V)`) to grid occupancy
+    (`grid_occupied / dens_grid_area`) — the same dual-field pattern that made
+    R5 the dominant soft lever. Hot hard macros sitting in the densest cells
+    are moved to lowest-density cold cells, accept-on-true-proxy. Same proxy
+    gate, same overlap check vs other hard macros, just a different hot/cold
+    selection field.
 
     WL-aware target selection (R4, 2026-05-28): when `net_centroid` ([n,2], a
     macro's WL anchor) is given with `wl_blend`>0, candidate cold cells are ranked
@@ -635,14 +645,20 @@ def _relocation_moves(
     best_score).
     """
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    try:
-        h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
-        v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
-    except Exception:
-        return pos, 0, initial_score
-    if h_arr.size != nr * nc or v_arr.size != nr * nc:
-        return pos, 0, initial_score
-    cell_cong = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+    if use_density:
+        go = getattr(incremental_scorer, "grid_occupied", None)
+        if go is None or go.size != nr * nc:
+            return pos, 0, initial_score
+        cell_cong = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
+    else:
+        try:
+            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
+            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
+        except Exception:
+            return pos, 0, initial_score
+        if h_arr.size != nr * nc or v_arr.size != nr * nc:
+            return pos, 0, initial_score
+        cell_cong = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
     cell_w, cell_h = cw / nc, ch / nr
 
     # Per-macro local congestion → pick the hottest movable macros to relocate.
@@ -856,6 +872,8 @@ def _two_opt_soft_swap(
     top_hot: int = 64,
     k_neighbors: int = 12,
     soft_movable: "np.ndarray | None" = None,
+    use_density: bool = True,
+    n_cold_teleports: int = 0,
 ) -> "tuple[np.ndarray, int, float]":
     """A1 (2026-05-29): pair-swap two SOFT macros' positions, accept-on-true-
     proxy. The single-soft relocation pass can't find moves where two softs
@@ -863,26 +881,47 @@ def _two_opt_soft_swap(
     there's no legality check on the destinations; the proxy gate handles
     selection.
 
-    Candidate selection: pick the `top_hot` softs sitting in the highest-
-    occupancy cells (density-hot — analog of cong-hot for hards), and for each
-    such k1, try swapping with its `k_neighbors` nearest movable softs.
-    Skip pairs once either macro has been swapped this pass (avoid re-swapping
-    a destination that just won)."""
+    A1b: `use_density` selects the hotness field — True (default) uses grid
+    occupancy (the original A1 lever); False uses `max(H,V)` routing congestion
+    (analog of R3 for soft-2opt). Running BOTH fields per round (A1×2)
+    finds moves the other can't — same dual-field symmetry that gave R3 + R5
+    its compound gain.
+
+    A1c: `n_cold_teleports` appends the N globally-coldest movable softs as
+    extra swap candidates per hot. Spatial kNN alone can never find a long-
+    range exchange between a hot and a far cold soft — analogous to S9's
+    cold-teleport augmentation for hard 2-opt.
+
+    Candidate selection: pick the `top_hot` softs by the chosen field, and for
+    each such k1, try swapping with its `k_neighbors` nearest movable softs
+    plus `n_cold_teleports` globally coldest movable softs. Skip pairs once
+    either macro has been swapped this pass."""
     num_soft = incremental_scorer.num_soft
     if num_soft < 2:
         return soft_pos, 0, initial_score
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    go = incremental_scorer.grid_occupied
-    if go is None or go.size != nr * nc:
-        return soft_pos, 0, initial_score
     cell_w, cell_h = cw / nc, ch / nr
 
-    # Hotness = current cell density (occupancy / cell_area).
-    occ_field = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
+    # Hotness field: density (occupancy) or congestion (plc routing).
+    if use_density:
+        go = incremental_scorer.grid_occupied
+        if go is None or go.size != nr * nc:
+            return soft_pos, 0, initial_score
+        cell_field = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
+    else:
+        try:
+            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
+            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
+        except Exception:
+            return soft_pos, 0, initial_score
+        if h_arr.size != nr * nc or v_arr.size != nr * nc:
+            return soft_pos, 0, initial_score
+        cell_field = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+
     ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
-    local_dens = occ_field[ri, ci]
-    order = np.argsort(-local_dens)
+    local_field = cell_field[ri, ci]
+    order = np.argsort(-local_field)
     if soft_movable is not None:
         sm = np.asarray(soft_movable, dtype=bool)
         order = order[sm[order]]
@@ -892,6 +931,14 @@ def _two_opt_soft_swap(
     else:
         movable_idx = np.arange(num_soft)
     movable_pos = soft_pos[movable_idx]
+
+    # A1c: precompute the n_cold_teleports globally-coldest movable softs once
+    # per pass (cheap — O(num_soft)). Appended to each hot's kNN candidates.
+    cold_tele = None
+    if n_cold_teleports > 0:
+        movable_local_field = local_field[movable_idx]
+        cold_order = np.argsort(movable_local_field)[:n_cold_teleports]
+        cold_tele = movable_idx[cold_order]
 
     best_score = initial_score
     accepts = 0
@@ -908,6 +955,12 @@ def _two_opt_soft_swap(
         sorted_local = np.argsort(d2)
         nbrs = movable_idx[sorted_local]
         nbrs = nbrs[nbrs != k1][:k_neighbors]
+        # A1c: append the cold-teleport candidates (dedup vs nbrs and exclude k1).
+        if cold_tele is not None:
+            extra = cold_tele[cold_tele != k1]
+            extra = extra[~np.isin(extra, nbrs)]
+            if extra.size > 0:
+                nbrs = np.concatenate([nbrs, extra])
 
         best_pair = None  # (k2, xy1, xy2)
         for k2 in nbrs:
@@ -931,6 +984,102 @@ def _two_opt_soft_swap(
             swapped[k2_win] = True
             accepts += 1
     return soft_pos, accepts, best_score
+
+
+def _multiseed_2opt_worker(
+    name: str,
+    iccad_path: str,
+    seed_pl_full_np: np.ndarray,
+    seed_score: float,
+    seed_tag: str,
+    n: int,
+    cw: float,
+    ch: float,
+    sizes_np: np.ndarray,
+    hw_np: np.ndarray,
+    hh_np: np.ndarray,
+    movable_np: np.ndarray,
+    deadline_sec: float = 15.0,
+    k_neighbors: int = 20,
+    max_iters: int = 6,
+) -> dict:
+    """Speedup #3 (2026-05-30): one seed of multi-seed 2-opt in an independent
+    subprocess. Each subprocess loads its own benchmark + plc (the C++ object
+    isn't picklable, so it can't be shared across processes) and runs the
+    full 2-opt path independently. Returns a picklable dict with the result.
+
+    Per-subprocess cost = ~1–3s benchmark/plc load + ~15s 2-opt = ~18s.
+    Running 3 DP seeds in parallel with the main-thread "best" seed gives
+    ~18s vs ~60s sequential → ~42s saved per benchmark (~12 min on `--all`).
+    """
+    # Lazy import inside the worker (avoid top-level circulars on parallel boot).
+    from macro_place.loader import load_benchmark_from_dir
+
+    bm, _ = load_benchmark_from_dir(iccad_path)
+    plc = _load_plc(name, bm)
+
+    # Reconstruct seed placement as a torch tensor matching bm.macro_positions.
+    pl_full = bm.macro_positions.clone()
+    pl_full[:, 0] = torch.tensor(seed_pl_full_np[:, 0], dtype=torch.float32)
+    pl_full[:, 1] = torch.tensor(seed_pl_full_np[:, 1], dtype=torch.float32)
+
+    # Establish plc state at the seed placement (also caches routing map).
+    _ = _exact_proxy(pl_full, bm, plc)
+
+    # Build the incremental scorer from the seed.
+    try:
+        scorer = IncrementalScorer(plc, bm, pl_full.cpu().numpy().astype(np.float64))
+    except Exception:
+        scorer = None
+
+    # S9 per-macro local congestion snapshot (same as the inline main-thread code).
+    macro_cong = None
+    try:
+        nr_g, nc_g = bm.grid_rows, bm.grid_cols
+        h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
+        v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
+        if h_arr.size == nr_g * nc_g and v_arr.size == nr_g * nc_g:
+            cell_cong = np.maximum(h_arr.reshape(nr_g, nc_g), v_arr.reshape(nr_g, nc_g))
+            cwc, chc = cw / nc_g, ch / nr_g
+            hard_xy0 = seed_pl_full_np[:n]
+            ci = np.clip((hard_xy0[:, 0] / cwc).astype(np.int64), 0, nc_g - 1)
+            ri = np.clip((hard_xy0[:, 1] / chc).astype(np.int64), 0, nr_g - 1)
+            macro_cong = cell_cong[ri, ci]
+    except Exception:
+        macro_cong = None
+
+    # _exact_proxy fallback closure for 2-opt (uses this worker's plc).
+    scratch = pl_full.clone()
+
+    def _score_fn(pos_arr, _scr=scratch, _bm=bm, _plc=plc):
+        pos32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
+        _scr[:n, 0] = pos32[:, 0]
+        _scr[:n, 1] = pos32[:, 1]
+        return float(_exact_proxy(_scr, _bm, _plc))
+
+    # Run 2-opt (same parameters as the inline path).
+    pass_deadline = time.monotonic() + deadline_sec
+    work_hard = seed_pl_full_np[:n].copy()
+    opt_pos, ac, fs, sc = _two_opt_proxy_swap(
+        work_hard, sizes_np, hw_np, hh_np, cw, ch, movable_np, n,
+        score_fn=_score_fn, initial_score=seed_score,
+        k_neighbors=k_neighbors, max_iters=max_iters, deadline=pass_deadline,
+        incremental_scorer=scorer, macro_cong=macro_cong,
+    )
+
+    # True final rescore on this worker's plc.
+    cand_pl = pl_full.clone()
+    cand_pl[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
+    cand_pl[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
+    true_final = float(_exact_proxy(cand_pl, bm, plc))
+
+    return {
+        "tag": seed_tag,
+        "true_final": true_final,
+        "opt_pos_full": cand_pl.cpu().numpy(),  # full (num_macros, 2)
+        "accept_count": int(ac),
+        "score_calls": int(sc),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -5305,23 +5454,55 @@ class MacroPlacer:
         # placements. Here the primary key is preserved.
         N_ORDER_TRIALS = 3
         area = sizes[:n, 0] * sizes[:n, 1]
-        for trial in range(N_ORDER_TRIALS):
+        # Phase-9 parallelization (2026-05-29): the N trials are independent
+        # legalize-then-score chains. _will_legalize is pure numpy (releases
+        # the GIL on the heavy work), so we run the legalize calls
+        # concurrently in a thread pool. The score step (_exact_proxy /
+        # _score) mutates the shared plc + pl_scratch state and must stay
+        # sequential. Saves the legalize time (~0.1-0.3s × N) per benchmark.
+        p9_orders: list = []
+        for _ in range(N_ORDER_TRIALS):
+            # np.lexsort: last key is primary. With (random_key, -area) the
+            # primary sort is by -area (largest first), tied entries broken by
+            # the uniform random key — different per trial.
+            random_key = rng_cong.random(n)
+            p9_orders.append(np.lexsort((random_key, -area)).tolist())
+
+        def _p9_legalize(order):
+            return _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n,
+                                  deadline=time.monotonic() + 60.0, order=order)
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=N_ORDER_TRIALS) as _p9_ex:
+                p9_legs = list(_p9_ex.map(_p9_legalize, p9_orders))
+        except Exception as exc:
+            _log(f"  Phase 9 parallel legalize failed ({type(exc).__name__}: {exc}); "
+                 f"falling back to sequential")
+            p9_legs = [_p9_legalize(o) for o in p9_orders]
+
+        for trial, leg in enumerate(p9_legs):
             remaining_p9 = (
                 effective_budget_s + BUDGET_OVERRUN_S
             ) - (time.monotonic() - t0)
             if remaining_p9 < t_one_score * 1.3:
+                _log(f"  Skipping P9 trial {trial}+ "
+                     f"(budget: {remaining_p9:.0f}s left)")
                 break
-            # np.lexsort: last key is primary. With (random_key, -area) the
-            # primary sort is by -area (largest first), tied entries broken
-            # by the uniform random key — different per trial.
-            random_key = rng_cong.random(n)
-            shuffled_order = np.lexsort((random_key, -area)).tolist()
-            if not _try_restart(f"random-order-legalize trial={trial}",
-                                 init_pos, k=1 + directed_ran,
-                                 allow_overrun=True,
-                                 order=shuffled_order):
-                break
+            t_score_start = time.monotonic()
+            score = _score(leg)
+            t_score_observed = time.monotonic() - t_score_start
+            if t_score_observed > t_one_score:
+                t_one_score = t_score_observed
+            _log(f"  Restart {1 + directed_ran} (random-order-legalize "
+                 f"trial={trial}) proxy={score:.4f}")
+            if score < best_score:
+                best_score = score
+                best_pl = pl_scratch.clone()
             directed_ran += 1
+            # Safety: post-score budget guard, same as _try_restart's tail.
+            if time.monotonic() - t0 > (effective_budget_s + BUDGET_OVERRUN_S):
+                _log(f"  Over budget after P9 trial {trial}; stopping")
+                break
 
         # -- 2-opt swap on cong-grad winner (additive, after Phase 7) ---------
         # Proxy-driven (issue #1, 2026-05-23). Previously this used
@@ -5380,7 +5561,54 @@ class MacroPlacer:
             twoopt_best_pl = best_pl
             twoopt_best_score = float(_exact_proxy(best_pl, benchmark, plc))
             _dp_diag_2opt = []  # (seed_tag, true_final, cand) when DP_DIAG set
+
+            # Speedup #3 (2026-05-30): launch non-best DP seeds in subprocesses
+            # BEFORE running the best seed inline, so they run in parallel.
+            # Each worker loads its own benchmark+plc (~1-3s) then does the
+            # full ~15s 2-opt path. Net: best+DP-pool wall-time ≈ max(15, 18)
+            # = ~18s instead of ~60s sequential — ~42s saved per benchmark.
+            _mp_pool = None
+            _mp_futures: list = []
+            try:
+                _iccad_path = (Path("external/MacroPlacement/Testcases/ICCAD04")
+                               / benchmark.name)
+                if _iccad_path.exists():
+                    _eligible_dp = []
+                    for _t, _pl, _sc in twoopt_seeds:
+                        if _t == "best":
+                            continue
+                        if _sc > best_score + DP_SEED_2OPT_WINDOW:
+                            _log(f"  2-opt seed {_t}: pruned "
+                                 f"(raw {_sc:.4f} > best {best_score:.4f} "
+                                 f"+ {DP_SEED_2OPT_WINDOW})")
+                            continue
+                        _eligible_dp.append((_t, _pl, _sc))
+                    if _eligible_dp:
+                        _mp_pool = concurrent.futures.ProcessPoolExecutor(
+                            max_workers=len(_eligible_dp))
+                        for _t, _pl, _sc in _eligible_dp:
+                            _fut = _mp_pool.submit(
+                                _multiseed_2opt_worker,
+                                benchmark.name, str(_iccad_path),
+                                _pl.cpu().numpy().astype(np.float64),
+                                float(_sc), _t,
+                                int(n), float(cw), float(ch),
+                                sizes, hw, hh, movable,
+                                15.0, 20, 6,
+                            )
+                            _mp_futures.append((_t, _fut))
+                        _log(f"  2-opt: launched {len(_mp_futures)} DP seeds "
+                             f"in subprocesses (parallel with best)")
+            except Exception as exc:
+                _log(f"  2-opt subprocess pool launch failed: "
+                     f"{type(exc).__name__}: {exc}")
+                _mp_pool = None
+                _mp_futures = []
+
             for seed_tag, seed_pl, seed_score in twoopt_seeds:
+                # When the subprocess pool handled this DP seed, skip it here.
+                if _mp_pool is not None and seed_tag != "best":
+                    continue
                 rem = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
                 if rem < 2.0 * t_one_score + 15.0:
                     _log(f"  2-opt seed {seed_tag}: skipped (budget {rem:.0f}s)")
@@ -5554,6 +5782,38 @@ class MacroPlacer:
                 if os.environ.get("DP_DIAG"):
                     _dp_diag_2opt.append((seed_tag, true_final, cand.clone()))
 
+            # Speedup #3: collect DP-seed subprocess results (run in parallel
+            # with the inline best-seed 2-opt above). Wait per-future with a
+            # generous timeout (deadline_sec=15 + worker startup overhead).
+            if _mp_pool is not None:
+                for _t, _fut in _mp_futures:
+                    try:
+                        _res = _fut.result(timeout=60.0)
+                        _log(f"  2-opt seed {_t} (proxy/subproc): "
+                             f"{_res['accept_count']} accepts / "
+                             f"{_res['score_calls']} scores, "
+                             f"true={_res['true_final']:.4f}")
+                        if _res["true_final"] < twoopt_best_score:
+                            twoopt_best_score = _res["true_final"]
+                            _opt_full = _res["opt_pos_full"]
+                            _cand = best_pl.clone()
+                            _cand[:, 0] = torch.tensor(_opt_full[:, 0], dtype=torch.float32)
+                            _cand[:, 1] = torch.tensor(_opt_full[:, 1], dtype=torch.float32)
+                            twoopt_best_pl = _cand
+                        if os.environ.get("DP_DIAG"):
+                            _cand_diag = best_pl.clone()
+                            _opt_full = _res["opt_pos_full"]
+                            _cand_diag[:, 0] = torch.tensor(_opt_full[:, 0], dtype=torch.float32)
+                            _cand_diag[:, 1] = torch.tensor(_opt_full[:, 1], dtype=torch.float32)
+                            _dp_diag_2opt.append((_t, _res["true_final"], _cand_diag))
+                    except Exception as exc:
+                        _log(f"  2-opt seed {_t} subprocess failed: "
+                             f"{type(exc).__name__}: {exc}")
+                try:
+                    _mp_pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+
             if twoopt_best_score < best_score:
                 best_score = twoopt_best_score
                 best_pl = twoopt_best_pl
@@ -5627,6 +5887,14 @@ class MacroPlacer:
             except Exception:
                 return None
 
+        # Adaptive skip-if-empty (speedup, 2026-05-30): track zero-accept rounds
+        # for each new pass added in this layer. After SKIP_EMPTY_AFTER
+        # consecutive rounds with no candidate-level accepts, drop the pass
+        # for the remainder of the interleave. Defensive guard: most new passes
+        # find moves every round, so this rarely fires — but it bounds the
+        # worst case (a pass that has converged just sits doing 0-yield work).
+        SKIP_EMPTY_AFTER = 1
+        _empty_streak = {"reloc_density": 0, "soft2opt_cong": 0, "soft2opt_density": 0}
         for _r2 in range(R2_MAX_ROUNDS):
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 3.0 * t_one_score + 3.0:
@@ -5658,11 +5926,53 @@ class MacroPlacer:
                     cand[:n, 1] = torch.tensor(rel_pos[:, 1], dtype=torch.float32)
                     rel_true = float(_exact_proxy(cand, benchmark, plc))
                     if rel_true < best_score - 1e-6:
-                        _log(f"  R2 round {_r2+1} reloc: {rel_acc} moves, "
+                        _log(f"  R2 round {_r2+1} reloc[cong]: {rel_acc} moves, "
                              f"{best_score:.4f} → {rel_true:.4f}")
                         best_score, best_pl, round_improved = rel_true, cand, True
             except Exception as exc:
-                _log(f"  R2 relocation failed: {type(exc).__name__}: {exc}")
+                _log(f"  R2 relocation[cong] failed: {type(exc).__name__}: {exc}")
+
+            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+            if rem_r2 < 2.0 * t_one_score + 2.0:
+                break
+
+            # --- H5 (2026-05-29): hard DENSITY relocation pass (analog of R5
+            # for hards). Hot hard macros in densest cells → lowest-density
+            # cold cells. Same _relocation_moves but with use_density=True,
+            # which switches the hot/cold field to scorer.grid_occupied.
+            # Skip-if-empty (2026-05-30): drop after a zero-accept round —
+            # H5 typically finds 0-3 moves; once it stops finding anything,
+            # the basin's flat for hards on the density field and the ~0.7s
+            # per round is wasted budget.
+            if _empty_streak["reloc_density"] < SKIP_EMPTY_AFTER:
+                try:
+                    t_rel_d = time.monotonic()
+                    base_rel_d = float(_exact_proxy(best_pl, benchmark, plc))
+                    rel_scorer_d = IncrementalScorer(
+                        plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
+                    )
+                    rel_pos_d, rel_acc_d, _ = _relocation_moves(
+                        _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
+                        benchmark, rel_scorer_d, base_rel_d,
+                        deadline=t_rel_d + min(rem_r2 - t_one_score, 15.0),
+                        top_hot=R2_HOT, n_targets=R2_TGT,
+                        use_density=True,
+                    )
+                    if rel_acc_d == 0:
+                        _empty_streak["reloc_density"] += 1
+                    else:
+                        _empty_streak["reloc_density"] = 0
+                    if rel_acc_d > 0:
+                        cand = best_pl.clone()
+                        cand[:n, 0] = torch.tensor(rel_pos_d[:, 0], dtype=torch.float32)
+                        cand[:n, 1] = torch.tensor(rel_pos_d[:, 1], dtype=torch.float32)
+                        rel_true_d = float(_exact_proxy(cand, benchmark, plc))
+                        if rel_true_d < best_score - 1e-6:
+                            _log(f"  R2 round {_r2+1} reloc[density]: {rel_acc_d} moves, "
+                                 f"{best_score:.4f} → {rel_true_d:.4f}")
+                            best_score, best_pl, round_improved = rel_true_d, cand, True
+                except Exception as exc:
+                    _log(f"  R2 relocation[density] failed: {type(exc).__name__}: {exc}")
 
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 2.0 * t_one_score + 2.0:
@@ -5733,41 +6043,63 @@ class MacroPlacer:
                 break
 
             # --- A1 (2026-05-29): soft-soft 2-opt swap. Single soft relocation
-            # can't find moves where two softs need to EXCHANGE places (e.g.,
-            # both at suboptimal cells but the swap improves their net WL
-            # AND the density distribution). This pair-swap pass adds that
-            # move type, restricted to top_hot=64 density-hot softs ×
-            # k_neighbors=12 nearest movable softs. Accept-on-true-proxy.
-            try:
-                if _n_soft >= 2:
+            # can't find moves where two softs need to EXCHANGE places. This
+            # pair-swap pass adds that move type.
+            # A1b + A1×2: run TWICE per round, once with the cong hotness field
+            # and once with density — same dual-field symmetry that gave R3 +
+            # R5 their compound gain (the two fields find different hot softs
+            # and so different beneficial swaps).
+            # A1c: each pass appends n_cold_teleports=4 globally-coldest movable
+            # softs to the kNN candidate set, so the search can find long-range
+            # exchanges (analog of S9 cold-teleport for hard 2-opt).
+            for _ssfield, _ssuse_d in (("cong", False), ("density", True)):
+                if _n_soft < 2:
+                    break
+                # Speedup #1 (2026-05-30): cap cong-field soft-2opt at round 3
+                # (mirror of A for cong soft-relocation — cong saturates fast,
+                # so rounds 4-6 are mostly wasted cycles for the cong-field A1b
+                # while density A1 keeps finding moves through round 6).
+                if _ssfield == "cong" and _r2 >= R3_CONG_MAX_ROUNDS:
+                    continue
+                # Speedup #2: skip a pass after a zero-accept round.
+                _streak_key = "soft2opt_cong" if _ssfield == "cong" else "soft2opt_density"
+                if _empty_streak[_streak_key] >= SKIP_EMPTY_AFTER:
+                    continue
+                try:
                     rem_ss = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                    if rem_ss >= 2.0 * t_one_score + 2.0:
-                        t_ss = time.monotonic()
-                        base_ss = float(_exact_proxy(best_pl, benchmark, plc))
-                        ss_scorer = IncrementalScorer(
-                            plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
-                        )
-                        ss_pos = np.stack(
-                            [best_pl[n:n + _n_soft, 0].numpy(),
-                             best_pl[n:n + _n_soft, 1].numpy()], axis=1
-                        ).astype(np.float64)
-                        ss_pos, ss_acc, _ = _two_opt_soft_swap(
-                            ss_pos, cw, ch, n, plc, benchmark, ss_scorer, base_ss,
-                            deadline=t_ss + min(rem_ss - t_one_score, 6.0),
-                            top_hot=64, k_neighbors=12,
-                            soft_movable=_soft_movable,
-                        )
-                        if ss_acc > 0:
-                            cand = best_pl.clone()
-                            cand[n:n + _n_soft, 0] = torch.tensor(ss_pos[:, 0], dtype=torch.float32)
-                            cand[n:n + _n_soft, 1] = torch.tensor(ss_pos[:, 1], dtype=torch.float32)
-                            ss_true = float(_exact_proxy(cand, benchmark, plc))
-                            if ss_true < best_score - 1e-6:
-                                _log(f"  R2 round {_r2+1} soft-2opt: {ss_acc} swaps, "
-                                     f"{best_score:.4f} → {ss_true:.4f}")
-                                best_score, best_pl, round_improved = ss_true, cand, True
-            except Exception as exc:
-                _log(f"  R2 soft-2opt failed: {type(exc).__name__}: {exc}")
+                    if rem_ss < 2.0 * t_one_score + 2.0:
+                        break
+                    t_ss = time.monotonic()
+                    base_ss = float(_exact_proxy(best_pl, benchmark, plc))
+                    ss_scorer = IncrementalScorer(
+                        plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
+                    )
+                    ss_pos = np.stack(
+                        [best_pl[n:n + _n_soft, 0].numpy(),
+                         best_pl[n:n + _n_soft, 1].numpy()], axis=1
+                    ).astype(np.float64)
+                    ss_pos, ss_acc, _ = _two_opt_soft_swap(
+                        ss_pos, cw, ch, n, plc, benchmark, ss_scorer, base_ss,
+                        deadline=t_ss + min(rem_ss - t_one_score, 6.0),
+                        top_hot=64, k_neighbors=12,
+                        soft_movable=_soft_movable,
+                        use_density=_ssuse_d, n_cold_teleports=4,
+                    )
+                    if ss_acc == 0:
+                        _empty_streak[_streak_key] += 1
+                    else:
+                        _empty_streak[_streak_key] = 0
+                    if ss_acc > 0:
+                        cand = best_pl.clone()
+                        cand[n:n + _n_soft, 0] = torch.tensor(ss_pos[:, 0], dtype=torch.float32)
+                        cand[n:n + _n_soft, 1] = torch.tensor(ss_pos[:, 1], dtype=torch.float32)
+                        ss_true = float(_exact_proxy(cand, benchmark, plc))
+                        if ss_true < best_score - 1e-6:
+                            _log(f"  R2 round {_r2+1} soft-2opt[{_ssfield}]: {ss_acc} "
+                                 f"swaps, {best_score:.4f} → {ss_true:.4f}")
+                            best_score, best_pl, round_improved = ss_true, cand, True
+                except Exception as exc:
+                    _log(f"  R2 soft-2opt[{_ssfield}] failed: {type(exc).__name__}: {exc}")
 
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 2.0 * t_one_score + 2.0:

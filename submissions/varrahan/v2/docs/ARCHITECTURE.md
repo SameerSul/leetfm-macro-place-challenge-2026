@@ -5,9 +5,10 @@ per-benchmark numbers + experiment history, see [`PROGRESS.md`]; for open issues
 and closed dead-ends, see [`ISSUES.md`]; for DREAMPlace bridge / source patches,
 see [`DREAMPLACE_FIXES.md`].
 
-Headline (`--all`, 2026-05-29 — full stack): **avg `1.2433`** — beats
-RePlAce (1.4578) by **14.7%** and the UT Austin DREAMPlace leaderboard (1.4076)
-by **11.7%**. All 17 IBM benchmarks VALID / 0 overlaps, bit-exact verified.
+Headline (`--all`, 2026-05-30 — full stack): **avg `1.2195`** — beats
+RePlAce (1.4578) by **16.3%** and the UT Austin DREAMPlace leaderboard (1.4076)
+by **13.4%**. All 17 IBM benchmarks VALID / 0 overlaps, bit-exact verified.
+We now **beat RePlAce on every benchmark** (ibm01 flipped from +2.6% to −1.0%).
 
 ---
 

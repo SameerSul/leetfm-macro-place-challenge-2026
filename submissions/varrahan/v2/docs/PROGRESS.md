@@ -3,9 +3,31 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-29 — full-stack `--all` incl. A1+A3):** **Avg 1.2433 —
-> beats RePlAce (1.4578) by 0.215 (−14.7%), and beats the UT Austin DREAMPlace
-> leaderboard (1.4076) by 0.164 (−11.7%).** All 17 VALID / 0 overlaps.
+> **Status (2026-05-30 — full-stack `--all` incl. H5+A1b+A1c+A1×2+Phase9-parallel):**
+> **Avg 1.2195 — beats RePlAce (1.4578) by 0.238 (−16.3%), and beats the UT
+> Austin DREAMPlace leaderboard (1.4076) by 0.188 (−13.4%).** All 17 VALID /
+> 0 overlaps. We now **beat RePlAce on every benchmark** (ibm01 was the only
+> loss; now flipped from +2.6% to −1.0%). All 17 benchmarks improved vs the
+> 1.2433 baseline (17/17 wins, cumulative Δ −0.4044, avg −0.024/bench).
+> **H5 (hard density relocation):** new pass — the R5-analog for hard macros.
+> `_relocation_moves` now switches its hot/cold field via `use_density=True`;
+> a new pass in the R2 round runs the hard-density variant after the existing
+> cong-based hard reloc. Modest (1-3 moves/round) but consistent contribution.
+> **A1b (cong-field soft-2opt):** soft-2opt now runs TWICE per round — once
+> on the cong hotness field, once on density — same dual-field symmetry that
+> gave R3 + R5 their compound gain. Finds 7-35 swaps/round on the cong pass.
+> **A1c (cold-teleport):** each A1 pass appends 4 globally-coldest movable
+> softs to the kNN candidate set per hot — analog of S9 cold-teleport for the
+> hard 2-opt.
+> **Phase 9 parallelization:** ThreadPoolExecutor on the 3 random-order
+> legalize trials (numpy releases the GIL on the heavy work). Score step
+> stays sequential (plc state). Saves ~0.3s/bench.
+> **DREAMPlace ×3 already parallel** (confirmed) — 3 async subprocess
+> handles, no change needed.
+> Combined `--all`: 1.2433 → **1.2195** (−0.0238). Biggest movers: ibm12
+> −0.069, ibm11 −0.041, ibm10 −0.029, ibm08 −0.030, ibm15 −0.028, ibm17
+> −0.028. Total runtime 2598s (clean, under cap).
+> Prior milestones (stacked):
 > **A1 + A3 (added 2026-05-29) — the dominant new lever.**
 > **A1 (soft-soft 2-opt):** new pair-swap move type that exchanges two soft
 > macros' positions. Single-soft relocation can't find moves where two softs
