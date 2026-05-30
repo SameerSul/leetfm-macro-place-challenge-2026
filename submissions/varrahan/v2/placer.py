@@ -39,6 +39,7 @@ Baselines (full --all average over 17 IBM ICCAD04 benchmarks):
 """
 
 import concurrent.futures
+import multiprocessing as mp
 import os
 import random
 import time
@@ -1080,6 +1081,21 @@ def _multiseed_2opt_worker(
         "accept_count": int(ac),
         "score_calls": int(sc),
     }
+
+
+# Pickle-identity fix for Speedup #3 (2026-05-30): the evaluator harness loads
+# placer.py via `importlib.util.spec_from_file_location` WITHOUT registering
+# in sys.modules (confirmed: sys.modules[__name__] raises KeyError). pickle
+# resolves a function by `sys.modules[func.__module__].<func.__qualname__>`, so
+# without a stable registered module, the subprocess pool's submit fails with
+# "not the same object". Synthesize a small ModuleType wrapping our globals,
+# register it under a stable name, and patch the worker's __module__ to match.
+import sys as _sys_for_mp  # noqa: E402
+import types as _types_for_mp  # noqa: E402
+_mp_module = _types_for_mp.ModuleType("_v2_placer_mp")
+_mp_module.__dict__.update(globals())
+_sys_for_mp.modules["_v2_placer_mp"] = _mp_module
+_multiseed_2opt_worker.__module__ = "_v2_placer_mp"
 
 
 # ---------------------------------------------------------------------------
@@ -5584,8 +5600,16 @@ class MacroPlacer:
                             continue
                         _eligible_dp.append((_t, _pl, _sc))
                     if _eligible_dp:
+                        # mp_context="fork" is critical: placer.py is loaded
+                        # via importlib by the evaluator's harness, so the
+                        # default "spawn" can't pickle our module-level worker
+                        # function ("not the same object as placer._...").
+                        # Fork inherits the parent's loaded modules + function
+                        # references directly via COW, no pickling needed.
                         _mp_pool = concurrent.futures.ProcessPoolExecutor(
-                            max_workers=len(_eligible_dp))
+                            max_workers=len(_eligible_dp),
+                            mp_context=mp.get_context("fork"),
+                        )
                         for _t, _pl, _sc in _eligible_dp:
                             _fut = _mp_pool.submit(
                                 _multiseed_2opt_worker,
