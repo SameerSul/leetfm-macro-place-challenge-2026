@@ -5,9 +5,9 @@ per-benchmark numbers + experiment history, see [`PROGRESS.md`]; for open issues
 and closed dead-ends, see [`ISSUES.md`]; for DREAMPlace bridge / source patches,
 see [`DREAMPLACE_FIXES.md`].
 
-Headline (`--all`, 2026-05-29 — combined stack): **avg `1.2755`** — beats
-RePlAce (1.4578) by **12.5%** and the UT Austin DREAMPlace leaderboard (1.4076)
-by **9.4%**. All 17 IBM benchmarks VALID / 0 overlaps, bit-exact verified.
+Headline (`--all`, 2026-05-29 — full stack): **avg `1.2737`** — beats
+RePlAce (1.4578) by **12.6%** and the UT Austin DREAMPlace leaderboard (1.4076)
+by **9.5%**. All 17 IBM benchmarks VALID / 0 overlaps, bit-exact verified.
 
 ---
 
@@ -324,6 +324,8 @@ Everything above runs inside a single per-benchmark budget
 | **9 random-order legalize** | N=3 trials with randomized secondary-sort key in `_will_legalize` | Different legalization arrangements from the same starting positions |
 | **Multi-seed 2-opt** | Proxy-driven 2-opt (k=20) from `best_pl` + each DP basin; true-proxy selection | A DP seed's basin can 2-opt to a deeper minimum than `best_pl`'s; pruning at `+0.02` skips unreachable seeds |
 | **R2 interleave (≤6 rounds)** | Hard reloc ⇄ soft-cong reloc ⇄ soft-density reloc ⇄ 2-opt cleanup | The dominant lever — see § 2.3 |
+
+> **Why the numbering skips 4 and 6.** The phase numbers are historical labels, not a contiguous sequence. **Phase 4** (cong-grad from a noise-perturbed / multi-start seed) was tested 2026-05-09 and reverted — strictly worse on every benchmark. **Phase 6** (additive cong-grad from the DP placement) was tested 2026-05-21 and rejected (+0.017 on ibm08 from budget displacement). Both numbers were retired rather than reused. Unrelated: the `B3 phase 4` tags in `placer.py` are a *separate* scheme — the `IncrementalScorer` build stages (B3p2 = incremental WL, B3p4 = incremental routing), not pipeline phases.
 
 ### 4.2 Budget allocation (floor-reservation)
 

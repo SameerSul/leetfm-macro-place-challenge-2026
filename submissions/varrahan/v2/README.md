@@ -5,20 +5,24 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-05-29 — combined stack): avg `1.2755`** — beats the
-RePlAce target (`1.4578`) by **12.5%**, all 17 IBM benchmarks VALID / 0
+**Headline (`--all`, 2026-05-29 — combined stack): avg `1.2737`** — beats the
+RePlAce target (`1.4578`) by **12.6%**, all 17 IBM benchmarks VALID / 0
 overlaps. **Beats the #1 leaderboard** (UT Austin DREAMPlace, `1.4076`) by
-**0.132 (−9.4%)**. Driven by the **relocation family** (R1/R2/R3/R5) plus a
+**0.134 (−9.5%)**. Driven by the **relocation family** (R1/R2/R3/R5) plus a
 **bit-exact scoring-speedup stack**: (i) **incremental congestion cost** (cache
 the smoothed normalized H/V; re-smooth only the touched-net bbox per move,
 bit-identical), (ii) **#1 subset-cumsum strip-batch** (cumsum only the touched
 rows/cols), (iii) **#2 topology-struct cache** for the routing apply (the
 position-independent gather is built once per macro and reused across moves and
 the −1/+1 applies), (iv) a **floor-reservation budget allocator** (every
-benchmark in `--all` is guaranteed ≥110 s — no last-benchmark starvation), and
+benchmark in `--all` is guaranteed ≥110 s — no last-benchmark starvation),
 (v) a **round-3 cong cap + density `top_hot=192` boost** (cong soft-pass
-saturates by round 3 — reclaim those cycles for more density attempts).
-Prior milestone (R5 alone): 1.2799; incremental cong cost alone: 1.2767.
+saturates by round 3 — reclaim those cycles for more density attempts), and
+(vi) **S1 prep/trial/commit/revert + S3 bincount strip-batch** (hoist the
+loop-invariant subtract-old out of the candidate inner loop — 25–43% faster
+per-trial in the realistic relocation pattern; bit-exact verified Δ=0.0e+00).
+Stacked progression: 1.4854 (v12) → 1.2799 (R5) → 1.2767 (inc cong) → 1.2755
+(+ #1+#2+floor-res+A+C) → **1.2737** (+ S1+S3).
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
 > open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches

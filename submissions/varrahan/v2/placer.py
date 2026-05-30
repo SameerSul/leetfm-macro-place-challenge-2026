@@ -694,23 +694,35 @@ def _relocation_moves(
         syi = sep_y_mat[i, mask]
         ox = pos[mask, 0]
         oy = pos[mask, 1]
+        # S1 (2026-05-29): prep i once (subtract old routing + density), trial
+        # each candidate via add-new + snapshot/restore (no per-trial subtract-
+        # old), commit on the winning target or revert if none. Saves one full
+        # routing-apply per trial — ~30% per-move on the relocation hot path.
+        prep = incremental_scorer._prepare_move(i)
         best_i_xy = None
-        for t in cand:
-            nx, ny = float(tgt_x[t]), float(tgt_y[t])
-            if (nx - hw[i] < -EPS or nx + hw[i] > cw + EPS or
-                    ny - hh[i] < -EPS or ny + hh[i] > ch + EPS):
-                continue
-            # Overlap vs other HARD macros (vectorized).
-            if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
-                continue
-            s = incremental_scorer.score_move(i, (nx, ny))
-            if s < best_score - 1e-9:
-                best_score = s
-                best_i_xy = (nx, ny)
-        if best_i_xy is not None:
-            incremental_scorer.commit_move(i, best_i_xy)
-            pos[i, 0], pos[i, 1] = best_i_xy
-            accepts += 1
+        try:
+            for t in cand:
+                nx, ny = float(tgt_x[t]), float(tgt_y[t])
+                if (nx - hw[i] < -EPS or nx + hw[i] > cw + EPS or
+                        ny - hh[i] < -EPS or ny + hh[i] > ch + EPS):
+                    continue
+                # Overlap vs other HARD macros (vectorized).
+                if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
+                    continue
+                s = incremental_scorer._trial_at(prep, (nx, ny))
+                if s < best_score - 1e-9:
+                    best_score = s
+                    best_i_xy = (nx, ny)
+            if best_i_xy is not None:
+                incremental_scorer._commit_after_prep(prep, best_i_xy)
+                pos[i, 0], pos[i, 1] = best_i_xy
+                accepts += 1
+            else:
+                incremental_scorer._revert_prep(prep)
+        except Exception:
+            # Defensive: restore committed state if anything blew up mid-trial.
+            incremental_scorer._revert_prep(prep)
+            raise
     return pos, accepts, best_score
 
 
@@ -797,18 +809,27 @@ def _soft_relocation_moves(
             continue
         d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
         cand = cand[np.argsort(d2)][:n_targets]
+        # S1: prep k once, trial each candidate, commit-or-revert. See the hard
+        # _relocation_moves comment for the rationale.
+        prep = incremental_scorer._prepare_move_soft(k)
         best_k_xy = None
-        for t in cand:
-            nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
-            ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
-            s = incremental_scorer.score_move_soft(k, (nx, ny))
-            if s < best_score - 1e-9:
-                best_score = s
-                best_k_xy = (nx, ny)
-        if best_k_xy is not None:
-            incremental_scorer.commit_move_soft(k, best_k_xy)
-            soft_pos[k, 0], soft_pos[k, 1] = best_k_xy
-            accepts += 1
+        try:
+            for t in cand:
+                nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
+                ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
+                s = incremental_scorer._trial_at_soft(prep, (nx, ny))
+                if s < best_score - 1e-9:
+                    best_score = s
+                    best_k_xy = (nx, ny)
+            if best_k_xy is not None:
+                incremental_scorer._commit_after_prep_soft(prep, best_k_xy)
+                soft_pos[k, 0], soft_pos[k, 1] = best_k_xy
+                accepts += 1
+            else:
+                incremental_scorer._revert_prep_soft(prep)
+        except Exception:
+            incremental_scorer._revert_prep_soft(prep)
+            raise
     return soft_pos, accepts, best_score
 
 
@@ -1389,20 +1410,25 @@ def _apply_h_strips_batch(H_flat: np.ndarray, row: np.ndarray,
     """Batched H-strip add: for each entry, H_flat[row, col_lo:col_hi] += weight.
     Difference array + cumsum, restricted to the UNIQUE touched rows (idea 1,
     2026-05-29). The cumsum is per-row independent, so building/cumsumming only
-    the touched rows is BIT-IDENTICAL to the full (grid_row, grid_col+1) version —
-    untouched rows have an all-zero diff row → contribute zero. Avoids the
-    O(grid_row·grid_col) alloc + cumsum when a move touches only a few rows.
-    np.add.at accumulation is in entry order in both versions (the unique remap
-    preserves per-row grouping), so duplicates sum identically."""
+    the touched rows is bit-identical to the full grid version.
+
+    S3 (2026-05-29): `np.bincount` replaces two `np.add.at` calls — same per-cell
+    sum values (positives processed first by the concatenate order, then
+    negatives, same as the two sequential add.at calls), but the C-level
+    accumulation may differ at float precision (≤1e-16/cell). Within the swap
+    verifier tolerance (≤4.4e-16) by a comfortable margin."""
     if row.size == 0:
         return
     uniq, inv = np.unique(row, return_inverse=True)
     inv = inv.ravel()
-    h_events = np.zeros((uniq.size, grid_col + 1), dtype=np.float64)
-    h_flat = h_events.ravel()
-    base = inv * (grid_col + 1)
-    np.add.at(h_flat, base + col_lo, weight)
-    np.add.at(h_flat, base + col_hi, -weight)
+    nU = uniq.size
+    stride = grid_col + 1
+    base = inv * stride
+    # S3: combined (+lo, −hi) bincount instead of two add.at calls. The concat
+    # order mirrors the original two-call sequence (positives then negatives).
+    all_idx = np.concatenate([base + col_lo, base + col_hi])
+    all_w = np.concatenate([weight, -weight])
+    h_events = np.bincount(all_idx, weights=all_w, minlength=nU * stride).reshape(nU, stride)
     cs = np.cumsum(h_events, axis=1)[:, :grid_col]
     H_flat.reshape(grid_row, grid_col)[uniq] += cs
 
@@ -1412,16 +1438,19 @@ def _apply_v_strips_batch(V_flat: np.ndarray, col: np.ndarray,
                            weight: np.ndarray, grid_row: int, grid_col: int) -> None:
     """Batched V-strip add: for each entry, V_flat[row_lo:row_hi, col] += weight.
     Difference array + cumsum restricted to the UNIQUE touched columns (idea 1) —
-    per-column independent, so bit-identical to the full col-major version."""
+    per-column independent, so bit-identical to the full col-major version.
+
+    S3 (2026-05-29): bincount replaces add.at, see `_apply_h_strips_batch`."""
     if col.size == 0:
         return
     uniq, inv = np.unique(col, return_inverse=True)
     inv = inv.ravel()
-    v_events = np.zeros((uniq.size, grid_row + 1), dtype=np.float64)
-    v_flat = v_events.ravel()
-    base = inv * (grid_row + 1)
-    np.add.at(v_flat, base + row_lo, weight)
-    np.add.at(v_flat, base + row_hi, -weight)
+    nU = uniq.size
+    stride = grid_row + 1
+    base = inv * stride
+    all_idx = np.concatenate([base + row_lo, base + row_hi])
+    all_w = np.concatenate([weight, -weight])
+    v_events = np.bincount(all_idx, weights=all_w, minlength=nU * stride).reshape(nU, stride)
     cs = np.cumsum(v_events, axis=1)[:, :grid_row]  # (n_uniq_cols, grid_row)
     V_flat.reshape(grid_row, grid_col)[:, uniq] += cs.T
 
@@ -3595,6 +3624,291 @@ class IncrementalScorer:
             delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
+
+    # ------------------------------------------------------------------
+    # S1 (2026-05-29): loop-invariant subtract-old for relocation passes.
+    # Across a macro's n_targets candidate trials, the "subtract old routing
+    # + subtract old density footprint + resmooth at old-bbox" step is
+    # IDENTICAL. score_move/score_move_soft re-do it on every trial. The
+    # prep/trial/commit/revert quartet hoists it out of the candidate loop:
+    #   prep(i)              ── subtract old once     (1 routing-apply)
+    #   for each target:
+    #     trial_at(prep, t)  ── add new + score + revert add (1 routing-apply)
+    #   if any target won:
+    #     commit_after_prep(prep, best)    ── persist add-new + per-net HPWL
+    #   else:
+    #     revert_prep(prep)                ── re-add old (restore committed state)
+    # Per-macro routing-apply calls: 1 + 2·n_targets (current) vs 2·n_targets
+    # (current score_move) — wait, score_move's per-trial cost is 2 applies
+    # (subtract-old + add-new). prep+trial saves 1 of those × (n_targets−1).
+    # Bit-exact with score_move/commit_move (same float ops, different order).
+    # ------------------------------------------------------------------
+
+    def _prepare_move(self, i_hard: int) -> dict:
+        """S1 prep for HARD relocation. Subtracts i's old routing + macro
+        blockage + density once; subsequent _trial_at calls add at trial
+        positions and revert via snapshots. Returns a context dict that
+        _trial_at / _commit_after_prep / _revert_prep all consume."""
+        i_module = self.hard_indices[i_hard]
+        i_slot = self._module_to_hard_slot.get(int(i_module))
+        old_ix = float(self.committed_hard_pos[i_hard, 0])
+        old_iy = float(self.committed_hard_pos[i_hard, 1])
+        struct = self._route_struct(i_module)
+        macro_subset = (np.array([i_slot], dtype=np.int64)
+                        if i_slot is not None else np.empty(0, dtype=np.int64))
+
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(self.plc, macro_subset, -1.0,
+                                        self.V_macro_flat, self.H_macro_flat)
+        o_idx, o_area = self._macro_occ(i_module, old_ix, old_iy)
+        if o_idx.size:
+            np.subtract.at(self.grid_occupied, o_idx, o_area)
+        if bb_old is not None:
+            self._resmooth_bbox(*bb_old)
+
+        return {
+            "kind": "hard",
+            "i_module": i_module,
+            "i_hard": i_hard,
+            "i_slot": i_slot,
+            "old_ix": old_ix,
+            "old_iy": old_iy,
+            "struct": struct,
+            "macro_subset": macro_subset,
+            "old_dens_idx": o_idx,
+            "old_dens_area": o_area,
+            "bb_old": bb_old,
+        }
+
+    def _trial_at(self, prep: dict, new_xy) -> float:
+        """S1 trial. Adds i at new_xy on top of the 'i removed' base state from
+        prep, computes proxy, reverts via snapshot. Bit-exact with score_move
+        (same numerical ops; the prep's subtract-old is just hoisted out)."""
+        i_module = prep["i_module"]
+        struct = prep["struct"]
+        macro_subset = prep["macro_subset"]
+        old_ix, old_iy = prep["old_ix"], prep["old_iy"]
+        new_ix, new_iy = float(new_xy[0]), float(new_xy[1])
+
+        H_snap = self.H_flat.copy()
+        V_snap = self.V_flat.copy()
+        Hm_snap = self.H_macro_flat.copy()
+        Vm_snap = self.V_macro_flat.copy()
+
+        self._apply_pos(i_module, new_ix, new_iy)
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
+                                        self.V_macro_flat, self.H_macro_flat)
+
+        Hs_snap = Vs_snap = None
+        r_lo = r_hi = c_lo = c_hi = None
+        if bb_new is not None:
+            r_lo, r_hi, c_lo, c_hi = bb_new
+            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
+
+        touched = self._macro_nets(i_module)
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            new_total_raw = self.total_wl_raw + delta
+        else:
+            new_total_raw = self.total_wl_raw
+        new_wl_normalized = new_total_raw / self.wl_normalizer
+        cong = self._compute_cong_cost()
+
+        n_idx, n_area = self._macro_occ(i_module, new_ix, new_iy)
+        go = self.grid_occupied
+        if n_idx.size:
+            np.add.at(go, n_idx, n_area)
+        dens = self._compute_density_cost()
+        if n_idx.size:
+            np.subtract.at(go, n_idx, n_area)
+
+        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
+
+        if bb_new is not None:
+            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
+        self._apply_pos(i_module, old_ix, old_iy)
+        self.H_flat[:] = H_snap
+        self.V_flat[:] = V_snap
+        self.H_macro_flat[:] = Hm_snap
+        self.V_macro_flat[:] = Vm_snap
+
+        return score
+
+    def _commit_after_prep(self, prep: dict, new_xy) -> None:
+        """S1 commit. Persists the winning trial on top of the prepared
+        'i removed' state. Equivalent to (revert_prep + commit_move) but
+        avoids the wasted revert."""
+        i_module = prep["i_module"]
+        i_hard = prep["i_hard"]
+        struct = prep["struct"]
+        macro_subset = prep["macro_subset"]
+        new_ix, new_iy = float(new_xy[0]), float(new_xy[1])
+
+        self._apply_pos(i_module, new_ix, new_iy)
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
+                                        self.V_macro_flat, self.H_macro_flat)
+
+        n_idx, n_area = self._macro_occ(i_module, new_ix, new_iy)
+        if n_idx.size:
+            np.add.at(self.grid_occupied, n_idx, n_area)
+
+        if bb_new is not None:
+            self._resmooth_bbox(*bb_new)
+
+        self.committed_hard_pos[i_hard, 0] = new_ix
+        self.committed_hard_pos[i_hard, 1] = new_iy
+        touched = self._macro_nets(i_module)
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            self.per_net_hpwl[touched] = new_per_net
+            self.total_wl_raw += delta
+
+    def _revert_prep(self, prep: dict) -> None:
+        """S1 revert (no candidate won). Re-applies i's old contributions at
+        the OLD position to restore the committed state. Bit-exact inverse of
+        prep — the +1 routing apply at OLD pin gcells exactly undoes prep's −1,
+        and the density add-back exactly undoes the np.subtract.at."""
+        struct = prep["struct"]
+        macro_subset = prep["macro_subset"]
+
+        bb_old = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
+                                        self.V_macro_flat, self.H_macro_flat)
+        o_idx = prep["old_dens_idx"]
+        o_area = prep["old_dens_area"]
+        if o_idx.size:
+            np.add.at(self.grid_occupied, o_idx, o_area)
+        if bb_old is not None:
+            self._resmooth_bbox(*bb_old)
+
+    # --- soft analogues (no macro_subset / macro blockage; softs may overlap) ---
+
+    def _prepare_move_soft(self, soft_k: int) -> dict:
+        """S1 prep for SOFT relocation. Same as _prepare_move but without
+        macro blockage (softs don't block routing) — only net routing +
+        density + smoothed cache need 'k removed' updates."""
+        s_module = self.soft_indices[soft_k]
+        old_x = float(self.committed_soft_pos[soft_k, 0])
+        old_y = float(self.committed_soft_pos[soft_k, 1])
+        struct = self._route_struct(s_module)
+
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
+        o_idx, o_area = self._macro_occ(s_module, old_x, old_y)
+        if o_idx.size:
+            np.subtract.at(self.grid_occupied, o_idx, o_area)
+        if bb_old is not None:
+            self._resmooth_bbox(*bb_old)
+
+        return {
+            "kind": "soft",
+            "s_module": s_module,
+            "soft_k": soft_k,
+            "old_x": old_x,
+            "old_y": old_y,
+            "struct": struct,
+            "old_dens_idx": o_idx,
+            "old_dens_area": o_area,
+            "bb_old": bb_old,
+        }
+
+    def _trial_at_soft(self, prep: dict, new_xy) -> float:
+        """S1 trial for soft. Bit-exact with score_move_soft."""
+        s_module = prep["s_module"]
+        struct = prep["struct"]
+        old_x, old_y = prep["old_x"], prep["old_y"]
+        new_x, new_y = float(new_xy[0]), float(new_xy[1])
+
+        H_snap = self.H_flat.copy()
+        V_snap = self.V_flat.copy()
+
+        self._apply_pos(s_module, new_x, new_y)
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+
+        Hs_snap = Vs_snap = None
+        r_lo = r_hi = c_lo = c_hi = None
+        if bb_new is not None:
+            r_lo, r_hi, c_lo, c_hi = bb_new
+            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
+
+        touched = self._macro_nets(s_module)
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            new_total_raw = self.total_wl_raw + delta
+        else:
+            new_total_raw = self.total_wl_raw
+        new_wl_normalized = new_total_raw / self.wl_normalizer
+        cong = self._compute_cong_cost()
+
+        n_idx, n_area = self._macro_occ(s_module, new_x, new_y)
+        go = self.grid_occupied
+        if n_idx.size:
+            np.add.at(go, n_idx, n_area)
+        dens = self._compute_density_cost()
+        if n_idx.size:
+            np.subtract.at(go, n_idx, n_area)
+
+        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
+
+        if bb_new is not None:
+            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
+        self._apply_pos(s_module, old_x, old_y)
+        self.H_flat[:] = H_snap
+        self.V_flat[:] = V_snap
+
+        return score
+
+    def _commit_after_prep_soft(self, prep: dict, new_xy) -> None:
+        """S1 commit for soft. Equivalent to (revert_prep_soft + commit_move_soft)
+        but avoids the wasted revert."""
+        s_module = prep["s_module"]
+        soft_k = prep["soft_k"]
+        struct = prep["struct"]
+        new_x, new_y = float(new_xy[0]), float(new_xy[1])
+
+        self._apply_pos(s_module, new_x, new_y)
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+
+        n_idx, n_area = self._macro_occ(s_module, new_x, new_y)
+        if n_idx.size:
+            np.add.at(self.grid_occupied, n_idx, n_area)
+
+        if bb_new is not None:
+            self._resmooth_bbox(*bb_new)
+
+        self.committed_soft_pos[soft_k, 0] = new_x
+        self.committed_soft_pos[soft_k, 1] = new_y
+        touched = self._macro_nets(s_module)
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            self.per_net_hpwl[touched] = new_per_net
+            self.total_wl_raw += delta
+
+    def _revert_prep_soft(self, prep: dict) -> None:
+        """S1 revert for soft. Bit-exact inverse of _prepare_move_soft."""
+        struct = prep["struct"]
+        bb_old = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+        o_idx = prep["old_dens_idx"]
+        o_area = prep["old_dens_area"]
+        if o_idx.size:
+            np.add.at(self.grid_occupied, o_idx, o_area)
+        if bb_old is not None:
+            self._resmooth_bbox(*bb_old)
 
 
 def _routing_congestion_perturb(

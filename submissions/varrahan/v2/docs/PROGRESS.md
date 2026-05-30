@@ -3,9 +3,21 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-29 — combined-stack `--all`):** **Avg 1.2755 — beats
-> RePlAce (1.4578) by 0.182 (−12.5%), and beats the UT Austin DREAMPlace
-> leaderboard (1.4076) by 0.132 (−9.4%).** All 17 VALID / 0 overlaps.
+> **Status (2026-05-29 — full-stack `--all` incl. S1+S3):** **Avg 1.2737 —
+> beats RePlAce (1.4578) by 0.184 (−12.6%), and beats the UT Austin DREAMPlace
+> leaderboard (1.4076) by 0.134 (−9.5%).** All 17 VALID / 0 overlaps.
+> **S1 + S3 (added 2026-05-29):** S1 hoists the loop-invariant "subtract k's
+> old routing + density" out of the relocation candidate inner loop via a new
+> `_prepare_move(_soft)` / `_trial_at(_soft)` / `_commit_after_prep(_soft)` /
+> `_revert_prep(_soft)` quartet on `IncrementalScorer`. Per-trial cost in the
+> realistic same-macro / nearby-target pattern drops 25–43% (ibm10
+> 1.50→0.90 ms, ibm15 1.50→0.86 ms, ibm17 1.82→1.36 ms). Bit-exact verified
+> (`_verify_prep_trial.py`: Δ=0.00e+00 on every trial vs `score_move(_soft)`).
+> S3 replaces `np.add.at` with `np.bincount` in the strip-batch routing fill —
+> same-order accumulation, swap verifier still passes at Δ≤4.4e-16.
+> Combined `--all`: 1.2755 → **1.2737** (−0.0018; 10/17 wins; ibm18 −0.021
+> and ibm06 −0.019 the biggest movers).
+> Prior milestones (stacked):
 > **Latest changes stacked this session** (each one bit-exact-verified before
 > the next): (1) **Incremental congestion cost** — `IncrementalScorer` caches
 > the smoothed normalized H/V and per move re-smooths only the touched-net
