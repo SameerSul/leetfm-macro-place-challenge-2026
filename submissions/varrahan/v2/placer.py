@@ -697,9 +697,9 @@ def _relocation_moves(
 
     # Candidate target cells = the lowest-congestion cells; their centers are the
     # relocation destinations. Pool a few × n_targets so per-macro legality
-    # filtering still leaves options.
+    # filtering still leaves options. Wider pool = more diverse cold targets.
     flat = cell_cong.ravel()
-    pool = np.argsort(flat)[: max(n_targets * 4, n_targets)]
+    pool = np.argsort(flat)[: max(n_targets * 8, 64)]
     tgt_c = (pool % nc).astype(np.float64)
     tgt_r = (pool // nc).astype(np.float64)
     tgt_x = (tgt_c + 0.5) * cell_w
@@ -822,7 +822,11 @@ def _soft_relocation_moves(
     hot = order[:top_hot]
 
     flat = cell_field.ravel()
-    pool = np.argsort(flat)[: max(n_targets * 4, n_targets)]
+    # Pool: top coldest cells to use as relocation targets. Previously
+    # max(n_targets*4, n_targets) = 96 cells — only 5% of a 41x45 grid.
+    # Wider pool discovers more diverse targets; each hot soft still only
+    # tries n_targets nearest candidates so the per-soft cost is the same.
+    pool = np.argsort(flat)[: max(n_targets * 8, 64)]
     tgt_x = ((pool % nc).astype(np.float64) + 0.5) * cell_w
     tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
     tgt_cong = flat[pool]
@@ -5102,8 +5106,8 @@ class MacroPlacer:
         # R3b (2026-05-28): softs number 900-2000 but only R2_HOT were tried per
         # round (~16% coverage over 6 rounds on ibm17), so the dominant lever was
         # under-covered. Wider soft candidate set; budget-gated by the pass deadline.
-        R3_SOFT_HOT = 128
-        R3_SOFT_TGT = 24
+        R3_SOFT_HOT = 160    # was 128: wider cong-pass coverage
+        R3_SOFT_TGT = 32     # was 24: more target cells tried per hot soft
         # A+C (2026-05-29): the cong soft-reloc pass saturates by round 3
         # (top routing hotspots cleared; ibm09 round 4+ accepts ≤2 moves for
         # ~zero gain) while the density pass keeps finding moves through round
@@ -5112,7 +5116,7 @@ class MacroPlacer:
         # cap so the freed ~4-5s/round is spent on more density attempts
         # instead of ending the round early (C). Preserves the productive
         # rounds 1-3 of cong (~−0.027 cumulative on ibm09: −0.023, −0.004, ≈0).
-        R3_SOFT_HOT_BOOSTED = 192
+        R3_SOFT_HOT_BOOSTED = 256  # was 192: more density-pass coverage in later rounds
         R3_CONG_MAX_ROUNDS = 3
         # Soft-macro half-sizes (for the soft relocation pass — R3, 2026-05-28).
         _n_soft = benchmark.num_soft_macros
