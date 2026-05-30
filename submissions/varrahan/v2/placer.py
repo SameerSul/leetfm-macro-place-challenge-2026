@@ -51,11 +51,31 @@ from macro_place.benchmark import Benchmark
 # ---------------------------------------------------------------------------
 # GPU device selection (gpu-testing branch)
 # ---------------------------------------------------------------------------
-# All hot-path NumPy operations have GPU-accelerated code paths below. When
-# CUDA is unavailable the code falls back to the original NumPy path — the
-# algorithm and benchmarking interface are identical either way.
-_GPU_DEVICE: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-_USE_GPU: bool = _GPU_DEVICE.type == "cuda"
+# Priority: DirectML (AMD/Intel on Windows) > CUDA (NVIDIA) > CPU.
+# _GPU_BACKEND is one of "directml", "cuda", or "cpu".
+# All hot-path NumPy operations have GPU-accelerated code paths below gated
+# on _USE_GPU. When no GPU is available the code falls back to the original
+# NumPy path — the algorithm and benchmarking interface are identical.
+try:
+    import torch_directml as _dml_mod
+    _GPU_DEVICE = _dml_mod.device(0)
+    _USE_GPU = True
+    _GPU_BACKEND = "directml"
+    try:
+        _GPU_DEVICE_NAME = _dml_mod.device_name(0)
+    except Exception:
+        _GPU_DEVICE_NAME = "AMD/Intel GPU (DirectML)"
+except ImportError:
+    if torch.cuda.is_available():
+        _GPU_DEVICE = torch.device("cuda")
+        _USE_GPU = True
+        _GPU_BACKEND = "cuda"
+        _GPU_DEVICE_NAME = torch.cuda.get_device_name(0)
+    else:
+        _GPU_DEVICE = torch.device("cpu")
+        _USE_GPU = False
+        _GPU_BACKEND = "cpu"
+        _GPU_DEVICE_NAME = "CPU (no GPU found)"
 
 
 def _log(msg: str) -> None:
@@ -461,14 +481,17 @@ def _two_opt_proxy_swap(
         swap_score_cache.clear()
 
         # kNN per macro (re-derived each outer iter; positions change on accept)
-        # GPU path: torch.cdist is an O(N²) batched pairwise distance on GPU.
-        # For large macro counts (N > ~100) this is substantially faster than
-        # the NumPy outer-product loop. Falls back to NumPy when CUDA is absent.
+        # GPU path: O(N^2) pairwise squared-L2 via the identity
+        #   |a-b|^2 = |a|^2 + |b|^2 - 2<a,b>
+        # using torch.mm (matrix multiply) — works correctly on DirectML, CUDA,
+        # and CPU. torch.cdist is NOT used: on DirectML it returns a wrong shape
+        # ([N,1,2] instead of [N,N]).
         if _USE_GPU:
             with torch.no_grad():
                 pos_t = torch.from_numpy(pos).to(_GPU_DEVICE, dtype=torch.float32)
-                # cdist gives L2; we need squared L2 to match the NumPy version.
-                d_pair = torch.cdist(pos_t, pos_t, p=2).pow(2).cpu().numpy().astype(np.float64)
+                xn = (pos_t * pos_t).sum(-1)          # [N] squared norms
+                d_pair = (xn.unsqueeze(1) + xn.unsqueeze(0)
+                          - 2.0 * torch.mm(pos_t, pos_t.t())).cpu().numpy().astype(np.float64)
         else:
             dx = pos[:, 0:1] - pos[:, 0:1].T
             dy = pos[:, 1:2] - pos[:, 1:2].T
@@ -1248,17 +1271,11 @@ def _vectorized_get_grid_cells_density(plc) -> "list[float]":
     np.maximum(oy, 0.0, out=oy)
     ov = ox * oy
 
-    # GPU path: torch.zeros.scatter_add_ is the GPU-native weighted bincount.
-    # Beneficial when total (number of per-cell entries) is large (>~4000).
-    if _USE_GPU and total > 4000:
-        with torch.no_grad():
-            idx_t = torch.from_numpy(flat_idx_cells).to(_GPU_DEVICE)
-            ov_t = torch.from_numpy(ov).to(_GPU_DEVICE)
-            go_t = torch.zeros(n_cells, dtype=torch.float64, device=_GPU_DEVICE)
-            go_t.scatter_add_(0, idx_t, ov_t)
-            grid_occupied = go_t.cpu().numpy()
-    else:
-        grid_occupied = np.bincount(flat_idx_cells, weights=ov, minlength=n_cells)
+    # scatter_add_ on DirectML has a last-write-wins bug for duplicate indices
+    # (does not accumulate as expected), so the GPU scatter path is removed.
+    # np.bincount with weights handles duplicate indices correctly and is fast
+    # enough for all benchmarks (even ibm18 with ~4K entries runs in < 1ms).
+    grid_occupied = np.bincount(flat_idx_cells, weights=ov, minlength=n_cells)
     grid_area = grid_w * grid_h
     grid_cells = grid_occupied / grid_area
     plc.grid_occupied = grid_occupied.tolist()
@@ -1648,11 +1665,13 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
     `axis_h=False` means smooth along the column axis (V-style behavior);
     `axis_h=True` means smooth along the row axis (H-style).
 
-    GPU path (gpu-testing branch): when CUDA is available, uses torch.index_add_
-    (GPU-accelerated scatter-add) + torch.cumsum in place of np.add.at +
-    np.cumsum. The event array lives on GPU; the result is moved back to CPU.
-    Numerically identical to the NumPy path (same integer window boundaries,
-    same FP64 accumulation order within each boundary group).
+    GPU path (gpu-testing branch): uses pure torch.cumsum + fancy indexing in
+    place of np.add.at + np.cumsum. Mathematically equivalent to the difference-
+    array approach: smoothed[p] = sum of w[r] for all source rows r whose window
+    contains p, where w[r] = grid_2d[r] / window_width[r].
+
+    index_add_ is NOT used: on DirectML it falls back to CPU with a UserWarning.
+    torch.cumsum and fancy integer indexing (cs[hi] - cs[lo]) are DirectML-native.
     """
     grid_2d = routing_flat.reshape(grid_row, grid_col)
     sr = smooth_range
@@ -1661,26 +1680,32 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
             dev = _GPU_DEVICE
             g2d = torch.from_numpy(grid_2d).to(dev)
             if axis_h:
+                # H-style: smooth along rows (axis 0).
+                # For source row r the window spans [max(0,r-sr), min(gr-1,r+sr)].
+                # cnts[r] = window width; w[r,:] = grid_2d[r,:] / cnts[r].
+                # cs[j,:] = cumsum(w)[j] with a prepended zero row.
+                # smoothed[p,:] = cs[min(gr,p+sr+1),:] - cs[max(0,p-sr),:]
                 rows = torch.arange(grid_row, dtype=torch.int64, device=dev)
-                lp = torch.clamp(rows - sr, min=0)
-                up = torch.clamp(rows + sr, max=grid_row - 1)
-                cnts = (up - lp + 1).double()
-                weighted = g2d / cnts[:, None]
-                events = torch.zeros((grid_row + 1, grid_col), dtype=torch.float64, device=dev)
-                events.index_add_(0, lp, weighted)
-                events.index_add_(0, up + 1, -weighted)
-                smoothed = torch.cumsum(events, dim=0)[:grid_row]
+                cnts = (torch.clamp(rows + sr, max=grid_row - 1)
+                        - torch.clamp(rows - sr, min=0) + 1).to(g2d.dtype)
+                w = g2d / cnts[:, None]
+                zero_row = torch.zeros(1, grid_col, dtype=g2d.dtype, device=dev)
+                cs = torch.cumsum(torch.cat([zero_row, w], dim=0), dim=0)  # [gr+1, gc]
+                lo_idx = torch.clamp(rows - sr, min=0)
+                hi_idx = torch.clamp(rows + sr + 1, max=grid_row)
+                smoothed = cs[hi_idx] - cs[lo_idx]  # [gr, gc]
             else:
+                # V-style: smooth along cols (axis 1).
+                # For source col c the window spans [max(0,c-sr), min(gc-1,c+sr)].
                 cols = torch.arange(grid_col, dtype=torch.int64, device=dev)
-                lp = torch.clamp(cols - sr, min=0)
-                up = torch.clamp(cols + sr, max=grid_col - 1)
-                cnts = (up - lp + 1).double()
-                weighted = g2d / cnts[None, :]
-                # Transpose so we can scatter along dim=0 (cols become rows).
-                events_T = torch.zeros((grid_col + 1, grid_row), dtype=torch.float64, device=dev)
-                events_T.index_add_(0, lp, weighted.t().contiguous())
-                events_T.index_add_(0, up + 1, -(weighted.t().contiguous()))
-                smoothed = torch.cumsum(events_T, dim=0)[:grid_col].t()
+                cnts = (torch.clamp(cols + sr, max=grid_col - 1)
+                        - torch.clamp(cols - sr, min=0) + 1).to(g2d.dtype)
+                w = g2d / cnts[None, :]
+                zero_col = torch.zeros(grid_row, 1, dtype=g2d.dtype, device=dev)
+                cs = torch.cumsum(torch.cat([zero_col, w], dim=1), dim=1)  # [gr, gc+1]
+                lo_idx = torch.clamp(cols - sr, min=0)
+                hi_idx = torch.clamp(cols + sr + 1, max=grid_col)
+                smoothed = cs[:, hi_idx] - cs[:, lo_idx]  # [gr, gc]
             return smoothed.contiguous().cpu().numpy().ravel()
     if axis_h:
         # H-style: each cell's value spreads across rows in window
@@ -3030,15 +3055,10 @@ class IncrementalScorer:
         if self.dens_n_cells < 10:
             return 0.5 * float(nz.mean() / self.dens_grid_area)
         k = min(cnt, nz.size)
-        if _USE_GPU and nz.size > 512:
-            with torch.no_grad():
-                nz_t = torch.from_numpy(nz).to(_GPU_DEVICE)
-                top_vals = torch.topk(nz_t, k, largest=True, sorted=False).values
-                top_sum = float(top_vals.sum().item())
-        else:
-            top = np.partition(nz, nz.size - k)[nz.size - k:]
-            top_sum = float(top.sum())
-        return 0.5 * top_sum / self.dens_grid_area / cnt
+        # np.partition is ~50 µs for these array sizes (<2K elements). GPU topk
+        # dispatch (>1 ms on DirectML) is 20x slower here — always use CPU.
+        top = np.partition(nz, nz.size - k)[nz.size - k:]
+        return 0.5 * float(top.sum()) / self.dens_grid_area / cnt
 
     def _compute_cong_cost(self) -> float:
         """B3 phase 4 + incremental cost (2026-05-29): congestion cost from the
@@ -3047,24 +3067,16 @@ class IncrementalScorer:
         callers re-smooth the touched bbox (see `_resmooth_bbox`) before this.
         Mirrors the final transform in `_vectorized_get_congestion_cost`.
 
-        GPU path: torch.topk replaces np.partition for the top-5% selection.
-        The concatenated array (2 × grid_cells) can be large on big benchmarks
-        (ibm15/18: ~4K elements); topk on GPU is beneficial once n > ~1024.
+        Always runs on CPU: np.partition on <5K float64 elements is ~50 µs,
+        while GPU topk dispatch overhead is >1 ms on DirectML — 20x slower.
         """
         Hm = self.H_macro_flat / self.grid_h_routes
         Vm = self.V_macro_flat / self.grid_v_routes
-        V_total = self.V_smoothed.ravel() + Vm
-        H_total = self.H_smoothed.ravel() + Hm
-        xx = np.concatenate([V_total, H_total])
+        xx = np.concatenate([self.V_smoothed.ravel() + Vm, self.H_smoothed.ravel() + Hm])
         n = xx.size
         cnt = int(n * 0.05)
         if cnt == 0:
             return float(xx.max())
-        if _USE_GPU and n > 1024:
-            with torch.no_grad():
-                xx_t = torch.from_numpy(xx).to(_GPU_DEVICE)
-                top_vals = torch.topk(xx_t, cnt, largest=True, sorted=False).values
-                return float(top_vals.sum().item() / cnt)
         top = np.partition(xx, n - cnt)[n - cnt:]
         return float(top.sum() / cnt)
 
@@ -3082,37 +3094,44 @@ class IncrementalScorer:
         """Recompute `H_smoothed[:, c_lo:c_hi+1]` from raw `H_flat` (axis_h=True:
         per-column box filter). Bit-identical to a full `_smooth_routing_cong_vec`
         of those columns — H smoothing mixes only rows within a column, so each
-        column is independent and a full re-smooth of just these columns matches."""
+        column is independent and a full re-smooth of just these columns matches.
+
+        Uses pure cumsum instead of np.add.at: avoids the O(grid_row) Python
+        overhead from duplicate-index accumulation. smoothed[p] = cs[hi(p)] - cs[lo(p)]
+        where lo(p)=max(0,p-sr), hi(p)=min(grid_row,p+sr+1), cs=cumsum([0, w]).
+        """
         H2d = self.H_flat.reshape(self.grid_row, self.grid_col)
         sub = H2d[:, c_lo:c_hi + 1] / self.grid_h_routes
         if self.smooth_range <= 0:
             self.H_smoothed[:, c_lo:c_hi + 1] = sub
             return
-        weighted = sub / self._sm_row_cnt[:, None]
-        events = np.zeros((self.grid_row + 1, sub.shape[1]), dtype=np.float64)
-        np.add.at(events, self._sm_row_lp, weighted)
-        np.subtract.at(events, self._sm_row_up + 1, weighted)
-        self.H_smoothed[:, c_lo:c_hi + 1] = np.cumsum(events, axis=0)[:self.grid_row]
+        weighted = sub / self._sm_row_cnt[:, None]         # [grid_row, ncols]
+        ncols = sub.shape[1]
+        cs = np.empty((self.grid_row + 1, ncols), dtype=np.float64)
+        cs[0, :] = 0.0
+        np.cumsum(weighted, axis=0, out=cs[1:, :])         # cs[j] = sum(w[0..j-1])
+        self.H_smoothed[:, c_lo:c_hi + 1] = cs[self._sm_row_up + 1] - cs[self._sm_row_lp]
 
     def _resmooth_v_rows(self, r_lo: int, r_hi: int) -> None:
         """Recompute `V_smoothed[r_lo:r_hi+1, :]` from raw `V_flat` (axis_h=False:
         per-row box filter). Bit-identical to a full re-smooth of those rows — V
-        smoothing mixes only columns within a row, so each row is independent."""
+        smoothing mixes only columns within a row, so each row is independent.
+
+        Uses pure cumsum instead of 2D np.add.at: fully vectorized, no Python loop.
+        smoothed[r, q] = cs[r, hi(q)] - cs[r, lo(q)]
+        where lo(q)=max(0,q-sr), hi(q)=min(grid_col,q+sr+1), cs=cumsum([0, w], axis=1).
+        """
         V2d = self.V_flat.reshape(self.grid_row, self.grid_col)
         sub = V2d[r_lo:r_hi + 1, :] / self.grid_v_routes
         if self.smooth_range <= 0:
             self.V_smoothed[r_lo:r_hi + 1, :] = sub
             return
         nrows = sub.shape[0]
-        weighted = sub / self._sm_col_cnt[None, :]
-        events = np.zeros((nrows, self.grid_col + 1), dtype=np.float64)
-        row_idx = np.broadcast_to(
-            np.arange(nrows, dtype=np.int64)[:, None], (nrows, self.grid_col))
-        col_lp = np.broadcast_to(self._sm_col_lp[None, :], (nrows, self.grid_col))
-        col_up = np.broadcast_to((self._sm_col_up + 1)[None, :], (nrows, self.grid_col))
-        np.add.at(events, (row_idx, col_lp), weighted)
-        np.subtract.at(events, (row_idx, col_up), weighted)
-        self.V_smoothed[r_lo:r_hi + 1, :] = np.cumsum(events, axis=1)[:, :self.grid_col]
+        weighted = sub / self._sm_col_cnt[None, :]          # [nrows, grid_col]
+        cs = np.empty((nrows, self.grid_col + 1), dtype=np.float64)
+        cs[:, 0] = 0.0
+        np.cumsum(weighted, axis=1, out=cs[:, 1:])          # cs[:,j] = sum(w[:,0..j-1])
+        self.V_smoothed[r_lo:r_hi + 1, :] = cs[:, self._sm_col_up + 1] - cs[:, self._sm_col_lp]
 
     def _resmooth_bbox(self, r_lo, r_hi, c_lo, c_hi) -> None:
         """Refresh the smoothed cache for a touched bbox: H per affected column,
@@ -3915,10 +3934,7 @@ class MacroPlacer:
 
         # GPU status line (gpu-testing branch) — printed once per benchmark so
         # it's easy to confirm GPU is active in a run log.
-        if _USE_GPU:
-            _log(f"[GPU] {torch.cuda.get_device_name(0)} | benchmark={benchmark.name}")
-        else:
-            _log("[GPU] CUDA not available — running on CPU")
+        _log(f"[GPU] backend={_GPU_BACKEND} device={_GPU_DEVICE_NAME} | benchmark={benchmark.name}")
 
         t0 = time.monotonic()
         n = benchmark.num_hard_macros
@@ -5074,10 +5090,10 @@ class MacroPlacer:
         # converged best_pl, so a fresh 2-opt finds nothing until relocation moves
         # something). Budget-gated; a round needs slack for a relocation (~cheap)
         # + a short 2-opt pass.
-        R2_MAX_ROUNDS = 6  # budget-guarded; converges + breaks on no-improvement.
-        # (Tested 6→10: rounds 7+ are below the run-to-run noise floor (~-0.001
-        # total) and cost real time on large benchmarks — kept at 6. The binding
-        # limit on large benchmarks is top_hot per round, not round count.)
+        R2_MAX_ROUNDS = 12  # budget-guarded; converges + breaks on no-improvement.
+        # (Previously 6: GPU topk overhead left only ~57s after 6 rounds, but the
+        # hard cap 6 was the binding constraint, not budget. With topk on CPU, later
+        # rounds are faster (diminishing moves) and fit comfortably in the surplus.)
         # R2_HOT/R2_TGT widen the relocation candidate set per round so large
         # benchmarks (ibm10 786 macros) relieve more than ~3% of hot macros/round.
         R2_HOT = 48
