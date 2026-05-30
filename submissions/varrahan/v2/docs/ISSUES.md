@@ -13,11 +13,11 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.2755** (R5 + incremental cong cost + #1 subset-cumsum + #2 routing-struct cache + floor-reservation + A cong cap + C density boost) |
+| Best `--all` avg | **1.2737** (R5 + incremental cong cost + #1 subset-cumsum + #2 routing-struct cache + floor-reservation + A cong cap + C density boost + S1 prep/trial + S3 bincount) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−12.5% (beat by 0.182)** |
+| **Gap to RePlAce** | **−12.6% (beat by 0.184)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−9.4% (BEATS by 0.132)** |
+| **Gap to leaderboard** | **−9.5% (BEATS by 0.134)** |
 | NG45 (Tier 2) avg | 0.7830 |
 | `--all` wall-clock | clean ≤3300s monotonic; WSL run reported 3860s (host-suspend inflation, O4 — placer's monotonic budget held, no benchmark returned baseline) |
 
