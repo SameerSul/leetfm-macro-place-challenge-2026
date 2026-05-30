@@ -3,9 +3,34 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-29 — full-stack `--all` incl. S1+S3):** **Avg 1.2737 —
-> beats RePlAce (1.4578) by 0.184 (−12.6%), and beats the UT Austin DREAMPlace
-> leaderboard (1.4076) by 0.134 (−9.5%).** All 17 VALID / 0 overlaps.
+> **Status (2026-05-29 — full-stack `--all` incl. A1+A3):** **Avg 1.2433 —
+> beats RePlAce (1.4578) by 0.215 (−14.7%), and beats the UT Austin DREAMPlace
+> leaderboard (1.4076) by 0.164 (−11.7%).** All 17 VALID / 0 overlaps.
+> **A1 + A3 (added 2026-05-29) — the dominant new lever.**
+> **A1 (soft-soft 2-opt):** new pair-swap move type that exchanges two soft
+> macros' positions. Single-soft relocation can't find moves where two softs
+> need to swap places (e.g., both at suboptimal cells where their connections
+> would be happier in each other's slot). New `score_swap_soft` /
+> `commit_swap_soft` on `IncrementalScorer` (analog of `score_swap` minus
+> macro_subset since softs don't block routing), new `_two_opt_soft_swap`
+> pass in the R2 interleave round (between soft-density and the hard 2-opt
+> cleanup): top_hot=64 density-hot softs × k_neighbors=12 nearest movable
+> softs, accept-on-true-proxy, ~6s budget slice. Bit-exact verified
+> (`_verify_score_swap_soft.py`: Δ ≤ 2.2e-16 machine eps across trials and
+> sequential commits). **A3 (smart soft candidate ordering):** new
+> `soft_net_centroids()` method (analog of `hard_net_centroids`);
+> `_soft_relocation_moves` now blends Euclidean distance with distance-to-
+> net-centroid via `wl_blend=0.3` so candidates aligned with the soft's
+> WL anchor are tried first. Pure ordering change — strictly non-regressing.
+> Combined `--all`: 1.2737 → **1.2433** (−0.0304, **ALL 17 wins**, biggest
+> movers ibm17 −0.059, ibm07 −0.050, ibm13 −0.043, ibm16/15 −0.039,
+> ibm14 −0.035, ibm18 −0.032). Per-round soft-2opt accepted 9–41 swaps
+> consistently across all 6 rounds, confirming A1 finds many real moves the
+> single-soft passes couldn't reach. Total runtime 2291s (clean, no WSL
+> inflation this run). **A1 is the largest single algorithmic improvement
+> since R5** — they're now co-dominant levers, both around −0.03 to −0.1
+> magnitude.
+> Prior milestones (stacked):
 > **S1 + S3 (added 2026-05-29):** S1 hoists the loop-invariant "subtract k's
 > old routing + density" out of the relocation candidate inner loop via a new
 > `_prepare_move(_soft)` / `_trial_at(_soft)` / `_commit_after_prep(_soft)` /
