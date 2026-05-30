@@ -296,3 +296,45 @@ ineffective** — routopt cannot move the TILOS proxy congestion (no-op or worse
 across a 64× capacity sweep + grid-matched bins). See ISSUES.md DP1. The patch is
 retained only so future routopt experiments don't re-hit the crash; the bridge
 `routability_opt` knob defaults OFF, so the production pipeline is unaffected.
+
+---
+
+## Patch (build-time): NumPy 2.0 `np.string_` → `np.bytes_` in PlaceDB.py
+
+**Required for DREAMPlace to import/run under NumPy ≥ 2.0** (`np.string_` was
+removed in NumPy 2.0). `PlaceDB.py` builds string arrays with `dtype=np.string_`
+at 6 sites (`node_names`, `node_orient` ×2, `pin_direct`, `pin_names`,
+`net_names`); replace all with `np.bytes_`:
+
+```bash
+sed -i 's/np\.string_/np.bytes_/g' \
+  submissions/varrahan/dreamplace_build/install/dreamplace/PlaceDB.py
+```
+
+**Discrepancy to know:** this fix is applied to the **built/install tree only**
+(`dreamplace_build/install/...`, which is what `DREAMPLACE_INSTALL` runs) — the
+**`dreamplace_src` copy is unpatched (still `np.string_`)**. A clean rebuild from
+`src` therefore reintroduces the crash; after rebuilding, re-run the sed above on
+the fresh install, AND re-apply the NCTUgr-map guard (above) to the fresh
+`install/dreamplace/PlaceObj.py`.
+
+---
+
+## Inventory — all current DREAMPlace tree modifications (2026-05-28)
+
+Both trees are gitignored (~814 MB src, ~523 MB build), so these source edits are
+**not version-controlled** — this table is their canonical record. Re-apply after
+any rebuild.
+
+| File | Edit | src | install (runs) | Why |
+|---|---|---|---|---|
+| `PlaceObj.py` | gate NCTUgr-map build on `adjust_nctugr_area_flag` | ✅ | ✅ | routopt crash on Bookshelf inputs (DP1) |
+| `PlaceDB.py` | `np.string_` → `np.bytes_` (×6) | ❌ (still `np.string_`) | ✅ | NumPy 2.0 compat |
+
+Build config (not source edits, for completeness): `cmake -DCMAKE_CXX_ABI=1
+-DPython_EXECUTABLE=$(which python)`, `make -j2 install` (NOT `-j$(nproc)` — OOM).
+
+**Convention going forward:** any edit to `dreamplace_src/**` or
+`dreamplace_build/**` gets an entry here (file, exact change, which tree, why) at
+the time it's made — since git can't track these trees, this doc is the only
+record that survives a rebuild.

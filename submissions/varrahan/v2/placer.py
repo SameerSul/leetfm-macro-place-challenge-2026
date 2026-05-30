@@ -609,8 +609,18 @@ def _relocation_moves(
     deadline: "float | None" = None,
     top_hot: int = 24,
     n_targets: int = 12,
+    net_centroid: "np.ndarray | None" = None,
+    wl_blend: float = 0.0,
 ) -> "tuple[np.ndarray, int, float]":
     """Congestion-directed single-macro RELOCATION pass (2026-05-27).
+
+    WL-aware target selection (R4, 2026-05-28): when `net_centroid` ([n,2], a
+    macro's WL anchor) is given with `wl_blend`>0, candidate cold cells are ranked
+    by a blend of distance-to-current and distance-to-WL-anchor:
+      key = (1-wl_blend)·||cell − cur||² + wl_blend·||cell − centroid||²
+    `wl_blend`=0 reproduces the original nearest-to-current behavior exactly.
+    Higher blend prefers cold cells toward the macro's connections, so the cong-
+    relieving move costs less (or saves) wirelength → more moves pass the gate.
 
     The 2-opt search only EXCHANGES two macros' positions — it can never relocate
     a routing-heavy macro into an empty low-congestion gap (a swap would dump some
@@ -674,6 +684,9 @@ def _relocation_moves(
         if cand.size == 0:
             continue
         d2 = (tgt_x[cand] - pos[i, 0]) ** 2 + (tgt_y[cand] - pos[i, 1]) ** 2
+        if wl_blend > 0.0 and net_centroid is not None:
+            d2c = (tgt_x[cand] - net_centroid[i, 0]) ** 2 + (tgt_y[cand] - net_centroid[i, 1]) ** 2
+            d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
         cand = cand[np.argsort(d2)][:n_targets]
 
         mask = all_idx != i
@@ -699,6 +712,104 @@ def _relocation_moves(
             pos[i, 0], pos[i, 1] = best_i_xy
             accepts += 1
     return pos, accepts, best_score
+
+
+def _soft_relocation_moves(
+    soft_pos: np.ndarray,
+    soft_hw: np.ndarray,
+    soft_hh: np.ndarray,
+    cw: float,
+    ch: float,
+    n: int,
+    plc,
+    benchmark: "Benchmark",
+    incremental_scorer,
+    initial_score: float,
+    deadline: "float | None" = None,
+    top_hot: int = 48,
+    n_targets: int = 16,
+    soft_movable: "np.ndarray | None" = None,
+    use_density: bool = False,
+) -> "tuple[np.ndarray, int, float]":
+    """Congestion-directed SOFT-macro relocation (probe of the R1 idea on softs).
+
+    `use_density=True` (R5 probe, 2026-05-28): select hot softs and cold targets
+    by the DENSITY field (occupancy grid) instead of routing congestion. Softs are
+    the bulk of the density term (~30% of proxy) and may overlap, so the cong pass
+    can pile them into low-cong cells without relieving density; a density-targeted
+    pass attacks the top-10% occupancy cells the density cost actually measures.
+    Same accept-on-true-proxy machinery; only the hot/cold field changes.
+
+    The leverage analysis showed hard relocation can't help the soft/net-dominated
+    benchmarks (ibm17/18). This relocates the hottest SOFT clusters into low-
+    congestion cells, accept-on-true-proxy via `score_move_soft`. Softs may
+    overlap, so there's NO legality/conflict check — only a half-size clip to keep
+    them in canvas bounds. Softs contribute to WL + net-routing congestion +
+    density (not macro blockage). `soft_pos` is [num_soft, 2] (canvas coords).
+    Returns (soft_pos, accepts, best_score).
+    """
+    num_soft = incremental_scorer.num_soft
+    if num_soft == 0:
+        return soft_pos, 0, initial_score
+    nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    if use_density:
+        # Density field = occupancy grid maintained by the scorer (same nr×nc grid).
+        go = getattr(incremental_scorer, "grid_occupied", None)
+        if go is None or go.size != nr * nc:
+            return soft_pos, 0, initial_score
+        cell_field = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
+    else:
+        try:
+            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
+            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
+        except Exception:
+            return soft_pos, 0, initial_score
+        if h_arr.size != nr * nc or v_arr.size != nr * nc:
+            return soft_pos, 0, initial_score
+        cell_field = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+    cell_w, cell_h = cw / nc, ch / nr
+
+    ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
+    ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
+    local_cong = cell_field[ri, ci]
+    # Only relocate MOVABLE softs — fixed macros must stay put (contract). The
+    # IBM benchmarks have 0 fixed softs (no-op here), but NG45/other inputs may.
+    order = np.argsort(-local_cong)
+    if soft_movable is not None:
+        sm = np.asarray(soft_movable, dtype=bool)
+        order = order[sm[order]]
+    hot = order[:top_hot]
+
+    flat = cell_field.ravel()
+    pool = np.argsort(flat)[: max(n_targets * 4, n_targets)]
+    tgt_x = ((pool % nc).astype(np.float64) + 0.5) * cell_w
+    tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
+    tgt_cong = flat[pool]
+
+    best_score = initial_score
+    accepts = 0
+    for k in hot:
+        k = int(k)
+        if deadline is not None and time.monotonic() > deadline:
+            break
+        cand = np.where(tgt_cong < local_cong[k] - 1e-9)[0]
+        if cand.size == 0:
+            continue
+        d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
+        cand = cand[np.argsort(d2)][:n_targets]
+        best_k_xy = None
+        for t in cand:
+            nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
+            ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
+            s = incremental_scorer.score_move_soft(k, (nx, ny))
+            if s < best_score - 1e-9:
+                best_score = s
+                best_k_xy = (nx, ny)
+        if best_k_xy is not None:
+            incremental_scorer.commit_move_soft(k, best_k_xy)
+            soft_pos[k, 0], soft_pos[k, 1] = best_k_xy
+            accepts += 1
+    return soft_pos, accepts, best_score
 
 
 # ---------------------------------------------------------------------------
@@ -1276,30 +1387,43 @@ def _apply_h_strips_batch(H_flat: np.ndarray, row: np.ndarray,
                            col_lo: np.ndarray, col_hi: np.ndarray,
                            weight: np.ndarray, grid_row: int, grid_col: int) -> None:
     """Batched H-strip add: for each entry, H_flat[row, col_lo:col_hi] += weight.
-    Uses (grid_row, grid_col+1) difference array → cumsum across cols."""
+    Difference array + cumsum, restricted to the UNIQUE touched rows (idea 1,
+    2026-05-29). The cumsum is per-row independent, so building/cumsumming only
+    the touched rows is BIT-IDENTICAL to the full (grid_row, grid_col+1) version —
+    untouched rows have an all-zero diff row → contribute zero. Avoids the
+    O(grid_row·grid_col) alloc + cumsum when a move touches only a few rows.
+    np.add.at accumulation is in entry order in both versions (the unique remap
+    preserves per-row grouping), so duplicates sum identically."""
     if row.size == 0:
         return
-    h_events = np.zeros((grid_row, grid_col + 1), dtype=np.float64)
+    uniq, inv = np.unique(row, return_inverse=True)
+    inv = inv.ravel()
+    h_events = np.zeros((uniq.size, grid_col + 1), dtype=np.float64)
     h_flat = h_events.ravel()
-    base = row * (grid_col + 1)
+    base = inv * (grid_col + 1)
     np.add.at(h_flat, base + col_lo, weight)
     np.add.at(h_flat, base + col_hi, -weight)
-    H_flat += np.cumsum(h_events, axis=1)[:, :grid_col].ravel()
+    cs = np.cumsum(h_events, axis=1)[:, :grid_col]
+    H_flat.reshape(grid_row, grid_col)[uniq] += cs
 
 
 def _apply_v_strips_batch(V_flat: np.ndarray, col: np.ndarray,
                            row_lo: np.ndarray, row_hi: np.ndarray,
                            weight: np.ndarray, grid_row: int, grid_col: int) -> None:
     """Batched V-strip add: for each entry, V_flat[row_lo:row_hi, col] += weight.
-    Uses (grid_col, grid_row+1) col-major difference array → cumsum across rows."""
+    Difference array + cumsum restricted to the UNIQUE touched columns (idea 1) —
+    per-column independent, so bit-identical to the full col-major version."""
     if col.size == 0:
         return
-    v_events = np.zeros((grid_col, grid_row + 1), dtype=np.float64)
+    uniq, inv = np.unique(col, return_inverse=True)
+    inv = inv.ravel()
+    v_events = np.zeros((uniq.size, grid_row + 1), dtype=np.float64)
     v_flat = v_events.ravel()
-    base = col * (grid_row + 1)
+    base = inv * (grid_row + 1)
     np.add.at(v_flat, base + row_lo, weight)
     np.add.at(v_flat, base + row_hi, -weight)
-    V_flat += np.cumsum(v_events, axis=1)[:, :grid_row].T.ravel()
+    cs = np.cumsum(v_events, axis=1)[:, :grid_row]  # (n_uniq_cols, grid_row)
+    V_flat.reshape(grid_row, grid_col)[:, uniq] += cs.T
 
 
 def _apply_2pin_routing(H_flat: np.ndarray, V_flat: np.ndarray,
@@ -1660,6 +1784,214 @@ def _apply_macro_routing(V_macro_flat: np.ndarray, H_macro_flat: np.ndarray,
             )
 
 
+def _build_net_routing_struct(plc, net_indices: np.ndarray):
+    """Idea 2 (2026-05-29): the position-INDEPENDENT structure of the subset
+    routing apply — which flat pins the touched nets span, their macro refs,
+    net-length classification (2/3/≥4-pin), and the ≥4-pin sink index layout.
+
+    Depends only on the netlist topology + `net_indices`, NOT on placement, so it
+    can be built once per net-set and reused across the −1/+1 applies of a move
+    AND across moves of the same macro (the scorer caches it per module). The
+    position-dependent fill is done by `_apply_net_routing_struct`. Returns None
+    for an empty/pinless set. Mirrors the bookkeeping of `_apply_net_routing_subset`
+    exactly (same arrays), just hoisted out of the per-call path.
+    """
+    if len(net_indices) == 0:
+        return None
+    cache = plc._cong_cache
+    wl_cache = plc._wl_vec_cache
+    starts = cache["starts"]
+    lengths = cache["lengths"]
+    net_weights = wl_cache["net_weights"]
+    inv = wl_cache["ref_inv"]
+
+    starts_s = starts[net_indices]
+    lengths_s = lengths[net_indices]
+    total_pins = int(lengths_s.sum())
+    if total_pins == 0:
+        return None
+    cumsum_lens = np.concatenate([[0], np.cumsum(lengths_s)[:-1]]).astype(np.int64)
+    sub_pin_idx_in_flat = (
+        np.repeat(starts_s, lengths_s)
+        + (np.arange(total_pins, dtype=np.int64) - np.repeat(cumsum_lens, lengths_s))
+    )
+    struct = {
+        "sub_pin_idx_in_flat": sub_pin_idx_in_flat,
+        "pin_ref_local": inv[sub_pin_idx_in_flat],
+        "weights_unsigned": net_weights[net_indices],
+        "mask_l2": lengths_s == 2,
+        "mask_l3": lengths_s == 3,
+    }
+    struct["local_starts_l2"] = (
+        cumsum_lens[struct["mask_l2"]] if struct["mask_l2"].any() else None)
+    struct["local_starts_l3"] = (
+        cumsum_lens[struct["mask_l3"]] if struct["mask_l3"].any() else None)
+
+    struct["l4"] = None
+    mask_l4 = lengths_s >= 4
+    if mask_l4.any():
+        sub_idx_big = np.where(mask_l4)[0]
+        starts_big_local = cumsum_lens[sub_idx_big]
+        sink_lens_local = lengths_s[sub_idx_big] - 1
+        sink_total_local = int(sink_lens_local.sum())
+        if sink_total_local > 0:
+            B_local = sub_idx_big.size
+            net_local_ids_local = np.repeat(np.arange(B_local, dtype=np.int64), sink_lens_local)
+            cum_sink_starts_local = np.zeros(B_local + 1, dtype=np.int64)
+            np.cumsum(sink_lens_local, out=cum_sink_starts_local[1:])
+            offset_in_sinks_local = (
+                np.arange(sink_total_local, dtype=np.int64)
+                - np.repeat(cum_sink_starts_local[:-1], sink_lens_local)
+            )
+            global_pin_idx_local = (starts_big_local + 1)[net_local_ids_local] + offset_in_sinks_local
+            struct["l4"] = {
+                "sub_idx_big": sub_idx_big,
+                "starts_big_local": starts_big_local,
+                "B_local": B_local,
+                "net_local_ids_local": net_local_ids_local,
+                "global_pin_idx_local": global_pin_idx_local,
+            }
+    return struct
+
+
+def _apply_net_routing_struct(plc, struct, weight_mult: float,
+                              H_flat: np.ndarray, V_flat: np.ndarray):
+    """Idea 2: position-DEPENDENT routing apply using a prebuilt topology struct.
+    Computes pin_gcell from current positions, dispatches the 2/3/≥4-pin fills
+    with a signed weight, and returns the touched-pin bbox (or None). The math is
+    identical to `_apply_net_routing_subset`'s second half — only the
+    position-independent bookkeeping has been hoisted into the struct.
+    """
+    if struct is None:
+        return None
+    wl_cache = plc._wl_vec_cache
+    grid_col = int(plc.grid_col)
+    grid_row = int(plc.grid_row)
+    grid_w = float(plc.width / grid_col)
+    grid_h = float(plc.height / grid_row)
+
+    sub_pin_idx_in_flat = struct["sub_pin_idx_in_flat"]
+    pin_ref_local = struct["pin_ref_local"]
+    pos_cache = _ensure_pos_cache(plc)
+    unique_ref = wl_cache["unique_ref"]
+    x_off = wl_cache["x_off"]
+    y_off = wl_cache["y_off"]
+    pin_x = pos_cache[unique_ref[pin_ref_local], 0] + x_off[sub_pin_idx_in_flat]
+    pin_y = pos_cache[unique_ref[pin_ref_local], 1] + y_off[sub_pin_idx_in_flat]
+    pin_col = np.clip((pin_x / grid_w).astype(np.int64), 0, grid_col - 1)
+    pin_row = np.clip((pin_y / grid_h).astype(np.int64), 0, grid_row - 1)
+    pin_gcell = pin_row * grid_col + pin_col
+
+    weights_sub = struct["weights_unsigned"] * weight_mult
+
+    bucket_2_src: list = []
+    bucket_2_snk: list = []
+    bucket_2_w: list = []
+    bucket_3_g0: list = []
+    bucket_3_g1: list = []
+    bucket_3_g2: list = []
+    bucket_3_w: list = []
+
+    mask_l2 = struct["mask_l2"]
+    local_starts_l2 = struct["local_starts_l2"]
+    if local_starts_l2 is not None:
+        src2 = pin_gcell[local_starts_l2]
+        snk2 = pin_gcell[local_starts_l2 + 1]
+        sub_mask = src2 != snk2
+        if sub_mask.any():
+            bucket_2_src.append(src2[sub_mask])
+            bucket_2_snk.append(snk2[sub_mask])
+            bucket_2_w.append(weights_sub[mask_l2][sub_mask])
+
+    mask_l3 = struct["mask_l3"]
+    local_starts_l3 = struct["local_starts_l3"]
+    if local_starts_l3 is not None:
+        g0 = pin_gcell[local_starts_l3]
+        g1 = pin_gcell[local_starts_l3 + 1]
+        g2 = pin_gcell[local_starts_l3 + 2]
+        eq01 = g0 == g1
+        eq02 = g0 == g2
+        eq12 = g1 == g2
+        eq_count = eq01.astype(np.int64) + eq02.astype(np.int64) + eq12.astype(np.int64)
+        uniq2 = eq_count == 1
+        uniq3 = eq_count == 0
+        if uniq2.any():
+            src_2 = g0[uniq2]
+            sink_2 = np.where(eq01[uniq2], g2[uniq2], g1[uniq2])
+            bucket_2_src.append(src_2)
+            bucket_2_snk.append(sink_2)
+            bucket_2_w.append(weights_sub[mask_l3][uniq2])
+        if uniq3.any():
+            bucket_3_g0.append(g0[uniq3])
+            bucket_3_g1.append(g1[uniq3])
+            bucket_3_g2.append(g2[uniq3])
+            bucket_3_w.append(weights_sub[mask_l3][uniq3])
+
+    l4 = struct["l4"]
+    if l4 is not None:
+        sub_idx_big = l4["sub_idx_big"]
+        starts_big_local = l4["starts_big_local"]
+        B_local = l4["B_local"]
+        net_local_ids_local = l4["net_local_ids_local"]
+        global_pin_idx_local = l4["global_pin_idx_local"]
+        src_gcells_big = pin_gcell[starts_big_local]
+        sink_gcells = pin_gcell[global_pin_idx_local]
+        mask_not_src = sink_gcells != src_gcells_big[net_local_ids_local]
+        if mask_not_src.any():
+            nli_ns = net_local_ids_local[mask_not_src]
+            sg_ns = sink_gcells[mask_not_src]
+            order = np.lexsort((sg_ns, nli_ns))
+            nli_sorted = nli_ns[order]
+            sg_sorted = sg_ns[order]
+            keep = np.empty(sg_sorted.size, dtype=bool)
+            keep[0] = True
+            if sg_sorted.size > 1:
+                keep[1:] = (
+                    (nli_sorted[1:] != nli_sorted[:-1])
+                    | (sg_sorted[1:] != sg_sorted[:-1])
+                )
+            nli_uniq = nli_sorted[keep]
+            sg_uniq = sg_sorted[keep]
+            uniq_sink_counts = np.bincount(nli_uniq, minlength=B_local)
+            n_uniq_total = 1 + uniq_sink_counts
+            net_is_3 = n_uniq_total == 3
+            net_is_starlike = ~net_is_3
+            mask_starlike = net_is_starlike[nli_uniq]
+            if mask_starlike.any():
+                nli_emit = nli_uniq[mask_starlike]
+                bucket_2_src.append(src_gcells_big[nli_emit])
+                bucket_2_snk.append(sg_uniq[mask_starlike])
+                bucket_2_w.append(weights_sub[sub_idx_big[nli_emit]])
+            if net_is_3.any():
+                cum_counts = np.cumsum(uniq_sink_counts)
+                net3_ids = np.where(net_is_3)[0]
+                ends = cum_counts[net3_ids]
+                bucket_3_g0.append(src_gcells_big[net3_ids])
+                bucket_3_g1.append(sg_uniq[ends - 2])
+                bucket_3_g2.append(sg_uniq[ends - 1])
+                bucket_3_w.append(weights_sub[sub_idx_big[net3_ids]])
+
+    if bucket_2_src:
+        src_flat = np.concatenate(bucket_2_src)
+        snk_flat = np.concatenate(bucket_2_snk)
+        w_arr = np.concatenate(bucket_2_w)
+        _apply_2pin_routing(
+            H_flat, V_flat,
+            src_flat // grid_col, src_flat % grid_col,
+            snk_flat // grid_col, snk_flat % grid_col,
+            w_arr, grid_row, grid_col,
+        )
+    if bucket_3_g0:
+        g0_arr = np.concatenate(bucket_3_g0)
+        g1_arr = np.concatenate(bucket_3_g1)
+        g2_arr = np.concatenate(bucket_3_g2)
+        w_arr3 = np.concatenate(bucket_3_w)
+        _apply_3pin_routing_vec(H_flat, V_flat, g0_arr, g1_arr, g2_arr, w_arr3, grid_row, grid_col)
+
+    return (int(pin_row.min()), int(pin_row.max()),
+            int(pin_col.min()), int(pin_col.max()))
+
+
 def _apply_net_routing_subset(
     plc,
     net_indices: np.ndarray,
@@ -1681,9 +2013,14 @@ def _apply_net_routing_subset(
     Pin positions read from `plc._global_pos_cache` (B3 phase 1). For
     efficient subset processing, pin_gcell is computed only for the
     touched pins (a small fraction of total pins).
+
+    Returns the (r_lo, r_hi, c_lo, c_hi) grid-cell bounding box of the touched
+    pins (or None if nothing was applied). Every cell this call modifies lies
+    within that box (routing fill stays inside the pin bbox), so the caller can
+    re-smooth only those columns/rows for the incremental congestion cost.
     """
     if len(net_indices) == 0:
-        return
+        return None
 
     cache = plc._cong_cache
     wl_cache = plc._wl_vec_cache
@@ -1701,7 +2038,7 @@ def _apply_net_routing_subset(
     lengths_s = lengths[net_indices]
     total_pins = int(lengths_s.sum())
     if total_pins == 0:
-        return
+        return None
     cumsum_lens = np.concatenate([[0], np.cumsum(lengths_s)[:-1]]).astype(np.int64)
     sub_pin_idx_in_flat = (
         np.repeat(starts_s, lengths_s)
@@ -1839,6 +2176,9 @@ def _apply_net_routing_subset(
         g2_arr = np.concatenate(bucket_3_g2)
         w_arr3 = np.concatenate(bucket_3_w)
         _apply_3pin_routing_vec(H_flat, V_flat, g0_arr, g1_arr, g2_arr, w_arr3, grid_row, grid_col)
+
+    return (int(pin_row.min()), int(pin_row.max()),
+            int(pin_col.min()), int(pin_col.max()))
 
 
 def _apply_macro_routing_subset(
@@ -2455,6 +2795,17 @@ class IncrementalScorer:
         # Committed hard-macro positions (only hard macros can swap).
         self.committed_hard_pos = current_placement_np[:self.n_hard].astype(np.float64).copy()
 
+        # Soft-macro state (for soft relocation). Softs occupy placement rows
+        # n_hard..; they contribute to WL + net-routing congestion + density, but
+        # NOT macro-routing blockage (only hard macros block). They may overlap,
+        # so soft relocation needs no legality check.
+        self.soft_indices = list(benchmark.soft_macro_indices)
+        self.num_soft = len(self.soft_indices)
+        self.committed_soft_pos = (
+            current_placement_np[self.n_hard:self.n_hard + self.num_soft]
+            .astype(np.float64).copy()
+        )
+
         # ---- B3 phase 4 (2026-05-24): congestion incremental state. ----
         cong_cache = plc._cong_cache
         self.grid_col = int(plc.grid_col)
@@ -2488,10 +2839,51 @@ class IncrementalScorer:
                 self.V_macro_flat, self.H_macro_flat,
             )
 
+        # ---- Incremental congestion COST cache (2026-05-29). ----
+        # `_compute_cong_cost` used to full-re-smooth H/V + re-partition every
+        # move-eval; the smoothing was ~85% of the cong cost (~14% of a whole
+        # move). The box filter is SEPARABLE (H along columns, V along rows,
+        # each cell independent of the other axis), so we cache the smoothed
+        # NORMALIZED H/V (2D, grid_row×grid_col) and, per move, recompute only
+        # the columns/rows inside the touched-net bbox FROM the raw flats — each
+        # recomputed value is identical to a full re-smooth (no delta
+        # accumulation → no drift, preserving the bit-exact non-regression
+        # guarantee). The window (lp/up/cnt) is fixed by the grid, so precompute.
+        sr = self.smooth_range
+        if sr > 0:
+            _rows = np.arange(self.grid_row, dtype=np.int64)
+            self._sm_row_lp = np.maximum(_rows - sr, 0)
+            self._sm_row_up = np.minimum(_rows + sr, self.grid_row - 1)
+            self._sm_row_cnt = (self._sm_row_up - self._sm_row_lp + 1).astype(np.float64)
+            _cols = np.arange(self.grid_col, dtype=np.int64)
+            self._sm_col_lp = np.maximum(_cols - sr, 0)
+            self._sm_col_up = np.minimum(_cols + sr, self.grid_col - 1)
+            self._sm_col_cnt = (self._sm_col_up - self._sm_col_lp + 1).astype(np.float64)
+            self.H_smoothed = _smooth_routing_cong_vec(
+                self.H_flat / self.grid_h_routes, self.grid_row, self.grid_col,
+                sr, axis_h=True,
+            ).reshape(self.grid_row, self.grid_col)
+            self.V_smoothed = _smooth_routing_cong_vec(
+                self.V_flat / self.grid_v_routes, self.grid_row, self.grid_col,
+                sr, axis_h=False,
+            ).reshape(self.grid_row, self.grid_col)
+        else:
+            # No smoothing: cache == normalized flats (kept 2D for the subset API).
+            self.H_smoothed = (self.H_flat / self.grid_h_routes).reshape(
+                self.grid_row, self.grid_col)
+            self.V_smoothed = (self.V_flat / self.grid_v_routes).reshape(
+                self.grid_row, self.grid_col)
+
         # Map module-index → hard-macro-slot-index (for _apply_macro_routing_subset).
         self._module_to_hard_slot: "dict[int, int]" = {
             int(m): k for k, m in enumerate(cong_cache["hard_indices"])
         }
+
+        # Idea 2 (2026-05-29): per-module topology routing-struct cache. A macro's
+        # touched-net structure is placement-independent, so build it once and
+        # reuse across that macro's score/commit calls AND the −1/+1 applies of
+        # each. Keyed by module index; value may be None (macro has no nets).
+        self._route_struct_cache: "dict[int, object]" = {}
 
         # ---- P3 (2026-05-26): incremental density state. ----
         # Density was the last full-recompute in score_swap (~28-36% of its time
@@ -2577,19 +2969,16 @@ class IncrementalScorer:
         return 0.5 * float(top.sum() / self.dens_grid_area / cnt)
 
     def _compute_cong_cost(self) -> float:
-        """B3 phase 4: compute congestion cost from current H_flat / V_flat /
-        H_macro_flat / V_macro_flat (RAW pre-normalization). Mirrors the
-        final transform in `_vectorized_get_routing` + `_vectorized_get_congestion_cost`.
+        """B3 phase 4 + incremental cost (2026-05-29): congestion cost from the
+        cached smoothed normalized routing (`H_smoothed`/`V_smoothed`) plus the
+        live macro flats. The cache must be current for the touched region —
+        callers re-smooth the touched bbox (see `_resmooth_bbox`) before this.
+        Mirrors the final transform in `_vectorized_get_congestion_cost`.
         """
-        H = self.H_flat / self.grid_h_routes
-        V = self.V_flat / self.grid_v_routes
         Hm = self.H_macro_flat / self.grid_h_routes
         Vm = self.V_macro_flat / self.grid_v_routes
-        if self.smooth_range > 0:
-            V = _smooth_routing_cong_vec(V, self.grid_row, self.grid_col, self.smooth_range, axis_h=False)
-            H = _smooth_routing_cong_vec(H, self.grid_row, self.grid_col, self.smooth_range, axis_h=True)
-        V_total = V + Vm
-        H_total = H + Hm
+        V_total = self.V_smoothed.ravel() + Vm
+        H_total = self.H_smoothed.ravel() + Hm
         xx = np.concatenate([V_total, H_total])
         n = xx.size
         cnt = int(n * 0.05)
@@ -2597,6 +2986,60 @@ class IncrementalScorer:
             return float(xx.max())
         top = np.partition(xx, n - cnt)[n - cnt:]
         return float(top.sum() / cnt)
+
+    @staticmethod
+    def _union_bbox(*bbs):
+        """Union of (r_lo, r_hi, c_lo, c_hi) boxes (None entries ignored).
+        Returns (None, None, None, None) if every box is None."""
+        bbs = [b for b in bbs if b is not None]
+        if not bbs:
+            return None, None, None, None
+        return (min(b[0] for b in bbs), max(b[1] for b in bbs),
+                min(b[2] for b in bbs), max(b[3] for b in bbs))
+
+    def _resmooth_h_cols(self, c_lo: int, c_hi: int) -> None:
+        """Recompute `H_smoothed[:, c_lo:c_hi+1]` from raw `H_flat` (axis_h=True:
+        per-column box filter). Bit-identical to a full `_smooth_routing_cong_vec`
+        of those columns — H smoothing mixes only rows within a column, so each
+        column is independent and a full re-smooth of just these columns matches."""
+        H2d = self.H_flat.reshape(self.grid_row, self.grid_col)
+        sub = H2d[:, c_lo:c_hi + 1] / self.grid_h_routes
+        if self.smooth_range <= 0:
+            self.H_smoothed[:, c_lo:c_hi + 1] = sub
+            return
+        weighted = sub / self._sm_row_cnt[:, None]
+        events = np.zeros((self.grid_row + 1, sub.shape[1]), dtype=np.float64)
+        np.add.at(events, self._sm_row_lp, weighted)
+        np.subtract.at(events, self._sm_row_up + 1, weighted)
+        self.H_smoothed[:, c_lo:c_hi + 1] = np.cumsum(events, axis=0)[:self.grid_row]
+
+    def _resmooth_v_rows(self, r_lo: int, r_hi: int) -> None:
+        """Recompute `V_smoothed[r_lo:r_hi+1, :]` from raw `V_flat` (axis_h=False:
+        per-row box filter). Bit-identical to a full re-smooth of those rows — V
+        smoothing mixes only columns within a row, so each row is independent."""
+        V2d = self.V_flat.reshape(self.grid_row, self.grid_col)
+        sub = V2d[r_lo:r_hi + 1, :] / self.grid_v_routes
+        if self.smooth_range <= 0:
+            self.V_smoothed[r_lo:r_hi + 1, :] = sub
+            return
+        nrows = sub.shape[0]
+        weighted = sub / self._sm_col_cnt[None, :]
+        events = np.zeros((nrows, self.grid_col + 1), dtype=np.float64)
+        row_idx = np.broadcast_to(
+            np.arange(nrows, dtype=np.int64)[:, None], (nrows, self.grid_col))
+        col_lp = np.broadcast_to(self._sm_col_lp[None, :], (nrows, self.grid_col))
+        col_up = np.broadcast_to((self._sm_col_up + 1)[None, :], (nrows, self.grid_col))
+        np.add.at(events, (row_idx, col_lp), weighted)
+        np.subtract.at(events, (row_idx, col_up), weighted)
+        self.V_smoothed[r_lo:r_hi + 1, :] = np.cumsum(events, axis=1)[:, :self.grid_col]
+
+    def _resmooth_bbox(self, r_lo, r_hi, c_lo, c_hi) -> None:
+        """Refresh the smoothed cache for a touched bbox: H per affected column,
+        V per affected row. No-op if the bbox is empty (c_lo is None)."""
+        if c_lo is None:
+            return
+        self._resmooth_h_cols(c_lo, c_hi)
+        self._resmooth_v_rows(r_lo, r_hi)
 
     def _build_macro_to_nets(self):
         """Group nets by the macros (modules) that reference them.
@@ -2727,10 +3170,10 @@ class IncrementalScorer:
         )
 
         # 1. Subtract OLD contributions (using current/committed positions).
-        if len(touched) > 0:
-            _apply_net_routing_subset(
-                self.plc, touched, -1.0, self.H_flat, self.V_flat
-            )
+        # The union net-set isn't per-module, so build the topology struct once
+        # for this swap (idea 2) and reuse it for the −1/+1 applies.
+        struct = _build_net_routing_struct(self.plc, touched)
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
             _apply_macro_routing_subset(
                 self.plc, macro_subset, -1.0,
@@ -2745,15 +3188,20 @@ class IncrementalScorer:
         self._apply_pos(j_module, new_jx, new_jy)
 
         # 3. Add NEW contributions.
-        if len(touched) > 0:
-            _apply_net_routing_subset(
-                self.plc, touched, +1.0, self.H_flat, self.V_flat
-            )
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
             _apply_macro_routing_subset(
                 self.plc, macro_subset, +1.0,
                 self.V_macro_flat, self.H_macro_flat,
             )
+
+        # 3b. Refresh the smoothed-cost cache for the touched bbox; snapshot the
+        #     affected columns/rows first so the trial can restore them on revert.
+        r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
+        if c_lo is not None:
+            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
 
         # 4. Incremental WL via touched nets (raw HPWL delta).
         if len(touched) > 0:
@@ -2801,6 +3249,9 @@ class IncrementalScorer:
         self.V_flat[:] = V_snap
         self.H_macro_flat[:] = Hm_snap
         self.V_macro_flat[:] = Vm_snap
+        if c_lo is not None:
+            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
 
         return score
 
@@ -2826,11 +3277,10 @@ class IncrementalScorer:
             [s for s in (i_slot, j_slot) if s is not None], dtype=np.int64
         )
 
-        # Subtract OLD routing contributions.
-        if len(touched) > 0:
-            _apply_net_routing_subset(
-                self.plc, touched, -1.0, self.H_flat, self.V_flat
-            )
+        # Subtract OLD routing contributions. Build the topology struct once for
+        # this swap (idea 2) and reuse it for the −1/+1 applies.
+        struct = _build_net_routing_struct(self.plc, touched)
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
             _apply_macro_routing_subset(
                 self.plc, macro_subset, -1.0,
@@ -2860,15 +3310,15 @@ class IncrementalScorer:
             np.add.at(go, nj_idx, nj_area)
 
         # Add NEW routing contributions.
-        if len(touched) > 0:
-            _apply_net_routing_subset(
-                self.plc, touched, +1.0, self.H_flat, self.V_flat
-            )
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
             _apply_macro_routing_subset(
                 self.plc, macro_subset, +1.0,
                 self.V_macro_flat, self.H_macro_flat,
             )
+
+        # Persist the smoothed-cost cache for the touched bbox.
+        self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
 
         # Persist position state on the scorer.
         self.committed_hard_pos[i_hard, 0] = new_ix
@@ -2885,6 +3335,51 @@ class IncrementalScorer:
     def _macro_nets(self, i_module: int) -> np.ndarray:
         a = self.macro_to_nets.get(i_module)
         return a if a is not None else np.empty(0, dtype=np.int64)
+
+    def _route_struct(self, module_idx: int):
+        """Cached topology routing-struct for one macro's touched nets (idea 2).
+        Built once per module (placement-independent), reused across calls."""
+        cache = self._route_struct_cache
+        m = int(module_idx)
+        if m not in cache:
+            cache[m] = _build_net_routing_struct(self.plc, self._macro_nets(m))
+        return cache[m]
+
+    def hard_net_centroids(self) -> np.ndarray:
+        """[n_hard, 2] WL-anchor per hard macro = mean over its pins of the
+        centroid of that pin's net (net centroid = mean pin position). This is
+        roughly where the macro wants to sit to minimize its wirelength, used by
+        WL-aware relocation to pick cold cells that don't spike WL. Computed from
+        current committed positions. Macros with no pins get their current pos.
+        """
+        pos = _ensure_pos_cache(self.plc)
+        ref_idx = self.wl_cache["ref_idx"]
+        pin_to_net = self.wl_cache["pin_to_net"]
+        starts = self.net_starts
+        out = np.empty((self.n_hard, 2), dtype=np.float64)
+        for k in range(self.n_hard):
+            out[k, 0] = self.committed_hard_pos[k, 0]
+            out[k, 1] = self.committed_hard_pos[k, 1]
+        if ref_idx.size == 0 or starts.size == 0:
+            return out
+        pin_x = pos[ref_idx, 0] + self.x_off
+        pin_y = pos[ref_idx, 1] + self.y_off
+        counts = (self.net_ends - self.net_starts).astype(np.float64)
+        counts[counts == 0] = 1.0
+        net_cx = np.add.reduceat(pin_x, starts) / counts
+        net_cy = np.add.reduceat(pin_y, starts) / counts
+        n_mod = int(ref_idx.max()) + 1
+        msx = np.zeros(n_mod, dtype=np.float64)
+        msy = np.zeros(n_mod, dtype=np.float64)
+        mc = np.zeros(n_mod, dtype=np.float64)
+        np.add.at(msx, ref_idx, net_cx[pin_to_net])
+        np.add.at(msy, ref_idx, net_cy[pin_to_net])
+        np.add.at(mc, ref_idx, 1.0)
+        for k, m in enumerate(self.hard_indices):
+            if m < n_mod and mc[m] > 0:
+                out[k, 0] = msx[m] / mc[m]
+                out[k, 1] = msy[m] / mc[m]
+        return out
 
     def score_move(self, i_hard: int, new_xy) -> float:
         """Trial: proxy as if hard macro i_hard RELOCATED to new_xy, then revert.
@@ -2906,20 +3401,28 @@ class IncrementalScorer:
         Vm_snap = self.V_macro_flat.copy()
 
         touched = self._macro_nets(i_module)
+        struct = self._route_struct(i_module)
         macro_subset = (np.array([i_slot], dtype=np.int64)
                         if i_slot is not None else np.empty(0, dtype=np.int64))
 
-        if len(touched) > 0:
-            _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
             _apply_macro_routing_subset(self.plc, macro_subset, -1.0,
                                         self.V_macro_flat, self.H_macro_flat)
         self._apply_pos(i_module, new_ix, new_iy)
-        if len(touched) > 0:
-            _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
             _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
                                         self.V_macro_flat, self.H_macro_flat)
+
+        # Refresh the smoothed-cost cache for the touched bbox (snapshot first so
+        # the trial can restore it). Macro blockage is added live in the cost, so
+        # only the net-routing bbox needs re-smoothing.
+        r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
+        if c_lo is not None:
+            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
 
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
@@ -2941,7 +3444,7 @@ class IncrementalScorer:
 
         score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
 
-        # Revert: density cells, position, raw routing flats.
+        # Revert: density cells, position, raw routing flats, smoothed cache.
         if n_idx.size:
             np.subtract.at(go, n_idx, n_area)
         if o_idx.size:
@@ -2951,6 +3454,9 @@ class IncrementalScorer:
         self.V_flat[:] = V_snap
         self.H_macro_flat[:] = Hm_snap
         self.V_macro_flat[:] = Vm_snap
+        if c_lo is not None:
+            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
         return score
 
     def commit_move(self, i_hard: int, new_xy) -> None:
@@ -2963,11 +3469,11 @@ class IncrementalScorer:
         new_ix, new_iy = float(new_xy[0]), float(new_xy[1])
 
         touched = self._macro_nets(i_module)
+        struct = self._route_struct(i_module)
         macro_subset = (np.array([i_slot], dtype=np.int64)
                         if i_slot is not None else np.empty(0, dtype=np.int64))
 
-        if len(touched) > 0:
-            _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
             _apply_macro_routing_subset(self.plc, macro_subset, -1.0,
                                         self.V_macro_flat, self.H_macro_flat)
@@ -2981,14 +3487,109 @@ class IncrementalScorer:
         if n_idx.size:
             np.add.at(go, n_idx, n_area)
 
-        if len(touched) > 0:
-            _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
             _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
                                         self.V_macro_flat, self.H_macro_flat)
 
+        # Persist the smoothed-cost cache for the touched bbox.
+        self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
+
         self.committed_hard_pos[i_hard, 0] = new_ix
         self.committed_hard_pos[i_hard, 1] = new_iy
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            self.per_net_hpwl[touched] = new_per_net
+            self.total_wl_raw += delta
+
+    def score_move_soft(self, soft_k: int, new_xy) -> float:
+        """Trial: proxy as if SOFT macro `soft_k` (0..num_soft-1) relocated to
+        new_xy, then revert. Softs contribute to WL + net-routing congestion +
+        density, but NOT macro-routing blockage (only hard macros block) — so
+        there is no macro_subset term. No legality constraint (softs may overlap).
+        """
+        s_module = self.soft_indices[soft_k]
+        old_x = float(self.committed_soft_pos[soft_k, 0])
+        old_y = float(self.committed_soft_pos[soft_k, 1])
+        new_x, new_y = float(new_xy[0]), float(new_xy[1])
+
+        H_snap = self.H_flat.copy()
+        V_snap = self.V_flat.copy()
+        touched = self._macro_nets(s_module)
+        struct = self._route_struct(s_module)
+
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
+        self._apply_pos(s_module, new_x, new_y)
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+
+        # Refresh the smoothed-cost cache for the touched bbox (snapshot first).
+        r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
+        if c_lo is not None:
+            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
+
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            new_total_raw = self.total_wl_raw + delta
+        else:
+            new_total_raw = self.total_wl_raw
+        new_wl_normalized = new_total_raw / self.wl_normalizer
+        cong = self._compute_cong_cost()
+
+        o_idx, o_area = self._macro_occ(s_module, old_x, old_y)
+        n_idx, n_area = self._macro_occ(s_module, new_x, new_y)
+        go = self.grid_occupied
+        if o_idx.size:
+            np.subtract.at(go, o_idx, o_area)
+        if n_idx.size:
+            np.add.at(go, n_idx, n_area)
+        dens = self._compute_density_cost()
+
+        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
+
+        # Revert: density cells, position, net-routing flats, smoothed cache.
+        if n_idx.size:
+            np.subtract.at(go, n_idx, n_area)
+        if o_idx.size:
+            np.add.at(go, o_idx, o_area)
+        self._apply_pos(s_module, old_x, old_y)
+        self.H_flat[:] = H_snap
+        self.V_flat[:] = V_snap
+        if c_lo is not None:
+            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
+        return score
+
+    def commit_move_soft(self, soft_k: int, new_xy) -> None:
+        """Persist a soft relocation (net routing + density + per-net HPWL)."""
+        s_module = self.soft_indices[soft_k]
+        old_x = float(self.committed_soft_pos[soft_k, 0])
+        old_y = float(self.committed_soft_pos[soft_k, 1])
+        new_x, new_y = float(new_xy[0]), float(new_xy[1])
+        touched = self._macro_nets(s_module)
+        struct = self._route_struct(s_module)
+
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
+        self._apply_pos(s_module, new_x, new_y)
+
+        go = self.grid_occupied
+        o_idx, o_area = self._macro_occ(s_module, old_x, old_y)
+        n_idx, n_area = self._macro_occ(s_module, new_x, new_y)
+        if o_idx.size:
+            np.subtract.at(go, o_idx, o_area)
+        if n_idx.size:
+            np.add.at(go, n_idx, n_area)
+
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+
+        # Persist the smoothed-cost cache for the touched bbox.
+        self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
+
+        self.committed_soft_pos[soft_k, 0] = new_x
+        self.committed_soft_pos[soft_k, 1] = new_y
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
             delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
@@ -3214,6 +3815,18 @@ class MacroPlacer:
         # pass actual remaining-benchmark count, but isn't wired in yet.
         self.HARNESS_TOTAL_BUDGET_S: float = 3300.0
         self.HARNESS_TOTAL_BENCHMARKS: int = 17
+        # Directed phases overrun the soft budget by this much (see BUDGET_OVERRUN_S
+        # in place()); hoisted here so the budget allocator can reserve for it.
+        self.BUDGET_OVERRUN_S: float = 60.0
+        # Floor-reservation (2026-05-29): every benchmark in an --all run is
+        # guaranteed at least this much budget. The allocator reserves
+        # (floor + overrun) for each *remaining* benchmark so an early/large one
+        # can't eat the tail's budget — which previously collapsed the last
+        # benchmark (ibm18) to the raw baseline. 17·(110+60)=2890 < 3300, so the
+        # floor is feasible for all 17 with margin.
+        self.PER_BENCH_FLOOR_S: float = 110.0
+        # Leave headroom under the 3600s hard harness cap for setup/teardown.
+        self.HARD_CAP_SAFE_S: float = 3540.0
 
     def place(self, benchmark: Benchmark) -> torch.Tensor:
         np.random.seed(self.seed)
@@ -3244,10 +3857,32 @@ class MacroPlacer:
             remaining_benchmarks = max(
                 1, self.HARNESS_TOTAL_BENCHMARKS - self._benchmarks_done
             )
-            adaptive_cap = remaining_total / remaining_benchmarks * 0.9
-            effective_budget_s = min(
-                self.time_budget_s, max(30.0, adaptive_cap)
+            # Floor-reservation (2026-05-29): each remaining benchmark consumes
+            # up to (effective_budget_s + BUDGET_OVERRUN_S) of wall time. To
+            # stop an early/large benchmark from eating the tail's budget (which
+            # collapsed ibm18 to the raw baseline in the 2026-05-29 --all),
+            # reserve (FLOOR + OVERRUN) for every OTHER remaining benchmark and
+            # OVERRUN for this one's own slop. The reservation is slack when
+            # remaining is large (this_cap > time_budget_s → cap stays at the
+            # full soft budget) and only bites near the tail, guaranteeing the
+            # last benchmark a real budget instead of baseline.
+            reserve_others = (
+                (self.PER_BENCH_FLOOR_S + self.BUDGET_OVERRUN_S)
+                * (remaining_benchmarks - 1)
             )
+            this_cap = remaining_total - reserve_others - self.BUDGET_OVERRUN_S
+            effective_budget_s = min(
+                self.time_budget_s, max(self.PER_BENCH_FLOOR_S, this_cap)
+            )
+            # Hard-cap safety: this benchmark's worst case is
+            # effective_budget_s + BUDGET_OVERRUN_S of wall time; never let
+            # that push past the 3600s harness cap (use HARD_CAP_SAFE_S to
+            # leave teardown/reporting room). If this clamps below the floor,
+            # the --all guard below decides whether to bother running at all.
+            hard_headroom = (
+                self.HARD_CAP_SAFE_S - cumulative_elapsed - self.BUDGET_OVERRUN_S
+            )
+            effective_budget_s = min(effective_budget_s, hard_headroom)
         else:
             effective_budget_s = self.time_budget_s
 
@@ -3561,15 +4196,15 @@ class MacroPlacer:
             self._benchmarks_done += 1
             return pl_scratch  # safe: no more in-place writes will happen
 
-        # --all wall-clock guard: if cumulative time is close to the harness
-        # cap, return baseline immediately without spending time on the first
-        # exact score. ibm17's baseline scoring alone is 280s+; on a tight
-        # cumulative budget that single score would blow the cap. Threshold is
-        # effective_budget_s < 60s (one safe score) OR cumulative elapsed has
-        # consumed >= 95% of HARNESS_TOTAL_BUDGET_S.
+        # --all wall-clock guard: last-resort safety. The floor-reservation
+        # allocator above caps effective_budget_s at hard_headroom, so
+        # eff < ~45s only happens when even the floor was clipped by the hard
+        # cap (cumulative genuinely near 3540s). Old behavior was a blunt
+        # 95%-of-3300 cumulative test, which collapsed the final benchmark to
+        # the raw baseline even when budget remained — that's the bug the
+        # allocator fix is meant to prevent.
         cumulative_now = time.monotonic() - self._first_place_call_time
-        if (effective_budget_s < 60.0 or
-                cumulative_now > self.HARNESS_TOTAL_BUDGET_S * 0.95):
+        if effective_budget_s < 45.0:
             _log(f"  [--all guard] tight budget "
                  f"(eff={effective_budget_s:.0f}s, cumulative={cumulative_now:.0f}s"
                  f" of {self.HARNESS_TOTAL_BUDGET_S:.0f}s); returning baseline")
@@ -3613,7 +4248,7 @@ class MacroPlacer:
         # lives (1.3316). With 60s overrun, ibm04 recovers Phase 3 even after a spike.
         # Noise restarts stay strict (allow_overrun=False default) — they're
         # exploratory and shouldn't push us over budget on dead-end benchmarks.
-        BUDGET_OVERRUN_S = 60.0
+        BUDGET_OVERRUN_S = self.BUDGET_OVERRUN_S
 
         def _try_restart(label: str, perturbed_init: np.ndarray, k: int,
                          allow_overrun: bool = False,
@@ -4351,8 +4986,36 @@ class MacroPlacer:
         # converged best_pl, so a fresh 2-opt finds nothing until relocation moves
         # something). Budget-gated; a round needs slack for a relocation (~cheap)
         # + a short 2-opt pass.
-        R2_MAX_ROUNDS = 6  # budget-guarded; converges + breaks on no-improvement
+        R2_MAX_ROUNDS = 6  # budget-guarded; converges + breaks on no-improvement.
+        # (Tested 6→10: rounds 7+ are below the run-to-run noise floor (~-0.001
+        # total) and cost real time on large benchmarks — kept at 6. The binding
+        # limit on large benchmarks is top_hot per round, not round count.)
+        # R2_HOT/R2_TGT widen the relocation candidate set per round so large
+        # benchmarks (ibm10 786 macros) relieve more than ~3% of hot macros/round.
+        R2_HOT = 48
+        R2_TGT = 16
         R2_2OPT_SLICE = 8.0
+        # R3b (2026-05-28): softs number 900-2000 but only R2_HOT were tried per
+        # round (~16% coverage over 6 rounds on ibm17), so the dominant lever was
+        # under-covered. Wider soft candidate set; budget-gated by the pass deadline.
+        R3_SOFT_HOT = 128
+        R3_SOFT_TGT = 24
+        # A+C (2026-05-29): the cong soft-reloc pass saturates by round 3
+        # (top routing hotspots cleared; ibm09 round 4+ accepts ≤2 moves for
+        # ~zero gain) while the density pass keeps finding moves through round
+        # 6. Hard-cap cong at R3_CONG_MAX_ROUNDS rounds (A), and boost the
+        # density candidate set to R3_SOFT_HOT_BOOSTED on the rounds after the
+        # cap so the freed ~4-5s/round is spent on more density attempts
+        # instead of ending the round early (C). Preserves the productive
+        # rounds 1-3 of cong (~−0.027 cumulative on ibm09: −0.023, −0.004, ≈0).
+        R3_SOFT_HOT_BOOSTED = 192
+        R3_CONG_MAX_ROUNDS = 3
+        # Soft-macro half-sizes (for the soft relocation pass — R3, 2026-05-28).
+        _n_soft = benchmark.num_soft_macros
+        _soft_sizes = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
+        soft_hw = _soft_sizes[:, 0] / 2
+        soft_hh = _soft_sizes[:, 1] / 2
+        _soft_movable = benchmark.get_movable_mask().numpy()[n:n + _n_soft]
 
         def _hard_xy(_pl):
             return np.stack([_pl[:n, 0].numpy(), _pl[:n, 1].numpy()], axis=1).astype(np.float64)
@@ -4387,10 +5050,17 @@ class MacroPlacer:
                 rel_scorer = IncrementalScorer(
                     plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
                 )
+                # R4 (WL-aware hard-relocation targeting) was DISPROVEN 2026-05-29:
+                # biasing targets toward the net centroid steered the interleave to
+                # a slightly WORSE local min (ibm03 +0.0015, ibm07 +0.0025) with no
+                # upside. Reverted to the nearest-to-current sort. The `wl_blend`
+                # option + `hard_net_centroids()` + `WLAWARE_PROBE` are kept as inert
+                # diagnostic scaffolding (see ISSUES.md).
                 rel_pos, rel_acc, _ = _relocation_moves(
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
                     benchmark, rel_scorer, base_rel,
                     deadline=t_rel + min(rem_r2 - t_one_score, 15.0),
+                    top_hot=R2_HOT, n_targets=R2_TGT,
                 )
                 if rel_acc > 0:
                     cand = best_pl.clone()
@@ -4403,6 +5073,65 @@ class MacroPlacer:
                         best_score, best_pl, round_improved = rel_true, cand, True
             except Exception as exc:
                 _log(f"  R2 relocation failed: {type(exc).__name__}: {exc}")
+
+            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+            if rem_r2 < 2.0 * t_one_score + 2.0:
+                break
+
+            # --- soft relocation passes: hot soft clusters → cold cells, by the
+            # CONGESTION field (R3, 2026-05-28) then the DENSITY field (R5,
+            # 2026-05-28). Softs are the bulk of BOTH the routing-congestion and
+            # density terms; the cong pass converges then the density pass finds
+            # MORE moves it missed (DENS_SOFT_PROBE on best_pl: cong=0 relocs, but
+            # density 22–68 relocs for −0.011 to −0.020, all in the density term).
+            # Softs may overlap → no legality check. Accept-on-true-proxy. ---
+            for _sfield, _use_d in (("cong", False), ("density", True)):
+                if _n_soft <= 0:
+                    break
+                # A: hard-cap cong soft-pass at R3_CONG_MAX_ROUNDS rounds (cong
+                # saturates by round 3: ibm09 round 4+ ≤2 accepts, ~zero gain).
+                # Frees ~4-5s/round of wasted cong cycles for the density pass.
+                if _sfield == "cong" and _r2 >= R3_CONG_MAX_ROUNDS:
+                    continue
+                rem_sr = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+                if rem_sr < 2.0 * t_one_score + 2.0:
+                    break
+                # C: on rounds after the cong cap, the density pass gets a wider
+                # candidate set (top_hot 128 → 192) so the freed ~4-5s is spent
+                # on more density attempts instead of returning early.
+                _top_hot_this = (
+                    R3_SOFT_HOT_BOOSTED
+                    if (_sfield == "density" and _r2 >= R3_CONG_MAX_ROUNDS)
+                    else R3_SOFT_HOT
+                )
+                try:
+                    t_sr = time.monotonic()
+                    base_sr = float(_exact_proxy(best_pl, benchmark, plc))
+                    sr_scorer = IncrementalScorer(
+                        plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
+                    )
+                    sr_pos = np.stack(
+                        [best_pl[n:n + _n_soft, 0].numpy(),
+                         best_pl[n:n + _n_soft, 1].numpy()], axis=1
+                    ).astype(np.float64)
+                    sr_pos, sr_acc, _ = _soft_relocation_moves(
+                        sr_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark,
+                        sr_scorer, base_sr,
+                        deadline=t_sr + min(rem_sr - t_one_score, 15.0),
+                        top_hot=_top_hot_this, n_targets=R3_SOFT_TGT,
+                        soft_movable=_soft_movable, use_density=_use_d,
+                    )
+                    if sr_acc > 0:
+                        cand = best_pl.clone()
+                        cand[n:n + _n_soft, 0] = torch.tensor(sr_pos[:, 0], dtype=torch.float32)
+                        cand[n:n + _n_soft, 1] = torch.tensor(sr_pos[:, 1], dtype=torch.float32)
+                        sr_true = float(_exact_proxy(cand, benchmark, plc))
+                        if sr_true < best_score - 1e-6:
+                            _log(f"  R2 round {_r2+1} soft-reloc[{_sfield}]: {sr_acc} "
+                                 f"moves, {best_score:.4f} → {sr_true:.4f}")
+                            best_score, best_pl, round_improved = sr_true, cand, True
+                except Exception as exc:
+                    _log(f"  R2 soft-reloc[{_sfield}] failed: {type(exc).__name__}: {exc}")
 
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 2.0 * t_one_score + 2.0:
@@ -4497,6 +5226,107 @@ class MacroPlacer:
                      f"in {time.monotonic()-t_rp:.1f}s")
             except Exception as exc:
                 _log(f"  [RELOC_PROBE] failed: {type(exc).__name__}: {exc}")
+
+        # SOFT_RELOC_PROBE (2026-05-28): relocate hot SOFT clusters into low-
+        # congestion cells (R1 idea on softs). Targets the soft/net-dominated
+        # benchmarks (ibm17/18) that hard relocation can't help. Diagnostic only.
+        if os.environ.get("SOFT_RELOC_PROBE"):
+            try:
+                t_sp = time.monotonic()
+                n_soft = benchmark.num_soft_macros
+                base = float(_exact_proxy(best_pl, benchmark, plc))
+                bw = float(plc.get_cost()); bd = 0.5 * float(plc.get_density_cost())
+                bc = 0.5 * float(plc.get_congestion_cost())
+                sscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                spos = np.stack([best_pl[n:n + n_soft, 0].numpy(),
+                                 best_pl[n:n + n_soft, 1].numpy()], axis=1).astype(np.float64)
+                ssz = benchmark.macro_sizes[n:n + n_soft].numpy().astype(np.float64)
+                spos, sacc, _ssc = _soft_relocation_moves(
+                    spos, ssz[:, 0] / 2, ssz[:, 1] / 2, cw, ch, n, plc, benchmark,
+                    sscorer, base, deadline=t_sp + 30.0,
+                )
+                scand = best_pl.clone()
+                scand[n:n + n_soft, 0] = torch.tensor(spos[:, 0], dtype=torch.float32)
+                scand[n:n + n_soft, 1] = torch.tensor(spos[:, 1], dtype=torch.float32)
+                sp, sw, sd, sc = _proxy_decomp(scand, benchmark, plc)
+                verdict = "BEATS best" if sp < base - 1e-4 else "no gain"
+                _log(f"  [SOFT_RELOC_PROBE] base={base:.4f} (wl={bw:.4f} den={bd:.4f} "
+                     f"cong={bc:.4f}) -> {sacc} soft relocs -> proxy={sp:.4f} "
+                     f"(wl={sw:.4f} den={sd:.4f} cong={sc:.4f}) {verdict} "
+                     f"in {time.monotonic()-t_sp:.1f}s")
+            except Exception as exc:
+                import traceback
+                _log(f"  [SOFT_RELOC_PROBE] failed: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
+
+        # WLAWARE_PROBE (2026-05-28): A/B WL-aware HARD relocation target selection
+        # on best_pl. For each wl_blend, run one hard relocation pass from the SAME
+        # best_pl (fresh scorer) and report the resulting true proxy. blend=0 is the
+        # current nearest-to-current sort; >0 biases toward each macro's net
+        # centroid (WL anchor). Isolates the target-selection effect. Diagnostic.
+        if os.environ.get("WLAWARE_PROBE"):
+            try:
+                base = float(_exact_proxy(best_pl, benchmark, plc))
+                _log(f"  [WLAWARE_PROBE] base={base:.4f}")
+                for blend in (0.0, 0.5, 1.0):
+                    t_wp = time.monotonic()
+                    wscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                    cent = wscorer.hard_net_centroids()
+                    wpos = np.stack([best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1).astype(np.float64)
+                    wpos, wacc, _ = _relocation_moves(
+                        wpos, sizes, hw, hh, cw, ch, movable, n, plc, benchmark,
+                        wscorer, base, deadline=t_wp + 20.0, top_hot=48, n_targets=16,
+                        net_centroid=cent, wl_blend=blend,
+                    )
+                    wcand = best_pl.clone()
+                    wcand[:n, 0] = torch.tensor(wpos[:, 0], dtype=torch.float32)
+                    wcand[:n, 1] = torch.tensor(wpos[:, 1], dtype=torch.float32)
+                    wp, ww, wd, wc = _proxy_decomp(wcand, benchmark, plc)
+                    _log(f"  [WLAWARE_PROBE] blend={blend:.1f}: {wacc} relocs -> "
+                         f"proxy={wp:.4f} (wl={ww:.4f} den={wd:.4f} cong={wc:.4f}) "
+                         f"Δ={wp-base:+.4f} in {time.monotonic()-t_wp:.1f}s")
+            except Exception as exc:
+                import traceback
+                _log(f"  [WLAWARE_PROBE] failed: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
+
+        # DENS_SOFT_PROBE (R5, 2026-05-28): is there DENSITY headroom in the softs
+        # that the congestion-targeted soft pass (R3) missed? On best_pl (where the
+        # cong soft pass is already converged), run a DENSITY-targeted soft
+        # relocation (hot = softs in the densest cells, target = low-density cells)
+        # and report the true-proxy delta + decomposition. If it beats 0, a
+        # density-aware soft pass is worth adding to production. Diagnostic only.
+        if os.environ.get("DENS_SOFT_PROBE"):
+            try:
+                _n_soft = benchmark.num_soft_macros
+                if _n_soft > 0:
+                    base = float(_exact_proxy(best_pl, benchmark, plc))
+                    bw = float(plc.get_cost()); bd = 0.5 * float(plc.get_density_cost())
+                    bc = 0.5 * float(plc.get_congestion_cost())
+                    _ssz = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
+                    _smov = benchmark.get_movable_mask().numpy()[n:n + _n_soft]
+                    for tag, use_d in (("cong", False), ("density", True)):
+                        t_dp = time.monotonic()
+                        dscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                        dpos = np.stack([best_pl[n:n + _n_soft, 0].numpy(),
+                                         best_pl[n:n + _n_soft, 1].numpy()], axis=1).astype(np.float64)
+                        dpos, dacc, _ = _soft_relocation_moves(
+                            dpos, _ssz[:, 0] / 2, _ssz[:, 1] / 2, cw, ch, n, plc, benchmark,
+                            dscorer, base, deadline=t_dp + 30.0, top_hot=96, n_targets=24,
+                            soft_movable=_smov, use_density=use_d,
+                        )
+                        dcand = best_pl.clone()
+                        dcand[n:n + _n_soft, 0] = torch.tensor(dpos[:, 0], dtype=torch.float32)
+                        dcand[n:n + _n_soft, 1] = torch.tensor(dpos[:, 1], dtype=torch.float32)
+                        dp, dw, dd, dc = _proxy_decomp(dcand, benchmark, plc)
+                        _log(f"  [DENS_SOFT_PROBE] field={tag:7s}: {dacc} relocs -> "
+                             f"proxy={dp:.4f} (wl={dw:.4f} den={dd:.4f} cong={dc:.4f}) "
+                             f"Δ={dp-base:+.4f} in {time.monotonic()-t_dp:.1f}s")
+                    _log(f"  [DENS_SOFT_PROBE] base={base:.4f} (wl={bw:.4f} den={bd:.4f} cong={bc:.4f})")
+            except Exception as exc:
+                import traceback
+                _log(f"  [DENS_SOFT_PROBE] failed: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
         self._benchmarks_done += 1
