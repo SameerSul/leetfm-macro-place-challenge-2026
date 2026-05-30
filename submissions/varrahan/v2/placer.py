@@ -5157,7 +5157,7 @@ class MacroPlacer:
                     rel_true = float(_exact_proxy(cand, benchmark, plc))
                     if rel_true < best_score - 1e-6:
                         _log(f"  R2 round {_r2+1} reloc: {rel_acc} moves, "
-                             f"{best_score:.4f} → {rel_true:.4f}")
+                             f"{best_score:.4f} -> {rel_true:.4f}")
                         best_score, best_pl, round_improved = rel_true, cand, True
             except Exception as exc:
                 _log(f"  R2 relocation failed: {type(exc).__name__}: {exc}")
@@ -5216,7 +5216,7 @@ class MacroPlacer:
                         sr_true = float(_exact_proxy(cand, benchmark, plc))
                         if sr_true < best_score - 1e-6:
                             _log(f"  R2 round {_r2+1} soft-reloc[{_sfield}]: {sr_acc} "
-                                 f"moves, {best_score:.4f} → {sr_true:.4f}")
+                                 f"moves, {best_score:.4f} -> {sr_true:.4f}")
                             best_score, best_pl, round_improved = sr_true, cand, True
                 except Exception as exc:
                     _log(f"  R2 soft-reloc[{_sfield}] failed: {type(exc).__name__}: {exc}")
@@ -5253,7 +5253,7 @@ class MacroPlacer:
                     o_true = float(_exact_proxy(cand, benchmark, plc))
                     if o_true < best_score - 1e-6:
                         _log(f"  R2 round {_r2+1} 2-opt: {o_acc} swaps, "
-                             f"{best_score:.4f} → {o_true:.4f}")
+                             f"{best_score:.4f} -> {o_true:.4f}")
                         best_score, best_pl, round_improved = o_true, cand, True
             except Exception as exc:
                 _log(f"  R2 2-opt failed: {type(exc).__name__}: {exc}")
