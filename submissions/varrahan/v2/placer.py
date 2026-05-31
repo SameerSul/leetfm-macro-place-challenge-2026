@@ -696,10 +696,14 @@ def _relocation_moves(
     hot = mov_idx[np.argsort(-local_cong[mov_idx])][:top_hot]
 
     # Candidate target cells = the lowest-congestion cells; their centers are the
-    # relocation destinations. Pool a few × n_targets so per-macro legality
-    # filtering still leaves options. Wider pool = more diverse cold targets.
+    # relocation destinations. Use a percentile-based pool so that medium-cold
+    # cells geographically close to each hot macro are included — not just the
+    # globally coldest N cells which may all cluster in one corner.
     flat = cell_cong.ravel()
-    pool = np.argsort(flat)[: max(n_targets * 8, 64)]
+    _thr = np.percentile(flat, 55)  # bottom 55% by congestion ≈ 55% of grid cells
+    pool = np.where(flat < _thr)[0]
+    if pool.size < max(n_targets, 64):
+        pool = np.argsort(flat)[: max(n_targets, 64)]
     tgt_c = (pool % nc).astype(np.float64)
     tgt_r = (pool // nc).astype(np.float64)
     tgt_x = (tgt_c + 0.5) * cell_w
@@ -822,11 +826,14 @@ def _soft_relocation_moves(
     hot = order[:top_hot]
 
     flat = cell_field.ravel()
-    # Pool: top coldest cells to use as relocation targets. Previously
-    # max(n_targets*4, n_targets) = 96 cells — only 5% of a 41x45 grid.
-    # Wider pool discovers more diverse targets; each hot soft still only
-    # tries n_targets nearest candidates so the per-soft cost is the same.
-    pool = np.argsort(flat)[: max(n_targets * 8, 64)]
+    # Pool: use a percentile threshold so medium-cold cells near each hot soft
+    # are included — not just globally coldest N cells that may all be in one
+    # corner. Each hot soft still tries only n_targets nearest candidates from
+    # the pool, so per-soft cost is the same; diversity improves acceptance rate.
+    _thr = np.percentile(flat, 55)  # bottom 55% by field value
+    pool = np.where(flat < _thr)[0]
+    if pool.size < max(n_targets, 64):
+        pool = np.argsort(flat)[: max(n_targets, 64)]
     tgt_x = ((pool % nc).astype(np.float64) + 0.5) * cell_w
     tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
     tgt_cong = flat[pool]
@@ -840,6 +847,12 @@ def _soft_relocation_moves(
         cand = np.where(tgt_cong < local_cong[k] - 1e-9)[0]
         if cand.size == 0:
             continue
+        # Target selection: nearest-first for BOTH cong and density passes.
+        # Coldness-first was TRIED 2026-05-30 but regressed density severely
+        # (R1: 28 accepts -0.014 vs 75 accepts -0.045 with nearest-first). The
+        # reason: coldest cells are scattered across the chip; moving there
+        # spikes WL which outweighs density savings → proxy gate rejects most
+        # moves. Nearest-first keeps WL stable so the density reduction passes.
         d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
         cand = cand[np.argsort(d2)][:n_targets]
         best_k_xy = None
@@ -3921,12 +3934,16 @@ class MacroPlacer:
         self.HARNESS_TOTAL_BENCHMARKS: int = 17
         # Directed phases overrun the soft budget by this much (see BUDGET_OVERRUN_S
         # in place()); hoisted here so the budget allocator can reserve for it.
-        self.BUDGET_OVERRUN_S: float = 60.0
+        # Increased 60→75 (2026-05-30): bgfj81y2x and babz0gezx both hit the
+        # 260s cap after 6 R2 rounds with ~0s remaining. A 7th density-only round
+        # costs ~17s (cong skipped: _r2=6 ≥ R3_CONG_MAX_ROUNDS=5); this 15s extra
+        # budget enables it. 17×(110+75)=3145 < 3300s harness total → --all safe.
+        self.BUDGET_OVERRUN_S: float = 75.0
         # Floor-reservation (2026-05-29): every benchmark in an --all run is
         # guaranteed at least this much budget. The allocator reserves
         # (floor + overrun) for each *remaining* benchmark so an early/large one
         # can't eat the tail's budget — which previously collapsed the last
-        # benchmark (ibm18) to the raw baseline. 17·(110+60)=2890 < 3300, so the
+        # benchmark (ibm18) to the raw baseline. 17·(110+75)=3145 < 3300, so the
         # floor is feasible for all 17 with margin.
         self.PER_BENCH_FLOOR_S: float = 110.0
         # Leave headroom under the 3600s hard harness cap for setup/teardown.
@@ -4223,7 +4240,7 @@ class MacroPlacer:
                 except Exception:
                     pass
             if plc is not None and dp_handle is not None:
-                large_dp_budget = effective_budget_s + 60.0  # mirrors BUDGET_OVERRUN_S below
+                large_dp_budget = effective_budget_s + 75.0  # mirrors BUDGET_OVERRUN_S below
                 t_base_score_start = time.monotonic()
                 try:
                     base_score = float(_exact_proxy(pl_scratch, benchmark, plc))
@@ -5117,7 +5134,18 @@ class MacroPlacer:
         # instead of ending the round early (C). Preserves the productive
         # rounds 1-3 of cong (~−0.027 cumulative on ibm09: −0.023, −0.004, ≈0).
         R3_SOFT_HOT_BOOSTED = 256  # was 192: more density-pass coverage in later rounds
-        R3_CONG_MAX_ROUNDS = 3
+        # D (2026-05-30): the boosted density pass (rounds ≥ R3_CONG_MAX_ROUNDS)
+        # has top_hot=256 but n_targets=32.  At ~3ms/score_move_soft, the 15s
+        # deadline covers only 15000/(32*3)=156 of 256 hot macros — the bottom
+        # 100 are never tried.  Halving to n_targets=16 covers all 256 in
+        # 15000/(16*3)=312 slot-evals → 256 macros actually done in ~7.7s. The
+        # nearest-16 captures most of the value of nearest-32 (targets 17–32 are
+        # farther, more WL-penalised, and less likely to pass the proxy gate).
+        # Net expected effect: ~40% more density accepts per boosted pass at
+        # the cost of ~5–8% lower per-macro acceptance quality — trades a small
+        # per-macro loss for 64% wider coverage.
+        R3_SOFT_TGT_BOOSTED = 16  # narrower targets × wider coverage for boosted rounds
+        R3_CONG_MAX_ROUNDS = 5
         # Soft-macro half-sizes (for the soft relocation pass — R3, 2026-05-28).
         _n_soft = benchmark.num_soft_macros
         _soft_sizes = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
@@ -5145,42 +5173,83 @@ class MacroPlacer:
             except Exception:
                 return None
 
+        _consecutive_reloc_zeros = 0  # rounds with 0 reloc accepts
         for _r2 in range(R2_MAX_ROUNDS):
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 3.0 * t_one_score + 3.0:
                 break
             round_improved = False
 
-            # --- relocation pass (hot → cold gaps) ---
+            # --- Per-round shared scorer (scorer-sharing, 2026-05-30) -----------
+            # Previously each pass (reloc, cong, density, 2-opt) built its own
+            # IncrementalScorer (~0.5–1s) and called _exact_proxy (~0.2s) before
+            # starting — 4×/round × 6 rounds = ~18s of pure overhead. Now we build
+            # ONE scorer per round and reuse it across all passes. After each pass
+            # commits moves, the scorer's state is already at the new best position
+            # (the post-accept _exact_proxy keeps plc in sync). Only if a verify
+            # unexpectedly fails do we rebuild from the known-good best_pl.
+            _r2_base = None
+            _r2_shared = None
             try:
-                t_rel = time.monotonic()
-                base_rel = float(_exact_proxy(best_pl, benchmark, plc))
-                rel_scorer = IncrementalScorer(
+                _r2_base = float(_exact_proxy(best_pl, benchmark, plc))
+                _r2_shared = IncrementalScorer(
                     plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
                 )
-                # R4 (WL-aware hard-relocation targeting) was DISPROVEN 2026-05-29:
-                # biasing targets toward the net centroid steered the interleave to
-                # a slightly WORSE local min (ibm03 +0.0015, ibm07 +0.0025) with no
-                # upside. Reverted to the nearest-to-current sort. The `wl_blend`
-                # option + `hard_net_centroids()` + `WLAWARE_PROBE` are kept as inert
-                # diagnostic scaffolding (see ISSUES.md).
-                rel_pos, rel_acc, _ = _relocation_moves(
-                    _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
-                    benchmark, rel_scorer, base_rel,
-                    deadline=t_rel + min(rem_r2 - t_one_score, 15.0),
-                    top_hot=R2_HOT, n_targets=R2_TGT,
-                )
-                if rel_acc > 0:
-                    cand = best_pl.clone()
-                    cand[:n, 0] = torch.tensor(rel_pos[:, 0], dtype=torch.float32)
-                    cand[:n, 1] = torch.tensor(rel_pos[:, 1], dtype=torch.float32)
-                    rel_true = float(_exact_proxy(cand, benchmark, plc))
-                    if rel_true < best_score - 1e-6:
-                        _log(f"  R2 round {_r2+1} reloc: {rel_acc} moves, "
-                             f"{best_score:.4f} -> {rel_true:.4f}")
-                        best_score, best_pl, round_improved = rel_true, cand, True
             except Exception as exc:
-                _log(f"  R2 relocation failed: {type(exc).__name__}: {exc}")
+                _log(f"  R2 round {_r2+1} scorer init failed: {type(exc).__name__}: {exc}")
+                break
+
+            # --- relocation pass (hot → cold gaps) ---
+            # Adaptive reloc skip (2026-05-30): once reloc has found 0
+            # improvements for 2+ consecutive rounds it is very unlikely to
+            # find any (congestion map stable; no new cold gaps from density
+            # moves since density targets softs while reloc targets hard macros
+            # via the cong map). Skipping saves ~1.5s/round which the density
+            # pass can use instead. Counter resets to 0 when reloc finds an
+            # improvement; stays at 2+ while skipping (no reset from density).
+            _run_reloc = (_consecutive_reloc_zeros < 2)
+            if _run_reloc:
+                try:
+                    t_rel = time.monotonic()
+                    # R4 (WL-aware hard-relocation targeting) was DISPROVEN 2026-05-29:
+                    # biasing targets toward the net centroid steered the interleave to
+                    # a slightly WORSE local min (ibm03 +0.0015, ibm07 +0.0025) with no
+                    # upside. Reverted to the nearest-to-current sort. The `wl_blend`
+                    # option + `hard_net_centroids()` + `WLAWARE_PROBE` are kept as inert
+                    # diagnostic scaffolding (see ISSUES.md).
+                    rel_pos, rel_acc, _ = _relocation_moves(
+                        _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
+                        benchmark, _r2_shared, _r2_base,
+                        deadline=t_rel + min(rem_r2 - t_one_score, 15.0),
+                        top_hot=R2_HOT, n_targets=R2_TGT,
+                    )
+                    if rel_acc > 0:
+                        cand = best_pl.clone()
+                        cand[:n, 0] = torch.tensor(rel_pos[:, 0], dtype=torch.float32)
+                        cand[:n, 1] = torch.tensor(rel_pos[:, 1], dtype=torch.float32)
+                        rel_true = float(_exact_proxy(cand, benchmark, plc))
+                        if rel_true < best_score - 1e-6:
+                            _log(f"  R2 round {_r2+1} reloc: {rel_acc} moves, "
+                                 f"{best_score:.4f} -> {rel_true:.4f}")
+                            best_score, best_pl, _r2_base, round_improved = (
+                                rel_true, cand, rel_true, True)
+                            _consecutive_reloc_zeros = 0
+                        else:
+                            # Verify failed (rare): plc was set to cand, reset to best_pl.
+                            _r2_base = float(_exact_proxy(best_pl, benchmark, plc))
+                            _r2_shared = IncrementalScorer(
+                                plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                            _consecutive_reloc_zeros += 1
+                    else:
+                        _consecutive_reloc_zeros += 1
+                except Exception as exc:
+                    _log(f"  R2 relocation failed: {type(exc).__name__}: {exc}")
+                    try:
+                        _r2_base = float(_exact_proxy(best_pl, benchmark, plc))
+                        _r2_shared = IncrementalScorer(
+                            plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                    except Exception:
+                        break
 
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 2.0 * t_one_score + 2.0:
@@ -5192,7 +5261,10 @@ class MacroPlacer:
             # density terms; the cong pass converges then the density pass finds
             # MORE moves it missed (DENS_SOFT_PROBE on best_pl: cong=0 relocs, but
             # density 22–68 relocs for −0.011 to −0.020, all in the density term).
-            # Softs may overlap → no legality check. Accept-on-true-proxy. ---
+            # Softs may overlap → no legality check. Accept-on-true-proxy.
+            # Scorer-sharing: no new IncrementalScorer or _exact_proxy here —
+            # _r2_shared is already at the post-reloc committed state, and plc
+            # was synced by the reloc verify call (or round-start if reloc=0). ---
             for _sfield, _use_d in (("cong", False), ("density", True)):
                 if _n_soft <= 0:
                     break
@@ -5207,26 +5279,28 @@ class MacroPlacer:
                 # C: on rounds after the cong cap, the density pass gets a wider
                 # candidate set (top_hot 128 → 192) so the freed ~4-5s is spent
                 # on more density attempts instead of returning early.
+                _is_boosted_density = (_sfield == "density" and _r2 >= R3_CONG_MAX_ROUNDS)
                 _top_hot_this = (
-                    R3_SOFT_HOT_BOOSTED
-                    if (_sfield == "density" and _r2 >= R3_CONG_MAX_ROUNDS)
-                    else R3_SOFT_HOT
+                    R3_SOFT_HOT_BOOSTED if _is_boosted_density else R3_SOFT_HOT
+                )
+                # D (2026-05-30): boosted density rounds use narrower n_targets so the
+                # 15s deadline covers all 256 hot macros (not just the top ~156 with
+                # n_targets=32 at ~3ms/call).  Non-boosted rounds keep n_targets=32
+                # (160 hot macros → all 160 covered with ample margin).
+                _n_tgt_this = (
+                    R3_SOFT_TGT_BOOSTED if _is_boosted_density else R3_SOFT_TGT
                 )
                 try:
                     t_sr = time.monotonic()
-                    base_sr = float(_exact_proxy(best_pl, benchmark, plc))
-                    sr_scorer = IncrementalScorer(
-                        plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
-                    )
                     sr_pos = np.stack(
                         [best_pl[n:n + _n_soft, 0].numpy(),
                          best_pl[n:n + _n_soft, 1].numpy()], axis=1
                     ).astype(np.float64)
                     sr_pos, sr_acc, _ = _soft_relocation_moves(
                         sr_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark,
-                        sr_scorer, base_sr,
+                        _r2_shared, _r2_base,
                         deadline=t_sr + min(rem_sr - t_one_score, 15.0),
-                        top_hot=_top_hot_this, n_targets=R3_SOFT_TGT,
+                        top_hot=_top_hot_this, n_targets=_n_tgt_this,
                         soft_movable=_soft_movable, use_density=_use_d,
                     )
                     if sr_acc > 0:
@@ -5237,21 +5311,30 @@ class MacroPlacer:
                         if sr_true < best_score - 1e-6:
                             _log(f"  R2 round {_r2+1} soft-reloc[{_sfield}]: {sr_acc} "
                                  f"moves, {best_score:.4f} -> {sr_true:.4f}")
-                            best_score, best_pl, round_improved = sr_true, cand, True
+                            best_score, best_pl, _r2_base, round_improved = (
+                                sr_true, cand, sr_true, True)
+                        else:
+                            # Verify failed: reset scorer + plc to best_pl.
+                            _r2_base = float(_exact_proxy(best_pl, benchmark, plc))
+                            _r2_shared = IncrementalScorer(
+                                plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
                 except Exception as exc:
                     _log(f"  R2 soft-reloc[{_sfield}] failed: {type(exc).__name__}: {exc}")
+                    try:
+                        _r2_base = float(_exact_proxy(best_pl, benchmark, plc))
+                        _r2_shared = IncrementalScorer(
+                            plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
+                    except Exception:
+                        pass
 
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
             # --- 2-opt cleanup pass (swaps around the relocated macros) ---
+            # Scorer-sharing: reuses _r2_shared (post-reloc+cong+density state).
             try:
                 t_2o = time.monotonic()
-                base_2o = float(_exact_proxy(best_pl, benchmark, plc))
-                o_scorer = IncrementalScorer(
-                    plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
-                )
                 o_scratch = best_pl.clone()
 
                 def _r2_score(pos_arr, _scr=o_scratch):
@@ -5262,9 +5345,9 @@ class MacroPlacer:
 
                 o_pos, o_acc, _o_fs, _o_sc = _two_opt_proxy_swap(
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n,
-                    score_fn=_r2_score, initial_score=base_2o, k_neighbors=20,
+                    score_fn=_r2_score, initial_score=_r2_base, k_neighbors=20,
                     max_iters=6, deadline=t_2o + min(rem_r2 - t_one_score, R2_2OPT_SLICE),
-                    incremental_scorer=o_scorer, macro_cong=_macro_cong_now(),
+                    incremental_scorer=_r2_shared, macro_cong=_macro_cong_now(),
                 )
                 if o_acc > 0:
                     cand = best_pl.clone()
@@ -5274,7 +5357,12 @@ class MacroPlacer:
                     if o_true < best_score - 1e-6:
                         _log(f"  R2 round {_r2+1} 2-opt: {o_acc} swaps, "
                              f"{best_score:.4f} -> {o_true:.4f}")
-                        best_score, best_pl, round_improved = o_true, cand, True
+                        best_score, best_pl, _r2_base, round_improved = (
+                            o_true, cand, o_true, True)
+                    else:
+                        _r2_base = float(_exact_proxy(best_pl, benchmark, plc))
+                        _r2_shared = IncrementalScorer(
+                            plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
             except Exception as exc:
                 _log(f"  R2 2-opt failed: {type(exc).__name__}: {exc}")
 
