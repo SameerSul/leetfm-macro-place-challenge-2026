@@ -5135,11 +5135,13 @@ class MacroPlacer:
         # ibm04 -0.0130 vs D-change.
         # F (2026-05-30): IBM benchmarks have 894–1985 soft macros; E covers only 13–29%.
         # Doubling to top_hot=512, n_targets=8 keeps the same ~4096 slot-evals/pass but
-        # covers 25–57% of softs.  With 8 nearest-targets, acceptance quality drops slightly
-        # but coverage gain (256 extra macros at 10–40% acceptance) is the larger effect.
-        # Outer loop overhead (512 vs 256 Python iterations) adds ~0.25s/pass — negligible.
-        R3_SOFT_HOT = 512    # was 256 (E): cover top-512 hot softs; IBM softs=894–1985
-        R3_SOFT_TGT = 8      # was 16: halved again to keep 512×8=4096 evals ≈ 12.3s/pass
+        # covers 25–57% of softs.  Delivered ibm01 -0.0012, ibm04 -0.0041 vs E-change.
+        # G (2026-05-30): double again to top_hot=1024, n_targets=4 → covers 52–100% of
+        # softs (ibm01 894→100%, ibm04 1085→94%, ibm10 1982→52%).  4096 evals/pass unchanged.
+        # Risk: nearest-4 may miss moves that nearest-8 would find (targets 5-8 cut).
+        # The density field is spatially smooth; nearest-4 should capture most value.
+        R3_SOFT_HOT = 1024   # was 512 (F): cover top-1024 hot softs (capped at num_soft)
+        R3_SOFT_TGT = 4      # was 8: halved to keep 1024×4=4096 evals ≈ 12.3s/pass
         # A+C (2026-05-29): the cong soft-reloc pass saturates by round 3
         # (top routing hotspots cleared; ibm09 round 4+ accepts ≤2 moves for
         # ~zero gain) while the density pass keeps finding moves through round
@@ -5148,9 +5150,9 @@ class MacroPlacer:
         # cap so the freed ~4-5s/round is spent on more density attempts
         # instead of ending the round early (C). Preserves the productive
         # rounds 1-3 of cong (~−0.027 cumulative on ibm09: −0.023, −0.004, ≈0).
-        R3_SOFT_HOT_BOOSTED = 512  # same as base (F); kept for code clarity
-        # F: boosted rounds now also use 8 targets and 512 hot — same as base.
-        R3_SOFT_TGT_BOOSTED = 8   # same as base (F); kept for code clarity
+        R3_SOFT_HOT_BOOSTED = 1024  # same as base (G); kept for code clarity
+        # G: boosted rounds also use 4 targets and 1024 hot — same as base.
+        R3_SOFT_TGT_BOOSTED = 4    # same as base (G); kept for code clarity
         R3_CONG_MAX_ROUNDS = 5
         # Soft-macro half-sizes (for the soft relocation pass — R3, 2026-05-28).
         _n_soft = benchmark.num_soft_macros
