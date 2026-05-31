@@ -5128,8 +5128,15 @@ class MacroPlacer:
         # R3b (2026-05-28): softs number 900-2000 but only R2_HOT were tried per
         # round (~16% coverage over 6 rounds on ibm17), so the dominant lever was
         # under-covered. Wider soft candidate set; budget-gated by the pass deadline.
-        R3_SOFT_HOT = 160    # was 128: wider cong-pass coverage
-        R3_SOFT_TGT = 32     # was 24: more target cells tried per hot soft
+        # E (2026-05-30): extend n_targets=16 / top_hot=256 to ALL rounds (not just boosted).
+        # Rounds 1-5 previously used top_hot=160, n_targets=32 → 15000/(32*3)=156/160 macros
+        # covered per pass at ~15s each.  Switching to top_hot=256, n_targets=16 covers all
+        # 256 macros in 15000/(16*3)=312 slot-evals → ~12.3s/pass.  96 more hot macros per
+        # pass at the same or faster pace; acceptance rates in rounds 1-5 are 30-60%, so the
+        # extra coverage translates directly to additional density/cong improvements.
+        # The boosted parameters below become identical to the base but are kept for clarity.
+        R3_SOFT_HOT = 256    # was 160: cover top-256 hot softs in ALL rounds
+        R3_SOFT_TGT = 16     # was 32: halved to keep all-256 coverage within ~12.3s/pass
         # A+C (2026-05-29): the cong soft-reloc pass saturates by round 3
         # (top routing hotspots cleared; ibm09 round 4+ accepts ≤2 moves for
         # ~zero gain) while the density pass keeps finding moves through round
@@ -5138,18 +5145,11 @@ class MacroPlacer:
         # cap so the freed ~4-5s/round is spent on more density attempts
         # instead of ending the round early (C). Preserves the productive
         # rounds 1-3 of cong (~−0.027 cumulative on ibm09: −0.023, −0.004, ≈0).
-        R3_SOFT_HOT_BOOSTED = 256  # was 192: more density-pass coverage in later rounds
-        # D (2026-05-30): the boosted density pass (rounds ≥ R3_CONG_MAX_ROUNDS)
-        # has top_hot=256 but n_targets=32.  At ~3ms/score_move_soft, the 15s
-        # deadline covers only 15000/(32*3)=156 of 256 hot macros — the bottom
-        # 100 are never tried.  Halving to n_targets=16 covers all 256 in
-        # 15000/(16*3)=312 slot-evals → 256 macros actually done in ~7.7s. The
-        # nearest-16 captures most of the value of nearest-32 (targets 17–32 are
-        # farther, more WL-penalised, and less likely to pass the proxy gate).
-        # Net expected effect: ~40% more density accepts per boosted pass at
-        # the cost of ~5–8% lower per-macro acceptance quality — trades a small
-        # per-macro loss for 64% wider coverage.
-        R3_SOFT_TGT_BOOSTED = 16  # narrower targets × wider coverage for boosted rounds
+        R3_SOFT_HOT_BOOSTED = 256  # same as base now; kept for code clarity
+        # D (2026-05-30): boosted density rounds use n_targets=16 for full-256 coverage.
+        # E: base rounds now also use 16 — these values are identical but the distinction
+        # between boosted/non-boosted is preserved in case the values diverge later.
+        R3_SOFT_TGT_BOOSTED = 16  # same as base now; kept for code clarity
         R3_CONG_MAX_ROUNDS = 5
         # Soft-macro half-sizes (for the soft relocation pass — R3, 2026-05-28).
         _n_soft = benchmark.num_soft_macros
