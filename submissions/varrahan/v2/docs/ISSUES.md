@@ -13,14 +13,14 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.1993** (above + HXS hard ⇄ soft cross-swap + R6 combined cong+density relocation + WL-delta prefilter for soft-2opt + persistent shared scorer per R2 round + numba-JIT routing apply with numpy fallback) |
-| Prior `--all` avg | 1.2092 (A4 + A5 + adaptive R2/skip-empty + #3v2 env-gated) |
+| Best `--all` avg | **1.1963** (above + HS3 hard-soft 3-cycle + 3-pin routing dispatcher numba-JIT) |
+| Prior `--all` avg | 1.1993 (HXS + R6 + WL-prefilter + shared-scorer + numba strips) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−17.7% (beat by 0.259 — beats on every benchmark)** |
+| **Gap to RePlAce** | **−17.9% (beat by 0.262 — beats on every benchmark)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−14.8% (BEATS by 0.208)** |
+| **Gap to leaderboard** | **−15.0% (BEATS by 0.211)** |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | 11486s WSL wall (host-suspend inflated); harness monotonic ≤3300s, well under the 3600s hard cap |
+| `--all` wall-clock | 4429s wall (74 min, no host-suspend drift), harness monotonic well under the 3600s hard cap |
 
 All 17 IBM benchmarks improved vs v12 baseline. The **relocation family** is the
 dominant lever (R1 −0.0096, R2 −0.0083, R2b −0.0027, R3 −0.0452, **R5 −0.0965**

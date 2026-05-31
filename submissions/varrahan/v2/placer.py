@@ -1191,6 +1191,162 @@ def _two_opt_hard_soft_swap(
     return hard_pos, soft_pos, accepts, best_score
 
 
+def _three_opt_hard_soft_soft(
+    hard_pos: np.ndarray,
+    soft_pos: np.ndarray,
+    sizes: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    cw: float,
+    ch: float,
+    movable_hard: np.ndarray,
+    n: int,
+    plc,
+    benchmark: "Benchmark",
+    incremental_scorer,
+    initial_score: float,
+    deadline: "float | None" = None,
+    top_hot: int = 15,
+    k_inner: int = 5,
+    soft_movable: "np.ndarray | None" = None,
+    use_density: bool = False,
+) -> "tuple[np.ndarray, np.ndarray, int, float]":
+    """HS3 (2026-05-31): hard-soft-soft 3-cycle rotation.
+
+    For each hot hard H, considers the cycle H → S1 → S2 → H where S1 is
+    one of H's k_inner nearest movable softs, and S2 is one of S1's
+    k_inner nearest movable softs. The cycle is: H takes S1's old pos,
+    S1 takes S2's old pos, S2 takes H's old pos.
+
+    Captures patterns no 2-opt can: when a hard wants S1's slot but
+    swapping H↔S1 hurts because S1's current connections need to go
+    elsewhere, the 3-cycle finds a single combined move that 2-opt
+    (which would have to accept S1↔S2 separately) cannot reach.
+
+    Legality: hard's new position (S1's old position) must satisfy
+    in-bounds + no overlap with OTHER hard macros (overlap with hard's
+    own old footprint is OK). Softs may overlap, no legality check for
+    them.
+
+    Cost: O(top_hot × k_inner²) trials. With top_hot=15, k_inner=5 →
+    ~375 trials × ~10ms = ~3.8s/pass — gated by a tight deadline."""
+    num_soft = incremental_scorer.num_soft
+    if num_soft < 2:
+        return hard_pos, soft_pos, 0, initial_score
+    nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    cell_w, cell_h = cw / nc, ch / nr
+
+    if use_density:
+        go = incremental_scorer.grid_occupied
+        if go is None or go.size != nr * nc:
+            return hard_pos, soft_pos, 0, initial_score
+        cell_field = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
+    else:
+        try:
+            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
+            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
+        except Exception:
+            return hard_pos, soft_pos, 0, initial_score
+        if h_arr.size != nr * nc or v_arr.size != nr * nc:
+            return hard_pos, soft_pos, 0, initial_score
+        cell_field = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+
+    # Hot hards by chosen field.
+    hci = np.clip((hard_pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
+    hri = np.clip((hard_pos[:n, 1] / cell_h).astype(np.int64), 0, nr - 1)
+    local_h = cell_field[hri, hci]
+    mov_hard = np.where(movable_hard)[0]
+    if mov_hard.size == 0:
+        return hard_pos, soft_pos, 0, initial_score
+    hot = mov_hard[np.argsort(-local_h[mov_hard])][:top_hot]
+
+    if soft_movable is not None:
+        movable_soft_idx = np.where(np.asarray(soft_movable, dtype=bool))[0]
+    else:
+        movable_soft_idx = np.arange(num_soft)
+    if movable_soft_idx.size < 2:
+        return hard_pos, soft_pos, 0, initial_score
+    movable_soft_pos = soft_pos[movable_soft_idx]
+
+    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
+    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    EPS = 0.05
+    all_hard_idx = np.arange(n)
+
+    best_score = initial_score
+    accepts = 0
+    swapped_hard = np.zeros(n, dtype=bool)
+    swapped_soft = np.zeros(num_soft, dtype=bool)
+
+    for i in hot:
+        i = int(i)
+        if swapped_hard[i]:
+            continue
+        if deadline is not None and time.monotonic() > deadline:
+            break
+
+        # kNN softs around hard i — candidates for S1.
+        d2_h = ((movable_soft_pos[:, 0] - hard_pos[i, 0]) ** 2 +
+                (movable_soft_pos[:, 1] - hard_pos[i, 1]) ** 2)
+        s1_order = np.argsort(d2_h)[:k_inner]
+        s1_cands = movable_soft_idx[s1_order]
+
+        # Hard legality pre-mask (other hards' positions).
+        mask = all_hard_idx != i
+        sxi = sep_x_mat[i, mask]
+        syi = sep_y_mat[i, mask]
+        ox = hard_pos[mask, 0]
+        oy = hard_pos[mask, 1]
+
+        best_triple = None
+        for k1 in s1_cands:
+            k1 = int(k1)
+            if swapped_soft[k1]:
+                continue
+            # Hard's new position = S1's old position. Check legality.
+            hx, hy = float(soft_pos[k1, 0]), float(soft_pos[k1, 1])
+            if (hx - hw[i] < -EPS or hx + hw[i] > cw + EPS or
+                    hy - hh[i] < -EPS or hy + hh[i] > ch + EPS):
+                continue
+            if ((np.abs(hx - ox) < sxi + EPS) & (np.abs(hy - oy) < syi + EPS)).any():
+                continue
+
+            # kNN softs around k1 — candidates for S2.
+            d2_k1 = ((movable_soft_pos[:, 0] - soft_pos[k1, 0]) ** 2 +
+                     (movable_soft_pos[:, 1] - soft_pos[k1, 1]) ** 2)
+            # +1 in case k1 is in its own neighbor list.
+            s2_order = np.argsort(d2_k1)[:k_inner + 1]
+            s2_cands = movable_soft_idx[s2_order]
+
+            for k2 in s2_cands:
+                k2 = int(k2)
+                if k2 == k1 or swapped_soft[k2]:
+                    continue
+                # Cycle: H → S1's old, S1 → S2's old, S2 → H's old.
+                s1_new_xy = (float(soft_pos[k2, 0]), float(soft_pos[k2, 1]))
+                s2_new_xy = (float(hard_pos[i, 0]), float(hard_pos[i, 1]))
+                s = incremental_scorer.score_cycle_hard_soft_soft(
+                    i, (hx, hy), k1, s1_new_xy, k2, s2_new_xy
+                )
+                if s < best_score - 1e-9:
+                    best_score = s
+                    best_triple = (k1, (hx, hy), s1_new_xy, k2, s2_new_xy)
+
+        if best_triple is not None:
+            k1_win, h_xy, s1_xy, k2_win, s2_xy = best_triple
+            incremental_scorer.commit_cycle_hard_soft_soft(
+                i, h_xy, k1_win, s1_xy, k2_win, s2_xy
+            )
+            hard_pos[i, 0], hard_pos[i, 1] = h_xy
+            soft_pos[k1_win, 0], soft_pos[k1_win, 1] = s1_xy
+            soft_pos[k2_win, 0], soft_pos[k2_win, 1] = s2_xy
+            swapped_hard[i] = True
+            swapped_soft[k1_win] = True
+            swapped_soft[k2_win] = True
+            accepts += 1
+    return hard_pos, soft_pos, accepts, best_score
+
+
 def _multiseed_2opt_worker(
     name: str,
     iccad_path: str,
@@ -1993,13 +2149,166 @@ def _apply_2pin_routing(H_flat: np.ndarray, V_flat: np.ndarray,
     _apply_v_strips_batch(V_flat, snk_col, row_min, row_max, weight, grid_row, grid_col)
 
 
+if HAS_NUMBA:
+    @_numba_njit(cache=True, fastmath=False)
+    def _apply_3pin_routing_vec_jit(H_flat, V_flat, g0_flat, g1_flat, g2_flat,
+                                      weights, grid_col):
+        """Speedup #35 (2026-05-31): JIT explicit-per-net 3-pin routing.
+
+        Bit-equivalent to `_apply_3pin_routing_vec_numpy` (the original
+        numpy gather/scatter version). For each net:
+          1. Convert 3 flat gcells to (row, col) pairs.
+          2. Sort by (col asc, row asc) — manual 3-element insertion sort.
+          3. Classify into the 4 cases (3 with the col-sorted order,
+             T-routing/case 4 needs a row-sorted re-sort).
+          4. Apply H/V strip adds directly into the flat arrays.
+
+        Profile said `_apply_3pin_routing_vec` was 38% of per-move time.
+        The numpy version's per-case mask/concat/strip-batch fanout has
+        meaningful overhead beyond the actual arithmetic; collapsing it
+        into a single per-net loop turns it into a small, tight JIT'd
+        kernel with no temporary allocations. Float accumulation order
+        matches a left-to-right per-cell scalar accumulation — within
+        the move verifier tolerance (≤4.4e-16) by design.
+        """
+        n = g0_flat.shape[0]
+        for k in range(n):
+            # Decode flat → (row, col) for each of the 3 pins.
+            ya = g0_flat[k] // grid_col; xa = g0_flat[k] % grid_col
+            yb = g1_flat[k] // grid_col; xb = g1_flat[k] % grid_col
+            yc = g2_flat[k] // grid_col; xc = g2_flat[k] % grid_col
+            w = weights[k]
+
+            # Sort 3 (x, y) pairs by (x asc, y asc). Manual 3-pass swap —
+            # equivalent to a 3-element insertion / bubble sort.
+            x1 = xa; y1 = ya
+            x2 = xb; y2 = yb
+            x3 = xc; y3 = yc
+            if x1 > x2 or (x1 == x2 and y1 > y2):
+                tx = x1; x1 = x2; x2 = tx
+                ty = y1; y1 = y2; y2 = ty
+            if x2 > x3 or (x2 == x3 and y2 > y3):
+                tx = x2; x2 = x3; x3 = tx
+                ty = y2; y2 = y3; y3 = ty
+            if x1 > x2 or (x1 == x2 and y1 > y2):
+                tx = x1; x1 = x2; x2 = tx
+                ty = y1; y1 = y2; y2 = ty
+
+            # Case 1: L-routing — x1<x2<x3 AND y2 strictly between y1 and y3.
+            if x1 < x2 and x2 < x3:
+                ymn13 = y1 if y1 < y3 else y3
+                ymx13 = y1 if y1 > y3 else y3
+                if ymn13 < y2 and ymx13 > y2:
+                    # H y1 [x1..x2], y2 [x2..x3]
+                    base1 = y1 * grid_col
+                    for c in range(x1, x2):
+                        H_flat[base1 + c] += w
+                    base2 = y2 * grid_col
+                    for c in range(x2, x3):
+                        H_flat[base2 + c] += w
+                    # V x2 [min(y1,y2)..max(y1,y2)]
+                    r_lo = y1 if y1 < y2 else y2
+                    r_hi = y1 if y1 > y2 else y2
+                    for r in range(r_lo, r_hi):
+                        V_flat[r * grid_col + x2] += w
+                    # V x3 [min(y2,y3)..max(y2,y3)]
+                    r_lo = y2 if y2 < y3 else y3
+                    r_hi = y2 if y2 > y3 else y3
+                    for r in range(r_lo, r_hi):
+                        V_flat[r * grid_col + x3] += w
+                    continue
+
+            # Case 2: x2==x3, x1<x2, y1 < min(y2, y3).  NOT case1.
+            mny23 = y2 if y2 < y3 else y3
+            if x2 == x3 and x1 < x2 and y1 < mny23:
+                # H y1 [x1..x2]
+                base1 = y1 * grid_col
+                for c in range(x1, x2):
+                    H_flat[base1 + c] += w
+                # V x2 [y1..max(y2,y3)]
+                mxy23 = y2 if y2 > y3 else y3
+                for r in range(y1, mxy23):
+                    V_flat[r * grid_col + x2] += w
+                continue
+
+            # Case 3: y2 == y3.  NOT case1, NOT case2.
+            if y2 == y3:
+                base1 = y1 * grid_col
+                for c in range(x1, x2):
+                    H_flat[base1 + c] += w
+                base2 = y2 * grid_col
+                for c in range(x2, x3):
+                    H_flat[base2 + c] += w
+                # V x2 [min(y2,y1)..max(y2,y1)]
+                r_lo = y2 if y2 < y1 else y1
+                r_hi = y2 if y2 > y1 else y1
+                for r in range(r_lo, r_hi):
+                    V_flat[r * grid_col + x2] += w
+                continue
+
+            # Case 4: T-routing — re-sort by (row asc, col asc).
+            # Restart from the ORIGINAL (xa, ya), (xb, yb), (xc, yc).
+            x1t = xa; y1t = ya
+            x2t = xb; y2t = yb
+            x3t = xc; y3t = yc
+            if y1t > y2t or (y1t == y2t and x1t > x2t):
+                tx = x1t; x1t = x2t; x2t = tx
+                ty = y1t; y1t = y2t; y2t = ty
+            if y2t > y3t or (y2t == y3t and x2t > x3t):
+                tx = x2t; x2t = x3t; x3t = tx
+                ty = y2t; y2t = y3t; y3t = ty
+            if y1t > y2t or (y1t == y2t and x1t > x2t):
+                tx = x1t; x1t = x2t; x2t = tx
+                ty = y1t; y1t = y2t; y2t = ty
+
+            # xmin/xmax over all 3 (= over the original 3 = the row-sorted 3).
+            xmin = x1t if x1t < x2t else x2t
+            if x3t < xmin:
+                xmin = x3t
+            xmax = x1t if x1t > x2t else x2t
+            if x3t > xmax:
+                xmax = x3t
+            # H y2t [xmin..xmax]
+            base = y2t * grid_col
+            for c in range(xmin, xmax):
+                H_flat[base + c] += w
+            # V x1t [y1t..y2t]  (rows are sorted, so y1t <= y2t <= y3t)
+            for r in range(y1t, y2t):
+                V_flat[r * grid_col + x1t] += w
+            # V x3t [y2t..y3t]
+            for r in range(y2t, y3t):
+                V_flat[r * grid_col + x3t] += w
+
+
 def _apply_3pin_routing_vec(H_flat: np.ndarray, V_flat: np.ndarray,
                              g0_flat: np.ndarray, g1_flat: np.ndarray,
                              g2_flat: np.ndarray, weights: np.ndarray,
                              grid_row: int, grid_col: int) -> None:
+    """Dispatcher: JIT explicit-per-net when numba is available, else the
+    vectorized numpy gather/scatter (see `_apply_3pin_routing_vec_numpy`)."""
+    if g0_flat.size == 0:
+        return
+    if HAS_NUMBA:
+        _apply_3pin_routing_vec_jit(
+            H_flat, V_flat,
+            np.ascontiguousarray(g0_flat, dtype=np.int64),
+            np.ascontiguousarray(g1_flat, dtype=np.int64),
+            np.ascontiguousarray(g2_flat, dtype=np.int64),
+            np.ascontiguousarray(weights, dtype=np.float64),
+            int(grid_col),
+        )
+        return
+    _apply_3pin_routing_vec_numpy(H_flat, V_flat, g0_flat, g1_flat, g2_flat,
+                                    weights, grid_row, grid_col)
+
+
+def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
+                                    g0_flat: np.ndarray, g1_flat: np.ndarray,
+                                    g2_flat: np.ndarray, weights: np.ndarray,
+                                    grid_row: int, grid_col: int) -> None:
     """Vectorized __three_pin_net_routing — bit-equivalent to the scalar
-    reference (_apply_3pin_routing). Operates on 3 flat-gcell arrays
-    + weights, dispatches all four branches as batched H/V strip adds.
+    reference (_apply_3pin_routing). Numpy gather/scatter fallback kept for
+    when numba isn't installed.
 
     Each net's 3 gcells are first sorted by (col, row). Cases 1-3 use that
     ordering; case 4 (T-routing) requires a second sort by (row, col).
@@ -3676,6 +3985,18 @@ class IncrementalScorer:
             return a
         return np.union1d(a, b)
 
+    def _touched_nets3(self, m1: int, m2: int, m3: int) -> np.ndarray:
+        """Union of nets touched by 3 modules — for HS3 hard-soft-soft cycle."""
+        a = self.macro_to_nets.get(m1)
+        b = self.macro_to_nets.get(m2)
+        c = self.macro_to_nets.get(m3)
+        parts = [x for x in (a, b, c) if x is not None]
+        if not parts:
+            return np.empty(0, dtype=np.int64)
+        if len(parts) == 1:
+            return parts[0]
+        return np.unique(np.concatenate(parts))
+
     def _apply_pos(self, module_idx: int, x: float, y: float) -> None:
         """set_pos + update global pos cache + dirty-flag plc."""
         self.plc.modules_w_pins[module_idx].set_pos(float(x), float(y))
@@ -4776,6 +5097,182 @@ class IncrementalScorer:
         self.committed_hard_pos[i_hard, 1] = new_iy
         self.committed_soft_pos[k_soft, 0] = new_sx
         self.committed_soft_pos[k_soft, 1] = new_sy
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            self.per_net_hpwl[touched] = new_per_net
+            self.total_wl_raw += delta
+
+    def score_cycle_hard_soft_soft(self, i_hard: int, new_hard_xy,
+                                     k1_soft: int, new_k1_xy,
+                                     k2_soft: int, new_k2_xy) -> float:
+        """HS3 (2026-05-31): trial proxy for a 3-cycle rotation
+        H → S1 → S2 → H, then revert. Hybrid of score_swap_hard_soft
+        extended to 3 modules: hard contributes routing blockage via
+        macro_subset; both softs contribute only via net routing + density.
+        The caller is responsible for legality of the hard's new position
+        (no overlap with other hards). Bit-exact with full _exact_proxy
+        (verified ≤4.4e-16)."""
+        i_module = self.hard_indices[i_hard]
+        s_mod1 = self.soft_indices[k1_soft]
+        s_mod2 = self.soft_indices[k2_soft]
+        i_slot = self._module_to_hard_slot.get(int(i_module))
+
+        old_ix = float(self.committed_hard_pos[i_hard, 0])
+        old_iy = float(self.committed_hard_pos[i_hard, 1])
+        old_s1x = float(self.committed_soft_pos[k1_soft, 0])
+        old_s1y = float(self.committed_soft_pos[k1_soft, 1])
+        old_s2x = float(self.committed_soft_pos[k2_soft, 0])
+        old_s2y = float(self.committed_soft_pos[k2_soft, 1])
+
+        H_snap = self.H_flat.copy()
+        V_snap = self.V_flat.copy()
+        Hm_snap = self.H_macro_flat.copy()
+        Vm_snap = self.V_macro_flat.copy()
+
+        touched = self._touched_nets3(i_module, s_mod1, s_mod2)
+        macro_subset = (np.array([i_slot], dtype=np.int64)
+                        if i_slot is not None else np.empty(0, dtype=np.int64))
+
+        struct = _build_net_routing_struct(self.plc, touched)
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, -1.0,
+                self.V_macro_flat, self.H_macro_flat,
+            )
+
+        new_ix, new_iy = float(new_hard_xy[0]), float(new_hard_xy[1])
+        new_s1x, new_s1y = float(new_k1_xy[0]), float(new_k1_xy[1])
+        new_s2x, new_s2y = float(new_k2_xy[0]), float(new_k2_xy[1])
+        self._apply_pos(i_module, new_ix, new_iy)
+        self._apply_pos(s_mod1, new_s1x, new_s1y)
+        self._apply_pos(s_mod2, new_s2x, new_s2y)
+
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, +1.0,
+                self.V_macro_flat, self.H_macro_flat,
+            )
+
+        r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
+        if c_lo is not None:
+            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
+
+        if len(touched) > 0:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            new_total_raw = self.total_wl_raw + delta
+        else:
+            new_total_raw = self.total_wl_raw
+        new_wl_normalized = new_total_raw / self.wl_normalizer
+        cong = self._compute_cong_cost()
+
+        # Density: subtract 3 OLD footprints, add 3 NEW, compute, revert.
+        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
+        o1_idx, o1_area = self._macro_occ(s_mod1, old_s1x, old_s1y)
+        o2_idx, o2_area = self._macro_occ(s_mod2, old_s2x, old_s2y)
+        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
+        n1_idx, n1_area = self._macro_occ(s_mod1, new_s1x, new_s1y)
+        n2_idx, n2_area = self._macro_occ(s_mod2, new_s2x, new_s2y)
+        go = self.grid_occupied
+        if oi_idx.size: np.subtract.at(go, oi_idx, oi_area)
+        if o1_idx.size: np.subtract.at(go, o1_idx, o1_area)
+        if o2_idx.size: np.subtract.at(go, o2_idx, o2_area)
+        if ni_idx.size: np.add.at(go, ni_idx, ni_area)
+        if n1_idx.size: np.add.at(go, n1_idx, n1_area)
+        if n2_idx.size: np.add.at(go, n2_idx, n2_area)
+        dens = self._compute_density_cost()
+
+        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
+
+        # Revert.
+        if ni_idx.size: np.subtract.at(go, ni_idx, ni_area)
+        if n1_idx.size: np.subtract.at(go, n1_idx, n1_area)
+        if n2_idx.size: np.subtract.at(go, n2_idx, n2_area)
+        if oi_idx.size: np.add.at(go, oi_idx, oi_area)
+        if o1_idx.size: np.add.at(go, o1_idx, o1_area)
+        if o2_idx.size: np.add.at(go, o2_idx, o2_area)
+        self._apply_pos(i_module, old_ix, old_iy)
+        self._apply_pos(s_mod1, old_s1x, old_s1y)
+        self._apply_pos(s_mod2, old_s2x, old_s2y)
+        self.H_flat[:] = H_snap
+        self.V_flat[:] = V_snap
+        self.H_macro_flat[:] = Hm_snap
+        self.V_macro_flat[:] = Vm_snap
+        if c_lo is not None:
+            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
+
+        return score
+
+    def commit_cycle_hard_soft_soft(self, i_hard: int, new_hard_xy,
+                                      k1_soft: int, new_k1_xy,
+                                      k2_soft: int, new_k2_xy) -> None:
+        """Persist an HS3 3-cycle. Analogue of commit_swap_hard_soft for 3 modules."""
+        i_module = self.hard_indices[i_hard]
+        s_mod1 = self.soft_indices[k1_soft]
+        s_mod2 = self.soft_indices[k2_soft]
+        i_slot = self._module_to_hard_slot.get(int(i_module))
+
+        old_ix = float(self.committed_hard_pos[i_hard, 0])
+        old_iy = float(self.committed_hard_pos[i_hard, 1])
+        old_s1x = float(self.committed_soft_pos[k1_soft, 0])
+        old_s1y = float(self.committed_soft_pos[k1_soft, 1])
+        old_s2x = float(self.committed_soft_pos[k2_soft, 0])
+        old_s2y = float(self.committed_soft_pos[k2_soft, 1])
+
+        touched = self._touched_nets3(i_module, s_mod1, s_mod2)
+        macro_subset = (np.array([i_slot], dtype=np.int64)
+                        if i_slot is not None else np.empty(0, dtype=np.int64))
+
+        struct = _build_net_routing_struct(self.plc, touched)
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, -1.0,
+                self.V_macro_flat, self.H_macro_flat,
+            )
+
+        new_ix, new_iy = float(new_hard_xy[0]), float(new_hard_xy[1])
+        new_s1x, new_s1y = float(new_k1_xy[0]), float(new_k1_xy[1])
+        new_s2x, new_s2y = float(new_k2_xy[0]), float(new_k2_xy[1])
+        self._apply_pos(i_module, new_ix, new_iy)
+        self._apply_pos(s_mod1, new_s1x, new_s1y)
+        self._apply_pos(s_mod2, new_s2x, new_s2y)
+
+        go = self.grid_occupied
+        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
+        o1_idx, o1_area = self._macro_occ(s_mod1, old_s1x, old_s1y)
+        o2_idx, o2_area = self._macro_occ(s_mod2, old_s2x, old_s2y)
+        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
+        n1_idx, n1_area = self._macro_occ(s_mod1, new_s1x, new_s1y)
+        n2_idx, n2_area = self._macro_occ(s_mod2, new_s2x, new_s2y)
+        if oi_idx.size: np.subtract.at(go, oi_idx, oi_area)
+        if o1_idx.size: np.subtract.at(go, o1_idx, o1_area)
+        if o2_idx.size: np.subtract.at(go, o2_idx, o2_area)
+        if ni_idx.size: np.add.at(go, ni_idx, ni_area)
+        if n1_idx.size: np.add.at(go, n1_idx, n1_area)
+        if n2_idx.size: np.add.at(go, n2_idx, n2_area)
+
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+        if macro_subset.size > 0:
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, +1.0,
+                self.V_macro_flat, self.H_macro_flat,
+            )
+
+        self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
+
+        self.committed_hard_pos[i_hard, 0] = new_ix
+        self.committed_hard_pos[i_hard, 1] = new_iy
+        self.committed_soft_pos[k1_soft, 0] = new_s1x
+        self.committed_soft_pos[k1_soft, 1] = new_s1y
+        self.committed_soft_pos[k2_soft, 0] = new_s2x
+        self.committed_soft_pos[k2_soft, 1] = new_s2y
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
             delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
@@ -6377,6 +6874,8 @@ class MacroPlacer:
             "soft2opt_density": 0,
             "hxs_cong": 0,
             "hxs_density": 0,
+            "hs3_cong": 0,
+            "hs3_density": 0,
         }
 
         # Adaptive R2 termination (2026-05-30): break out of the round loop on
@@ -6761,6 +7260,62 @@ class MacroPlacer:
                         _round_scorer_handoff(x_true, cand)
                 except Exception as exc:
                     _log(f"  R2 HXS[{_xfield}] failed: {type(exc).__name__}: {exc}")
+                    _round_scorer_dirty[0] = True
+
+            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+            if rem_r2 < 2.0 * t_one_score + 2.0:
+                break
+
+            # --- HS3 (2026-05-31): hard-soft-soft 3-cycle rotation.
+            # Extension of HXS to 3-cycles: H → S1 → S2 → H. Captures
+            # configurations where a hard wants S1's slot but swapping
+            # H↔S1 alone hurts because S1's connections need to go
+            # elsewhere — 2-opt can't accept the chain individually,
+            # but the single combined 3-cycle move can. Same dual-field +
+            # skip-if-empty pattern. Cubic cost in (top_hot × k_inner²)
+            # → tight 3s deadline cap.
+            for _h3field, _h3use_d in (("cong", False), ("density", True)):
+                if _n_soft < 2:
+                    break
+                _h3streak = "hs3_cong" if _h3field == "cong" else "hs3_density"
+                if _empty_streak[_h3streak] >= SKIP_EMPTY_AFTER:
+                    continue
+                rem_h3 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+                if rem_h3 < 2.0 * t_one_score + 2.0:
+                    break
+                try:
+                    t_h3 = time.monotonic()
+                    base_h3 = float(_exact_proxy(best_pl, benchmark, plc))
+                    h3_scorer = _round_scorer_get()
+                    h3_hard_pos = _hard_xy(best_pl)
+                    h3_soft_pos = np.stack(
+                        [best_pl[n:n + _n_soft, 0].numpy(),
+                         best_pl[n:n + _n_soft, 1].numpy()], axis=1
+                    ).astype(np.float64)
+                    h3_hard_pos, h3_soft_pos, h3_acc, _ = _three_opt_hard_soft_soft(
+                        h3_hard_pos, h3_soft_pos, sizes, hw, hh, cw, ch,
+                        movable, n, plc, benchmark, h3_scorer, base_h3,
+                        deadline=t_h3 + min(rem_h3 - t_one_score, 3.0),
+                        top_hot=15, k_inner=5,
+                        soft_movable=_soft_movable, use_density=_h3use_d,
+                    )
+                    if h3_acc == 0:
+                        _empty_streak[_h3streak] += 1
+                    else:
+                        _empty_streak[_h3streak] = 0
+                    if h3_acc > 0:
+                        cand = best_pl.clone()
+                        cand[:n, 0] = torch.tensor(h3_hard_pos[:, 0], dtype=torch.float32)
+                        cand[:n, 1] = torch.tensor(h3_hard_pos[:, 1], dtype=torch.float32)
+                        cand[n:n + _n_soft, 0] = torch.tensor(h3_soft_pos[:, 0], dtype=torch.float32)
+                        cand[n:n + _n_soft, 1] = torch.tensor(h3_soft_pos[:, 1], dtype=torch.float32)
+                        h3_true = float(_exact_proxy(cand, benchmark, plc))
+                        if h3_true < best_score - 1e-6:
+                            _log(f"  R2 round {_r2+1} HS3[{_h3field}]: {h3_acc} cycles, "
+                                 f"{best_score:.4f} → {h3_true:.4f}")
+                        _round_scorer_handoff(h3_true, cand)
+                except Exception as exc:
+                    _log(f"  R2 HS3[{_h3field}] failed: {type(exc).__name__}: {exc}")
                     _round_scorer_dirty[0] = True
 
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
