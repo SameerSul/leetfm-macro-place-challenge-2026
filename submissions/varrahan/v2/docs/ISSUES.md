@@ -13,13 +13,14 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.2195** (R3/R5 single-soft + A1 soft-2opt + A1b cong-field + A1c cold-teleport + A1×2 dual-field + H5 hard-density-reloc + A3 net-centroid ordering + S1/S3 scoring speedups + #1+#2+inc cong + floor-res + A+C round budget + Phase 9 parallel + DP×3 parallel) |
+| Best `--all` avg | **1.2092** (above + A4 WL-aware soft-2opt ordering + A5 adaptive multi-pass soft-2opt + adaptive R2 round termination + adaptive skip-empty replacing hardcoded round caps + #3v2 time-shifted multi-seed 2-opt subprocess pool, env-gated off) |
+| Prior `--all` avg | 1.2195 (R3/R5 single-soft + A1 soft-2opt + A1b cong-field + A1c cold-teleport + A1×2 dual-field + H5 hard-density-reloc + A3 net-centroid ordering + S1/S3 scoring speedups + #1+#2+inc cong + floor-res + A+C round budget + Phase 9 parallel + DP×3 parallel) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−16.3% (beat by 0.238 — beats on every benchmark)** |
+| **Gap to RePlAce** | **−17.1% (beat by 0.249 — beats on every benchmark)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−13.4% (BEATS by 0.188)** |
+| **Gap to leaderboard** | **−14.1% (BEATS by 0.198)** |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | clean ≤3300s monotonic; WSL run reported 3860s (host-suspend inflation, O4 — placer's monotonic budget held, no benchmark returned baseline) |
+| `--all` wall-clock | 2716s clean (no host suspend) — well under the 3600s hard cap |
 
 All 17 IBM benchmarks improved vs v12 baseline. The **relocation family** is the
 dominant lever (R1 −0.0096, R2 −0.0083, R2b −0.0027, R3 −0.0452, **R5 −0.0965**

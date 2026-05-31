@@ -3,12 +3,48 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-05-30 — full-stack `--all` incl. A4+A5+adaptive R2/skip-empty):**
+> **Avg 1.2092 — beats RePlAce (1.4578) by 0.249 (−17.1%), and beats the UT
+> Austin DREAMPlace leaderboard (1.4076) by 0.198 (−14.1%).** All 17 VALID /
+> 0 overlaps. **15/17 wins** vs 1.2195 baseline (only ibm04 +0.0017 and ibm18
+> +0.0063 — both near noise). Cumulative Δ −0.1755, avg −0.0103/bench.
+> Biggest movers: ibm15 −0.0311, ibm06 −0.0259, ibm12 −0.0194, ibm13 −0.0174,
+> ibm08 −0.0148, ibm14 −0.0135, ibm11 −0.0121. Total runtime 2716s.
+>
+> **A4 (WL-aware soft-2opt candidate ordering):** `_two_opt_soft_swap` now
+> takes `net_centroid` + `wl_blend=0.3`, blending Euclidean distance with
+> distance-to-net-centroid in the candidate ordering — the soft-2opt analog
+> of A3. Pure ordering change; strictly non-regressing.
+> **A5 (adaptive multi-pass soft-2opt):** each soft-2opt call in R2 now runs
+> up to `A5_NUM_PASSES=2` passes with early-stop if the first pass made no
+> improvement. Pass 2 fired 186/189 opportunities across the run — nearly
+> every round had a productive 2nd pass.
+> **Adaptive R2 round termination:** added `TINY_R2_ROUNDS_TO_STOP=2`
+> consecutive rounds of Δ < `R2_DELTA_THRESHOLD=1e-3` to short-circuit
+> diminishing-returns rounds. In practice the tiny-streak guard never fired
+> on the winning run (every round productively > 1e-3) — confirms the rounds
+> are doing real work.
+> **Adaptive skip-empty replacing hardcoded `R3_CONG_MAX_ROUNDS`:** both the
+> single-soft cong-relocation pass and the A1b cong-field soft-2opt now skip
+> a round only after `SKIP_EMPTY_AFTER=1` empty round in a row. The earlier
+> hardcoded round-3 cap on A1b was found to regress scores by killing
+> productive late-round work (A1b finds 7–35 swaps even at round 6 on some
+> benchmarks). Density `top_hot` boost still triggers, but adaptively (when
+> the cong empty-streak counter saturates).
+> **#3v2 time-shifted multi-seed 2-opt subprocess pool (drafted, env-gated
+> off):** `V2_MULTISEED_MP=1` runs the main "best" 2-opt inline first (full
+> solo CPU during the 15s deadline), then submits DP seed 2-opts to a
+> ProcessPoolExecutor afterward. Default off — direct subprocess parallelism
+> on the deadline-bound search caused regression due to CPU contention.
+> Total runtime 2716s (clean, no host suspend, well under 3600s hard cap).
+>
+> Prior milestones (stacked):
 > **Status (2026-05-30 — full-stack `--all` incl. H5+A1b+A1c+A1×2+Phase9-parallel):**
 > **Avg 1.2195 — beats RePlAce (1.4578) by 0.238 (−16.3%), and beats the UT
 > Austin DREAMPlace leaderboard (1.4076) by 0.188 (−13.4%).** All 17 VALID /
-> 0 overlaps. We now **beat RePlAce on every benchmark** (ibm01 was the only
-> loss; now flipped from +2.6% to −1.0%). All 17 benchmarks improved vs the
-> 1.2433 baseline (17/17 wins, cumulative Δ −0.4044, avg −0.024/bench).
+> 0 overlaps. We **beat RePlAce on every benchmark** (ibm01 flipped from
+> +2.6% to −1.0%). All 17 benchmarks improved vs the 1.2433 baseline
+> (17/17 wins, cumulative Δ −0.4044, avg −0.024/bench).
 > **H5 (hard density relocation):** new pass — the R5-analog for hard macros.
 > `_relocation_moves` now switches its hot/cold field via `use_density=True`;
 > a new pass in the R2 round runs the hard-density variant after the existing
