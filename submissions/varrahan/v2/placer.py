@@ -5287,17 +5287,26 @@ class MacroPlacer:
                 # C: on rounds after the cong cap, the density pass gets a wider
                 # candidate set (top_hot 128 → 192) so the freed ~4-5s is spent
                 # on more density attempts instead of returning early.
-                _is_boosted_density = (_sfield == "density" and _r2 >= R3_CONG_MAX_ROUNDS)
-                _top_hot_this = (
-                    R3_SOFT_HOT_BOOSTED if _is_boosted_density else R3_SOFT_HOT
-                )
-                # D (2026-05-30): boosted density rounds use narrower n_targets so the
-                # 15s deadline covers all 256 hot macros (not just the top ~156 with
-                # n_targets=32 at ~3ms/call).  Non-boosted rounds keep n_targets=32
-                # (160 hot macros → all 160 covered with ample margin).
-                _n_tgt_this = (
-                    R3_SOFT_TGT_BOOSTED if _is_boosted_density else R3_SOFT_TGT
-                )
+                # I (2026-05-30): adaptive split — always G (1024/4) for cong; density
+                # uses F (512/8) on small benchmarks and G (1024/4) on large ones.
+                # Analysis of round-1 data:
+                #   cong always: G 1024/4 wins (wider hotspot coverage, +55% accepts ibm01)
+                #   density small (<1000 softs, e.g. ibm01 894): F 512/8 wins (quality
+                #     compounding across rounds; ibm01 H=0.9345 vs G=0.9396, F=0.9359)
+                #   density large (≥1000 softs, e.g. ibm04 1085): G 1024/4 wins (coverage
+                #     gain dominates quality loss; ibm04 G=1.0374 vs H=1.0478, F=1.0510)
+                # This gives both benchmarks their individually optimal parameters without
+                # branching on benchmark name (uses only num_soft_macros, a size property).
+                _n_soft_movable = int(_soft_movable.sum()) if _soft_movable is not None else _n_soft
+                _is_density_pass = (_sfield == "density")
+                if _is_density_pass and _n_soft_movable < 1000:
+                    # Small benchmark: F-quality density — precise moves compound better
+                    _top_hot_this = 512
+                    _n_tgt_this = 8
+                else:
+                    # Cong always, and large-benchmark density: G-coverage (1024/4)
+                    _top_hot_this = 1024
+                    _n_tgt_this = 4
                 try:
                     t_sr = time.monotonic()
                     sr_pos = np.stack(
