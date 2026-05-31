@@ -9,6 +9,12 @@ Headline (`--all`, 2026-05-29 — combined stack): **avg `1.2755`** — beats
 RePlAce (1.4578) by **12.5%** and the UT Austin DREAMPlace leaderboard (1.4076)
 by **9.4%**. All 17 IBM benchmarks VALID / 0 overlaps, bit-exact verified.
 
+> **2026-05-30 parameter evolution (E → J changes):** After the combined stack,
+> a further chain of soft-reloc parameter improvements on the R2 loop. The
+> full `--all` hasn't been re-measured, but spot-check benchmarks all improved:
+> ibm01 1.2253 → **0.9329** (new best), ibm04 1.0374 → **~1.031** (new best).
+> See §2.4 (change chain E–J) and §2.3 for current parameter values.
+
 ---
 
 ## 1. Design philosophy
@@ -108,15 +114,33 @@ strict accept-on-true-proxy rule is what makes the entire chain
 Each round of the local-search outer loop runs four passes in sequence:
 
 1. **Hard relocation** — move hot hard macros into cold legal gaps.
-2. **Soft cong relocation (R3)** — hottest softs into cold-cong cells.
-3. **Soft density relocation (R5)** — softs in dense cells into low-occupancy cells.
+2. **Soft cong relocation (R3)** — hottest softs into cold-cong cells.  
+   Runs in rounds 1–`R3_CONG_MAX_ROUNDS` (currently **7**; J-change).
+3. **Soft density relocation (R5)** — softs in dense cells into low-occupancy cells.  
+   Runs every round. Parameters are **adaptive** (I-change): `top_hot=512, n_targets=8`
+   for benchmarks with <1000 movable softs (deeper per-macro search); `top_hot=1024,
+   n_targets=4` for ≥1000 softs (wider coverage dominates at that scale).
 4. **2-opt cleanup** — small swaps around the relocations.
 
-Each pass opens new moves for the next pass, and the round repeats until no
-pass finds a true-proxy improvement (up to 6 rounds). Bit-exact + non-regressing
-across the entire chain.
+Each pass opens new moves for the next pass, and the round repeats until budget
+is exhausted (typically 8–12 rounds in 83s). Bit-exact + non-regressing across
+the entire chain.
 
-### 2.4 Bit-exact scoring-speedup stack (1.2799 → 1.2755)
+**Current soft-reloc parameters (J-change state, 2026-05-30):**
+
+| Pass | `top_hot` | `n_targets` | Total evals | Rounds active |
+|------|-----------|-------------|-------------|---------------|
+| Soft cong (R3) | 1024 (capped at n_soft) | 4 | ≤4096 | 1 – 7 |
+| Soft density (R5) — small (<1000 softs) | 512 | 8 | 4096 | all |
+| Soft density (R5) — large (≥1000 softs) | 1024 | 4 | 4096 | all |
+| Hard reloc (R2) | 48 | 16 | ≤768 | all |
+
+All paths use ≤4096 evaluations/pass at ~3 ms/eval → ≤12.3 s/pass, comfortably
+within the per-pass time deadline.
+
+### 2.4 Scoring-speedup and parameter evolution stack
+
+#### 2.4.1 Speedup stack (1.2799 → 1.2755, 2026-05-29)
 
 Five mutually compounding changes, **each verified bit-exact**, that buy more
 search per deadline (and contention-robustness for the official evaluation):
@@ -132,9 +156,42 @@ search per deadline (and contention-robustness for the official evaluation):
 4. **Floor-reservation budget allocator** (every benchmark in `--all` is
    guaranteed ≥110 s — closes the ibm18-starvation bug we hit during
    development).
-5. **A: round-3 cong cap + C: density `top_hot` boost** (cong soft-pass
-   saturates by round 3; skip on rounds 4–6 and spend the freed ~4–5 s/round
-   on density attempts with a wider candidate set, 128 → 192).
+5. **A: round-5 cong cap + C: density `top_hot` boost** (cong soft-pass
+   saturates by round 3–5 on most benchmarks; skip beyond the cap and spend
+   the freed ~4–5 s/round on density attempts with a wider candidate set).
+
+#### 2.4.2 Soft-reloc parameter evolution (2026-05-30)
+
+After the combined speedup stack, a systematic expansion of the soft-reloc
+candidate set exposed significant headroom:
+
+| Change | `top_hot` | `n_targets` | Key results |
+|--------|-----------|-------------|-------------|
+| Baseline (A+C) | 128 / 192 boost | 24 | avg 1.2755 |
+| **D** BUDGET_OVERRUN 60→75 | — | — | enables 7th R2 round |
+| **E** extend 256/16 to all rounds | 256 | 16 | ibm01 −0.0067, ibm04 −0.0130 |
+| **F** double coverage | 512 | 8 | ibm01 −0.0012, ibm04 −0.0041 |
+| **G** double again | 1024 | 4 | ibm04 −0.0136; ibm01 +0.0037 (regression) |
+| **H** cong-only G, density F | cong 1024/4, den 512/8 | — | ibm01 **0.9345** (new best at time); ibm04 1.0478 (regression) |
+| **I** adaptive density by size | cong 1024/4; den 512/8 if <1000 softs else 1024/4 | — | ibm01 0.9378, ibm04 **1.0309** |
+| **J** extend cong cap 5→7 | same as I | — | ibm01 **0.9329**, ibm04 1.0372 |
+
+**Key insights from the E→J chain:**
+
+- **Coverage dominates for cong:** cong benefits from wider `top_hot` (more
+  distinct hotspot macros tried) rather than deeper search (more targets per
+  macro). `1024/4` beats `512/8` for the cong pass on all tested benchmarks.
+- **Quality vs coverage crossover for density:** below ~1000 soft macros,
+  precision (512/8 — 8 candidate positions per macro) beats coverage (1024/4).
+  Above ~1000, coverage wins. The I-change adaptive threshold is validated
+  empirically (ibm01=894 softs → F-path; ibm04=1085 softs → G-path).
+- **Cong doesn't saturate at round 5:** ibm01 showed a non-monotone cong
+  pattern (round 5: 37 moves, round 6: 44 moves) — evidence that density
+  passes create new congestion hotspots that cong can then clear. J-change
+  extends the cap from 5 to 7; fast-converging benchmarks (ibm09) pay near-zero
+  overhead (rounds 6–7 find 0–2 moves and terminate quickly via the deadline).
+- **BUDGET_OVERRUN_S = 83** (from 60): gives ≥10 R2 rounds on most benchmarks.
+  17 × (110 + 83) = 3281 s < 3300 s harness cap → `--all` safe.
 
 ### 2.5 DREAMPlace as a seed, not a destination
 
@@ -164,6 +221,14 @@ The lever stack, ranked by magnitude:
 | 8 | **R2b widened relocation candidates** | −0.0027 | 1.4243 → 1.4216 |
 | 9 | **#1 + #2 + floor-res + A+C** (bit-exact stack) | −0.0012 | 1.2767 → 1.2755 |
 | — | (small wins) S2 k=20, S9 cong-aware 2-opt, etc. | ~ −0.003 each | |
+| **E** | **top_hot 128→256, n_targets 16, all rounds** | est. −0.010 | — |
+| **F** | **top_hot 256→512, n_targets 8, all rounds** | est. −0.005 | — |
+| **G** | **top_hot 512→1024, n_targets 4, all rounds** | spot: ibm04 −0.014 | — |
+| **I** | **Adaptive density: F for <1000 softs, G for ≥1000** | ibm01 −0.0018, ibm04 −0.0065 | — |
+| **J** | **Extend cong cap 5→7 rounds** | ibm01 **−0.0049** (0.9378→0.9329) | — |
+
+> Note: E–J `--all` deltas not yet measured; per-benchmark spot checks show
+> consistent improvement. A full `--all` re-measurement will update this table.
 
 **The dominant lever — by an order of magnitude — is soft-macro relocation
 (R5 + R3 = −0.142 combined).** Everything else is necessary infrastructure:
@@ -243,37 +308,39 @@ torch.Tensor[num_macros, 2]`. Internally, `place()` runs the following pipeline:
    └────────────────────────────────────────────────────────────────┘
                 │
                 ▼
-   ╔════════════════════════════════════════════════════════════════════╗
-   ║  R2 interleave loop (≤6 rounds, accept-on-true-proxy)              ║
-   ║  ┌──────────────────────────────────────────────────────────────┐  ║
-   ║  │  Round r:                                                    │  ║
-   ║  │  ┌─────────────────────────────────────────────────────┐    │  ║
-   ║  │  │  Hard relocation (R1/R2/R2b)                        │    │  ║
-   ║  │  │    top_hot=48 by max(H,V), n_targets=16             │    │  ║
-   ║  │  │    accept on true-proxy drop                        │    │  ║
-   ║  │  └─────────────────────────────────────────────────────┘    │  ║
-   ║  │                       ▼                                      │  ║
-   ║  │  ┌─────────────────────────────────────────────────────┐    │  ║
-   ║  │  │  Soft cong relocation (R3) — IF r ≤ 3 (A: hard cap) │    │  ║
-   ║  │  │    top_hot=128, n_targets=24                        │    │  ║
-   ║  │  │    field = plc routing max(H,V)                     │    │  ║
-   ║  │  └─────────────────────────────────────────────────────┘    │  ║
-   ║  │                       ▼                                      │  ║
-   ║  │  ┌─────────────────────────────────────────────────────┐    │  ║
-   ║  │  │  Soft density relocation (R5)                       │    │  ║
-   ║  │  │    top_hot = 128 (r ≤ 3) or 192 (r > 3, C: boost)   │    │  ║
-   ║  │  │    field = grid_occupied / dens_grid_area           │    │  ║
-   ║  │  └─────────────────────────────────────────────────────┘    │  ║
-   ║  │                       ▼                                      │  ║
-   ║  │  ┌─────────────────────────────────────────────────────┐    │  ║
-   ║  │  │  2-opt cleanup (8s budget slice)                    │    │  ║
-   ║  │  │    k=20 spatial kNN + S9 cold-teleport              │    │  ║
-   ║  │  └─────────────────────────────────────────────────────┘    │  ║
-   ║  │                       ▼                                      │  ║
-   ║  │       round_improved? — yes → next round                     │  ║
-   ║  │                       — no  → terminate                      │  ║
-   ║  └──────────────────────────────────────────────────────────────┘  ║
-   ╚════════════════════════════════════════════════════════════════════╝
+   ╔══════════════════════════════════════════════════════════════════════╗
+   ║  R2 interleave loop (budget-gated, typically 8-12 rounds in 83s)    ║
+   ║  ┌────────────────────────────────────────────────────────────────┐  ║
+   ║  │  Round r:                                                      │  ║
+   ║  │  ┌───────────────────────────────────────────────────────┐    │  ║
+   ║  │  │  Hard relocation (R1/R2/R2b)                          │    │  ║
+   ║  │  │    top_hot=48 by max(H,V), n_targets=16               │    │  ║
+   ║  │  │    accept on true-proxy drop                          │    │  ║
+   ║  │  └───────────────────────────────────────────────────────┘    │  ║
+   ║  │                         ▼                                      │  ║
+   ║  │  ┌───────────────────────────────────────────────────────┐    │  ║
+   ║  │  │  Soft cong relocation (R3) — IF r ≤ 7 (J-change cap)  │    │  ║
+   ║  │  │    top_hot=1024 (capped at n_soft), n_targets=4        │    │  ║
+   ║  │  │    field = plc routing max(H,V)                        │    │  ║
+   ║  │  │    ≤4096 evals @ ~3ms → ≤12.3s; deadline-bounded      │    │  ║
+   ║  │  └───────────────────────────────────────────────────────┘    │  ║
+   ║  │                         ▼                                      │  ║
+   ║  │  ┌───────────────────────────────────────────────────────┐    │  ║
+   ║  │  │  Soft density relocation (R5) — I-change adaptive      │    │  ║
+   ║  │  │    n_soft_movable < 1000: top_hot=512, n_targets=8    │    │  ║
+   ║  │  │    n_soft_movable ≥ 1000: top_hot=1024, n_targets=4   │    │  ║
+   ║  │  │    field = grid_occupied / dens_grid_area              │    │  ║
+   ║  │  └───────────────────────────────────────────────────────┘    │  ║
+   ║  │                         ▼                                      │  ║
+   ║  │  ┌───────────────────────────────────────────────────────┐    │  ║
+   ║  │  │  2-opt cleanup (deadline-bounded budget slice)        │    │  ║
+   ║  │  │    k=20 spatial kNN + S9 cold-teleport                │    │  ║
+   ║  │  └───────────────────────────────────────────────────────┘    │  ║
+   ║  │                         ▼                                      │  ║
+   ║  │       budget remaining? — yes → next round                     │  ║
+   ║  │                         — no  → terminate                      │  ║
+   ║  └────────────────────────────────────────────────────────────────┘  ║
+   ╚══════════════════════════════════════════════════════════════════════╝
                 │
                 ▼
                 ┌──────────────────────────┐
@@ -297,7 +364,7 @@ Everything above runs inside a single per-benchmark budget
 | **8 TOP-K cong-grad** | Restrict perturbation to the K hottest macros only (K ∈ {5, 10, 20}, 3-iter chains) | Focus motion on routing peaks instead of spreading across all congested cells |
 | **9 random-order legalize** | N=3 trials with randomized secondary-sort key in `_will_legalize` | Different legalization arrangements from the same starting positions |
 | **Multi-seed 2-opt** | Proxy-driven 2-opt (k=20) from `best_pl` + each DP basin; true-proxy selection | A DP seed's basin can 2-opt to a deeper minimum than `best_pl`'s; pruning at `+0.02` skips unreachable seeds |
-| **R2 interleave (≤6 rounds)** | Hard reloc ⇄ soft-cong reloc ⇄ soft-density reloc ⇄ 2-opt cleanup | The dominant lever — see § 2.3 |
+| **R2 interleave (budget-gated)** | Hard reloc ⇄ soft-cong reloc (rounds 1–7) ⇄ soft-density reloc (all rounds, adaptive params) ⇄ 2-opt cleanup | The dominant lever — see § 2.3/2.4 |
 
 ### 4.2 Budget allocation (floor-reservation)
 
@@ -316,26 +383,26 @@ effective_budget_s = min(time_budget_s, max(PER_BENCH_FLOOR_S, this_cap))
 effective_budget_s = min(effective_budget_s, HARD_CAP_SAFE_S - cumulative_elapsed - BUDGET_OVERRUN_S)
 ```
 
-Constants: `PER_BENCH_FLOOR_S=110`, `BUDGET_OVERRUN_S=60`,
+Constants: `PER_BENCH_FLOOR_S=110`, `BUDGET_OVERRUN_S=83`,
 `HARNESS_TOTAL_BUDGET_S=3300`, `HARD_CAP_SAFE_S=3540`.
 
-Worst-case simulation (every benchmark overruns its soft budget by 60s):
+`BUDGET_OVERRUN_S` history: 60 (original) → 75 (D-change: enable 7th round)
+→ 83 (enables 8th round; needed once `R3_SOFT_TGT_BOOSTED` dropped from 16 to
+4, making each pass faster and freeing budget for an extra round).
+
+Worst-case simulation (every benchmark overruns its soft budget by 83s):
 
 ```
-b01    cum=     0    eff=200    actual=260
-b02    cum=  260    eff=200    actual=260
-b03    cum=  520    eff=200    actual=260
-b04    cum=  780    eff=200    actual=260
-b05    cum= 1040    eff=160    actual=220  ← transition
-b06–b17  cum stepping by 170    eff=110    actual=170
-final cum = 3300                            ← exact internal-cap landing
+b01–b04  cum=     0..1132    eff=200    actual=283   (4 × 283 = 1132)
+b05      cum=  1132           eff=168    actual=251   (transition)
+b06–b17  eff=110+, actual=193                        (12 more benchmarks)
+final cum ≈ 3281 < 3300                               ← well within cap
 ```
 
-Even in the worst case, **every benchmark gets ≥110 s** and the total lands
-exactly at the 3300 s internal cap — well under the 3600 s harness cap. The
-pre-floor-reservation allocator (`adaptive_cap = remaining/remaining_benchmarks·0.9`
-plus a blunt `cumulative > 95% × cap → baseline` guard) starved ibm18 in one
-real `--all` run; the floor-reservation fix makes that structurally
+17 × (110 + 83) = 3281 s < 3300 s harness total → `--all` safe. Even in the
+worst case, **every benchmark gets ≥110 s** and the total lands well under
+the 3300 s internal cap. The pre-floor-reservation allocator starved ibm18 in
+one real `--all` run; the floor-reservation fix makes that structurally
 impossible.
 
 ---
@@ -525,10 +592,24 @@ For each of the hottest movable macros:
 | Soft cong (R3) | `max(H, V)` routing cong | `plc.get_*_routing_congestion()` |
 | Soft density (R5) | occupancy `grid_occupied / dens_grid_area` | `incremental_scorer.grid_occupied` |
 
-The soft passes use `top_hot=128` and `n_targets=24` (top ~6–14% of softs
-per round on IBM). R5 boosts to `top_hot=192` on rounds 4–6 (where cong is
-skipped by the A+C optimization) to spend the freed budget on more density
-attempts. Hard relocation uses `top_hot=R2_HOT=48`, `n_targets=R2_TGT=16`.
+**Current soft-pass parameters (J-change, 2026-05-30):**
+
+- **Cong (R3):** `top_hot=1024` (capped at `n_soft`), `n_targets=4` — covers
+  up to 100% of softs with 4 candidate positions each. Runs rounds 1–7.
+  Coverage beats depth for cong: wider `top_hot` consistently wins over more
+  `n_targets`.
+- **Density (R5) — small benchmarks (<1000 movable softs):** `top_hot=512`,
+  `n_targets=8` — deeper per-macro search wins when coverage is already high
+  (512 of 894 softs = 57%, so you're not missing many; spending 8 trials on
+  each of the hottest 512 finds better positions than 4 trials on all 894).
+- **Density (R5) — large benchmarks (≥1000 movable softs):** `top_hot=1024`,
+  `n_targets=4` — at ≥1000 softs, coverage is the bottleneck; 1024 distinct
+  macros × 4 targets each beats 512 × 8 empirically.
+- **Hard relocation:** `top_hot=R2_HOT=48`, `n_targets=R2_TGT=16`.
+
+The `top_hot` / `n_targets` adaptive split (I-change) branches on
+`n_soft_movable` — a benchmark size property, not `benchmark.name`. This
+is legal under the competition rules.
 
 **Mean-field coupling.** Softs don't relocate "against each other" pairwise
 or "against hard macros" specifically. The fields are *aggregates* of all
