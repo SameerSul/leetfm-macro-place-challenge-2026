@@ -3936,7 +3936,7 @@ class MacroPlacer:
         # in place()); hoisted here so the budget allocator can reserve for it.
         # Increased 60→75 (2026-05-30): bgfj81y2x and babz0gezx both hit the
         # 260s cap after 6 R2 rounds with ~0s remaining. A 7th density-only round
-        # costs ~17s (cong runs in rounds 1-7 now: R3_CONG_MAX_ROUNDS=7); this
+        # costs ~17s (cong runs in rounds 1-6: R3_CONG_MAX_ROUNDS=6); this
         # 15s extra budget enables it. 17×(110+75)=3145 < 3300s harness total.
         # Increased 75→83 (2026-05-30): with R3_SOFT_TGT_BOOSTED=16 the density
         # pass with 256 hot macros finishes in ~7.7s instead of 15s, leaving
@@ -5146,14 +5146,17 @@ class MacroPlacer:
         # per benchmark. ibm09 saturates by round 3 (round 4+ ≤2 moves, ~zero
         # gain). ibm01/ibm04 are still active at round 5 (ibm01: 47 moves in
         # round 5 — non-monotone vs round 4's 42; ibm04: 31 moves in round 5).
-        # Hard-cap cong at R3_CONG_MAX_ROUNDS=7 (J); the time-deadline
-        # mechanism cuts the pass short if cong has converged (near-instant for
-        # ibm09 rounds 6-7). Capped rounds free time for the density pass.
-        # Preserves the productive rounds 1-5 of cong on high-cong benchmarks.
+        # Round 6 is still productive on ibm01 (44 moves) and ibm06 (27 moves).
+        # Hard-cap cong at R3_CONG_MAX_ROUNDS=6 (K, was 7 in J); J caused large
+        # regressions on ibm06 (+0.027) and ibm08 (+0.007) because round 7 cong
+        # squeezed out 4 density-only rounds (ibm06 ran 7 rounds with J vs 11
+        # with H at cong_max=5). Capping at 6 keeps the ibm01 round-6 gain
+        # (44 moves → ~0.001) without the severe budget-squeeze on larger/slower
+        # benchmarks. The time-deadline mechanism cuts near-instant if converged.
         R3_SOFT_HOT_BOOSTED = 1024  # same as base (G); kept for code clarity
         # G: boosted rounds also use 4 targets and 1024 hot — same as base.
         R3_SOFT_TGT_BOOSTED = 4    # same as base (G); kept for code clarity
-        R3_CONG_MAX_ROUNDS = 7     # J: extended 5→7 (ibm01 still active at round 5)
+        R3_CONG_MAX_ROUNDS = 6     # K: lowered 7→6 (round 7 squeezes budget on ibm06/ibm08)
         # Soft-macro half-sizes (for the soft relocation pass — R3, 2026-05-28).
         _n_soft = benchmark.num_soft_macros
         _soft_sizes = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
