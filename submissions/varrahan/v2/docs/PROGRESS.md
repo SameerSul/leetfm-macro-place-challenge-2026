@@ -3,6 +3,45 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-05-31 — full-stack `--all` incl. HS3 hard-soft 3-cycle + 3-pin routing JIT):**
+> **Avg 1.1963 — beats RePlAce (1.4578) by 0.262 (−17.9%), and beats the UT
+> Austin DREAMPlace leaderboard (1.4076) by 0.211 (−15.0%).** All 17 VALID /
+> 0 overlaps. **11/17 wins** vs 1.1993 baseline. Cumulative Δ −0.0504,
+> avg −0.0030/bench. Biggest movers: **ibm16 −0.0287** (recovers the
+> +0.0108 fluke-loss from the prior run AND adds a net win), ibm07 −0.0151,
+> ibm01 −0.0069, ibm13/ibm12 −0.005, ibm14 −0.0048, ibm09 −0.0034,
+> ibm17/ibm18 −0.0033. Losses (all small): ibm10 +0.0172 (the
+> mirror-image of ibm16: prior big winner became this run's main loser —
+> RNG sensitivity, swap nets cumulative wins), ibm11 +0.0077, ibm06/ibm08
+> +0.0017, ibm03 +0.0010, ibm04 +0.0003. Total runtime 4429s wall (74min,
+> harness monotonic well under 3300s — no host-suspend drift this run).
+>
+> **HS3 (hard-soft 3-cycle rotation):** new move type. Captures
+> configurations where H wants S1's slot but swapping H↔S1 hurts because
+> S1's connections need to go elsewhere — 2-opt can't accept that chain
+> individually, but the single combined 3-cycle (H → S1's old pos, S1 →
+> S2's old pos, S2 → H's old pos) can. New `score_cycle_hard_soft_soft`
+> + `commit_cycle_hard_soft_soft` on `IncrementalScorer` (extension of
+> HXS to 3 modules via _touched_nets3). Bit-exact verified
+> (`_verify_score_cycle_hard_soft_soft.py`: Δ ≤ 2.22e-16 across all
+> trials and sequential commits on ibm01/04/10). New pass
+> `_three_opt_hard_soft_soft` in the R2 round, dual-field, top_hot=15
+> hards × k_inner=5 S1 × k_inner+1=6 S2 = ~375 trials/pass, 3s tight
+> deadline cap, adaptive skip-if-empty. Cubic-in-knn but knn-truncated.
+> **3-pin routing dispatcher numba JIT (#35):** speedup. The 3-pin
+> dispatcher was 38% of move time (per profile) — the numpy gather /
+> scatter / per-case mask dance carries meaningful overhead beyond the
+> arithmetic. Collapsed into a single per-net numba loop with manual
+> 3-element sort + case branching + direct H/V strip writes. Bit-exact
+> within ≤4.4e-16. Saves another ~13-15s/bench → freed ~250s over the
+> full `--all` (the ibm04 smoke went from 138.8s to 124.8s).
+> ibm04 progression: 1.2092 baseline 1.0304 → ... → 1.0062 (prior shared-
+> scorer + numba strips) → **1.0067** (+ HS3 + 3pin JIT). HS3 fired 4
+> cycles on ibm04 (R1: 7 cycles, R2: 2). Note ibm04 score barely changed
+> but runtime dropped 14s — the freed budget compounds across other
+> benchmarks.
+>
+> Prior milestones (stacked):
 > **Status (2026-05-31 — full-stack `--all` incl. HXS+R6+WL-prefilter+shared-scorer+numba-JIT):**
 > **Avg 1.1993 — beats RePlAce (1.4578) by 0.259 (−17.7%), and beats the UT
 > Austin DREAMPlace leaderboard (1.4076) by 0.208 (−14.8%).** All 17 VALID /
