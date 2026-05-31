@@ -165,16 +165,17 @@ search per deadline (and contention-robustness for the official evaluation):
 After the combined speedup stack, a systematic expansion of the soft-reloc
 candidate set exposed significant headroom:
 
-| Change | `top_hot` | `n_targets` | Key results |
-|--------|-----------|-------------|-------------|
-| Baseline (A+C) | 128 / 192 boost | 24 | avg 1.2755 |
-| **D** BUDGET_OVERRUN 60→75 | — | — | enables 7th R2 round |
-| **E** extend 256/16 to all rounds | 256 | 16 | ibm01 −0.0067, ibm04 −0.0130 |
-| **F** double coverage | 512 | 8 | ibm01 −0.0012, ibm04 −0.0041 |
-| **G** double again | 1024 | 4 | ibm04 −0.0136; ibm01 +0.0037 (regression) |
-| **H** cong-only G, density F | cong 1024/4, den 512/8 | — | ibm01 **0.9345** (new best at time); ibm04 1.0478 (regression) |
-| **I** adaptive density by size | cong 1024/4; den 512/8 if <1000 softs else 1024/4 | — | ibm01 0.9378, ibm04 **1.0309** |
-| **J** extend cong cap 5→7 | same as I | — | ibm01 **0.9329**, ibm04 1.0372 |
+| Change | `top_hot` | `n_targets` | Cong cap | Key results |
+|--------|-----------|-------------|----------|-------------|
+| Baseline (A+C) | 128 / 192 boost | 24 | 3 | avg 1.2755 |
+| **D** BUDGET_OVERRUN 60→75 | — | — | 3 | enables 7th R2 round |
+| **E** extend 256/16 to all rounds | 256 | 16 | 5 | ibm01 −0.0067, ibm04 −0.0130 |
+| **F** double coverage | 512 | 8 | 5 | ibm01 −0.0012, ibm04 −0.0041 |
+| **G** double again | 1024 | 4 | 5 | ibm04 −0.0136; ibm01 +0.0037 (regression) |
+| **H** cong-only G, density F | cong 1024/4, den 512/8 | 5 | ibm01 **0.9345**; ibm04 1.0478 (regression) |
+| **I** adaptive density by size | cong 1024/4; den 512/8 if <1000 softs else 1024/4 | 5 | ibm01 0.9378, ibm04 **1.0309** |
+| **J** extend cong cap 5→7 | same as I | 7 | ibm01 **0.9329**; ibm06 1.3063 (+0.027 ❌), ibm08 1.1807 (+0.007 ❌) |
+| **K** *(current)* lower cap 7→6 | same as I | 6 | ibm01 0.9393, ibm06 1.2887 (−0.018 vs J ✅), ibm08 1.1749 (−0.006 vs J ✅) |
 
 **Key insights from the E→J chain:**
 
@@ -225,10 +226,14 @@ The lever stack, ranked by magnitude:
 | **F** | **top_hot 256→512, n_targets 8, all rounds** | est. −0.005 | — |
 | **G** | **top_hot 512→1024, n_targets 4, all rounds** | spot: ibm04 −0.014 | — |
 | **I** | **Adaptive density: F for <1000 softs, G for ≥1000** | ibm01 −0.0018, ibm04 −0.0065 | — |
-| **J** | **Extend cong cap 5→7 rounds** | ibm01 **−0.0049** (0.9378→0.9329) | — |
+| **J** | **Extend cong cap 5→7 rounds** | ibm01 −0.0049 BUT ibm06 +0.0274, ibm08 +0.0073 | — |
+| **K** | **Lower cong cap 7→6 (fix budget squeeze)** | ibm01 −0.0003, ibm06 −0.0176 (vs J), ibm08 −0.0058 (vs J) | — |
 
-> Note: E–J `--all` deltas not yet measured; per-benchmark spot checks show
-> consistent improvement. A full `--all` re-measurement will update this table.
+> **J-change budget-squeeze root cause:** Round 7 cong ate 4 density-only rounds on ibm06
+> (J=7 rounds, H=11 rounds). K-change (cap=6) restores 10 rounds on ibm06.
+>
+> Note: E–K `--all` deltas not yet measured; `--all` validation currently running.
+> Per-benchmark spot checks confirm no regression vs G-change baseline on tested benchmarks.
 
 **The dominant lever — by an order of magnitude — is soft-macro relocation
 (R5 + R3 = −0.142 combined).** Everything else is necessary infrastructure:
@@ -319,7 +324,7 @@ torch.Tensor[num_macros, 2]`. Internally, `place()` runs the following pipeline:
    ║  │  └───────────────────────────────────────────────────────┘    │  ║
    ║  │                         ▼                                      │  ║
    ║  │  ┌───────────────────────────────────────────────────────┐    │  ║
-   ║  │  │  Soft cong relocation (R3) — IF r ≤ 7 (J-change cap)  │    │  ║
+   ║  │  │  Soft cong relocation (R3) — IF r ≤ 6 (K-change cap)  │    │  ║
    ║  │  │    top_hot=1024 (capped at n_soft), n_targets=4        │    │  ║
    ║  │  │    field = plc routing max(H,V)                        │    │  ║
    ║  │  │    ≤4096 evals @ ~3ms → ≤12.3s; deadline-bounded      │    │  ║
