@@ -5,9 +5,10 @@ per-benchmark numbers + experiment history, see [`PROGRESS.md`]; for open issues
 and closed dead-ends, see [`ISSUES.md`]; for DREAMPlace bridge / source patches,
 see [`DREAMPLACE_FIXES.md`].
 
-Headline (`--all`, 2026-05-29 — combined stack): **avg `1.2755`** — beats
-RePlAce (1.4578) by **12.5%** and the UT Austin DREAMPlace leaderboard (1.4076)
-by **9.4%**. All 17 IBM benchmarks VALID / 0 overlaps, bit-exact verified.
+Headline (`--all`, 2026-05-31 — full stack): **avg `1.1963`** — beats
+RePlAce (1.4578) by **17.9%** and the UT Austin DREAMPlace leaderboard (1.4076)
+by **15.0%**. All 17 IBM benchmarks VALID / 0 overlaps, bit-exact verified.
+We **beat RePlAce on every benchmark**.
 
 ---
 
@@ -185,90 +186,115 @@ open space.
 The placer is invoked once per benchmark via `MacroPlacer.place(benchmark) →
 torch.Tensor[num_macros, 2]`. Internally, `place()` runs the following pipeline:
 
+The pipeline is **a single sequential spine** with exactly one genuinely
+concurrent branch: DREAMPlace is launched as 3 subprocesses at `place()` entry
+and harvested mid-pipeline (after Phase 3). Everything else runs in order on the
+main thread — including the noise restarts, which are an inline phase, *not* a
+parallel track.
+
 ```
-                       ┌───────────────────────────────────────┐
-                       │  initial.plc   (hand-tuned spread)    │
-                       └───────────────────────────────────────┘
-                                          │
-                ┌─────────────────────────┼─────────────────────────┐
-                │                         │                         │
-                ▼                         ▼                         ▼
-   ┌────────────────────────┐  ┌────────────────────────┐  ┌──────────────────────┐
-   │ Phase 0 — Baseline     │  │ Phase 5: DREAMPlace ×3 │  │ Noise restarts       │
-   │ _will_legalize         │  │ async subprocess       │  │ (k=4-50 fracs)       │
-   │ (vectorized rings)     │  │ lo-fix / hi-mov /      │  │ small Gaussian       │
-   │                        │  │ hi-fix configs         │  │ perturbations        │
-   └────────────────────────┘  └────────────────────────┘  └──────────────────────┘
-                │                         │                         │
-                ▼                         ▼                         │
-   ┌────────────────────────┐  ┌────────────────────────┐           │
-   │ Phase 1-3 cong-grad    │  │ legalize DP outputs    │           │
-   │ iterative descent +    │  │ + score                │           │
-   │ wide-step fallback     │  └────────────────────────┘           │
-   └────────────────────────┘             │                         │
-                │                         │                         │
-                ▼                         │                         │
-   ┌────────────────────────┐             │                         │
-   │ Phase 5b/5c cong-grad  │             │                         │
-   │ from best_pl + wide-   │             │                         │
-   │ from-best              │             │                         │
-   └────────────────────────┘             │                         │
-                │                         │                         │
-                ▼                         ▼                         │
-   ┌────────────────────────────────────────────────────┐           │
-   │ Phase 7 DP-rescue                                  │           │
-   │ cong-grad chain from each DP candidate basin       │           │
-   └────────────────────────────────────────────────────┘           │
-                │                                                   │
-                ▼                                                   │
-   ┌────────────────────────┐                                       │
-   │ Phase 8 TOP-K          │                                       │
-   │ cong-grad on K hottest │                                       │
-   │ macros only            │                                       │
-   └────────────────────────┘                                       │
-                │                                                   │
-                ▼                                                   │
-   ┌────────────────────────┐                                       │
-   │ Phase 9 random-order   │◄──────────────────────────────────────┘
+   ┌──────────────────────────────────────────────────────────────────────┐
+   │  initial.plc   (hand-tuned spread)                                   │
+   └──────────────────────────────────────────────────────────────────────┘
+            │
+            │ ─── async side-channel: launch at place() entry ───────────┐
+            │                                                            ▼
+            │                          ┌───────────────────────────────────────┐
+            │                          │  Phase 5: DREAMPlace ×3  (subprocess, │
+            │                          │  runs concurrently with the spine)    │
+            │                          │  lo-fix / hi-mov / hi-fix configs     │
+            │                          │  Nesterov-accelerated NLP global place│
+            │                          └───────────────────────────────────────┘
+            ▼                                                           │
+   ┌────────────────────────┐                                           │
+   │ Phase 0 — Baseline     │                                           │
+   │ _will_legalize         │                                           │
+   │ (vectorized rings)     │                                           │
+   └────────────────────────┘                                           │
+            │                                                           │
+            ▼                                                           │
+   ┌────────────────────────┐                                           │
+   │ Phase 1-3 cong-grad    │                                           │
+   │ iterative descent +    │                                           │
+   │ wide-step fallback     │                                           │
+   └────────────────────────┘                                           │
+            │                                                           │
+            ▼                                                           │
+   ┌────────────────────────┐   harvest DP results ◄────────────────────┘
+   │ Phase 5 — collect DP   │   legalize each output + score it; best
+   │ candidates             │   updates best_pl, ALL kept in dp_placements
+   │                        │   (reused by Phase 7 + the multi-seed 2-opt)
+   └────────────────────────┘
+            │
+            ▼
+   ┌────────────────────────┐
+   │ Phase 5b/5c cong-grad  │
+   │ from best_pl + wide-   │
+   │ from-best              │
+   └────────────────────────┘
+            │
+            ▼
+   ┌────────────────────────┐
+   │ Noise restarts         │   random Gaussian perturbations of initial.plc,
+   │ (inline, sequential)   │   ~24 fracs spanning 1%–25%; accept-on-true-proxy
+   └────────────────────────┘
+            │
+            ▼
+   ┌────────────────────────┐
+   │ Phase 7 DP-rescue      │ ◄── reads each DP basin from dp_placements
+   │ cong-grad chain from   │
+   │ each DP candidate basin│
+   └────────────────────────┘
+            │
+            ▼
+   ┌────────────────────────┐
+   │ Phase 8 TOP-K          │
+   │ cong-grad on K hottest │
+   │ macros only            │
+   └────────────────────────┘
+            │
+            ▼
+   ┌────────────────────────┐
+   │ Phase 9 random-order   │
    │ legalize variants      │
    └────────────────────────┘
-                │
-                ▼
+            │
+            ▼
    ┌────────────────────────────────────────────────────────────────┐
    │  Multi-seed 2-opt (k_neighbors=20, max_iters=6)                │
-   │  from best_pl + each DP candidate basin                        │
+   │  seeds = best_pl + each DP candidate basin (dp_placements)     │ ◄── DP basins
    │  with S9 cong-aware candidate selection:                       │
    │    hot-first outer ordering + cold-region teleport             │
    │  Final selection across seeds by true _exact_proxy             │
    └────────────────────────────────────────────────────────────────┘
-                │
-                ▼
+            │
+            ▼
    ╔════════════════════════════════════════════════════════════════════╗
    ║  R2 interleave loop (≤6 rounds, accept-on-true-proxy)              ║
    ║  ┌──────────────────────────────────────────────────────────────┐  ║
    ║  │  Round r:                                                    │  ║
-   ║  │  ┌─────────────────────────────────────────────────────┐    │  ║
-   ║  │  │  Hard relocation (R1/R2/R2b)                        │    │  ║
-   ║  │  │    top_hot=48 by max(H,V), n_targets=16             │    │  ║
-   ║  │  │    accept on true-proxy drop                        │    │  ║
-   ║  │  └─────────────────────────────────────────────────────┘    │  ║
+   ║  │  ┌─────────────────────────────────────────────────────┐     │  ║
+   ║  │  │  Hard relocation (R1/R2/R2b)                        │     │  ║
+   ║  │  │    top_hot=48 by max(H,V), n_targets=16             │     │  ║
+   ║  │  │    accept on true-proxy drop                        │     │  ║
+   ║  │  └─────────────────────────────────────────────────────┘     │  ║
    ║  │                       ▼                                      │  ║
-   ║  │  ┌─────────────────────────────────────────────────────┐    │  ║
-   ║  │  │  Soft cong relocation (R3) — IF r ≤ 3 (A: hard cap) │    │  ║
-   ║  │  │    top_hot=128, n_targets=24                        │    │  ║
-   ║  │  │    field = plc routing max(H,V)                     │    │  ║
-   ║  │  └─────────────────────────────────────────────────────┘    │  ║
+   ║  │  ┌─────────────────────────────────────────────────────┐     │  ║
+   ║  │  │  Soft cong relocation (R3) — IF r ≤ 3 (A: hard cap) │     │  ║
+   ║  │  │    top_hot=128, n_targets=24                        │     │  ║
+   ║  │  │    field = plc routing max(H,V)                     │     │  ║
+   ║  │  └─────────────────────────────────────────────────────┘     │  ║
    ║  │                       ▼                                      │  ║
-   ║  │  ┌─────────────────────────────────────────────────────┐    │  ║
-   ║  │  │  Soft density relocation (R5)                       │    │  ║
-   ║  │  │    top_hot = 128 (r ≤ 3) or 192 (r > 3, C: boost)   │    │  ║
-   ║  │  │    field = grid_occupied / dens_grid_area           │    │  ║
-   ║  │  └─────────────────────────────────────────────────────┘    │  ║
+   ║  │  ┌─────────────────────────────────────────────────────┐     │  ║
+   ║  │  │  Soft density relocation (R5)                       │     │  ║
+   ║  │  │    top_hot = 128 (r ≤ 3) or 192 (r > 3, C: boost)   │     │  ║
+   ║  │  │    field = grid_occupied / dens_grid_area           │     │  ║
+   ║  │  └─────────────────────────────────────────────────────┘     │  ║
    ║  │                       ▼                                      │  ║
-   ║  │  ┌─────────────────────────────────────────────────────┐    │  ║
-   ║  │  │  2-opt cleanup (8s budget slice)                    │    │  ║
-   ║  │  │    k=20 spatial kNN + S9 cold-teleport              │    │  ║
-   ║  │  └─────────────────────────────────────────────────────┘    │  ║
+   ║  │  ┌─────────────────────────────────────────────────────┐     │  ║
+   ║  │  │  2-opt cleanup (8s budget slice)                    │     │  ║
+   ║  │  │    k=20 spatial kNN + S9 cold-teleport              │     │  ║
+   ║  │  └─────────────────────────────────────────────────────┘     │  ║
    ║  │                       ▼                                      │  ║
    ║  │       round_improved? — yes → next round                     │  ║
    ║  │                       — no  → terminate                      │  ║
@@ -276,10 +302,10 @@ torch.Tensor[num_macros, 2]`. Internally, `place()` runs the following pipeline:
    ╚════════════════════════════════════════════════════════════════════╝
                 │
                 ▼
-                ┌──────────────────────────┐
-                │  best placement returned │
-                │  (centers, [num_macros, 2]) │
-                └──────────────────────────┘
+        ┌──────────────────────────┐
+        │  best placement returned │
+        │(centers, [num_macros, 2])│
+        └──────────────────────────┘
 ```
 
 Everything above runs inside a single per-benchmark budget
@@ -293,11 +319,14 @@ Everything above runs inside a single per-benchmark budget
 | **5 DREAMPlace ×3 (async)** | Launch DP at `place()` entry in 3 configs (lo-fix, hi-mov, hi-fix) | Side-channel seeds with different basins; legalize each and add to candidates |
 | **1-3 cong-grad** | Iterative max(H,V) gradient-descent perturbation from baseline (`frac=0.04`, ≤4 steps; wide-step fallback at frac=0.08/0.12) | Escape WL-trap local minima; relieve congestion peaks |
 | **5b/5c cong-grad-from-best** | One more cong-grad from `best_pl` + wide-from-best (frac=0.08) | Refine after multi-DP candidates settle |
+| **Noise restarts** | Inline (sequential) random Gaussian perturbations of `initial.plc`, ~24 fracs spanning 1%–25%, accept-on-true-proxy | Broad basin-hopping around the hand-tuned seed; fills budget between the directed phases |
 | **7 DP-rescue** | Cong-grad chain from each DP candidate's basin | Mine DP's WL+density edge for proxy-friendly local minima |
 | **8 TOP-K cong-grad** | Restrict perturbation to the K hottest macros only (K ∈ {5, 10, 20}, 3-iter chains) | Focus motion on routing peaks instead of spreading across all congested cells |
 | **9 random-order legalize** | N=3 trials with randomized secondary-sort key in `_will_legalize` | Different legalization arrangements from the same starting positions |
 | **Multi-seed 2-opt** | Proxy-driven 2-opt (k=20) from `best_pl` + each DP basin; true-proxy selection | A DP seed's basin can 2-opt to a deeper minimum than `best_pl`'s; pruning at `+0.02` skips unreachable seeds |
 | **R2 interleave (≤6 rounds)** | Hard reloc ⇄ soft-cong reloc ⇄ soft-density reloc ⇄ 2-opt cleanup | The dominant lever — see § 2.3 |
+
+> **Why the numbering skips 4 and 6.** The phase numbers are historical labels, not a contiguous sequence. **Phase 4** (cong-grad from a noise-perturbed / multi-start seed) was tested 2026-05-09 and reverted — strictly worse on every benchmark. **Phase 6** (additive cong-grad from the DP placement) was tested 2026-05-21 and rejected (+0.017 on ibm08 from budget displacement). Both numbers were retired rather than reused. Unrelated: the `B3 phase 4` tags in `placer.py` are a *separate* scheme — the `IncrementalScorer` build stages (B3p2 = incremental WL, B3p4 = incremental routing), not pipeline phases.
 
 ### 4.2 Budget allocation (floor-reservation)
 
@@ -429,7 +458,9 @@ Cost computation from the maintained H/V flats:
    `mean(top)`.
 
 Steps 3 + 4 cost ~17% of a per-move trial. The smoother is a fixed-kernel
-convolution (`smooth_range=2`), and crucially, it's **separable**:
+convolution (kernel width `2·smooth_range + 1`, with `smooth_range` read from
+`plc.smooth_range` — 2 under the TILOS evaluator), and crucially, it's
+**separable**:
 
 - H is smoothed *along rows-within-a-column* (each column independent).
 - V is smoothed *along cols-within-a-row* (each row independent).
@@ -577,9 +608,9 @@ scorer's correctness. Every move-path is verified bit-exact against
 | `_verify_incremental_scorer.py` | swap | Δ ≤ 4.4e-16 (machine eps) | 0 |
 | `_verify_score_move.py` | hard move | Δ ≤ 1.8e-9 | stable |
 | `_verify_score_move_soft.py` | soft move | Δ ≤ 5e-10 | stable |
-| `_verify_subset_routing.py` | `_apply_net_routing_subset` vs full routing | bit-exact | — |
-| `_verify_congestion.py` | `_compute_cong_cost` vs `plc.get_congestion_cost` | bit-exact | — |
-| `_verify_density.py` | `_compute_density_cost` vs `plc.get_density_cost` | bit-exact | — |
+| `_verify_subset_routing.py` | `_apply_net_routing_subset` / `_apply_macro_routing_subset` vs full routing | bit-exact | — |
+| `_verify_congestion.py` | vectorized `_patch_plc_congestion` vs scalar `plc.get_congestion_cost` | bit-exact | — |
+| `_verify_density.py` | vectorized `_patch_plc_density` vs scalar `plc.get_density_cost` | bit-exact | — |
 | `_stress_verify.py` | Many sequential commits, observe drift | none over 1000s of moves | |
 
 Every speedup added to the scoring path must pass these verifiers before
