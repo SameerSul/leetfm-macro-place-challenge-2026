@@ -5,20 +5,50 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-05-29 — combined stack): avg `1.2755`** — beats the
-RePlAce target (`1.4578`) by **12.5%**, all 17 IBM benchmarks VALID / 0
+**Headline (`--all`, 2026-05-31 — full stack): avg `1.1963`** — beats the
+RePlAce target (`1.4578`) by **17.9%**, all 17 IBM benchmarks VALID / 0
 overlaps. **Beats the #1 leaderboard** (UT Austin DREAMPlace, `1.4076`) by
-**0.132 (−9.4%)**. Driven by the **relocation family** (R1/R2/R3/R5) plus a
-**bit-exact scoring-speedup stack**: (i) **incremental congestion cost** (cache
-the smoothed normalized H/V; re-smooth only the touched-net bbox per move,
-bit-identical), (ii) **#1 subset-cumsum strip-batch** (cumsum only the touched
-rows/cols), (iii) **#2 topology-struct cache** for the routing apply (the
-position-independent gather is built once per macro and reused across moves and
-the −1/+1 applies), (iv) a **floor-reservation budget allocator** (every
-benchmark in `--all` is guaranteed ≥110 s — no last-benchmark starvation), and
-(v) a **round-3 cong cap + density `top_hot=192` boost** (cong soft-pass
-saturates by round 3 — reclaim those cycles for more density attempts).
-Prior milestone (R5 alone): 1.2799; incremental cong cost alone: 1.2767.
+**0.211 (−15.0%)**. We **beat RePlAce on every single benchmark**.
+Driven by a **family of dual-field soft + hard moves** (cong-field +
+density-field for every move type, plus HXS hard ⇄ soft cross-swaps), a
+bit-exact incremental scoring core, a parallelized pipeline, an **adaptive
+round/pass scheduler** that re-iterates whenever a pass keeps finding
+moves and bails when it saturates, plus a **persistent shared scorer +
+numba-JIT'd routing apply** that frees ~15-25s/benchmark of compute —
+which the R2 loop spends on additional productive rounds AND fixes the
+ibm18 starvation that previously cost +0.28 on that single benchmark.
+The dominant algorithmic levers:
+(a) **single-soft relocation** R3 (cong) + R5 (density) — 1.4216 → 1.2799,
+(b) **A1 soft-soft 2-opt** + A1b cong-field + A1c cold-teleport — 1.2737
+→ 1.2195,
+(c) **A4 WL-aware candidate ordering + A5 adaptive multi-pass 2-opt +
+adaptive R2 round termination + adaptive skip-empty replacing hardcoded
+round caps** — 1.2195 → 1.2092,
+(d) **HXS hard ⇄ soft cross-swap + R6 combined cong+density relocation +
+WL-delta prefilter for soft-2opt + persistent shared scorer per R2 round
++ numba-JIT routing apply (with numpy fallback)** — 1.2092 → 1.1993
+(14/17 wins, ibm18 starvation fixed: +0.28 → −0.036),
+(e) **HS3 hard-soft 3-cycle (H → S₁ → S₂ → H) + 3-pin routing dispatcher
+numba-JIT** — 1.1993 → **1.1963** (11/17 wins, biggest mover ibm16 −0.029).
+Layered on top: (i) **incremental congestion cost** (cache smoothed H/V;
+re-smooth only the touched-net bbox per move), (ii) **#1 subset-cumsum
+strip-batch**, (iii) **#2 topology-struct cache** for the routing apply,
+(iv) a **floor-reservation budget allocator** (every benchmark ≥110 s — no
+last-benchmark starvation), (v) **round-3 cong cap + density `top_hot=192`
+boost**, (vi) **S1 prep/trial/commit/revert + S3 bincount strip-batch**
+(hoist the loop-invariant subtract-old — 25–43% faster per-trial),
+(vii) **A3 net-centroid candidate ordering** for soft passes,
+(viii) **H5 hard density relocation** (the R5-for-hards symmetry),
+(ix) **Phase 9 + DREAMPlace ×3 parallelization** plus drafted multi-seed
+2-opt subprocess parallelization (#3v2 env-gated). The entire chain is
+**bit-exact verified** (every scoring path — including the new HXS
+score_swap_hard_soft and the numba-JIT strip-batch — has its own
+verifier; Δ ≤ 4.4e-16).
+Stacked progression: 1.4854 (v12) → 1.2799 (R5) → 1.2767 (inc cong) →
+1.2755 (+ #1+#2+floor-res+A+C) → 1.2737 (+ S1+S3) → 1.2433 (+ A1+A3) →
+1.2195 (+ H5+A1b+A1c+A1×2+Phase9-parallel) → 1.2092 (+ A4+A5+adaptive
+R2/skip-empty) → 1.1993 (+ HXS+R6+WL-prefilter+shared-scorer+numba) →
+**1.1963** (+ HS3+3pin-JIT, 11/17 wins).
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
 > open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches

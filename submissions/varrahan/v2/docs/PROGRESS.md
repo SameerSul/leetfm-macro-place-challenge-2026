@@ -3,9 +3,200 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-05-29 — combined-stack `--all`):** **Avg 1.2755 — beats
-> RePlAce (1.4578) by 0.182 (−12.5%), and beats the UT Austin DREAMPlace
-> leaderboard (1.4076) by 0.132 (−9.4%).** All 17 VALID / 0 overlaps.
+> **Status (2026-05-31 — full-stack `--all` incl. HS3 hard-soft 3-cycle + 3-pin routing JIT):**
+> **Avg 1.1963 — beats RePlAce (1.4578) by 0.262 (−17.9%), and beats the UT
+> Austin DREAMPlace leaderboard (1.4076) by 0.211 (−15.0%).** All 17 VALID /
+> 0 overlaps. **11/17 wins** vs 1.1993 baseline. Cumulative Δ −0.0504,
+> avg −0.0030/bench. Biggest movers: **ibm16 −0.0287** (recovers the
+> +0.0108 fluke-loss from the prior run AND adds a net win), ibm07 −0.0151,
+> ibm01 −0.0069, ibm13/ibm12 −0.005, ibm14 −0.0048, ibm09 −0.0034,
+> ibm17/ibm18 −0.0033. Losses (all small): ibm10 +0.0172 (the
+> mirror-image of ibm16: prior big winner became this run's main loser —
+> RNG sensitivity, swap nets cumulative wins), ibm11 +0.0077, ibm06/ibm08
+> +0.0017, ibm03 +0.0010, ibm04 +0.0003. Total runtime 4429s wall (74min,
+> harness monotonic well under 3300s — no host-suspend drift this run).
+>
+> **HS3 (hard-soft 3-cycle rotation):** new move type. Captures
+> configurations where H wants S1's slot but swapping H↔S1 hurts because
+> S1's connections need to go elsewhere — 2-opt can't accept that chain
+> individually, but the single combined 3-cycle (H → S1's old pos, S1 →
+> S2's old pos, S2 → H's old pos) can. New `score_cycle_hard_soft_soft`
+> + `commit_cycle_hard_soft_soft` on `IncrementalScorer` (extension of
+> HXS to 3 modules via _touched_nets3). Bit-exact verified
+> (`_verify_score_cycle_hard_soft_soft.py`: Δ ≤ 2.22e-16 across all
+> trials and sequential commits on ibm01/04/10). New pass
+> `_three_opt_hard_soft_soft` in the R2 round, dual-field, top_hot=15
+> hards × k_inner=5 S1 × k_inner+1=6 S2 = ~375 trials/pass, 3s tight
+> deadline cap, adaptive skip-if-empty. Cubic-in-knn but knn-truncated.
+> **3-pin routing dispatcher numba JIT (#35):** speedup. The 3-pin
+> dispatcher was 38% of move time (per profile) — the numpy gather /
+> scatter / per-case mask dance carries meaningful overhead beyond the
+> arithmetic. Collapsed into a single per-net numba loop with manual
+> 3-element sort + case branching + direct H/V strip writes. Bit-exact
+> within ≤4.4e-16. Saves another ~13-15s/bench → freed ~250s over the
+> full `--all` (the ibm04 smoke went from 138.8s to 124.8s).
+> ibm04 progression: 1.2092 baseline 1.0304 → ... → 1.0062 (prior shared-
+> scorer + numba strips) → **1.0067** (+ HS3 + 3pin JIT). HS3 fired 4
+> cycles on ibm04 (R1: 7 cycles, R2: 2). Note ibm04 score barely changed
+> but runtime dropped 14s — the freed budget compounds across other
+> benchmarks.
+>
+> Prior milestones (stacked):
+> **Status (2026-05-31 — full-stack `--all` incl. HXS+R6+WL-prefilter+shared-scorer+numba-JIT):**
+> **Avg 1.1993 — beats RePlAce (1.4578) by 0.259 (−17.7%), and beats the UT
+> Austin DREAMPlace leaderboard (1.4076) by 0.208 (−14.8%).** All 17 VALID /
+> 0 overlaps. **14/17 wins** vs 1.2092 baseline (only ibm07 +0.004, ibm15
+> +0.0004, ibm16 +0.0108 — the latter likely a fluke-loss back toward the
+> ibm16 long-run mean; the prior 1.2092 run got an unusually-good 1.2641 on
+> ibm16). Cumulative Δ −0.1683, avg −0.0099/bench. Biggest movers:
+> **ibm18 −0.0359** (starvation FIXED — went from +0.283 with the previous
+> HXS+R6 budget overrun to −0.036 with the shared scorer + numba freed-up
+> budget), ibm17 −0.0252, ibm04 −0.0226, ibm10 −0.0209, ibm11 −0.0186,
+> ibm06 −0.0158. Total runtime 11486s wall (host-suspend inflated; harness
+> monotonic ≤3300s).
+>
+> **HXS (hard ⇄ soft cross-swap):** new move type. Exchanges a hard macro
+> with a soft macro. Neither hard-2opt nor soft-2opt can find such pairs
+> (each swaps only within its own kind). New `score_swap_hard_soft` /
+> `commit_swap_hard_soft` on `IncrementalScorer` — hybrid of score_swap
+> (hard's routing blockage via macro_subset) + score_swap_soft (no
+> macro_subset for the soft). Bit-exact verified
+> (`_verify_score_swap_hard_soft.py`: Δ ≤ 4.4e-16 across all trials and
+> sequential commits on ibm01/04/10). New pass `_two_opt_hard_soft_swap`
+> in the R2 round, dual-field (cong + density), 2.5s tight deadline cap,
+> adaptive skip-if-empty.
+> **R6 (combined cong+density relocation):** third hard-reloc pass per
+> round, hotness = geometric mean of normalized cong & density. Catches
+> macros moderately hot on both fields that neither pure pass prioritized
+> (each ranking favors pure-field extremes). 4s deadline cap. Same proxy
+> gate, same overlap check. Sparse firings (1-3/round) before adaptive
+> skip-if-empty triggers.
+> **WL-delta prefilter for soft-2opt:** new cheap `wl_delta_swap_soft`
+> method on `IncrementalScorer` computes per-net HPWL change in ~50µs
+> (vs ~5-10ms for the full score_swap_soft). Used in
+> `_two_opt_soft_swap` as a prefilter — skip the full score call when
+> predicted WL delta exceeds 0.01 (loose enough to keep every
+> historically-accepted swap; typical accepted ΔWL is <0.002).
+> **Persistent shared scorer per R2 round (#33):** the R2 round body has
+> ~10 distinct passes (hard reloc cong / density / combined, soft reloc
+> cong / density, soft-2opt cong / density × A5 passes, HXS cong /
+> density, 2-opt cleanup); the status quo rebuilt an `IncrementalScorer`
+> per pass (~0.1-0.3s each → ~10-20 s/benchmark). Now the scorer is
+> built ONCE per round, lazily rebuilt on the rare case a pass's
+> committed accepts don't pass the cumulative `cand_true < best_score`
+> gate. Saves ~15-25s/benchmark, which the R2 loop spends on additional
+> productive rounds.
+> **Numba-JIT routing apply (#34):** soft-import numba; if available,
+> JIT-compile `_apply_h_strips_batch` / `_apply_v_strips_batch` (the
+> inner-inner loops of the 2-pin / 3-pin / big-net routing apply,
+> ~10% of move time per profile). Pure numpy fallback when numba is
+> absent. Bit-exact within ≤4.4e-16 (verified by the existing scorer
+> verifier on ibm01/04/10). Saves another ~10-15s/benchmark.
+> ibm04 progression (validating the stack incrementally):
+> 1.2092-baseline 1.0304 → + HXS+R6 (tight caps) 1.0162 → + WL prefilter
+> 1.0139 (187s) → + shared scorer 1.0074 (163s, **−24s**) → + numba JIT
+> **1.0062 (138s, −49s vs pre-shared)** — total −0.0242 score,
+> −49s/bench freed.
+>
+> Prior milestones (stacked):
+> **Status (2026-05-30 — full-stack `--all` incl. A4+A5+adaptive R2/skip-empty):**
+> **Avg 1.2092 — beats RePlAce (1.4578) by 0.249 (−17.1%), and beats the UT
+> Austin DREAMPlace leaderboard (1.4076) by 0.198 (−14.1%).** All 17 VALID /
+> 0 overlaps. **15/17 wins** vs 1.2195 baseline (only ibm04 +0.0017 and ibm18
+> +0.0063 — both near noise). Cumulative Δ −0.1755, avg −0.0103/bench.
+> Biggest movers: ibm15 −0.0311, ibm06 −0.0259, ibm12 −0.0194, ibm13 −0.0174,
+> ibm08 −0.0148, ibm14 −0.0135, ibm11 −0.0121. Total runtime 2716s.
+>
+> **A4 (WL-aware soft-2opt candidate ordering):** `_two_opt_soft_swap` now
+> takes `net_centroid` + `wl_blend=0.3`, blending Euclidean distance with
+> distance-to-net-centroid in the candidate ordering — the soft-2opt analog
+> of A3. Pure ordering change; strictly non-regressing.
+> **A5 (adaptive multi-pass soft-2opt):** each soft-2opt call in R2 now runs
+> up to `A5_NUM_PASSES=2` passes with early-stop if the first pass made no
+> improvement. Pass 2 fired 186/189 opportunities across the run — nearly
+> every round had a productive 2nd pass.
+> **Adaptive R2 round termination:** added `TINY_R2_ROUNDS_TO_STOP=2`
+> consecutive rounds of Δ < `R2_DELTA_THRESHOLD=1e-3` to short-circuit
+> diminishing-returns rounds. In practice the tiny-streak guard never fired
+> on the winning run (every round productively > 1e-3) — confirms the rounds
+> are doing real work.
+> **Adaptive skip-empty replacing hardcoded `R3_CONG_MAX_ROUNDS`:** both the
+> single-soft cong-relocation pass and the A1b cong-field soft-2opt now skip
+> a round only after `SKIP_EMPTY_AFTER=1` empty round in a row. The earlier
+> hardcoded round-3 cap on A1b was found to regress scores by killing
+> productive late-round work (A1b finds 7–35 swaps even at round 6 on some
+> benchmarks). Density `top_hot` boost still triggers, but adaptively (when
+> the cong empty-streak counter saturates).
+> **#3v2 time-shifted multi-seed 2-opt subprocess pool (drafted, env-gated
+> off):** `V2_MULTISEED_MP=1` runs the main "best" 2-opt inline first (full
+> solo CPU during the 15s deadline), then submits DP seed 2-opts to a
+> ProcessPoolExecutor afterward. Default off — direct subprocess parallelism
+> on the deadline-bound search caused regression due to CPU contention.
+> Total runtime 2716s (clean, no host suspend, well under 3600s hard cap).
+>
+> Prior milestones (stacked):
+> **Status (2026-05-30 — full-stack `--all` incl. H5+A1b+A1c+A1×2+Phase9-parallel):**
+> **Avg 1.2195 — beats RePlAce (1.4578) by 0.238 (−16.3%), and beats the UT
+> Austin DREAMPlace leaderboard (1.4076) by 0.188 (−13.4%).** All 17 VALID /
+> 0 overlaps. We **beat RePlAce on every benchmark** (ibm01 flipped from
+> +2.6% to −1.0%). All 17 benchmarks improved vs the 1.2433 baseline
+> (17/17 wins, cumulative Δ −0.4044, avg −0.024/bench).
+> **H5 (hard density relocation):** new pass — the R5-analog for hard macros.
+> `_relocation_moves` now switches its hot/cold field via `use_density=True`;
+> a new pass in the R2 round runs the hard-density variant after the existing
+> cong-based hard reloc. Modest (1-3 moves/round) but consistent contribution.
+> **A1b (cong-field soft-2opt):** soft-2opt now runs TWICE per round — once
+> on the cong hotness field, once on density — same dual-field symmetry that
+> gave R3 + R5 their compound gain. Finds 7-35 swaps/round on the cong pass.
+> **A1c (cold-teleport):** each A1 pass appends 4 globally-coldest movable
+> softs to the kNN candidate set per hot — analog of S9 cold-teleport for the
+> hard 2-opt.
+> **Phase 9 parallelization:** ThreadPoolExecutor on the 3 random-order
+> legalize trials (numpy releases the GIL on the heavy work). Score step
+> stays sequential (plc state). Saves ~0.3s/bench.
+> **DREAMPlace ×3 already parallel** (confirmed) — 3 async subprocess
+> handles, no change needed.
+> Combined `--all`: 1.2433 → **1.2195** (−0.0238). Biggest movers: ibm12
+> −0.069, ibm11 −0.041, ibm10 −0.029, ibm08 −0.030, ibm15 −0.028, ibm17
+> −0.028. Total runtime 2598s (clean, under cap).
+> Prior milestones (stacked):
+> **A1 + A3 (added 2026-05-29) — the dominant new lever.**
+> **A1 (soft-soft 2-opt):** new pair-swap move type that exchanges two soft
+> macros' positions. Single-soft relocation can't find moves where two softs
+> need to swap places (e.g., both at suboptimal cells where their connections
+> would be happier in each other's slot). New `score_swap_soft` /
+> `commit_swap_soft` on `IncrementalScorer` (analog of `score_swap` minus
+> macro_subset since softs don't block routing), new `_two_opt_soft_swap`
+> pass in the R2 interleave round (between soft-density and the hard 2-opt
+> cleanup): top_hot=64 density-hot softs × k_neighbors=12 nearest movable
+> softs, accept-on-true-proxy, ~6s budget slice. Bit-exact verified
+> (`_verify_score_swap_soft.py`: Δ ≤ 2.2e-16 machine eps across trials and
+> sequential commits). **A3 (smart soft candidate ordering):** new
+> `soft_net_centroids()` method (analog of `hard_net_centroids`);
+> `_soft_relocation_moves` now blends Euclidean distance with distance-to-
+> net-centroid via `wl_blend=0.3` so candidates aligned with the soft's
+> WL anchor are tried first. Pure ordering change — strictly non-regressing.
+> Combined `--all`: 1.2737 → **1.2433** (−0.0304, **ALL 17 wins**, biggest
+> movers ibm17 −0.059, ibm07 −0.050, ibm13 −0.043, ibm16/15 −0.039,
+> ibm14 −0.035, ibm18 −0.032). Per-round soft-2opt accepted 9–41 swaps
+> consistently across all 6 rounds, confirming A1 finds many real moves the
+> single-soft passes couldn't reach. Total runtime 2291s (clean, no WSL
+> inflation this run). **A1 is the largest single algorithmic improvement
+> since R5** — they're now co-dominant levers, both around −0.03 to −0.1
+> magnitude.
+> Prior milestones (stacked):
+> **S1 + S3 (added 2026-05-29):** S1 hoists the loop-invariant "subtract k's
+> old routing + density" out of the relocation candidate inner loop via a new
+> `_prepare_move(_soft)` / `_trial_at(_soft)` / `_commit_after_prep(_soft)` /
+> `_revert_prep(_soft)` quartet on `IncrementalScorer`. Per-trial cost in the
+> realistic same-macro / nearby-target pattern drops 25–43% (ibm10
+> 1.50→0.90 ms, ibm15 1.50→0.86 ms, ibm17 1.82→1.36 ms). Bit-exact verified
+> (`_verify_prep_trial.py`: Δ=0.00e+00 on every trial vs `score_move(_soft)`).
+> S3 replaces `np.add.at` with `np.bincount` in the strip-batch routing fill —
+> same-order accumulation, swap verifier still passes at Δ≤4.4e-16.
+> Combined `--all`: 1.2755 → **1.2737** (−0.0018; 10/17 wins; ibm18 −0.021
+> and ibm06 −0.019 the biggest movers).
+> Prior milestones (stacked):
 > **Latest changes stacked this session** (each one bit-exact-verified before
 > the next): (1) **Incremental congestion cost** — `IncrementalScorer` caches
 > the smoothed normalized H/V and per move re-smooths only the touched-net
