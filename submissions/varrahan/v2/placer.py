@@ -3938,12 +3938,17 @@ class MacroPlacer:
         # 260s cap after 6 R2 rounds with ~0s remaining. A 7th density-only round
         # costs ~17s (cong skipped: _r2=6 ≥ R3_CONG_MAX_ROUNDS=5); this 15s extra
         # budget enables it. 17×(110+75)=3145 < 3300s harness total → --all safe.
-        self.BUDGET_OVERRUN_S: float = 75.0
+        # Increased 75→83 (2026-05-30): with R3_SOFT_TGT_BOOSTED=16 the density
+        # pass with 256 hot macros finishes in ~7.7s instead of 15s, leaving
+        # ~0.3s after round 7 density — just below the 2.4s 2-opt guard.
+        # An 8s increase enables round 7's 2-opt (~20 swaps, −0.0003).
+        # 17×(110+83)=3281 < 3300s harness total → --all safe.
+        self.BUDGET_OVERRUN_S: float = 83.0
         # Floor-reservation (2026-05-29): every benchmark in an --all run is
         # guaranteed at least this much budget. The allocator reserves
         # (floor + overrun) for each *remaining* benchmark so an early/large one
         # can't eat the tail's budget — which previously collapsed the last
-        # benchmark (ibm18) to the raw baseline. 17·(110+75)=3145 < 3300, so the
+        # benchmark (ibm18) to the raw baseline. 17·(110+83)=3281 < 3300, so the
         # floor is feasible for all 17 with margin.
         self.PER_BENCH_FLOOR_S: float = 110.0
         # Leave headroom under the 3600s hard harness cap for setup/teardown.
@@ -4240,7 +4245,7 @@ class MacroPlacer:
                 except Exception:
                     pass
             if plc is not None and dp_handle is not None:
-                large_dp_budget = effective_budget_s + 75.0  # mirrors BUDGET_OVERRUN_S below
+                large_dp_budget = effective_budget_s + 83.0  # mirrors BUDGET_OVERRUN_S below
                 t_base_score_start = time.monotonic()
                 try:
                     base_score = float(_exact_proxy(pl_scratch, benchmark, plc))
