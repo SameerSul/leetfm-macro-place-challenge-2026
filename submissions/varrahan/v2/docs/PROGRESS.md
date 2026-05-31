@@ -3,6 +3,63 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-05-31 — full-stack `--all` incl. HXS+R6+WL-prefilter+shared-scorer+numba-JIT):**
+> **Avg 1.1993 — beats RePlAce (1.4578) by 0.259 (−17.7%), and beats the UT
+> Austin DREAMPlace leaderboard (1.4076) by 0.208 (−14.8%).** All 17 VALID /
+> 0 overlaps. **14/17 wins** vs 1.2092 baseline (only ibm07 +0.004, ibm15
+> +0.0004, ibm16 +0.0108 — the latter likely a fluke-loss back toward the
+> ibm16 long-run mean; the prior 1.2092 run got an unusually-good 1.2641 on
+> ibm16). Cumulative Δ −0.1683, avg −0.0099/bench. Biggest movers:
+> **ibm18 −0.0359** (starvation FIXED — went from +0.283 with the previous
+> HXS+R6 budget overrun to −0.036 with the shared scorer + numba freed-up
+> budget), ibm17 −0.0252, ibm04 −0.0226, ibm10 −0.0209, ibm11 −0.0186,
+> ibm06 −0.0158. Total runtime 11486s wall (host-suspend inflated; harness
+> monotonic ≤3300s).
+>
+> **HXS (hard ⇄ soft cross-swap):** new move type. Exchanges a hard macro
+> with a soft macro. Neither hard-2opt nor soft-2opt can find such pairs
+> (each swaps only within its own kind). New `score_swap_hard_soft` /
+> `commit_swap_hard_soft` on `IncrementalScorer` — hybrid of score_swap
+> (hard's routing blockage via macro_subset) + score_swap_soft (no
+> macro_subset for the soft). Bit-exact verified
+> (`_verify_score_swap_hard_soft.py`: Δ ≤ 4.4e-16 across all trials and
+> sequential commits on ibm01/04/10). New pass `_two_opt_hard_soft_swap`
+> in the R2 round, dual-field (cong + density), 2.5s tight deadline cap,
+> adaptive skip-if-empty.
+> **R6 (combined cong+density relocation):** third hard-reloc pass per
+> round, hotness = geometric mean of normalized cong & density. Catches
+> macros moderately hot on both fields that neither pure pass prioritized
+> (each ranking favors pure-field extremes). 4s deadline cap. Same proxy
+> gate, same overlap check. Sparse firings (1-3/round) before adaptive
+> skip-if-empty triggers.
+> **WL-delta prefilter for soft-2opt:** new cheap `wl_delta_swap_soft`
+> method on `IncrementalScorer` computes per-net HPWL change in ~50µs
+> (vs ~5-10ms for the full score_swap_soft). Used in
+> `_two_opt_soft_swap` as a prefilter — skip the full score call when
+> predicted WL delta exceeds 0.01 (loose enough to keep every
+> historically-accepted swap; typical accepted ΔWL is <0.002).
+> **Persistent shared scorer per R2 round (#33):** the R2 round body has
+> ~10 distinct passes (hard reloc cong / density / combined, soft reloc
+> cong / density, soft-2opt cong / density × A5 passes, HXS cong /
+> density, 2-opt cleanup); the status quo rebuilt an `IncrementalScorer`
+> per pass (~0.1-0.3s each → ~10-20 s/benchmark). Now the scorer is
+> built ONCE per round, lazily rebuilt on the rare case a pass's
+> committed accepts don't pass the cumulative `cand_true < best_score`
+> gate. Saves ~15-25s/benchmark, which the R2 loop spends on additional
+> productive rounds.
+> **Numba-JIT routing apply (#34):** soft-import numba; if available,
+> JIT-compile `_apply_h_strips_batch` / `_apply_v_strips_batch` (the
+> inner-inner loops of the 2-pin / 3-pin / big-net routing apply,
+> ~10% of move time per profile). Pure numpy fallback when numba is
+> absent. Bit-exact within ≤4.4e-16 (verified by the existing scorer
+> verifier on ibm01/04/10). Saves another ~10-15s/benchmark.
+> ibm04 progression (validating the stack incrementally):
+> 1.2092-baseline 1.0304 → + HXS+R6 (tight caps) 1.0162 → + WL prefilter
+> 1.0139 (187s) → + shared scorer 1.0074 (163s, **−24s**) → + numba JIT
+> **1.0062 (138s, −49s vs pre-shared)** — total −0.0242 score,
+> −49s/bench freed.
+>
+> Prior milestones (stacked):
 > **Status (2026-05-30 — full-stack `--all` incl. A4+A5+adaptive R2/skip-empty):**
 > **Avg 1.2092 — beats RePlAce (1.4578) by 0.249 (−17.1%), and beats the UT
 > Austin DREAMPlace leaderboard (1.4076) by 0.198 (−14.1%).** All 17 VALID /

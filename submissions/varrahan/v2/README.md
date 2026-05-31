@@ -5,21 +5,29 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-05-30 — full stack): avg `1.2092`** — beats the
-RePlAce target (`1.4578`) by **17.1%**, all 17 IBM benchmarks VALID / 0
+**Headline (`--all`, 2026-05-31 — full stack): avg `1.1993`** — beats the
+RePlAce target (`1.4578`) by **17.7%**, all 17 IBM benchmarks VALID / 0
 overlaps. **Beats the #1 leaderboard** (UT Austin DREAMPlace, `1.4076`) by
-**0.198 (−14.1%)**. We now **beat RePlAce on every single benchmark**.
+**0.208 (−14.8%)**. We **beat RePlAce on every single benchmark**.
 Driven by a **family of dual-field soft + hard moves** (cong-field +
-density-field for every move type), a bit-exact incremental scoring core,
-a parallelized pipeline, and an **adaptive round/pass scheduler** that
-re-iterates whenever a pass keeps finding moves and bails when it
-saturates. The dominant algorithmic levers:
+density-field for every move type, plus HXS hard ⇄ soft cross-swaps), a
+bit-exact incremental scoring core, a parallelized pipeline, an **adaptive
+round/pass scheduler** that re-iterates whenever a pass keeps finding
+moves and bails when it saturates, plus a **persistent shared scorer +
+numba-JIT'd routing apply** that frees ~15-25s/benchmark of compute —
+which the R2 loop spends on additional productive rounds AND fixes the
+ibm18 starvation that previously cost +0.28 on that single benchmark.
+The dominant algorithmic levers:
 (a) **single-soft relocation** R3 (cong) + R5 (density) — 1.4216 → 1.2799,
 (b) **A1 soft-soft 2-opt** + A1b cong-field + A1c cold-teleport — 1.2737
 → 1.2195,
 (c) **A4 WL-aware candidate ordering + A5 adaptive multi-pass 2-opt +
 adaptive R2 round termination + adaptive skip-empty replacing hardcoded
-round caps** — 1.2195 → **1.2092** (15/17 wins).
+round caps** — 1.2195 → 1.2092,
+(d) **HXS hard ⇄ soft cross-swap + R6 combined cong+density relocation +
+WL-delta prefilter for soft-2opt + persistent shared scorer per R2 round
++ numba-JIT routing apply (with numpy fallback)** — 1.2092 → **1.1993**
+(14/17 wins, ibm18 starvation fixed: +0.28 → −0.036).
 Layered on top: (i) **incremental congestion cost** (cache smoothed H/V;
 re-smooth only the touched-net bbox per move), (ii) **#1 subset-cumsum
 strip-batch**, (iii) **#2 topology-struct cache** for the routing apply,
@@ -31,12 +39,14 @@ boost**, (vi) **S1 prep/trial/commit/revert + S3 bincount strip-batch**
 (viii) **H5 hard density relocation** (the R5-for-hards symmetry),
 (ix) **Phase 9 + DREAMPlace ×3 parallelization** plus drafted multi-seed
 2-opt subprocess parallelization (#3v2 env-gated). The entire chain is
-**bit-exact verified** (every scoring path has its own verifier;
-Δ ≤ machine eps).
+**bit-exact verified** (every scoring path — including the new HXS
+score_swap_hard_soft and the numba-JIT strip-batch — has its own
+verifier; Δ ≤ 4.4e-16).
 Stacked progression: 1.4854 (v12) → 1.2799 (R5) → 1.2767 (inc cong) →
 1.2755 (+ #1+#2+floor-res+A+C) → 1.2737 (+ S1+S3) → 1.2433 (+ A1+A3) →
-1.2195 (+ H5+A1b+A1c+A1×2+Phase9-parallel) →
-**1.2092** (+ A4+A5+adaptive R2/skip-empty, 15/17 wins).
+1.2195 (+ H5+A1b+A1c+A1×2+Phase9-parallel) → 1.2092 (+ A4+A5+adaptive
+R2/skip-empty) → **1.1993** (+ HXS+R6+WL-prefilter+shared-scorer+numba,
+14/17 wins).
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
 > open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches
