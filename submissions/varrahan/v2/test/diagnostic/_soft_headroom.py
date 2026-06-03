@@ -37,18 +37,19 @@ from macro_place.loader import load_benchmark_from_dir  # noqa: E402
 from macro_place.objective import compute_proxy_cost  # noqa: E402
 
 SAMEER_DIR = REPO_ROOT / "submissions" / "sameer_v1"
-sys.path.insert(0, str(SAMEER_DIR))
-from placer import _will_legalize  # type: ignore  # noqa: E402
 
-# Both sameer_v1 and v2 expose a module named `placer`; load v2's by path
-# under a distinct name to avoid the sys.modules cache collision above.
-_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "src" / "main.py"))
-_v2 = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_v2)
-_build_wl_cache = _v2._build_wl_cache
-_ensure_pos_cache = _v2._ensure_pos_cache
-_fast_set_placement = _v2._fast_set_placement
-_exact_proxy = _v2._exact_proxy
+# v2 scoring helpers come from the v2 `placer` package (src is on sys.path).
+from placer import (  # noqa: E402
+    _build_wl_cache, _ensure_pos_cache, _fast_set_placement, _exact_proxy,
+)
+
+# sameer_v1's _will_legalize, loaded by path under a distinct module name so its
+# `placer.py` module doesn't shadow the v2 `placer` package above.
+_sameer_spec = importlib.util.spec_from_file_location(
+    "sameer_placer", str(SAMEER_DIR / "placer.py"))
+_sameer = importlib.util.module_from_spec(_sameer_spec)
+_sameer_spec.loader.exec_module(_sameer)
+_will_legalize = _sameer._will_legalize
 
 
 def _proxy_breakdown(pl_tensor, bm, plc):

@@ -260,7 +260,7 @@ submissions/varrahan/v2/
 
 | Path | Purpose |
 |---|---|
-| `src/main.py` | **Submission entrypoint** for `uv run evaluate`; wraps `MacroPlacer` so the evaluator sees class module `submit`. |
+| `src/main.py` | **Submission entrypoint** for `uv run evaluate`; wraps `MacroPlacer` so the evaluator sees class module `main`. |
 | `src/placer/pipeline/macro_placer.py` | Top-level orchestration: budgeted candidate generation, DREAMPlace integration, R2 loop scheduling, final placement selection. |
 | `src/placer/config.py` | Runtime config, GPU backend detection, numba feature flag, and `_log`. |
 | `src/placer/scoring/exact.py` | Exact proxy wrapper over patched `PlacementCost`: WL + density + congestion. |
