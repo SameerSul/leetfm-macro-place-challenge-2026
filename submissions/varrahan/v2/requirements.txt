@@ -1,12 +1,17 @@
 # v2 submission dependencies — only packages the v2 source actually imports.
-# Audited against placer.py + dreamplace_bridge/ + test/ (2026-05-29):
-# the sole third-party imports are torch, numpy, and pytest (tests only).
+# Audited against src/ (placer package + dreamplace_bridge/) + test/:
+# the third-party imports are torch, numpy, numba (runtime) and pytest (tests).
 # Everything else used by v2 is the Python stdlib or local modules
 # (macro_place.*, dreamplace_bridge, placer).
 
-# --- Runtime (placer.py + dreamplace_bridge/) ---
+# --- Runtime (src/placer/ + dreamplace_bridge/) ---
 torch>=2.0.0
 numpy>=1.20.0
+# numba JIT-compiles the routing-apply hot path (~2x faster per move, so more
+# R2 rounds in the budget). It is a SOFT import (placer.config falls back to the
+# numpy path if numba is absent), but it should be installed for full speed —
+# the published scores were produced with it active.
+numba>=0.59
 
 # --- Tests (submissions/varrahan/v2/test/) ---
 pytest>=7.0.0
