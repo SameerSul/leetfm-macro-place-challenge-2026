@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 _V2_DIR = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_V2_DIR))
+sys.path.insert(0, str(_V2_DIR / "src"))
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402

@@ -32,15 +32,16 @@ def _load_v2_placer():
     return module
 
 
-def test_routing_congestion_gradient_uses_combined_hv_objective():
+def test_routing_congestion_gradient_uses_max_hv_objective():
     placer = _load_v2_placer()
 
     h_cong = np.zeros((3, 3), dtype=np.float64)
     v_cong = np.zeros((3, 3), dtype=np.float64)
 
-    # Local center is hot enough to perturb. On the left, one channel is
-    # hotter; on the right, both channels are moderately hot. H+V makes the
-    # right side hotter, while max(H,V) would make the left side hotter.
+    # Local center is hot enough to perturb. On the left, one channel is hotter;
+    # on the right, both channels are moderately hot. max(H,V) (the production
+    # field) makes the LEFT side hottest, so the macro steps right (away from it)
+    # - the opposite of what an H+V objective would do.
     h_cong[1, 1] = 0.6
     v_cong[1, 1] = 0.6
     h_cong[1, 0] = 2.0
@@ -62,5 +63,6 @@ def test_routing_congestion_gradient_uses_combined_hv_objective():
         rng=_ZeroNoise(),
     )
 
-    assert perturbed[0, 0] < pos[0, 0]
+    # max(H,V): left cell (2.0) is hotter than right (1.1), so step right (+x).
+    assert perturbed[0, 0] > pos[0, 0]
     assert perturbed[0, 1] == pos[0, 1]

@@ -13,9 +13,9 @@ Usage:
 import sys
 from pathlib import Path
 
-# Make `placer` importable from the v2 directory.
+# Make `placer` importable from the v2 src directory.
 _V2_DIR = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_V2_DIR))
+sys.path.insert(0, str(_V2_DIR / "src"))
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402

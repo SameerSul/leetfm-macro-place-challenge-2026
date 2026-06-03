@@ -27,6 +27,7 @@ from macro_place.benchmark import Benchmark
 from placer.config import HAS_NUMBA, _GPU_BACKEND, _GPU_DEVICE, _GPU_DEVICE_NAME, _USE_GPU, _log, _numba_njit
 from placer.legalize.spiral import _ring_offsets, _will_legalize
 from placer.legalize.swap import _two_opt_swap
+from placer.local_search.fields import _congestion_field
 from placer.local_search.hard_soft import _three_opt_hard_soft_soft, _two_opt_hard_soft_swap
 from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
 from placer.local_search.soft_moves import _two_opt_soft_swap
@@ -185,18 +186,10 @@ class MacroPlacer:
         time_budget_s: float = 150.0,
     ):
         self.n_restarts = n_restarts
-        # Budget check in _try_restart terminates the loop early; n_restarts is an upper cap.
-        # First 4 entries [0.02, 0.04, 0.06, 0.08] are the "core" fracs - their np.random
-        # draw positions are preserved, so ibm01/03/08 winning restarts (6% and 2%) are
-        # unchanged. Entries 5+ fill remaining budget for fast benchmarks:
-        #   ibm01 (~5s/score): ~20 restarts fit in 200s → uses entries through ~20
-        #   ibm08 (~36s/score): ~4 restarts fit → only core 4 used, unchanged behavior
-        #
-        # Wide-noise tail (indices 35-51 in [0.10, 0.25]) was tested 2026-05-20 on ibm01
-        # and confirmed ineffective: 3 wide-tail entries fired (restarts 39-41), all
-        # scored 1.244-1.255 vs the 6% noise winner at 1.1860. The actual ibm01 -0.034
-        # improvement came from the DREAMPlace candidate, not from any noise restart.
-        # Wide-noise hypothesis is empirically dead on this benchmark.
+        # Noise restart fracs. _try_restart's budget check ends the loop early, so
+        # n_restarts is an upper cap and slow benchmarks only reach the first few.
+        # Ordering matters: the first 4 "core" fracs hold their np.random draw
+        # positions, so the ibm01/03/08 winning restarts stay reproducible.
         self.noise_fracs = noise_fracs or [
             # Core (preserves ibm01 6%-win and ibm03 2%-win)
             0.02, 0.04, 0.06, 0.08,
@@ -218,14 +211,11 @@ class MacroPlacer:
         self.seed = seed
         self.time_budget_s = time_budget_s
 
-        # --all wall-clock guard (issue #6, 2026-05-23).
-        # The harness caps total --all runtime around 3600s. When the placer is
-        # instantiated once and called per benchmark, these attributes track
-        # cumulative wall-clock across benchmarks and tighten subsequent
-        # per-benchmark budgets when the cumulative cap approaches. Single-
-        # benchmark runs (the dev iteration path) leave _benchmarks_done at 0
-        # and incur no extra cost - the adaptive branch is gated on
-        # `_benchmarks_done >= 1`.
+        # --all budget guard. The placer is instantiated once and called per
+        # benchmark; these attributes track cumulative place() time across
+        # benchmarks and tighten later per-benchmark budgets as the cap nears.
+        # Single-benchmark dev runs leave _benchmarks_done at 0 and pay nothing
+        # (the adaptive branch is gated on `_benchmarks_done >= 1`).
         self._first_place_call_time: Optional[float] = None
         self._benchmarks_done: int = 0
         # Track cumulative place()-execution time, not wall-clock: large-grid
@@ -263,33 +253,21 @@ class MacroPlacer:
         movable = (benchmark.get_movable_mask() & benchmark.get_hard_macro_mask())[:n].numpy()
         init_pos = benchmark.macro_positions[:n].numpy().copy().astype(np.float64)
 
-        # --all wall-clock guard: compute effective per-benchmark budget.
-        # On the first place() call, _first_place_call_time is set and the
-        # default time_budget_s is used. On subsequent calls, if we're in
-        # --all mode (heuristic: _benchmarks_done >= 1), the per-benchmark
-        # cap shrinks proportionally to remaining_total / remaining_benchmarks.
-        # Lower bound 30s prevents the budget from going negative on slow
-        # benchmarks late in the run; in that case the placer returns
-        # baseline-only.
+        # Compute the effective per-benchmark budget. The first call uses the full
+        # time_budget_s; in --all mode (_benchmarks_done >= 1) the cap shrinks as
+        # the cumulative place() time approaches HARNESS_TOTAL_BUDGET_S.
         if self._first_place_call_time is None:
             self._first_place_call_time = t0
-        # L-change: use sum-of-place()-times as cumulative (not wall-clock).
-        # See _total_place_time_s in __init__ for rationale.
         cumulative_elapsed = self._total_place_time_s
         if self._benchmarks_done >= 1:
             remaining_total = self.HARNESS_TOTAL_BUDGET_S - cumulative_elapsed
             remaining_benchmarks = max(
                 1, self.HARNESS_TOTAL_BENCHMARKS - self._benchmarks_done
             )
-            # Floor-reservation (2026-05-29): each remaining benchmark consumes
-            # up to (effective_budget_s + BUDGET_OVERRUN_S) of wall time. To
-            # stop an early/large benchmark from eating the tail's budget (which
-            # collapsed ibm18 to the raw baseline in the 2026-05-29 --all),
-            # reserve (FLOOR + OVERRUN) for every OTHER remaining benchmark and
-            # OVERRUN for this one's own slop. The reservation is slack when
-            # remaining is large (this_cap > time_budget_s → cap stays at the
-            # full soft budget) and only bites near the tail, guaranteeing the
-            # last benchmark a real budget instead of baseline.
+            # Floor-reservation: reserve (FLOOR + OVERRUN) for every other
+            # remaining benchmark plus OVERRUN for this one, so an early/large
+            # benchmark can't eat the tail's budget. Slack when many remain (cap
+            # stays at the full soft budget), it only bites near the tail.
             reserve_others = (
                 (self.PER_BENCH_FLOOR_S + self.BUDGET_OVERRUN_S)
                 * (remaining_benchmarks - 1)
@@ -298,11 +276,8 @@ class MacroPlacer:
             effective_budget_s = min(
                 self.time_budget_s, max(self.PER_BENCH_FLOOR_S, this_cap)
             )
-            # Hard-cap safety: this benchmark's worst case is
-            # effective_budget_s + BUDGET_OVERRUN_S of wall time; never let
-            # that push past the 3600s harness cap (use HARD_CAP_SAFE_S to
-            # leave teardown/reporting room). If this clamps below the floor,
-            # the --all guard below decides whether to bother running at all.
+            # Hard-cap safety: never let this benchmark's worst case
+            # (effective_budget_s + BUDGET_OVERRUN_S) push past HARD_CAP_SAFE_S.
             hard_headroom = (
                 self.HARD_CAP_SAFE_S - cumulative_elapsed - self.BUDGET_OVERRUN_S
             )
@@ -316,19 +291,11 @@ class MacroPlacer:
                 f"done={self._benchmarks_done}/{self.HARNESS_TOTAL_BENCHMARKS})"
                 if self._benchmarks_done >= 1 else ""))
 
-        # Exact scoring cutoffs.
-        #
-        # Pre-vectorization (2026-05-08, scalar congestion ~17-220s/call):
-        # only benchmarks with n<=400 and grid<=2200 could fit a restart
-        # pipeline within the 200s budget. Six benchmarks took the baseline-
-        # only branch as a result.
-        #
-        # Post-vectorization (2026-05-21, congestion 88x faster on ibm10):
-        # ibm10 (n=786) baseline scoring measured at 0.6s - was 41s. Even
-        # ibm17 (n=760, grid=2244, the largest) should now fit dozens of
-        # restarts. Thresholds bumped to admit ALL 17 IBM benchmarks; the
-        # SLOW_SCORE_THRESHOLD_S=100s guard in the use_exact path still
-        # bails to baseline if any benchmark slows back down under load.
+        # Exact scoring cutoffs. After the congestion vectorization, even the
+        # largest IBM benchmark scores fast enough to run the full restart
+        # pipeline, so the thresholds admit all 17; the SLOW_SCORE_THRESHOLD_S
+        # guard in the use_exact path still bails to baseline if one slows down
+        # under load.
         EXACT_MACRO_THRESHOLD = 10000  # admit all IBM benchmarks (ibm17 n=760 max)
         EXACT_GRID_CELL_LIMIT = 10000  # admit all IBM benchmarks (ibm17 grid=2244 max)
         grid_cells = benchmark.grid_rows * benchmark.grid_cols
@@ -428,42 +395,25 @@ class MacroPlacer:
         baseline_pos = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
         _log(f"    Legalized in {time.monotonic()-t1:.1f}s")
 
-        # 2-opt on the baseline causes subtle Phase 1 trajectory changes that
-        # can BREAK the existing wins. Tested 2026-05-19: baseline 2-opt
-        # improved ibm06 iter=1 from 1.6835 → 1.6801, but this made iter=2
-        # (1.6812) unable to clear the higher bar, triggering Phase 1's
-        # break-on-no-improvement and skipping the 5+ iterations that produced
-        # v12's 1.6684 Phase 3 win. Net regression: ibm06 +0.0087.
-        # 2-opt is therefore only applied on the baseline-only branch (below)
-        # where there's no cong-grad trajectory to disrupt.
+        # 2-opt on the baseline subtly shifts the Phase 1 trajectory and can break
+        # existing wins (a better iter-1 can stop the cong-grad chain early), so
+        # it's only applied on the baseline-only branch below, where there's no
+        # cong-grad trajectory to disrupt.
 
         # Fill the scratch buffer with baseline positions; reused below either
         # as the returned baseline-only tensor or as the input to the first score.
         pl_scratch[:n, 0] = torch.tensor(baseline_pos[:, 0], dtype=torch.float32)
         pl_scratch[:n, 1] = torch.tensor(baseline_pos[:, 1], dtype=torch.float32)
 
-        # No exact-scoring path => return baseline directly. Past experiments
-        # confirmed that the sum-of-squares occupancy fallback is anti-correlated
-        # with proxy cost (rewards spread, which hurts congestion), so unranked
-        # baseline beats density-ranked restarts on every n>400 / large-grid case.
+        # No exact-scoring path => return baseline directly. The sum-of-squares
+        # occupancy fallback is anti-correlated with proxy (rewards spread, which
+        # hurts congestion), and displacement-ranked re-ordering was disproven
+        # (different orders give legitimately different placements, not strictly
+        # better ones), so unranked baseline beats both on large-grid cases.
         #
-        # Displacement-ranked multi-order tested 2026-05-19, REJECTED:
-        #   - Hypothesis: lower total displacement from initial.plc → lower
-        #     proxy (since initial.plc is hand-tuned).
-        #   - Reality: tallest order minimized displacement on ibm10 (414 vs
-        #     1051 default) but raised congestion → proxy 1.5658 vs v12's 1.4037
-        #     (+0.162 regression). On dense benchmarks (ibm12), smallest-area
-        #     order produced INVALID placements (27 overlaps) because big macros
-        #     placed last couldn't find slots within the 60s spiral deadline.
-        #   - Conclusion: across orderings, displacement-sum is NOT a useful
-        #     proxy ranker; different orderings produce legitimately different
-        #     placements, not strictly-better ones.
-        #
-        # 2-opt swap post-pass (added 2026-05-19): WITHIN the same ordering, a
-        # 2-opt local refinement can ONLY reduce per-pair displacement (strict
-        # improvement check) and ONLY accepts legal swaps. Safe to apply on the
-        # baseline-only branch: no cong-grad pipeline to interfere with. Tested
-        # gain is small (~−0.0005 per benchmark on n>400 baseline-only set).
+        # A 2-opt post-pass is safe here (WITHIN one ordering it can only reduce
+        # per-pair displacement and only accepts legal swaps): no cong-grad
+        # trajectory to disrupt, small gain (~-0.0005/benchmark).
         if not use_exact:
             t_2opt = time.monotonic()
             opt_pos, swap_count = _two_opt_swap(
@@ -475,25 +425,12 @@ class MacroPlacer:
                 pl_scratch[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
                 pl_scratch[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
 
-            # DP-vs-baseline comparison on large benchmarks (Improvement #1,
-            # 2026-05-20). 6 benchmarks (ibm10/12/13/14/16/17) previously
-            # returned baseline-only because exact scoring with cong-grad
-            # ranking is too slow / density fallback is anti-correlated.
-            # Strategy: score BASELINE FIRST (fast on most benchmarks, ~30-90s);
-            # if scoring is fast enough that DP scoring also fits, score DP
-            # and compare; if baseline scoring is too slow, skip DP and return
-            # baseline (safe - DP might have won, but we can't fit both).
-            #
-            # DP-first tested 2026-05-20, REJECTED: on ibm16 (baseline 1.5324
-            # vs DP 1.5751) and likely ibm17, DP loses to baseline. Trusting
-            # DP unconditionally when baseline scoring doesn't fit caused
-            # +0.043 regression on ibm16. Baseline-first is strictly safer:
-            # we either know who won (small benchmarks) or correctly fall
-            # back to baseline (slowest benchmarks where DP can't be verified).
-            # Multi-DP fallback for the no-exact-scoring path: only use the
-            # first launched handle (target_density=0.85, looser). The "lo"
-            # handle would need another full score (~100s+ on these large
-            # benchmarks) and we can rarely afford one. Kill the rest.
+            # DP-vs-baseline comparison on large benchmarks. Score BASELINE FIRST
+            # (~30-90s); if there's budget left, score DP and compare; if baseline
+            # scoring is already too slow, skip DP and return baseline. This is
+            # safer than trusting DP unconditionally (DP loses to baseline on some
+            # large benchmarks, e.g. ibm16). Only the first DP handle is scored
+            # here - a second full score rarely fits - so kill the rest.
             dp_handle = dp_handles[0][2] if dp_handles else None
             for _tag, _td, _h in dp_handles[1:]:
                 try:
@@ -584,14 +521,9 @@ class MacroPlacer:
             self._benchmarks_done += 1
             return pl_scratch  # safe: no more in-place writes will happen
 
-        # --all wall-clock guard: last-resort safety. The floor-reservation
-        # allocator above caps effective_budget_s at hard_headroom, so
-        # eff < ~45s only happens when even the floor was clipped by the hard
-        # cap (cumulative genuinely near 3540s). Old behavior was a blunt
-        # 95%-of-3300 cumulative test, which collapsed the final benchmark to
-        # the raw baseline even when budget remained - that's the bug the
-        # allocator fix is meant to prevent.
-        # cumulative_now uses place()-time (L-change), same as cumulative_elapsed
+        # Last-resort guard: eff < 45s only happens when even the floor was
+        # clipped by the hard cap (cumulative genuinely near 3540s), so bail to
+        # baseline rather than start a restart that can't finish.
         cumulative_now = self._total_place_time_s
         if effective_budget_s < 45.0:
             _log(f"  [--all guard] tight budget "
@@ -613,12 +545,8 @@ class MacroPlacer:
         best_pl = pl_scratch.clone()
         _log(f"  Candidate 0: proxy={best_score:.4f}  (scored in {t_one_score:.1f}s)")
 
-        # Safety net: if exact scoring took longer than expected (CPU load),
-        # return baseline so we don't run out of budget mid-restart.
-        # Tightened 2026-05-23 (issue #6): was 100s. ibm15/ibm16 first-scores
-        # can be ~80s under --all CPU contention; the 100s threshold let them
-        # through and then they ate the rest of the per-benchmark budget. 80s
-        # is closer to the median expensive-but-still-useful score time.
+        # Safety net: if the first exact score is slow (CPU contention), it would
+        # eat the whole per-benchmark budget, so return baseline instead.
         SLOW_SCORE_THRESHOLD_S = 80.0
         if t_one_score > SLOW_SCORE_THRESHOLD_S:
             _log(f"  Exact score slow ({t_one_score:.0f}s); returning baseline")
@@ -632,13 +560,10 @@ class MacroPlacer:
             self._benchmarks_done += 1
             return best_pl
 
-        # Directed restarts (cong-grad Phase 1/2/3) can use up to BUDGET_OVERRUN_S
-        # extra seconds beyond time_budget_s. Reasoning: a single transient scoring
-        # spike on Phase 1 iter=0 (~200s vs typical ~7s on ibm04) was killing the
-        # entire placer pipeline, blocking Phase 2/3 where the productive ibm04 win
-        # lives (1.3316). With 60s overrun, ibm04 recovers Phase 3 even after a spike.
-        # Noise restarts stay strict (allow_overrun=False default) - they're
-        # exploratory and shouldn't push us over budget on dead-end benchmarks.
+        # Directed restarts (cong-grad phases) may overrun time_budget_s by
+        # BUDGET_OVERRUN_S so a single transient scoring spike can't kill the whole
+        # pipeline before the productive late phases run. Noise restarts stay
+        # strict (allow_overrun=False) - they're exploratory.
         BUDGET_OVERRUN_S = self.BUDGET_OVERRUN_S
 
         def _try_restart(label: str, perturbed_init: np.ndarray, k: int,
@@ -655,16 +580,10 @@ class MacroPlacer:
             elapsed = time.monotonic() - t0
             cap = effective_budget_s + (BUDGET_OVERRUN_S if allow_overrun else 0.0)
             remaining = cap - elapsed
-            # t_one_score is a running max over observed scoring times (initialized
-            # from the baseline score). Factor 1.3 covers score + legalize.
-            # Running-max (v11 design, removed in v12) is re-added because under
-            # --all CPU contention, scorings can be 3-5x slower than baseline -
-            # a much larger swing than "load jitter". Without adapting, the budget
-            # check approves restarts that then exceed the cap, causing Phase 3
-            # to be skipped on benchmarks like ibm04 (1.3316 → 1.3449 regression
-            # observed in the multi-order --all run). The trade-off: brief blips
-            # also tighten the budget, but blips that double t_one_score still
-            # leave 60s overrun for directed phases.
+            # t_one_score is a running max over observed scoring times (x1.3 to
+            # cover score + legalize). A running max (not the baseline-only time)
+            # is needed because --all CPU contention can make scores 3-5x slower;
+            # without it the budget check approves restarts that then overrun.
             estimated_cost = t_one_score * 1.3
             if remaining < estimated_cost:
                 _log(f"  Skipping restart {k}+ (budget: {remaining:.0f}s left, "
@@ -678,19 +597,10 @@ class MacroPlacer:
             t_leg = time.monotonic() - t1
             _log(f"  Restart {k} ({label}) legalized in {t_leg:.1f}s")
 
-            # 2-opt-everywhere tested 2026-05-19, REJECTED. Applied to each
-            # cong-grad iter, it produces:
-            #   - ibm04: 1.3316 → 1.3201 (−0.0115 improvement ✓)
-            #   - ibm06: 1.6684 → 1.6769 (+0.0085 regression ✗)
-            #   - ibm02: 1.5923 → 1.5938 (+0.0015 regression ✗)
-            # Net sporadic (similar variance pattern as WireMask). Root cause:
-            # 2-opt pulls cong-grad-perturbed positions BACK toward their pre-
-            # perturbation displacement target, undoing the cong-grad exploration
-            # that was supposed to push macros AWAY from congested cells. The
-            # cong-grad trajectory depends on consistent perturbation direction
-            # across iters; 2-opt's "snap back to target" interferes.
-            # 2-opt is still applied to BASELINE legalize (outside this function)
-            # where there's no cong-grad trajectory to disrupt.
+            # No 2-opt here: it pulls cong-grad-perturbed positions back toward
+            # their displacement target, undoing the exploration that pushes macros
+            # away from congested cells (net sporadic in testing). 2-opt is only
+            # applied to the baseline legalize, which has no cong-grad trajectory.
 
             t_score_start = time.monotonic()
             score = _score(leg)
@@ -710,23 +620,14 @@ class MacroPlacer:
 
             return True
 
-        # Density-grad / occupancy-spreading restart only fires for n <= 100,
-        # which never occurs on IBM benchmarks (smallest ibm01 has n=246). It
-        # also empirically hurt ibm03 (n=126) and ibm08 (n=301) in earlier
-        # experiments. Removed 2026-05-19 along with its helpers
-        # (_congestion_heatmap, _box_blur, _density_gradient_perturb).
         directed_ran = 0
 
-        # -- Routing-congestion-gradient descent (v8, iterative + wide) --------
-        # Phase 1: iterative gradient descent at frac=0.04.
-        #   After each improving step, extract the new position from best_pl
-        #   and use it (with plc's now-updated congestion map) as the starting
-        #   point for the next step. Stops when a step fails to improve or
-        #   budget can't fit 3 noise restarts.
-        # Phase 2: wide step at frac=0.08 from baseline_pos using current plc.
-        #   Only runs if phase 1 improved at least once (otherwise cong-grad
-        #   is not useful for this benchmark). Uses rng_cong so main random
-        #   state is unchanged and subsequent noise draws are identical to v5.
+        # -- Routing-congestion-gradient descent (iterative + wide) --------
+        # Phase 1: iterative gradient descent at frac=0.04 - after each improving
+        #   step, restart from best_pl's new position with plc's updated cong map.
+        # Phase 2: wide step at frac=0.08 from baseline, only if Phase 1 improved.
+        # Uses rng_cong (seed+1) so the main random state - and the downstream
+        # noise draws - are unaffected by cong-grad participation.
         rng_cong = np.random.RandomState(self.seed + 1)
         cong_pos = baseline_pos
         cong_improved = False
@@ -789,23 +690,11 @@ class MacroPlacer:
                 if best_score >= score_before:
                     break  # stop wide steps if this one didn't improve
 
-        # Phase 3: cong-grad from best known position using current (stale) plc.
-        # After Phase 2 failed wide steps, plc holds the cong map from a placement
-        # that was WORSE than our best. Moving from the BEST position away from the
-        # high-congestion regions of this stale map may explore a different local
-        # minimum. Only runs when cong-grad improved at least once (cong_improved)
-        # so we know the gradient signal is useful for this benchmark.
-        # Phase 3: cong-grad from best known position using current (stale) plc.
-        # After Phase 2 failed wide steps, plc holds the cong map from a placement
-        # that was WORSE than our best. Moving from the BEST position away from the
-        # high-congestion regions of this stale map may explore a different local
-        # minimum. Only runs when cong-grad improved at least once (cong_improved)
-        # so we know the gradient signal is useful for this benchmark.
-        #
-        # Multi-frac Phase 3 (0.02/0.04/0.06) tested 2026-05-19, REJECTED. f=0.04
-        # consistently wins on tested benchmarks (ibm04 1.3316, ibm06 1.6684,
-        # ibm02 1.5923, ibm09 1.1304); the extra fracs 0.02/0.06 never found
-        # deeper basins. Safe but ineffective; reverted for code clarity.
+        # Phase 3: cong-grad from the best known position using the current
+        # (stale) plc cong map - it reflects a worse Phase 2 placement, so moving
+        # the best position away from that map's hot regions can find a different
+        # local minimum. Only runs when cong-grad already improved once, so we
+        # know the gradient signal is useful for this benchmark.
         if cong_improved:
             # Use relaxed cap so Phase 3 fires after a Phase 1 spike - this is
             # where ibm04's 1.3316 win lives.
@@ -911,14 +800,11 @@ class MacroPlacer:
         # ibm08 at 6% noise. Phase 7 below revisits this idea but only AFTER
         # the noise loop completes - purely additive on leftover budget.
 
-        # Phase 5c: wide-from-best with current plc state. Fills the slot left
-        # by Phase 2 (wide from BASELINE only) and Phase 3/5b (frac=0.04 from
-        # BEST only). Uses the latest plc state (post-Phase-5b if DP fired,
-        # else post-Phase-3) which encodes the most-recent congestion pattern.
-        # Purely additive: fires only if cong-grad helped earlier and budget
-        # allows; placed AFTER Phase 5b so no current winning rng_cong path is
-        # affected. Noise loop uses np.random directly (not rng_cong), so the
-        # extra rng_cong draw here doesn't perturb noise restarts.
+        # Phase 5c: wide-from-best (frac=0.08) using the latest plc cong map -
+        # fills the gap between Phase 2 (wide from baseline) and Phase 3/5b
+        # (frac=0.04 from best). Additive; fires only if cong-grad helped and
+        # budget allows. The noise loop uses np.random, not rng_cong, so this
+        # extra rng_cong draw doesn't perturb noise restarts.
         if cong_improved:
             remaining_5c = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if remaining_5c >= t_one_score * 1.3:
@@ -934,14 +820,8 @@ class MacroPlacer:
                                  k=1 + directed_ran, allow_overrun=True):
                     directed_ran += 1
 
-        # WireMask-BBO with congestion penalty tested 2026-05-19, REJECTED.
-        # Helps sparse benchmarks (ibm01 WM=1.1964 vs baseline 1.2253) but hurts
-        # dense ones (ibm04 WM=1.5070 vs 1.4101; ibm06 WM=1.8890 vs 1.7197).
-        # Root cause: WireMask is constructive - rebuilds from scratch and
-        # loses initial.plc's hand-tuned spread that the pipeline operates around.
-        # A single alpha can't satisfy all benchmarks (would need per-benchmark
-        # tuning, which violates the "no benchmark-specific tweaks" rule).
-        # Implementation removed 2026-05-19; see commit 121a555-era history.
+        # (WireMask-BBO was disproven here - constructive rebuild loses
+        # initial.plc's hand-tuned spread; see ISSUES.md.)
 
         # -- Restarts 1+: Random Gaussian -------------------------------------
         noise_scale_base = min(cw, ch)
@@ -1006,13 +886,11 @@ class MacroPlacer:
                 if score < best_score:
                     best_score = score
                     best_pl = pl_scratch.clone()
-                # Iter-1 margin gate: abandon chain if iter 1 score is
-                # far above pre-chain best - empirically those chains
-                # don't recover (per Phase 7 retro-eval 2026-05-25).
+                # Iter-1 margin gate: abandon a chain whose first iter is far above
+                # the pre-chain best - those don't recover.
                 if it == 1 and (score - pre_chain_best) > P7_ITER1_MARGIN_GATE:
                     break
-                # Greedy descent: stop chain if this iter didn't strictly
-                # improve over previous iter's score.
+                # Greedy descent: stop if this iter didn't improve over the last.
                 if score >= prev_iter_score - 1e-4:
                     break
                 prev_iter_score = score
@@ -1021,25 +899,15 @@ class MacroPlacer:
                 if time.monotonic() - t0 > effective_budget_s + BUDGET_OVERRUN_S:
                     break
 
-        # RNG isolation (2026-05-25): restore rng_cong to pre-Phase-7 state
-        # so Phase 8/9 perturbations are deterministic regardless of how
-        # many Phase 7 chain iters fired (iter-1-margin gate, greedy break,
-        # MAX_P7_ITERS cap all cause irregular consumption).
+        # Restore rng_cong so Phase 8/9 are deterministic regardless of how many
+        # Phase 7 iters fired.
         rng_cong.set_state(rng_cong_pre_p7)
 
-        # -- Phase 8: TOP-K cong-grad from best_pl (A6 attack #1, 2026-05-23) -
-        # The A3 diagnostic showed DP loses on congestion by avg +0.08 vs our
-        # best. Phase 1/2/3/5/7 use the full-mask perturb (every macro in a
-        # congested cell moves), which may blunt the gradient on dense
-        # benchmarks. Phase 8 tries TOP-K (move only the K hottest macros)
-        # from best_pl with a few K values; preserves all prior wins because
-        # it runs LAST and only consumes leftover budget.
-        #
-        # 2026-05-24 (improvement #3): per-K multi-iter chains (like Phase 7
-        # but starting from current best_pl). Greedy break-on-no-improvement.
-        # Note: single-bench testing showed mixed results - ibm04 −0.0005
-        # but ibm10 +0.0020 (regression). Including in combined --all to see
-        # if cross-benchmark wins offset.
+        # -- Phase 8: TOP-K cong-grad from best_pl -
+        # The earlier phases perturb every macro in a congested cell, which can
+        # blunt the gradient on dense benchmarks. Phase 8 instead moves only the
+        # K hottest macros from best_pl, over a few K values, in greedy multi-iter
+        # chains. Runs last on leftover budget, so it preserves all prior wins.
         MAX_P8_ITERS = 3
         if cong_improved:
             for top_k_val in (5, 10, 20):
@@ -1076,26 +944,17 @@ class MacroPlacer:
         # time; the pipeline's existing perturbations already cover the
         # productive perturbation magnitudes.
 
-        # -- Phase 9: Random-tiebreak legalize order (A6 axis #4, 2026-05-23) -
-        # Default `_will_legalize` order is `sorted(range(n), key=-area)` -
-        # largest-area first with index-tied secondary key. For benchmarks
-        # with many similar-sized macros (ibm08/09/11/13), the deterministic
-        # tiebreaks may lock the placer into one specific legal arrangement.
-        # This phase tries N_TRIALS legalize orderings that keep the primary
-        # key (-area) but RANDOMIZE the secondary key.
-        #
-        # Distinct from the rejected "multi-order baseline" (smallest-area,
-        # tallest, widest) which changed the primary key - that regressed
-        # benchmarks where small-macro-first produced large-macro-trapped
-        # placements. Here the primary key is preserved.
+        # -- Phase 9: random-tiebreak legalize order -
+        # Default `_will_legalize` order is largest-area-first with index-tied
+        # secondary key, which can lock benchmarks with many similar-sized macros
+        # into one arrangement. This tries N_ORDER_TRIALS orderings that keep the
+        # -area primary key but randomize the secondary key (unlike the rejected
+        # multi-order baseline, which changed the primary key and regressed).
         N_ORDER_TRIALS = 3
         area = sizes[:n, 0] * sizes[:n, 1]
-        # Phase-9 parallelization (2026-05-29): the N trials are independent
-        # legalize-then-score chains. _will_legalize is pure numpy (releases
-        # the GIL on the heavy work), so we run the legalize calls
-        # concurrently in a thread pool. The score step (_exact_proxy /
-        # _score) mutates the shared plc + pl_scratch state and must stay
-        # sequential. Saves the legalize time (~0.1-0.3s × N) per benchmark.
+        # The trials are independent legalize-then-score chains. _will_legalize is
+        # pure numpy (releases the GIL), so the legalize calls run in a thread
+        # pool; the score step mutates shared plc/pl_scratch and stays sequential.
         p9_orders: list = []
         for _ in range(N_ORDER_TRIALS):
             # np.lexsort: last key is primary. With (random_key, -area) the
@@ -1140,80 +999,44 @@ class MacroPlacer:
                 _log(f"  Over budget after P9 trial {trial}; stopping")
                 break
 
-        # -- 2-opt swap on cong-grad winner (additive, after Phase 7) ---------
-        # Proxy-driven (issue #1, 2026-05-23). Previously this used
-        # `_two_opt_swap` (displacement-from-init criterion), which was
-        # empirically anti-correlated with proxy on ibm01/04/10 - every
-        # documented benchmark had the post-hoc guard reject ALL applied
-        # swaps. The 15s budget was wasted. With per-score time at ~5-50ms
-        # post-vectorization, scoring each candidate swap directly is
-        # affordable. Cheap bounds + conflict checks remain as a free
-        # filter so most candidates skip the score call.
-        # Phase 7b (DP-basin congestion relief) was prototyped 2026-05-26 and
-        # REVERTED - see ISSUES.md. The DP_PROBE ceiling test suggested the best
-        # raw DREAMPlace basin could 2-opt below best after a fuller cong-grad
-        # descent (ibm10 1.3279 vs 1.3337), but the production descent proved too
-        # budget-hungry (~30s/benchmark) AND high-variance - and not even
-        # reproducible at fixed seed (plc-state-dependent on where in the pipeline
-        # it runs: seed 777 gave 1.3639 post-pipeline but 1.3730 mid-pipeline). It
-        # captured zero net gain in-pipeline. The durable finding (DP loses purely
-        # on congestion; post-hoc repair can't fix it reliably) points instead at
-        # congestion-aware DREAMPlace (congestion in the global objective). The
-        # DP_DIAG/DP_PROBE diagnostics are retained (env-gated) to reproduce it.
+        # -- Proxy-driven 2-opt swap on the cong-grad winner (additive) ---------
+        # Scores each candidate swap by true proxy directly (cheap post-
+        # vectorization); cheap bounds + conflict checks act as a free filter so
+        # most candidates skip the score call. (The old displacement-from-init
+        # criterion was anti-correlated with proxy and wasted the budget.)
         remaining_2opt = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
         if remaining_2opt >= t_one_score + 15.0:
-            # O2 candidate #2 (2026-05-25): run 2-opt from MULTIPLE basins, not
-            # just the single refined best_pl. Raw DP proxy is not predictive of
-            # the final 2-opt result (the O2-margin experiment showed keeping the
-            # "winning" basin as the only seed can converge worse), so try best_pl
-            # plus each DP candidate basin and keep the global minimum. Losing DP
-            # basins cost one 2-opt budget each but may 2-opt below the winner.
+            # Run 2-opt from MULTIPLE basins (best_pl + each DP basin), not just
+            # best_pl: raw DP proxy doesn't predict the final 2-opt result, so a
+            # losing basin can still 2-opt below the winner. Keep the global min.
             twoopt_seeds: list[tuple[str, torch.Tensor, float]] = [
                 ("best", best_pl.clone(), best_score)
             ]
             for _tag, _dp_sc, _dp_pl in dp_placements:
                 twoopt_seeds.append((f"dp[{_tag}]", _dp_pl.clone(), _dp_sc))
-            # S4 baseline_pos seed tested 2026-05-25, REJECTED: 2-opt from the
-            # raw legalized baseline never beat best_pl on any of ibm01/04/09/
-            # 10/13 (landed 0.02-0.10 above), since baseline is best_pl's
-            # unrefined ancestor, not a distinct basin. Pure wall-clock cost.
 
-            # Prune hopeless DP basins. A seed can only beat the incumbent's
-            # 2-opt result if its own 2-opt result is lower; for a DP seed whose
-            # raw proxy is > DP_SEED_2OPT_WINDOW above best_score, the 2-opt gain
-            # needed to catch up exceeds anything observed, so it isn't worth a
-            # 15s pass. Both observed basin wins sit well inside this window
-            # (ibm04 dp[hi-mov] +0.011, ibm09 dp[hi-fix] +0.002). The "best" seed
-            # is never pruned (it reproduces the committed single-seed 2-opt,
-            # keeping the change strictly additive).
+            # Prune hopeless DP basins: a DP seed whose raw proxy is more than
+            # DP_SEED_2OPT_WINDOW above best_score can't make up the gap with any
+            # observed 2-opt gain. The "best" seed is never pruned (keeps the
+            # change strictly additive vs the single-seed 2-opt).
             DP_SEED_2OPT_WINDOW = 0.02
 
-            # Selection is by TRUE _exact_proxy, never the IncrementalScorer's
-            # final_score: the incremental WL drifts seed-dependently (ibm01
-            # dp[lo-fix] reported internal 1.1309 but true proxy 1.1506), so
-            # cross-seed comparison on the internal score picks phantom winners.
-            # The incremental scorer still guides which swaps to accept (speed);
-            # we just re-score each finalist exactly before comparing.
+            # Select by TRUE _exact_proxy, not the IncrementalScorer's final_score:
+            # the incremental WL drifts seed-dependently, so cross-seed comparison
+            # on the internal score picks phantom winners. The scorer still guides
+            # which swaps to accept; finalists are re-scored exactly before compare.
             twoopt_best_pl = best_pl
             twoopt_best_score = float(_exact_proxy(best_pl, benchmark, plc))
             _dp_diag_2opt = []  # (seed_tag, true_final, cand) when DP_DIAG set
 
-            # Speedup #3 v2 (2026-05-30): TIME-SHIFTED multi-seed 2-opt
-            # subprocess parallelism. The original v1 launched DP seeds in
-            # subprocesses BEFORE the inline best-seed 2-opt - but the 4-way
-            # CPU contention during the 15s deadlines degraded every thread's
-            # search (~+0.005/bench regression, 9/9 worse). v2 instead runs
-            # the inline "best" with FULL solo CPU, then fires DP seeds in
-            # a parallel pool AFTER best is done. DP seeds contend only with
-            # each other (3-way max, less impact). Best-seed quality - which
-            # usually wins the multi-seed tournament - is fully preserved.
-            # Env-gated: set V2_MULTISEED_MP=1 to enable.
+            # Optional time-shifted multi-seed parallelism (env-gated). When on,
+            # the inline loop runs only the "best" seed with solo CPU, then the DP
+            # seeds run in a parallel pool after (they contend only with each
+            # other). Running all seeds at once instead degraded every search.
             _use_mp = bool(os.environ.get("V2_MULTISEED_MP"))
 
             for seed_tag, seed_pl, seed_score in twoopt_seeds:
-                # Time-shifted #3 v2: when MP is enabled, the inline loop
-                # processes ONLY the "best" seed. DP seeds are handled by the
-                # pool launched after this loop (no overlap with best).
+                # With MP on, DP seeds are handled by the pool after this loop.
                 if _use_mp and seed_tag != "best":
                     continue
                 rem = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
@@ -1226,36 +1049,12 @@ class MacroPlacer:
                          f"{DP_SEED_2OPT_WINDOW})")
                     continue
                 t_2opt = time.monotonic()
-                # S1 (2026-05-26): basin-hopping 2-opt. The 2-opt search only
-                # PERMUTES existing macro slots - it can never reach a position
-                # no macro currently occupies. After a pass converges to a swap-
-                # only local minimum, inject a congestion-gradient KICK (the same
-                # _routing_congestion_perturb the cong-grad phases use) to move
-                # the hottest macros to NEW continuous positions against the live
-                # congestion field, legalize, then run 2-opt again to clean up.
-                # Accept-on-true-proxy, keeping the running best across passes.
-                #
-                # Budget-safe by construction: each pass gets the FULL remaining
-                # 15s deadline, and 2-opt returns early only when it converges.
-                # On deadline-bound large benchmarks (ibm10/12/16) the first pass
-                # eats the whole 15s → no time to kick → behavior is byte-identical
-                # to the prior single-pass code. The kicks only fill the otherwise-
-                # idle remainder on benchmarks where 2-opt exhausts its candidate
-                # pool early.
-                # Slice the 15s into passes so 2-opt yields its low-yield tail
-                # to a kick + fresh search. Empirically the 2-opt never reaches a
-                # local minimum within a full 15s on these benchmarks (always
-                # deadline-bound), so a "kick only on early convergence" trigger
-                # never fires - slicing is what makes the interleave happen.
+                # S1 basin-hopping scaffolding (DORMANT, S1_MAX_KICKS=0). The idea
+                # was to slice the 15s into passes and inject a cong-grad kick
+                # between them to escape swap-only minima; it was disproven
+                # (slicing starves the deadline-bound 2-opt and the kicks regressed
+                # 6/7 benchmarks), so it stays off. Kept for reference.
                 S1_PASS_BUDGET = 5.0      # seconds per 2-opt pass before a kick
-                # S1 DORMANT (max_kicks=0). DISPROVEN 2026-05-26: enabling sliced
-                # basin-hopping (5s passes + cong-grad kick, max_kicks=2) regressed
-                # --all on 6/7 benchmarks before the run was stopped (ibm01 +0.0037,
-                # ibm04 +0.0091, ibm08 +0.0045; cumulative +0.025/7). Slicing starves
-                # the productive deadline-bound 2-opt search, and the kicks perturb
-                # away from the optimum without recovering. The earlier "more accepts"
-                # signal (671→1072 on ibm04) was misleading - the extra accepts were
-                # repairing kick damage, not net-improving. Code kept for reference.
                 S1_MAX_KICKS = 0          # → up to (this+1) passes of ~5s each
                 S1_KICK_FRAC = 0.03       # kick magnitude (refinement-scale)
                 S1_MIN_REM = 3.0          # need >=this much budget to bother kicking
@@ -1475,53 +1274,33 @@ class MacroPlacer:
                 best_score = twoopt_best_score
                 best_pl = twoopt_best_pl
 
-        # -- Interleaved relocation ⇄ 2-opt (R2, 2026-05-27) ------------------
-        # R1 (relocation: move the hottest macros into empty low-congestion legal
-        # gaps - a move the swap-only 2-opt can't make) landed −0.0096 as a single
-        # post-2-opt pass. R2 ALTERNATES relocation and 2-opt until neither
-        # improves: each relocation opens new swap opportunities (and vice versa),
-        # so the two compound. Both reuse the fast incremental scorer and accept
-        # only on a strict TRUE-proxy drop, so the loop is strictly non-regressing.
-        # Relocation runs first each round (the multi-seed block already 2-opt-
-        # converged best_pl, so a fresh 2-opt finds nothing until relocation moves
-        # something). Budget-gated; a round needs slack for a relocation (~cheap)
-        # + a short 2-opt pass.
+        # -- Interleaved relocation <-> 2-opt (R2) ------------------
+        # Relocation moves the hottest macros into empty low-congestion gaps - a
+        # move swap-only 2-opt can't make. R2 alternates relocation and 2-opt
+        # until neither improves: each opens opportunities for the other, so they
+        # compound. Both reuse the incremental scorer and accept only on a strict
+        # true-proxy drop, so the loop is non-regressing. Relocation runs first
+        # each round (best_pl is already 2-opt-converged). Budget-gated.
         R2_MAX_ROUNDS = 20  # budget-guarded; converges + breaks on no-improvement.
-        # (Previously 12: increased to 20 (H-change, 2026-06-01) - budget-gated so
-        # no regression risk; allows more rounds on budget-flush fast benchmarks.)
-        # R2_HOT/R2_TGT widen the relocation candidate set per round so large
-        # benchmarks (ibm10 786 macros) relieve more than ~3% of hot macros/round.
-        # I-change REVERTED (2026-06-01): R2_HOT=96 for n>300 tested but reverted.
-        # Doubling reloc evals (768→1536) added ~4s/round overhead, reducing R2
-        # round throughput (ibm10: 1.1457→1.2029, ibm12: 1.3641→1.4063 regressions).
-        # The reloc deadline (15s) doesn't prevent the extra time from eating into
-        # partial rounds, cutting ibm12 from 2.4 to 2.0 complete R2 rounds.
+        # R2_HOT/R2_TGT size the hard relocation candidate set per round. Wider
+        # (96) was tried and reverted: the extra evals cut round throughput on
+        # large benchmarks and regressed them.
         R2_HOT = 48
         R2_TGT = 16
         R2_2OPT_SLICE = 8.0
-        # R3b (2026-05-28): softs number 900-2000 but only R2_HOT were tried per
-        # round (~16% coverage over 6 rounds on ibm17), so the dominant lever was
-        # under-covered. Wider soft candidate set; budget-gated by the pass deadline.
+        # Wider soft candidate set (softs number 900-2000, the dominant lever).
         R3_SOFT_HOT = 128
         R3_SOFT_TGT = 24
-        # A+C (2026-05-29, made adaptive 2026-05-30): the cong soft-reloc pass
-        # saturates fast (typically by round 3-4) while density keeps finding
-        # moves through round 6. C: boost the density pass's candidate set to
-        # R3_SOFT_HOT_BOOSTED on rounds where cong has saturated, spending the
-        # freed ~4-5s/round on more density attempts. The "cong saturated"
-        # trigger is now the SKIP_EMPTY_AFTER mechanism (#2) - adaptive per
-        # benchmark, no hardcoded round count. (The earlier hardcoded
-        # R3_CONG_MAX_ROUNDS=3 cap is retired; adaptive skip-empty matches the
-        # empirical observation without baking the round number in.)
+        # The cong soft-reloc pass saturates after a few rounds while density
+        # keeps finding moves, so once cong saturates (tracked adaptively by
+        # SKIP_EMPTY_AFTER) the density pass's candidate set is boosted to spend
+        # the freed time on more density attempts.
         R3_SOFT_HOT_BOOSTED = 192
-        # A3 (2026-05-29): bias soft-pass candidate ordering toward the macro's
-        # net centroid (where its connections want it). Pure ordering change -
-        # the proxy gate still validates every move, so it's strictly
-        # non-regressing. wl_blend=0 reproduces the original nearest-to-current
-        # ordering exactly; 0.3 gives a modest pull toward connections so the
-        # deadline-bound search tries WL-friendly candidates earlier.
+        # Bias soft-pass candidate ordering toward each macro's net centroid so
+        # the deadline-bound search tries WL-friendly candidates first (ordering
+        # only - the proxy gate still validates; 0 = nearest-to-current).
         A3_WL_BLEND = 0.3
-        # Soft-macro half-sizes (for the soft relocation pass - R3, 2026-05-28).
+        # Soft-macro half-sizes (for the soft relocation pass).
         _n_soft = benchmark.num_soft_macros
         _soft_sizes = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
         soft_hw = _soft_sizes[:, 0] / 2
@@ -1536,11 +1315,9 @@ class MacroPlacer:
             # IncrementalScorer init / last _exact_proxy on best_pl).
             try:
                 nr_g, nc_g = benchmark.grid_rows, benchmark.grid_cols
-                ha = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
-                va = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
-                if ha.size != nr_g * nc_g or va.size != nr_g * nc_g:
+                cc = _congestion_field(plc, nr_g, nc_g)
+                if cc is None:
                     return None
-                cc = np.maximum(ha.reshape(nr_g, nc_g), va.reshape(nr_g, nc_g))
                 cwc, chc = cw / nc_g, ch / nr_g
                 ci = np.clip((best_pl[:n, 0].numpy() / cwc).astype(np.int64), 0, nc_g - 1)
                 ri = np.clip((best_pl[:n, 1].numpy() / chc).astype(np.int64), 0, nr_g - 1)
@@ -1578,22 +1355,13 @@ class MacroPlacer:
         TINY_R2_ROUNDS_TO_STOP = 2
         _r2_tiny_streak = 0
 
-        # Speedup #32 (2026-05-31): persistent shared scorer across the passes
-        # of one R2 round. The R2 round body has ~10 distinct passes (hard
-        # reloc cong / density / combined, soft reloc cong / density, soft-2opt
-        # cong / density × A5 passes, HXS cong / density, 2-opt cleanup); the
-        # status-quo code rebuilt an `IncrementalScorer` per pass (full WL,
-        # density, routing-flats build - ~0.1-0.3 s each on large benchmarks =
-        # ~10-20 s of overhead per benchmark across 6 rounds). Since every
-        # accepting move commits via the scorer's commit_* API and every
-        # pass calls _exact_proxy(cand) at the end to validate, the scorer
-        # naturally stays in sync with `best_pl` whenever the cumulative pass
-        # accepts pass the proxy gate. The only time the scorer diverges is
-        # when a pass had accepts but `cand_true >= best_score - 1e-6` (the
-        # accepts didn't sum to a net improvement) - then we set the dirty
-        # flag and the next pass rebuilds. Bit-exact with the per-pass
-        # rebuild path because every commit_* is bit-exact with a fresh
-        # scorer + replay.
+        # Persistent shared scorer across the ~10 passes of one R2 round, instead
+        # of rebuilding an IncrementalScorer per pass (~0.1-0.3s each = 10-20s/
+        # benchmark). Every accepting move commits via the scorer and every pass
+        # validates with _exact_proxy, so it stays in sync with best_pl; the only
+        # divergence is a pass that accepted moves but didn't net-improve, which
+        # sets the dirty flag so the next pass rebuilds. Bit-exact with the
+        # per-pass rebuild path.
         _round_scorer = [None]   # list-as-mutable-flag (closure-safe)
         _round_scorer_dirty = [False]
 
@@ -1633,42 +1401,20 @@ class MacroPlacer:
             # between rounds via cleanup-2-opt commits / accept handling).
             _round_scorer_dirty[0] = True
 
-            # --- Per-round shared scorer (scorer-sharing, 2026-05-30) -----------
-            # Previously each pass (reloc, cong, density, 2-opt) built its own
-            # IncrementalScorer (~0.5–1s) and called _exact_proxy (~0.2s) before
-            # starting - 4×/round × 6 rounds = ~18s of pure overhead. Now we build
-            # ONE scorer per round and reuse it across all passes. After each pass
-            # commits moves, the scorer's state is already at the new best position
-            # (the post-accept _exact_proxy keeps plc in sync). Only if a verify
-            # unexpectedly fails do we rebuild from the known-good best_pl.
-            #
-            # K-change (2026-06-01): skip the round-start _exact_proxy for rounds
-            # 1+ (index ≥ 1). Analysis shows plc is ALWAYS synced to best_pl at
-            # every round boundary:
-            #   - Reloc/cong/density accepts: verify calls _exact_proxy(cand=best_pl) → sync.
-            #   - Reloc/cong/density fail-verify: explicit _exact_proxy(best_pl) resync.
-            #   - Reloc/cong/density 0 moves: plc unchanged = previous sync.
-            #   - 2-opt accepts: _exact_proxy(cand) → if improved: plc=new best_pl;
-            #     if verify fails: explicit _exact_proxy(best_pl) resync.
-            #   - 2-opt 0 swaps: 2-opt uses incremental scorer (NOT _exact_proxy) →
-            #     plc unchanged from density/cong/reloc verify → still synced.
-            #   - Budget breaks BETWEEN passes: last pass's verify left plc synced.
-            # Round 0 always re-scores: the outer 2-opt leaves plc at the last
-            # scored kick candidate (not best_pl after multi-seed processing).
-            # Savings: (n_rounds - 1) × t_one_score per benchmark.
-            # For ibm17 (t_one_score≈5s, 4 rounds): ~15s freed for 1 more round.
+            # Rounds 1+ skip the round-start _exact_proxy(best_pl): plc is always
+            # left synced to best_pl at every round boundary (every pass either
+            # validates an accept with _exact_proxy(best_pl), explicitly resyncs on
+            # a failed verify, or leaves plc untouched). Round 0 always re-scores,
+            # since the outer 2-opt leaves plc at its last kick candidate. Saves
+            # (n_rounds - 1) x t_one_score per benchmark.
             _r2_base = None
             _r2_shared = None
             try:
                 t_rel = time.monotonic()
                 base_rel = float(_exact_proxy(best_pl, benchmark, plc))
                 rel_scorer = _round_scorer_get()
-                # R4 (WL-aware hard-relocation targeting) was DISPROVEN 2026-05-29:
-                # biasing targets toward the net centroid steered the interleave to
-                # a slightly WORSE local min (ibm03 +0.0015, ibm07 +0.0025) with no
-                # upside. Reverted to the nearest-to-current sort. The `wl_blend`
-                # option + `hard_net_centroids()` + `WLAWARE_PROBE` are kept as inert
-                # diagnostic scaffolding (see ISSUES.md).
+                # Hard relocation uses nearest-to-current target ordering; WL-aware
+                # targeting (wl_blend) was disproven and left inert.
                 rel_pos, rel_acc, _ = _relocation_moves(
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
                     benchmark, rel_scorer, base_rel,
@@ -1692,14 +1438,9 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # --- H5 (2026-05-29): hard DENSITY relocation pass (analog of R5
-            # for hards). Hot hard macros in densest cells → lowest-density
-            # cold cells. Same _relocation_moves but with use_density=True,
-            # which switches the hot/cold field to scorer.grid_occupied.
-            # Skip-if-empty (2026-05-30): drop after a zero-accept round -
-            # H5 typically finds 0-3 moves; once it stops finding anything,
-            # the basin's flat for hards on the density field and the ~0.7s
-            # per round is wasted budget.
+            # Hard DENSITY relocation: hot hards in densest cells -> lowest-density
+            # cells (same _relocation_moves with use_density=True). Skip-if-empty
+            # drops it after a zero-accept streak (it usually finds 0-3 moves).
             if _empty_streak["reloc_density"] < SKIP_EMPTY_AFTER:
                 try:
                     t_rel_d = time.monotonic()
@@ -1771,16 +1512,11 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # --- soft relocation passes: hot soft clusters → cold cells, by the
-            # CONGESTION field (R3, 2026-05-28) then the DENSITY field (R5,
-            # 2026-05-28). Softs are the bulk of BOTH the routing-congestion and
-            # density terms; the cong pass converges then the density pass finds
-            # MORE moves it missed (DENS_SOFT_PROBE on best_pl: cong=0 relocs, but
-            # density 22–68 relocs for −0.011 to −0.020, all in the density term).
-            # Softs may overlap → no legality check. Accept-on-true-proxy.
-            # Scorer-sharing: no new IncrementalScorer or _exact_proxy here -
-            # _r2_shared is already at the post-reloc committed state, and plc
-            # was synced by the reloc verify call (or round-start if reloc=0). ---
+            # --- Soft relocation passes: hot soft clusters -> cold cells, by the
+            # congestion field then the density field. Softs are the bulk of both
+            # terms, and the density pass finds moves the cong pass misses. Softs
+            # may overlap (no legality check); accept-on-true-proxy. Reuses the
+            # shared scorer (already at the post-reloc committed state). ---
             for _sfield, _use_d in (("cong", False), ("density", True)):
                 if _n_soft <= 0:
                     break
@@ -1853,25 +1589,12 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # --- A1 (2026-05-29): soft-soft 2-opt swap. Single soft relocation
-            # can't find moves where two softs need to EXCHANGE places. This
-            # pair-swap pass adds that move type.
-            # A1b + A1×2: run TWICE per round, once with the cong hotness field
-            # and once with density - same dual-field symmetry that gave R3 +
-            # R5 their compound gain (the two fields find different hot softs
-            # and so different beneficial swaps).
-            # A1c: each pass appends n_cold_teleports=4 globally-coldest movable
-            # softs to the kNN candidate set, so the search can find long-range
-            # exchanges (analog of S9 cold-teleport for hard 2-opt).
-            # A5 (2026-05-30): adaptive multi-pass soft-2opt. Wrap each field's
-            # A1 call in a small inner loop (up to A5_NUM_PASSES). Each pass
-            # picks fresh hot softs from the updated state, so a second pass
-            # can find chains the first missed. Break on no committed swaps.
-            # Adaptive cong cap (2026-05-30): the hardcoded R3_CONG_MAX_ROUNDS
-            # gate has been REMOVED for A1b - observed data shows soft-2opt[cong]
-            # finds 7-35 swaps per round even at round 6 (unlike single-soft
-            # cong-relocation, which does saturate at round 3). Skip-if-empty
-            # (the #2 mechanism) is the right adaptive gate for A1b.
+            # --- Soft-soft 2-opt swap: the exchange move single-soft relocation
+            # can't make. Run twice per round (cong field then density - they find
+            # different hot softs), each appending n_cold_teleports globally-cold
+            # softs to the kNN set for long-range exchanges, and each wrapped in up
+            # to A5_NUM_PASSES inner passes that re-pick hot softs (a later pass can
+            # find chains the first missed). Skip-if-empty is the adaptive gate.
             A5_NUM_PASSES = 2
             for _ssfield, _ssuse_d in (("cong", False), ("density", True)):
                 if _n_soft < 2:
@@ -1988,14 +1711,11 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # --- HS3 (2026-05-31): hard-soft-soft 3-cycle rotation.
-            # Extension of HXS to 3-cycles: H → S1 → S2 → H. Captures
-            # configurations where a hard wants S1's slot but swapping
-            # H↔S1 alone hurts because S1's connections need to go
-            # elsewhere - 2-opt can't accept the chain individually,
-            # but the single combined 3-cycle move can. Same dual-field +
-            # skip-if-empty pattern. Cubic cost in (top_hot × k_inner²)
-            # → tight 3s deadline cap.
+            # --- Hard-soft-soft 3-cycle rotation (H -> S1 -> S2 -> H): captures
+            # configurations where a hard wants S1's slot but H<->S1 alone hurts
+            # because S1's connections must move too - a chain 2-opt can't accept
+            # but the single combined 3-cycle can. Same dual-field + skip-if-empty
+            # pattern; cubic cost (top_hot x k_inner^2), so a tight 3s deadline.
             for _h3field, _h3use_d in (("cong", False), ("density", True)):
                 if _n_soft < 2:
                     break
