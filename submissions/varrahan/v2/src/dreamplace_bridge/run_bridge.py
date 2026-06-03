@@ -29,7 +29,10 @@ from typing import Optional
 import numpy as np
 
 HERE = Path(__file__).resolve()
-REPO_ROOT = HERE.parents[4]
+REPO_ROOT = next(
+    p for p in HERE.parents
+    if (p / "pyproject.toml").exists() and (p / "macro_place").is_dir()
+)
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
