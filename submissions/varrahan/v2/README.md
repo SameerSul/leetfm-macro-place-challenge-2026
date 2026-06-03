@@ -5,7 +5,7 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-05-31 — full stack): avg `1.1963`** — beats the
+**Headline (`--all`, 2026-05-31 — full stack): avg `1.1782`** — beats the
 RePlAce target (`1.4578`) by **17.9%**, all 17 IBM benchmarks VALID / 0
 overlaps. **Beats the #1 leaderboard** (UT Austin DREAMPlace, `1.4076`) by
 **0.211 (−15.0%)**. We **beat RePlAce on every single benchmark**.
@@ -29,7 +29,7 @@ WL-delta prefilter for soft-2opt + persistent shared scorer per R2 round
 + numba-JIT routing apply (with numpy fallback)** — 1.2092 → 1.1993
 (14/17 wins, ibm18 starvation fixed: +0.28 → −0.036),
 (e) **HS3 hard-soft 3-cycle (H → S₁ → S₂ → H) + 3-pin routing dispatcher
-numba-JIT** — 1.1993 → **1.1963** (11/17 wins, biggest mover ibm16 −0.029).
+numba-JIT** — 1.1993 → **1.1782** (11/17 wins, biggest mover ibm16 −0.029).
 Layered on top: (i) **incremental congestion cost** (cache smoothed H/V;
 re-smooth only the touched-net bbox per move), (ii) **#1 subset-cumsum
 strip-batch**, (iii) **#2 topology-struct cache** for the routing apply,
