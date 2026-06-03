@@ -89,7 +89,7 @@ def _run(name, n_trials=10):
         sc2 = IncrementalScorer(plc, bm, pl_np)
         # Make sure plc state is consistent: just rebuilt.
         # (Both scorers share the same plc, but they don't co-exist concurrently
-        # — we just use one then the other.)
+        # - we just use one then the other.)
         i = int(mov[rng.randint(0, mov.size)])
         target = (float(rng.uniform(0, cw)), float(rng.uniform(0, ch)))
         # Reference path: commit_move

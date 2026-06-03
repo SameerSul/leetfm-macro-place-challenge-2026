@@ -2,7 +2,7 @@
 competitive placement on ibm04?
 
 Runs DREAMPlace with several legalize-enabled config variants, then scores
-DP's output DIRECTLY — no greedy spiral, no other Phase 1/2/3 perturbation.
+DP's output DIRECTLY - no greedy spiral, no other Phase 1/2/3 perturbation.
 This tells us whether the path to Fix 3 (DP as primary) is viable: if DP's
 own legalized placement scores below baseline 1.4101 on its own merits, then
 restructuring placer.py to use DP as primary makes sense. If even with its

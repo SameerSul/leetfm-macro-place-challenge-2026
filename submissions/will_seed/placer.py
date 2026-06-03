@@ -1,5 +1,5 @@
 """
-Will's Seed v4 — Minimal Legalization + GPU Refinement
+Will's Seed v4 - Minimal Legalization + GPU Refinement
 
 1. Legalize initial placement with minimum displacement
 2. GPU gradient refinement: reduce wirelength while maintaining no-overlap
@@ -98,7 +98,7 @@ class WillSeedPlacer:
         full_pos = benchmark.macro_positions.clone()
         full_pos[:n_hard] = torch.tensor(pos, dtype=torch.float32)
 
-        # Keep soft macros at initial positions — they were already optimized
+        # Keep soft macros at initial positions - they were already optimized
         # for the initial hard macro layout and minimal legalization preserves this
 
         return full_pos

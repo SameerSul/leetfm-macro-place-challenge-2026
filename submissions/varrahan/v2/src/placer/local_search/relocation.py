@@ -25,49 +25,26 @@ def _relocation_moves(
     use_density: bool = False,
     use_combined: bool = False,
 ) -> "tuple[np.ndarray, int, float]":
-    """Congestion-directed single-macro RELOCATION pass (2026-05-27).
+    """Congestion-directed single-macro RELOCATION of hard macros.
 
-    H5 (2026-05-29): when `use_density=True`, the hot/cold field switches from
-    routing congestion (`max(H,V)`) to grid occupancy
-    (`grid_occupied / dens_grid_area`) — the same dual-field pattern that made
-    R5 the dominant soft lever. Hot hard macros sitting in the densest cells
-    are moved to lowest-density cold cells, accept-on-true-proxy. Same proxy
-    gate, same overlap check vs other hard macros, just a different hot/cold
-    selection field.
+    The move 2-opt can't make: 2-opt only exchanges two macros, so it can never
+    move a routing-heavy macro into an empty low-congestion gap. For the hottest
+    macros (by the chosen field), this tries moving each into a handful of the
+    lowest-field legal cell centers and accepts iff the true incremental proxy
+    strictly drops. Legality = in-bounds + no overlap with other HARD macros
+    (softs may overlap and are ignored).
 
-    R6 (2026-05-30): when `use_combined=True`, hotness = geometric mean of
-    normalized cong AND density (each field divided by its own max). Macros
-    moderately hot on both fields rank above pure-field extremes — caught
-    candidates that neither pure pass prioritized.
-
-    WL-aware target selection (R4, 2026-05-28): when `net_centroid` ([n,2], a
-    macro's WL anchor) is given with `wl_blend`>0, candidate cold cells are ranked
-    by a blend of distance-to-current and distance-to-WL-anchor:
-      key = (1-wl_blend)·||cell − cur||² + wl_blend·||cell − centroid||²
-    `wl_blend`=0 reproduces the original nearest-to-current behavior exactly.
-    Higher blend prefers cold cells toward the macro's connections, so the cong-
-    relieving move costs less (or saves) wirelength → more moves pass the gate.
-
-    The 2-opt search only EXCHANGES two macros' positions — it can never relocate
-    a routing-heavy macro into an empty low-congestion gap (a swap would dump some
-    other macro into the vacated hot spot). This pass does exactly that: for the
-    hottest macros (by live routing congestion), try moving each into a handful of
-    the lowest-congestion legal cell centers, accept iff the true proxy (via the
-    incremental scorer's `score_move`) strictly drops, then `commit_move`.
-
-    Legality = in-bounds + no overlap with other HARD macros (soft macros may
-    overlap, so they're ignored). The proxy gate filters far moves that spike
-    wirelength, so only net-improving relocations stick. Returns (pos, accepts,
-    best_score).
+    use_density: hot/cold field - False = max(H,V) routing congestion, True =
+        grid occupancy. use_combined: geometric mean of normalized cong × density,
+        which favours macros moderately hot on both over pure-field extremes.
+    net_centroid / wl_blend: blend distance-to-current with distance-to-WL-anchor
+        in target ordering (wl_blend=0 = nearest-to-current; ordering only).
+    Returns (pos, accepts, best_score).
     """
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     if use_combined:
-        # R6 (2026-05-30): macros hot on BOTH cong AND density. Each field is
-        # normalized to [0, 1] (divided by its own max), then geometric-meaned
-        # so a cell is "combined hot" iff both terms are high. This catches
-        # macros sitting in low-grade hot spots on both fields that lose
-        # priority in either pure pass (each ranking favours pure-field
-        # extremes). Strictly non-regressing — the proxy gate still validates.
+        # Combined field: each of cong/density normalized to [0,1] by its own
+        # max, then geometric-meaned so a cell ranks hot iff both terms are high.
         try:
             h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
             v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
@@ -110,7 +87,7 @@ def _relocation_moves(
 
     # Candidate target cells = the lowest-congestion cells; their centers are the
     # relocation destinations. Use a percentile-based pool so that medium-cold
-    # cells geographically close to each hot macro are included — not just the
+    # cells geographically close to each hot macro are included - not just the
     # globally coldest N cells which may all cluster in one corner.
     flat = cell_cong.ravel()
     _thr = np.percentile(flat, 55)  # bottom 55% by congestion ≈ 55% of grid cells
@@ -152,10 +129,9 @@ def _relocation_moves(
         syi = sep_y_mat[i, mask]
         ox = pos[mask, 0]
         oy = pos[mask, 1]
-        # S1 (2026-05-29): prep i once (subtract old routing + density), trial
-        # each candidate via add-new + snapshot/restore (no per-trial subtract-
-        # old), commit on the winning target or revert if none. Saves one full
-        # routing-apply per trial — ~30% per-move on the relocation hot path.
+        # Prep i once (subtract old routing + density), trial each candidate via
+        # add-new + snapshot/restore, then commit the winner or revert. Saves one
+        # routing-apply per trial (~30% per-move on this hot path).
         prep = incremental_scorer._prepare_move(i)
         best_i_xy = None
         try:
@@ -203,22 +179,19 @@ def _soft_relocation_moves(
     net_centroid: "np.ndarray | None" = None,
     wl_blend: float = 0.0,
 ) -> "tuple[np.ndarray, int, float]":
-    """Congestion-directed SOFT-macro relocation (probe of the R1 idea on softs).
+    """Congestion-directed SOFT-macro relocation.
 
-    `use_density=True` (R5 probe, 2026-05-28): select hot softs and cold targets
-    by the DENSITY field (occupancy grid) instead of routing congestion. Softs are
-    the bulk of the density term (~30% of proxy) and may overlap, so the cong pass
-    can pile them into low-cong cells without relieving density; a density-targeted
-    pass attacks the top-10% occupancy cells the density cost actually measures.
-    Same accept-on-true-proxy machinery; only the hot/cold field changes.
+    Relocates the hottest movable soft clusters into low-field cells, accept-on-
+    true-proxy via the soft prep/trial path. Softs may overlap, so there's no
+    conflict check - only a half-size clip to keep them in canvas bounds.
 
-    The leverage analysis showed hard relocation can't help the soft/net-dominated
-    benchmarks (ibm17/18). This relocates the hottest SOFT clusters into low-
-    congestion cells, accept-on-true-proxy via `score_move_soft`. Softs may
-    overlap, so there's NO legality/conflict check — only a half-size clip to keep
-    them in canvas bounds. Softs contribute to WL + net-routing congestion +
-    density (not macro blockage). `soft_pos` is [num_soft, 2] (canvas coords).
-    Returns (soft_pos, accepts, best_score).
+    use_density: hot/cold field - False = max(H,V) routing congestion, True =
+        grid occupancy. Softs are the bulk of the density term and may overlap,
+        so a density-targeted pass finds moves the cong pass can't.
+    net_centroid / wl_blend: blend distance-to-current with distance-to-WL-anchor
+        in target ordering (wl_blend=0 = nearest-to-current; ordering only).
+    `soft_pos` is [num_soft, 2] (canvas coords). Returns (soft_pos, accepts,
+    best_score).
     """
     num_soft = incremental_scorer.num_soft
     if num_soft == 0:
@@ -244,7 +217,7 @@ def _soft_relocation_moves(
     ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
     local_cong = cell_field[ri, ci]
-    # Only relocate MOVABLE softs — fixed macros must stay put (contract). The
+    # Only relocate MOVABLE softs - fixed macros must stay put (contract). The
     # IBM benchmarks have 0 fixed softs (no-op here), but NG45/other inputs may.
     order = np.argsort(-local_cong)
     if soft_movable is not None:
@@ -254,7 +227,7 @@ def _soft_relocation_moves(
 
     flat = cell_field.ravel()
     # Pool: use a percentile threshold so medium-cold cells near each hot soft
-    # are included — not just globally coldest N cells that may all be in one
+    # are included - not just globally coldest N cells that may all be in one
     # corner. Each hot soft still tries only n_targets nearest candidates from
     # the pool, so per-soft cost is the same; diversity improves acceptance rate.
     _thr = np.percentile(flat, 55)  # bottom 55% by field value
@@ -274,24 +247,15 @@ def _soft_relocation_moves(
         cand = np.where(tgt_cong < local_cong[k] - 1e-9)[0]
         if cand.size == 0:
             continue
-        # Target selection: nearest-first for BOTH cong and density passes.
-        # Coldness-first was TRIED 2026-05-30 but regressed density severely
-        # (R1: 28 accepts -0.014 vs 75 accepts -0.045 with nearest-first). The
-        # reason: coldest cells are scattered across the chip; moving there
-        # spikes WL which outweighs density savings → proxy gate rejects most
-        # moves. Nearest-first keeps WL stable so the density reduction passes.
+        # Nearest-first target ordering (coldness-first regressed: scattered cold
+        # cells spike WL and the proxy gate then rejects the move). Optionally
+        # blended toward k's WL anchor (net_centroid); wl_blend=0 = nearest-only.
         d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
-        # A3 (2026-05-29): blend distance-to-current with distance-to-net-centroid
-        # so candidate ordering biases toward k's connections. The proxy gate
-        # still validates every move, so this only changes WHICH candidates
-        # are tried — strictly non-regressing. wl_blend=0 reproduces the
-        # original nearest-to-current ordering exactly.
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[k, 0]) ** 2 + (tgt_y[cand] - net_centroid[k, 1]) ** 2
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
         cand = cand[np.argsort(d2)][:n_targets]
-        # S1: prep k once, trial each candidate, commit-or-revert. See the hard
-        # _relocation_moves comment for the rationale.
+        # Prep k once, trial each candidate, commit-or-revert (see _relocation_moves).
         prep = incremental_scorer._prepare_move_soft(k)
         best_k_xy = None
         try:

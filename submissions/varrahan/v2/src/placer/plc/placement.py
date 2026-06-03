@@ -4,19 +4,12 @@ import numpy as np
 from macro_place.benchmark import Benchmark
 
 def _ensure_pos_cache(plc) -> np.ndarray:
-    """Maintain a per-module (x, y) position cache (B3, 2026-05-23).
+    """Maintain a per-module (x, y) position cache for vectorized scoring.
 
-    Vectorized scoring functions previously called `mods[idx].get_pos()`
-    in Python loops per call — ~3-6ms on ibm10 across WL / density /
-    congestion combined. This cache eliminates those loops by storing
-    positions in a numpy array, updated in-place by `_fast_set_placement`.
-
-    Initial build is O(n_modules) get_pos calls; amortized to near-zero.
-    Reads from the cache are fancy-indexed numpy operations.
-
-    Returns a (n_modules, 2) float64 array. Indexed by `plc.modules_w_pins`
-    index — the same indexing used by `unique_ref`, `macro_indices`, and
-    `hard_indices` in the various scoring caches.
+    Lets scoring read positions via fancy indexing instead of per-call
+    `mods[idx].get_pos()` loops. Built once (O(n_modules) get_pos calls),
+    updated in-place by `_fast_set_placement`. Returns a (n_modules, 2)
+    float64 array indexed by `plc.modules_w_pins` index.
     """
     cache = getattr(plc, "_global_pos_cache", None)
     if cache is None:
@@ -41,7 +34,7 @@ def _fast_set_placement(plc, placement_np: np.ndarray, benchmark: Benchmark) -> 
          score into a single equality check per macro.
       2. Skip pin.set_pos entirely. Verified that every cost path in
          plc_client_os recomputes pin coordinates via __get_pin_position
-         (ref_node.get_pos() + pin.get_offset()) — nothing reads pin.x/.y.
+         (ref_node.get_pos() + pin.get_offset()) - nothing reads pin.x/.y.
          The pin.set_pos calls were dead code defending against a non-issue.
       3. Skip the overlap-metric computation downstream (we never read it).
     """
@@ -54,10 +47,7 @@ def _fast_set_placement(plc, placement_np: np.ndarray, benchmark: Benchmark) -> 
         last = np.full(placement_np.shape, np.nan, dtype=np.float64)
         plc._last_pos_cache = last
 
-    # Global position cache (B3, 2026-05-23): keep `plc._global_pos_cache`
-    # synchronized with each set_pos call so the vectorized scoring
-    # functions can read positions via fancy indexing instead of looping
-    # mods[idx].get_pos().
+    # Keep the global pos cache synchronized with each set_pos call.
     pos_cache = _ensure_pos_cache(plc)
 
     any_changed = False
@@ -75,7 +65,7 @@ def _fast_set_placement(plc, placement_np: np.ndarray, benchmark: Benchmark) -> 
         pos_cache[macro_idx, 0] = x
         pos_cache[macro_idx, 1] = y
 
-    # Soft macros — usually unchanged after baseline; the equality check
+    # Soft macros - usually unchanged after baseline; the equality check
     # short-circuits the per-macro work for the common no-op case.
     for i, macro_idx in enumerate(soft_indices):
         row = n_hard + i

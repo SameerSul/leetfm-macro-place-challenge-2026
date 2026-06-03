@@ -19,33 +19,6 @@ def _build_macro_pin_map(plc):
     return pin_map
 
 
-def _ensure_pos_cache(plc) -> np.ndarray:
-    """Maintain a per-module (x, y) position cache (B3, 2026-05-23).
-
-    Vectorized scoring functions previously called `mods[idx].get_pos()`
-    in Python loops per call — ~3-6ms on ibm10 across WL / density /
-    congestion combined. This cache eliminates those loops by storing
-    positions in a numpy array, updated in-place by `_fast_set_placement`.
-
-    Initial build is O(n_modules) get_pos calls; amortized to near-zero.
-    Reads from the cache are fancy-indexed numpy operations.
-
-    Returns a (n_modules, 2) float64 array. Indexed by `plc.modules_w_pins`
-    index — the same indexing used by `unique_ref`, `macro_indices`, and
-    `hard_indices` in the various scoring caches.
-    """
-    cache = getattr(plc, "_global_pos_cache", None)
-    if cache is None:
-        mods = plc.modules_w_pins
-        cache = np.empty((len(mods), 2), dtype=np.float64)
-        for k, m in enumerate(mods):
-            x, y = m.get_pos()
-            cache[k, 0] = x
-            cache[k, 1] = y
-        plc._global_pos_cache = cache
-    return cache
-
-
 def _build_wl_cache(plc):
     """Precompute per-pin arrays used by the vectorized wirelength.
 
@@ -133,8 +106,8 @@ def _build_wl_cache(plc):
     # then scatter via numpy indexing.
     unique_ref, inv = np.unique(ref_idx_arr, return_inverse=True)
 
-    # B3 phase 2 (2026-05-23): per-pin → net-index mapping for incremental
-    # scoring. Allows touched-net selection given a moved macro.
+    # Per-pin → net-index mapping for incremental scoring (touched-net
+    # selection given a moved macro).
     pin_to_net = (
         np.searchsorted(net_starts_arr, np.arange(cursor), side="right") - 1
     ).astype(np.int64)
@@ -175,7 +148,6 @@ def _vectorized_wirelength(plc) -> float:
     if cache["n_nets"] == 0:
         return 0.0
     unique_ref = cache["unique_ref"]
-    # B3 (2026-05-23): use global pos cache instead of per-node get_pos loop.
     pos_cache = _ensure_pos_cache(plc)
     node_x = pos_cache[unique_ref, 0]
     node_y = pos_cache[unique_ref, 1]

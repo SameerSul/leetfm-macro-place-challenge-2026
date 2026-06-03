@@ -38,7 +38,7 @@ def _ensure_patches(plc, b):
     """Apply the B3-vectorized scoring patches so this script runs fast.
 
     Without these, each plc.get_*_cost call falls back to the unpatched
-    Python loop path (10s+ per call on ibm15+) — the diagnostic timed out
+    Python loop path (10s+ per call on ibm15+) - the diagnostic timed out
     at 15 min producing zero rows.
     """
     _patch_plc_wirelength(plc)
@@ -94,7 +94,7 @@ def evaluate_dp(bname, v15_best, v15_components=None, tag="hi"):
     hw = sizes[:n_hard, 0] / 2; hh = sizes[:n_hard, 1] / 2
     mov_h = (b.get_movable_mask() & b.get_hard_macro_mask()).numpy()[:n_hard]
 
-    # (a) Baseline legalize from initial.plc — for the WL/D/C reference
+    # (a) Baseline legalize from initial.plc - for the WL/D/C reference
     leg = _will_legalize(init[:n_hard], mov_h, sizes[:n_hard], hw, hh, cw, ch, n_hard)
     pl_base = b.macro_positions.clone()
     pl_base[:n_hard, 0] = torch.tensor(leg[:, 0], dtype=torch.float32)

@@ -51,7 +51,7 @@ v15 change: exploit full 1-hour competition budget (was self-limited to 200s).
 v16 change: Phase 4 macro-swap exploration (TILOS SA Assessment, TCAD 2024).
   After noise loop, if budget remains, explore best_pl neighbourhood using
   macro-swap moves: exchange positions of 1-3 random macro pairs and re-legalize.
-  Uses rng_swap (RandomState(seed+2)) — completely separate from main rng state;
+  Uses rng_swap (RandomState(seed+2)) - completely separate from main rng state;
   noise draws for ibm01/ibm08 winning fracs are unchanged.
   Impact:
     ibm01 (~6s/score): noise loop takes ~300×6=1800s → ~250s left → ~35 swap iterations
@@ -499,7 +499,7 @@ def _macro_swap_perturb(
       Exchange positions of two macros. When applied to the best-known legalized
       placement and re-legalized, explores the space of macro orderings without
       the full randomness of Gaussian noise restarts. A swap is the cheapest
-      meaningful structural change in a floorplan — it keeps the overall density
+      meaningful structural change in a floorplan - it keeps the overall density
       distribution but re-assigns which macro occupies which region.
 
     Use cases:
@@ -665,7 +665,7 @@ class MacroPlacer:
         """
         self.n_restarts = n_restarts
         # Budget check in _try_restart terminates the loop early; n_restarts is an upper cap.
-        # First 35 entries are "core" — RNG draw positions preserved so all v14 wins are
+        # First 35 entries are "core" - RNG draw positions preserved so all v14 wins are
         # unchanged (ibm01 6%-win at position 2, ibm03 2%-win at position 0, ibm08 6%-win
         # at position 2). Entries 35-394 extend the draw space for the 1-hour budget:
         #   ibm01 (~6s/score, budget=3300s): ~300 restarts → tries 30+ draws at 0.06
@@ -680,7 +680,7 @@ class MacroPlacer:
         ] * 12  # 360 entries (30 × 12)
         # Large-frac extension (indices 395-429): tried only by fast benchmarks on EPYC
         # (ibm01 ~9s/score, n_workers=8 → ~561 restarts → reaches index 395+).
-        # Large perturbations (25-50%) produce genuinely different macro arrangements —
+        # Large perturbations (25-50%) produce genuinely different macro arrangements -
         # the legalization finds a different basin than small-noise restarts.
         # WL impact of 50% noise: small (WL ≈ 0.06, congestion dominates at 1.3-2.5).
         # For slow benchmarks (ibm08 56 restarts, ibm13 47 restarts): never reached.
@@ -691,7 +691,7 @@ class MacroPlacer:
             0.25, 0.35, 0.30, 0.20, 0.25,
         ]  # 35 entries (indices 395-429)
         self.noise_fracs = noise_fracs or [
-            # ── Core 35 entries (UNCHANGED from v14 — preserves all known wins) ─────
+            # ── Core 35 entries (UNCHANGED from v14 - preserves all known wins) ─────
             # Core (preserves ibm01 6%-win and ibm03 2%-win)
             0.02, 0.04, 0.06, 0.08,
             # Fine grid fill: gaps between core points
@@ -744,7 +744,7 @@ class MacroPlacer:
         #     ibm15 (2166) and ibm18 (2145) which score in 164-220s; fine with 3300s budget)
         # SLOW_SCORE_THRESHOLD=400s: raised from 100s to allow large-grid benchmarks.
         #   ibm15 (164s) and ibm18 (~220s) now pass the threshold and get exact scoring.
-        # SKIP_EXACT=empty: with 1-hour budget, ibm11/ibm13 get 36/55 restarts — worth trying.
+        # SKIP_EXACT=empty: with 1-hour budget, ibm11/ibm13 get 36/55 restarts - worth trying.
         #   Previous SKIP_EXACT tested only 2-3 restarts; with 36+ restarts they may improve.
         #   Worst case: baseline still wins after 36 restarts, same quality as SKIP_EXACT.
         EXACT_MACRO_THRESHOLD = 430  # ibm16 (n=458) still excluded; test separately
@@ -1232,7 +1232,7 @@ class MacroPlacer:
         # Motivation: Gaussian noise always perturbs from init_pos (global search).
         # Phase 4 perturbs from best_pl (local exploitation of the best discovered
         # local minimum). Swapping pairs of macros explores different topology
-        # arrangements that noise cannot reach — particularly effective when the
+        # arrangements that noise cannot reach - particularly effective when the
         # best result significantly improves on the baseline (deeper local minimum).
         #
         # Uses rng_swap (RandomState(seed+2)) so the main rng state is unchanged
@@ -1248,7 +1248,7 @@ class MacroPlacer:
             [(1, 0.0)] * 5 + [(2, 0.0)] * 3 + [(1, 0.005)] * 4
             + [(3, 0.0)] * 2 + [(1, 0.01)] * 4 + [(2, 0.005)] * 3
             + [(1, 0.0)] * 5 + [(2, 0.01)] * 3 + [(1, 0.02)] * 3
-        ) * 20  # 960 entries — budget is the real limit
+        ) * 20  # 960 entries - budget is the real limit
         phase4_k = last_noise_k + 1
         phase4_ran = 0
         for phase4_i, (n_sw, nf) in enumerate(swap_schedule):

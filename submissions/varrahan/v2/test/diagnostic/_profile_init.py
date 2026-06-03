@@ -55,7 +55,7 @@ def run(name, n_reps=8):
     pl[:n, 1] = torch.tensor(leg[:, 1], dtype=torch.float32)
     pl_np = pl.cpu().numpy().astype(np.float64)
 
-    # Force a position change every call so plc's cost cache MISSES — this is the
+    # Force a position change every call so plc's cost cache MISSES - this is the
     # real interleave path (each pass scores a CHANGED best_pl). A static-position
     # _exact_proxy returns the cached cost (~ms) and badly underestimates the cost.
     rng = np.random.RandomState(0)

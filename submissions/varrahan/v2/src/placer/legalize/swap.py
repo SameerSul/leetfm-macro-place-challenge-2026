@@ -54,7 +54,7 @@ def _two_opt_swap(
         improved_any = False
 
         # For each macro i (in fixed order), find K nearest movable peers and
-        # try swap with each. We re-derive kNN per outer iter — positions
+        # try swap with each. We re-derive kNN per outer iter - positions
         # change across iters, so the neighborhood changes too.
         # Pairwise sq distances (vectorized): O(n²) memory but n<=800 is fine.
         dx = pos[:, 0:1] - pos[:, 0:1].T
@@ -92,7 +92,7 @@ def _two_opt_swap(
                         new_jy - hh[j] < -EPS or new_jy + hh[j] > ch + EPS):
                     continue
 
-                # Displacement check — strict improvement only.
+                # Displacement check - strict improvement only.
                 d_i_new = (new_ix - init_pos[i, 0]) ** 2 + (new_iy - init_pos[i, 1]) ** 2
                 d_j_new = (new_jx - init_pos[j, 0]) ** 2 + (new_jy - init_pos[j, 1]) ** 2
                 if d_i_new + d_j_new >= disp_sq[i] + disp_sq[j] - 1e-9:
@@ -117,11 +117,8 @@ def _two_opt_swap(
                           (np.abs(new_jy - oy) < syj + EPS)).any()
                 if conf_j:
                     continue
-                # i vs j (they end up where the other was — only an issue when
-                # they were not separated to begin with; the original placement
-                # is legal so pos[i] and pos[j] satisfy separation, but the new
-                # i-at-pos[j] / j-at-pos[i] separation is symmetric so this is
-                # also legal. Still verify defensively).
+                # i vs j: symmetric to the original legal separation, but verify
+                # defensively.
                 if (abs(new_ix - new_jx) < sep_x_mat[i, j] + EPS and
                         abs(new_iy - new_jy) < sep_y_mat[i, j] + EPS):
                     continue

@@ -21,12 +21,9 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
     _patch_plc_congestion(plc, benchmark)
     _patch_plc_density(plc, benchmark)
     placement_np = placement.cpu().numpy()
-    # Soft macros stay at the positions in `placement` (typically
-    # initial.plc) — naive centroid re-snap was tested 2026-05-22 and
-    # rejected (ibm04 1.3079 → 1.6465 with blend=1.0). The right approach
-    # is A2 (2026-05-24): DREAMPlace soft_movable=True is enabled in the
-    # DP launch, so DP-optimized soft positions are carried in dp_pl[n:]
-    # for the DP candidate path; non-DP candidates keep initial softs.
+    # Soft macros stay at the positions in `placement` (centroid re-snap was
+    # rejected). DP candidates carry DP-optimized softs in dp_pl[n:]; non-DP
+    # candidates keep the initial softs.
     _fast_set_placement(plc, placement_np, benchmark)
     wl = plc.get_cost()
     dens = plc.get_density_cost()
@@ -35,7 +32,7 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
 
 
 def _proxy_decomp(placement: torch.Tensor, benchmark: Benchmark, plc):
-    """(proxy, wl, 0.5*den, 0.5*cong) — the WEIGHTED proxy split. Re-scores the
+    """(proxy, wl, 0.5*den, 0.5*cong) - the WEIGHTED proxy split. Re-scores the
     placement (mutates plc state), so use only in diagnostic contexts."""
     p = _exact_proxy(placement, benchmark, plc)
     wl = float(plc.get_cost())

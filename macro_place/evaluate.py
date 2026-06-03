@@ -195,8 +195,8 @@ def _print_summary_table(results):
                 if r["replace_baseline"]
                 else 0
             )
-            sa_str = f"{r['sa_baseline']:>8.4f}" if r["sa_baseline"] else f"{'—':>8}"
-            rep_str = f"{r['replace_baseline']:>8.4f}" if r["replace_baseline"] else f"{'—':>8}"
+            sa_str = f"{r['sa_baseline']:>8.4f}" if r["sa_baseline"] else f"{'-':>8}"
+            rep_str = f"{r['replace_baseline']:>8.4f}" if r["replace_baseline"] else f"{'-':>8}"
             print(
                 f"{r['name']:>13}  {r['proxy_cost']:>8.4f}"
                 f"  {sa_str}  {rep_str}"
