@@ -18,19 +18,19 @@ git submodule update --init external/MacroPlacement
 uv sync
 
 # Single benchmark — fastest feedback loop, use this while iterating
-uv run evaluate submissions/varrahan/v2/placer.py -b ibm01
+uv run evaluate submissions/varrahan/v2/src/submit.py -b ibm01
 
 # All 17 IBM benchmarks — the headline score (~30 min on sameer_v1)
-uv run evaluate submissions/varrahan/v2/placer.py --all
+uv run evaluate submissions/varrahan/v2/src/submit.py --all
 
 # NG45 commercial designs (Tier 2, OpenROAD inputs)
-uv run evaluate submissions/varrahan/v2/placer.py --ng45
+uv run evaluate submissions/varrahan/v2/src/submit.py --ng45
 
 # Visualize a placement
-uv run evaluate submissions/varrahan/v2/placer.py -b ibm01 --vis
+uv run evaluate submissions/varrahan/v2/src/submit.py -b ibm01 --vis
 
 # Compare v2 against the v1 checkpoint
-uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/placer.py
+uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/src/submit.py
 
 # Compare two placers head-to-head
 uv run python scripts/compare_placers.py submissions/A/placer.py submissions/B/placer.py
@@ -51,7 +51,7 @@ If `uv` is not on PATH, fall back to `pip install -e .` and replace `uv run` wit
 **IMPORTANT — write scope is restricted to `submissions/varrahan/v2/**` plus this `CLAUDE.md`.** Anything outside that is read-only, including the prior submission slot `submissions/varrahan/v1/**`.
 
 Writable:
-- `submissions/varrahan/v2/**` — the active submission slot (placer.py, any new files Claude creates here)
+- `submissions/varrahan/v2/**` — the active submission slot (entrypoint `src/submit.py`, the `src/placer/` package, any new files Claude creates here)
 - `submissions/varrahan/dreamplace_build/**` — DREAMPlace install tree (rebuilds / patches allowed)
 - `submissions/varrahan/dreamplace_src/**` — DREAMPlace source (custom forks / modifications allowed)
 - `submissions/varrahan/CLAUDE.md` — this file
@@ -99,9 +99,10 @@ submissions/        One folder per submission. New work goes in submissions/varr
   sameer_v1/        Reference (~1.486).
   varrahan/v1/      Frozen v17 checkpoint — multi-DP + multi-iter Phase 7 + 2-opt-on-winner. READ-ONLY.
   varrahan/v2/      Active submission slot — writable.
-    placer.py             Active MacroPlacer implementation.
-    docs/                 ISSUES.md / PROGRESS.md / DREAMPLACE_FIXES.md.
-    dreamplace_bridge/    pb.txt ↔ Bookshelf converters + async launcher.
+    src/submit.py         Evaluator-facing entrypoint — exposes MacroPlacer (imports from src/placer/).
+    src/placer/           The placer package: pipeline/, scoring/, routing/, plc/, legalize/, local_search/, perturb/.
+    src/dreamplace_bridge/  pb.txt ↔ Bookshelf converters + async launcher.
+    docs/                 ARCHITECTURE.md / ISSUES.md / PROGRESS.md / DREAMPLACE_FIXES.md.
     test/                 v2-specific tests / diagnostics / probes — put ALL new v2 test files here.
       diagnostic/         Profiling, timing, scoring breakdown scripts.
       dreamplace/         DREAMPlace bridge tests + diagnostics.

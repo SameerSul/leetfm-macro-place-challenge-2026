@@ -256,23 +256,22 @@ effective_budget_s = min(time_budget_s, max(PER_BENCH_FLOOR_S, this_cap))
 effective_budget_s = min(effective_budget_s, HARD_CAP_SAFE_S - cumulative_elapsed - BUDGET_OVERRUN_S)
 ```
 
-Constants: `PER_BENCH_FLOOR_S=110`, `BUDGET_OVERRUN_S=60`,
+Constants: `PER_BENCH_FLOOR_S=110`, `BUDGET_OVERRUN_S=83`,
 `HARNESS_TOTAL_BUDGET_S=3300`, `HARD_CAP_SAFE_S=3540`.
 
-Worst-case simulation (every benchmark overruns its soft budget by 60s):
+Worst-case simulation (first call uses `time_budget_s=150` per M1; every
+benchmark overruns its soft budget by `BUDGET_OVERRUN_S=83s`):
 
 ```
-b01    cum=     0    eff=200    actual=260
-b02    cum=  260    eff=200    actual=260
-b03    cum=  520    eff=200    actual=260
-b04    cum=  780    eff=200    actual=260
-b05    cum= 1040    eff=160    actual=220  ← transition
-b06–b17  cum stepping by 170    eff=110    actual=170
-final cum = 3300                            ← exact internal-cap landing
+b01      cum=     0   eff=150   actual=233   (first call: time_budget_s, M1)
+b02      cum=   233   eff=110   actual=193   ← floor binds immediately (reserve_others dominates)
+b03–b17  cum stepping by 193    eff=110   actual=193
+final cum = 233 + 16×193 = 3321             ← matches the per-benchmark breakdown above
 ```
 
-Even in the worst case, **every benchmark gets ≥110 s** and the total lands
-exactly at the 3300 s internal cap — well under the 3600 s harness cap. The
+Even in the worst case, **every benchmark gets ≥110 s** and the total lands at
+~3321 s — just over the 3300 s soft target but comfortably under the 3540 s
+hard-cap headroom and the 3600 s harness cap. The
 pre-floor-reservation allocator (`adaptive_cap = remaining/remaining_benchmarks·0.9`
 plus a blunt `cumulative > 95% × cap → baseline` guard) starved ibm18 in one
 real `--all` run; the floor-reservation fix makes that structurally
@@ -562,7 +561,9 @@ To give ibm15-18 more budget the correct lever is reducing BUDGET_OVERRUN_S:
 
 ## Known Issues / Next Ideas
 
-- DREAMPlace broken (VENV_PYTHON symlink in WSL). Biggest untapped upside (~0.05-0.10 avg).
+- DREAMPlace is now built and functional (GPU/CUDA build — see DREAMPLACE_FIXES.md
+  and the gpu-dreamplace-build notes; the earlier "broken VENV_PYTHON symlink in
+  WSL" status is resolved). It contributes seed basins to the multi-seed 2-opt.
 - ibm17 (1.4519) and ibm18 (1.4615) still above 1.4 -- main remaining targets.
 - WireMask-BBO greedy evaluator: highest-leverage non-GPU idea not yet implemented.
 - Timing tight at 61 min. Reducing BUDGET_OVERRUN_S 83->65 is the safe fix.
