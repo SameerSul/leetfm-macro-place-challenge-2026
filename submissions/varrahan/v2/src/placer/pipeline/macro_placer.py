@@ -24,8 +24,8 @@ import numpy as np
 import torch
 from macro_place.benchmark import Benchmark
 
-from placer.config import HAS_NUMBA, _GPU_BACKEND, _GPU_DEVICE, _GPU_DEVICE_NAME, _USE_GPU, _log, _numba_njit
-from placer.legalize.spiral import _ring_offsets, _will_legalize
+from placer.config import _GPU_BACKEND, _GPU_DEVICE_NAME, _log
+from placer.legalize.spiral import _will_legalize
 from placer.legalize.swap import _two_opt_swap
 from placer.local_search.fields import _congestion_field
 from placer.local_search.hard_soft import _three_opt_hard_soft_soft, _two_opt_hard_soft_swap
@@ -35,35 +35,8 @@ from placer.local_search.two_opt import _two_opt_proxy_swap
 from placer.local_search.workers import _multiseed_2opt_worker
 from placer.perturb.congestion_gradient import _routing_congestion_perturb
 from placer.plc.loader import _load_plc
-from placer.plc.placement import _ensure_pos_cache, _fast_set_placement
-from placer.routing.apply import (
-    _apply_macro_routing_subset,
-    _apply_net_routing_struct,
-    _apply_net_routing_subset,
-    _build_cong_cache,
-    _build_net_routing_struct,
-    _smooth_routing_cong_vec,
-)
-from placer.scoring.congestion import _ensure_congestion_arrays, _patch_plc_congestion
-from placer.scoring.density import _patch_plc_density, _vectorized_get_grid_cells_density
 from placer.scoring.exact import _exact_proxy, _proxy_decomp
 from placer.scoring.incremental import IncrementalScorer
-from placer.scoring.wirelength import _build_wl_cache, _patch_plc_wirelength
-
-# ---------------------------------------------------------------------------
-# Will's minimum-displacement legalization (unchanged)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Scoring utilities
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
 
 def _dp_recoverability_probe(
     dp_placements, best_score, n, cw, ch, hw, hh, sizes, movable, plc, benchmark
@@ -1049,17 +1022,7 @@ class MacroPlacer:
                          f"{DP_SEED_2OPT_WINDOW})")
                     continue
                 t_2opt = time.monotonic()
-                # S1 basin-hopping scaffolding (DORMANT, S1_MAX_KICKS=0). The idea
-                # was to slice the 15s into passes and inject a cong-grad kick
-                # between them to escape swap-only minima; it was disproven
-                # (slicing starves the deadline-bound 2-opt and the kicks regressed
-                # 6/7 benchmarks), so it stays off. Kept for reference.
-                S1_PASS_BUDGET = 5.0      # seconds per 2-opt pass before a kick
-                S1_MAX_KICKS = 0          # → up to (this+1) passes of ~5s each
-                S1_KICK_FRAC = 0.03       # kick magnitude (refinement-scale)
-                S1_MIN_REM = 3.0          # need >=this much budget to bother kicking
                 global_2opt_deadline = t_2opt + 15.0
-                s1_rng = np.random.RandomState(20260526)
 
                 work_pl = seed_pl.clone()
                 work_hard = np.stack(
@@ -1070,117 +1033,73 @@ class MacroPlacer:
                 seed_best_score = float("inf")
                 accept_count = 0
                 score_calls = 0
-                final_score = work_score
-                n_kicks = 0
-                while True:
-                    # B3 phase 2/4 IncrementalScorer: incremental WL + congestion.
-                    # Re-init per pass from the current working placement (kick
-                    # moved positions non-swap-wise, so the prior scorer state is
-                    # stale). Init cost is ~3-10ms, negligible vs the 15s budget.
-                    try:
-                        incremental_scorer = IncrementalScorer(
-                            plc, benchmark, work_pl.cpu().numpy().astype(np.float64)
+                try:
+                    incremental_scorer = IncrementalScorer(
+                        plc, benchmark, work_pl.cpu().numpy().astype(np.float64)
+                    )
+                except Exception as exc:
+                    _log(f"  IncrementalScorer init failed: {type(exc).__name__}: "
+                         f"{exc}; falling back to full scoring")
+                    incremental_scorer = None
+
+                opt_scratch = work_pl.clone()
+
+                def _2opt_score(pos_arr: np.ndarray, _scr=opt_scratch) -> float:
+                    pos32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
+                    _scr[:n, 0] = pos32[:, 0]
+                    _scr[:n, 1] = pos32[:, 1]
+                    return float(_exact_proxy(_scr, benchmark, plc))
+
+                # S9: per-macro local max(H,V) snapshot for congestion-aware
+                # 2-opt ordering and cold-region teleport augmentation.
+                macro_cong = None
+                try:
+                    nr_g, nc_g = benchmark.grid_rows, benchmark.grid_cols
+                    h_arr = np.asarray(
+                        plc.get_horizontal_routing_congestion(), dtype=np.float64
+                    )
+                    v_arr = np.asarray(
+                        plc.get_vertical_routing_congestion(), dtype=np.float64
+                    )
+                    if h_arr.size == nr_g * nc_g and v_arr.size == nr_g * nc_g:
+                        cell_cong = np.maximum(
+                            h_arr.reshape(nr_g, nc_g), v_arr.reshape(nr_g, nc_g)
                         )
-                    except Exception as exc:
-                        _log(f"  IncrementalScorer init failed: {type(exc).__name__}: "
-                             f"{exc}; falling back to full scoring")
-                        incremental_scorer = None
-
-                    opt_scratch = work_pl.clone()
-
-                    def _2opt_score(pos_arr: np.ndarray, _scr=opt_scratch) -> float:
-                        pos32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
-                        _scr[:n, 0] = pos32[:, 0]
-                        _scr[:n, 1] = pos32[:, 1]
-                        return float(_exact_proxy(_scr, benchmark, plc))
-
-                    # S9 (2026-05-26): per-macro local congestion snapshot for
-                    # congestion-aware 2-opt (hot-first ordering + cold-region
-                    # teleport augmentation). The IncrementalScorer init above
-                    # called plc.get_congestion_cost() on work_pl, so plc's
-                    # routing map reflects the current placement. cell field is
-                    # max(H,V), matching _routing_congestion_perturb.
+                        cwc, chc = cw / nc_g, ch / nr_g
+                        ci = np.clip(
+                            (work_hard[:, 0] / cwc).astype(np.int64), 0, nc_g - 1
+                        )
+                        ri = np.clip(
+                            (work_hard[:, 1] / chc).astype(np.int64), 0, nr_g - 1
+                        )
+                        macro_cong = cell_cong[ri, ci]
+                except Exception:
                     macro_cong = None
-                    try:
-                        nr_g, nc_g = benchmark.grid_rows, benchmark.grid_cols
-                        h_arr = np.asarray(
-                            plc.get_horizontal_routing_congestion(), dtype=np.float64
-                        )
-                        v_arr = np.asarray(
-                            plc.get_vertical_routing_congestion(), dtype=np.float64
-                        )
-                        if h_arr.size == nr_g * nc_g and v_arr.size == nr_g * nc_g:
-                            cell_cong = np.maximum(
-                                h_arr.reshape(nr_g, nc_g), v_arr.reshape(nr_g, nc_g)
-                            )
-                            cwc, chc = cw / nc_g, ch / nr_g
-                            ci = np.clip(
-                                (work_hard[:, 0] / cwc).astype(np.int64), 0, nc_g - 1
-                            )
-                            ri = np.clip(
-                                (work_hard[:, 1] / chc).astype(np.int64), 0, nr_g - 1
-                            )
-                            macro_cong = cell_cong[ri, ci]
-                    except Exception:
-                        macro_cong = None
 
-                    # k_neighbors=20 / max_iters=6 (S2, 2026-05-25): per-score
-                    # ~3ms post-B3-phase-4, so a wide candidate pool fits. Each
-                    # pass is bounded by a time slice (S1_PASS_BUDGET) AND the
-                    # global 15s deadline, whichever is sooner.
-                    pass_deadline = global_2opt_deadline if S1_MAX_KICKS == 0 else min(
-                        global_2opt_deadline, time.monotonic() + S1_PASS_BUDGET
-                    )
-                    opt_pos, ac, fs, sc = _two_opt_proxy_swap(
-                        work_hard, sizes, hw, hh, cw, ch, movable, n,
-                        score_fn=_2opt_score, initial_score=work_score,
-                        k_neighbors=20, max_iters=6, deadline=pass_deadline,
-                        incremental_scorer=incremental_scorer,
-                        macro_cong=macro_cong,
-                    )
-                    accept_count += ac
-                    score_calls += sc
-                    final_score = fs
+                opt_pos, ac, _fs, sc = _two_opt_proxy_swap(
+                    work_hard, sizes, hw, hh, cw, ch, movable, n,
+                    score_fn=_2opt_score, initial_score=work_score,
+                    k_neighbors=20, max_iters=6, deadline=global_2opt_deadline,
+                    incremental_scorer=incremental_scorer,
+                    macro_cong=macro_cong,
+                )
+                accept_count += ac
+                score_calls += sc
 
-                    cand = work_pl.clone()
-                    cand[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
-                    cand[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
-                    # _exact_proxy also repopulates plc's routing-congestion map,
-                    # which the kick below reads to build its gradient.
-                    cand_true = float(_exact_proxy(cand, benchmark, plc))
-                    if cand_true < seed_best_score:
-                        seed_best_score = cand_true
-                        seed_best_pl = cand
-
-                    rem = global_2opt_deadline - time.monotonic()
-                    if n_kicks >= S1_MAX_KICKS or rem < S1_MIN_REM:
-                        break
-
-                    # Congestion-gradient kick from the just-scored 2-opt result
-                    # (plc reflects `cand`), then legalize the perturbed hard
-                    # macros. Feed the kicked layout into the next 2-opt pass even
-                    # if it scores worse - escaping the swap-only basin is the
-                    # whole point; seed_best_pl preserves the best seen so far.
-                    kicked = _routing_congestion_perturb(
-                        opt_pos, plc, benchmark, n, cw, ch, hw, hh, movable,
-                        frac=S1_KICK_FRAC, rng=s1_rng,
-                    )
-                    kicked_leg = _will_legalize(
-                        kicked, movable, sizes, hw, hh, cw, ch, n
-                    )
-                    work_pl = cand.clone()
-                    work_pl[:n, 0] = torch.tensor(kicked_leg[:, 0], dtype=torch.float32)
-                    work_pl[:n, 1] = torch.tensor(kicked_leg[:, 1], dtype=torch.float32)
-                    work_hard = kicked_leg.astype(np.float64)
-                    work_score = float(_exact_proxy(work_pl, benchmark, plc))
-                    n_kicks += 1
+                cand = work_pl.clone()
+                cand[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
+                cand[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
+                cand_true = float(_exact_proxy(cand, benchmark, plc))
+                if cand_true < seed_best_score:
+                    seed_best_score = cand_true
+                    seed_best_pl = cand
 
                 cand = seed_best_pl
                 true_final = seed_best_score
                 scorer_tag = "incr" if incremental_scorer is not None else "full"
                 _log(f"  2-opt seed {seed_tag} (proxy/{scorer_tag}): {accept_count} "
-                     f"accepts / {score_calls} scores, {n_kicks} kicks, "
-                     f"true={true_final:.4f} (was {seed_score:.4f}) "
+                     f"accepts / {score_calls} scores, true={true_final:.4f} "
+                     f"(was {seed_score:.4f}) "
                      f"in {time.monotonic()-t_2opt:.1f}s")
                 if true_final < twoopt_best_score:
                     twoopt_best_score = true_final
@@ -1211,11 +1130,11 @@ class MacroPlacer:
                                 continue
                             _eligible_dp.append((_t, _pl, _sc))
                         if _eligible_dp:
-                            # mp_context="fork" is critical: placer.py is loaded
-                            # via importlib by the evaluator's harness, so the
-                            # default "spawn" can't pickle our module-level
-                            # worker function. Fork inherits the parent's
-                            # loaded modules + function references via COW.
+                            # fork (not spawn): inherits the parent's loaded
+                            # modules + sys.path so the worker imports cleanly and
+                            # skips re-import / numba recompile. The worker calls
+                            # _force_worker_cpu() first — CUDA contexts don't
+                            # survive fork, so workers must stay CPU-only.
                             _mp_pool = concurrent.futures.ProcessPoolExecutor(
                                 max_workers=len(_eligible_dp),
                                 mp_context=mp.get_context("fork"),
@@ -1344,14 +1263,16 @@ class MacroPlacer:
             "hs3_density": 0,
         }
 
-        # Adaptive R2 termination (2026-05-30): break out of the round loop on
-        # TINY_R2_ROUNDS_TO_STOP consecutive rounds where the proxy Δ is below
-        # R2_DELTA_THRESHOLD. Catches the "diminishing returns" tail where the
-        # search is technically improving but the gains are below the noise
-        # floor of one --all run (~1e-3). The existing `if not round_improved`
-        # break still fires for true no-improvement; this fires earlier when
-        # improvements are microscopic.
+        # Adaptive R2 termination. Two tiers catch the diminishing-returns tail
+        # without burning extra rounds on negligible gains:
+        #   - HARD_STOP: a round improving by <= R2_DELTA_HARD_STOP is so small
+        #     it's not worth another round to confirm; stop immediately.
+        #   - TINY: a round in the borderline (HARD_STOP, THRESHOLD) band needs
+        #     TINY_R2_ROUNDS_TO_STOP consecutive occurrences before stopping (a
+        #     small round is occasionally followed by a productive one).
+        # The existing `if not round_improved` break still handles zero gain.
         R2_DELTA_THRESHOLD = 1e-3
+        R2_DELTA_HARD_STOP = 3e-4
         TINY_R2_ROUNDS_TO_STOP = 2
         _r2_tiny_streak = 0
 
@@ -1395,6 +1316,7 @@ class MacroPlacer:
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 3.0 * t_one_score + 3.0:
                 break
+            _t_round_start = time.monotonic()
             _r2_prev_best = best_score
             round_improved = False
             # Force a fresh scorer at round-start (best_pl may have changed
@@ -1407,8 +1329,6 @@ class MacroPlacer:
             # a failed verify, or leaves plc untouched). Round 0 always re-scores,
             # since the outer 2-opt leaves plc at its last kick candidate. Saves
             # (n_rounds - 1) x t_one_score per benchmark.
-            _r2_base = None
-            _r2_shared = None
             try:
                 t_rel = time.monotonic()
                 base_rel = float(_exact_proxy(best_pl, benchmark, plc))
@@ -1765,7 +1685,6 @@ class MacroPlacer:
                 break
 
             # --- 2-opt cleanup pass (swaps around the relocated macros) ---
-            # Scorer-sharing: reuses _r2_shared (post-reloc+cong+density state).
             try:
                 t_2o = time.monotonic()
                 base_2o = float(_exact_proxy(best_pl, benchmark, plc))
@@ -1782,7 +1701,7 @@ class MacroPlacer:
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n,
                     score_fn=_r2_score, initial_score=base_2o, k_neighbors=20,
                     max_iters=6, deadline=t_2o + min(rem_r2 - t_one_score, R2_2OPT_SLICE),
-                    incremental_scorer=_r2_shared, macro_cong=_macro_cong_now(),
+                    incremental_scorer=o_scorer, macro_cong=_macro_cong_now(),
                 )
                 if o_acc > 0:
                     cand = best_pl.clone()
@@ -1799,14 +1718,20 @@ class MacroPlacer:
 
             if not round_improved:
                 break
-            # Adaptive R2 round termination: break on consecutive tiny rounds.
+            # Adaptive R2 round termination (two-tier; see constants above).
             _r2_delta = _r2_prev_best - best_score
-            if _r2_delta < R2_DELTA_THRESHOLD:
+            _r2_round_time = time.monotonic() - _t_round_start
+            if _r2_delta < R2_DELTA_HARD_STOP:
+                _log(f"  R2 round {_r2+1}: negligible Δ={_r2_delta:.5f} "
+                     f"(< {R2_DELTA_HARD_STOP}) in {_r2_round_time:.1f}s; "
+                     f"stopping interleave early")
+                break
+            elif _r2_delta < R2_DELTA_THRESHOLD:
                 _r2_tiny_streak += 1
                 if _r2_tiny_streak >= TINY_R2_ROUNDS_TO_STOP:
                     _log(f"  R2 round {_r2+1}: tiny Δ={_r2_delta:.5f} for "
-                         f"{_r2_tiny_streak} rounds (< {R2_DELTA_THRESHOLD}); "
-                         f"stopping interleave early")
+                         f"{_r2_tiny_streak} rounds (< {R2_DELTA_THRESHOLD}) "
+                         f"in {_r2_round_time:.1f}s; stopping interleave early")
                     break
             else:
                 _r2_tiny_streak = 0
