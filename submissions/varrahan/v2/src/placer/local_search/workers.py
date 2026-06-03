@@ -5,6 +5,7 @@ import time
 import numpy as np
 import torch
 
+from placer.local_search.fields import _congestion_field
 from placer.local_search.two_opt import _two_opt_proxy_swap
 from placer.plc.loader import _load_plc
 from placer.scoring.exact import _exact_proxy
@@ -27,14 +28,12 @@ def _multiseed_2opt_worker(
     k_neighbors: int = 20,
     max_iters: int = 6,
 ) -> dict:
-    """Speedup #3 (2026-05-30): one seed of multi-seed 2-opt in an independent
-    subprocess. Each subprocess loads its own benchmark + plc (the C++ object
-    isn't picklable, so it can't be shared across processes) and runs the
-    full 2-opt path independently. Returns a picklable dict with the result.
+    """Run one seed of multi-seed 2-opt in an independent subprocess.
 
-    Per-subprocess cost = ~1–3s benchmark/plc load + ~15s 2-opt = ~18s.
-    Running 3 DP seeds in parallel with the main-thread "best" seed gives
-    ~18s vs ~60s sequential → ~42s saved per benchmark (~12 min on `--all`).
+    Each subprocess loads its own benchmark + plc (the C++ object isn't
+    picklable, so it can't be shared) and runs the full 2-opt path. Returns a
+    picklable result dict. Running the DP seeds in parallel with the main-thread
+    "best" seed turns ~60s of sequential 2-opt into ~18s.
     """
     # Lazy import inside the worker (avoid top-level circulars on parallel boot).
     from macro_place.loader import load_benchmark_from_dir
@@ -60,10 +59,8 @@ def _multiseed_2opt_worker(
     macro_cong = None
     try:
         nr_g, nc_g = bm.grid_rows, bm.grid_cols
-        h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
-        v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
-        if h_arr.size == nr_g * nc_g and v_arr.size == nr_g * nc_g:
-            cell_cong = np.maximum(h_arr.reshape(nr_g, nc_g), v_arr.reshape(nr_g, nc_g))
+        cell_cong = _congestion_field(plc, nr_g, nc_g)
+        if cell_cong is not None:
             cwc, chc = cw / nc_g, ch / nr_g
             hard_xy0 = seed_pl_full_np[:n]
             ci = np.clip((hard_xy0[:, 0] / cwc).astype(np.int64), 0, nc_g - 1)

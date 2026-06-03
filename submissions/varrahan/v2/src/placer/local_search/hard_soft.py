@@ -4,6 +4,8 @@ import time
 
 import numpy as np
 
+from placer.local_search.fields import _congestion_field, _density_field
+
 def _two_opt_hard_soft_swap(
     hard_pos: np.ndarray,
     soft_pos: np.ndarray,
@@ -42,20 +44,10 @@ def _two_opt_hard_soft_swap(
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     cell_w, cell_h = cw / nc, ch / nr
 
-    if use_density:
-        go = incremental_scorer.grid_occupied
-        if go is None or go.size != nr * nc:
-            return hard_pos, soft_pos, 0, initial_score
-        cell_field = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
-    else:
-        try:
-            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
-            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
-        except Exception:
-            return hard_pos, soft_pos, 0, initial_score
-        if h_arr.size != nr * nc or v_arr.size != nr * nc:
-            return hard_pos, soft_pos, 0, initial_score
-        cell_field = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+    cell_field = (_density_field(incremental_scorer, nr, nc) if use_density
+                  else _congestion_field(plc, nr, nc))
+    if cell_field is None:
+        return hard_pos, soft_pos, 0, initial_score
 
     # Hot hards by chosen field.
     hci = np.clip((hard_pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
@@ -174,20 +166,10 @@ def _three_opt_hard_soft_soft(
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     cell_w, cell_h = cw / nc, ch / nr
 
-    if use_density:
-        go = incremental_scorer.grid_occupied
-        if go is None or go.size != nr * nc:
-            return hard_pos, soft_pos, 0, initial_score
-        cell_field = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
-    else:
-        try:
-            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
-            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
-        except Exception:
-            return hard_pos, soft_pos, 0, initial_score
-        if h_arr.size != nr * nc or v_arr.size != nr * nc:
-            return hard_pos, soft_pos, 0, initial_score
-        cell_field = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+    cell_field = (_density_field(incremental_scorer, nr, nc) if use_density
+                  else _congestion_field(plc, nr, nc))
+    if cell_field is None:
+        return hard_pos, soft_pos, 0, initial_score
 
     # Hot hards by chosen field.
     hci = np.clip((hard_pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)

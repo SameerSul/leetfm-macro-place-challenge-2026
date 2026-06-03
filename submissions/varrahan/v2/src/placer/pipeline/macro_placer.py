@@ -1,42 +1,15 @@
-"""
-Competitive Macro Placer -- Partcl/HRT Challenge 2026
-Varrahan Uthayan
-Sameer Suleman
+"""Competitive Macro Placer -- Partcl/HRT Challenge 2026.
 
-Algorithm:
-  Multi-restart legalization with iterative routing-congestion-gradient
-  perturbations, scored against the exact PlacementCost proxy.
+Varrahan Uthayan, Sameer Suleman
 
-  Pipeline per benchmark (200s soft budget, 60s overrun allowed for
-  directed phases):
-    0.       Baseline      legalize from initial.plc
-    Phase 1  cong-grad     up to 12 iterative steps at frac=0.04 with adaptive
-                           halving; each improving step updates the source
-                           position for the next iter (uses live plc cong map)
-    Phase 2  cong-grad     wide steps from baseline at frac=0.08, 0.12 using
-                           the evolved (now-stale) plc cong map; early-exits
-                           on first non-improvement
-    Phase 3  cong-grad     perturb the current best at frac=0.04 using the
-                           stale plc map - finds basins missed by Phase 1/2
-                           (where ibm04's 1.3316 win lives)
-    Noise tail             Random Gaussian restarts (1%-20%) fill remaining
-                           budget; per-benchmark schedule preserves ibm01 6%
-                           and ibm03 2% winners
+Multi-restart legalization with routing-congestion-gradient perturbations and
+move-based local search (2-opt swaps + congestion/density-directed relocation),
+scored against the exact PlacementCost proxy. Congestion dominates the proxy
+(proxy = 1*WL + 0.5*density + 0.5*congestion, with congestion ~30x WL), so
+directed moves target congestion, not wirelength; restarts explore legalization
+variants without destroying initial.plc's hand-tuned spread.
 
-  All candidates re-legalized and scored with PlacementCost; lowest proxy wins.
-
-Why this pipeline:
-  - Proxy = 1*WL + 0.5*density + 0.5*congestion. WL ~0.06, cong ~2.0:
-    congestion dominates ~30x, so all directed moves target it (not WL).
-  - SA-on-WL clusters macros, spikes congestion, regresses. Restarts explore
-    legalization variants without destroying initial.plc's hand-tuned spread.
-
-Baselines (full --all average over 17 IBM ICCAD04 benchmarks):
-  will_seed             1.5338
-  sameer_v1 leg-only    1.5062
-  v12 (this code)       1.4854   stable, current best
-  RePlAce               1.4578   <- challenge grand-prize threshold
-  UT Austin DREAMPlace  1.4076   leaderboard #1 (GPU)
+See docs/ARCHITECTURE.md for the full pipeline and docs/PROGRESS.md for scores.
 """
 
 import concurrent.futures
@@ -255,43 +228,21 @@ class MacroPlacer:
         # `_benchmarks_done >= 1`.
         self._first_place_call_time: Optional[float] = None
         self._benchmarks_done: int = 0
-        # L-change (2026-05-31): track cumulative place()-execution time (not
-        # wall-clock). Large-grid benchmarks (ibm10/12/14) cause 100-170s of
-        # harness evaluation overhead *outside* place() that inflates the
-        # monotonic-clock cumulative and starves ibm15-18 of budget (observed:
-        # wall-clock cumulative=3416s at ibm15 start while place()-time was
-        # only ~2595s). The harness enforces its 3600s cap on sum-of-place()
-        # times, so _total_place_time_s is the correct quantity to guard.
+        # Track cumulative place()-execution time, not wall-clock: large-grid
+        # benchmarks add 100-170s of harness overhead outside place() that would
+        # inflate a wall-clock cumulative and starve the tail benchmarks. The
+        # harness caps the 3600s on sum-of-place() times, so this is what to guard.
         self._total_place_time_s: float = 0.0
-        # 3300s leaves 300s headroom under the 3600s harness cap for setup /
-        # teardown / final-benchmark spillover. HARNESS_TOTAL_BENCHMARKS is
-        # the standard --all set; a per-call override would let the harness
-        # pass actual remaining-benchmark count, but isn't wired in yet.
+        # 3300s internal cap leaves 300s headroom under the 3600s harness cap for
+        # setup / teardown / final-benchmark spillover.
         self.HARNESS_TOTAL_BUDGET_S: float = 3300.0
         self.HARNESS_TOTAL_BENCHMARKS: int = 17
-        # Directed phases overrun the soft budget by this much (see BUDGET_OVERRUN_S
-        # in place()); hoisted here so the budget allocator can reserve for it.
-        # Increased 60→75 (2026-05-30): bgfj81y2x and babz0gezx both hit the
-        # 260s cap after 6 R2 rounds with ~0s remaining. A 7th density-only round
-        # costs ~17s (cong runs in rounds 1-6: R3_CONG_MAX_ROUNDS=6); this
-        # 15s extra budget enables it. 17×(110+75)=3145 < 3300s harness total.
-        # Increased 75→83 (2026-05-30): with R3_SOFT_TGT_BOOSTED=16 the density
-        # pass with 256 hot macros finishes in ~7.7s instead of 15s, leaving
-        # ~0.3s after round 7 density - just below the 2.4s 2-opt guard.
-        # An 8s increase enables round 7's 2-opt (~20 swaps, −0.0003).
-        # M1-change (2026-05-31): ibm01 budget reduced 200→150s. Rounds 10-11 of R2
-        # improve proxy by only 0.0002 total; the 50s saved brings total place time
-        # to (150+83)+(16×193)=233+3088=3321s vs prior 3371s, keeping wall-clock
-        # comfortably under 3600s and freeing headroom so ibm18's hard_cap guard
-        # no longer triggers (ibm18 gets full 110s floor instead of ~86s cap).
-        # 17×(110+83)=3281 < 3300s harness total → --all safe.
+        # Directed phases may overrun the soft budget by this much; hoisted here so
+        # the allocator can reserve for it. 17*(110+83)=3281 < 3300s --all-safe.
         self.BUDGET_OVERRUN_S: float = 83.0
-        # Floor-reservation (2026-05-29): every benchmark in an --all run is
-        # guaranteed at least this much budget. The allocator reserves
-        # (floor + overrun) for each *remaining* benchmark so an early/large one
-        # can't eat the tail's budget - which previously collapsed the last
-        # benchmark (ibm18) to the raw baseline. 17·(110+83)=3281 < 3300, so the
-        # floor is feasible for all 17 with margin.
+        # Floor-reservation: every benchmark in an --all run is guaranteed at
+        # least this budget. The allocator reserves (floor + overrun) for each
+        # remaining benchmark so an early/large one can't starve the tail.
         self.PER_BENCH_FLOOR_S: float = 110.0
         # Leave headroom under the 3600s hard harness cap for setup/teardown.
         self.HARD_CAP_SAFE_S: float = 3540.0
@@ -300,8 +251,7 @@ class MacroPlacer:
         np.random.seed(self.seed)
         random.seed(self.seed)
 
-        # GPU status line (gpu-testing branch) - printed once per benchmark so
-        # it's easy to confirm GPU is active in a run log.
+        # GPU status line, printed once per benchmark to confirm the active backend.
         _log(f"[GPU] backend={_GPU_BACKEND} device={_GPU_DEVICE_NAME} | benchmark={benchmark.name}")
 
         t0 = time.monotonic()
@@ -418,28 +368,13 @@ class MacroPlacer:
             pl_scratch[:n, 1] = pos32[:, 1]
             return float(_exact_proxy(pl_scratch, benchmark, plc))
 
-        # -- Async DREAMPlace launch (Phase 5 candidate, fire-and-forget) ----
-        # Launch DREAMPlace as a non-blocking subprocess BEFORE the main
-        # pipeline starts. DREAMPlace runs in parallel with our scoring
-        # (which is C++-side and releases the GIL on long ops). Its output
-        # is checked at the END of the directed pipeline as one additional
-        # candidate - additive, never displacing Phase 1/2/3 wins.
-        #
-        # v13 (sync) was rejected because it ran DREAMPlace BEFORE Phase 1,
-        # paying 30-90s of subprocess time that displaced 5-10 noise/cong-grad
-        # restarts on most benchmarks. Async hides that cost behind scoring.
-        #
-        # Launched for all ICCAD04 benchmarks (even when use_exact=False), so
-        # the large-benchmark path (n>400 / grid>2200) can compare DP-vs-
-        # baseline via a single _exact_proxy call. The 6 affected benchmarks
-        # (ibm10/12/13/14/16/17) previously returned baseline-only in 2-6s.
-        # Multi-DP (2026-05-21): launch two DPs in parallel at different
-        # target_density. Diagnostic (_dp_diagnostic.py) showed DP loses on
-        # 9/12 benchmarks purely on congestion (dC averages +0.09 vs winner)
-        # while density is uniformly better. Hypothesis: looser target_density
-        # (0.85) leaves more routing channel space; tighter (0.65) trades for
-        # lower HPWL. Each at num_threads=1 to match the prior single-DP
-        # num_threads=2 CPU footprint.
+        # -- Async DREAMPlace launch (additive Phase 5 candidate) ----
+        # Launch DREAMPlace as non-blocking subprocesses before the main pipeline
+        # so they run in parallel with our (GIL-releasing C++) scoring; the output
+        # is harvested at the end of the directed pipeline as additional
+        # candidates that never displace the cong-grad/noise wins. Launched for
+        # all ICCAD04 benchmarks (even the large baseline-only ones, so they can
+        # compare DP vs baseline). Multiple configs run at once (see DP roles).
         dp_handles = []
         try:
             import sys as _sys
@@ -453,35 +388,12 @@ class MacroPlacer:
                 iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
                              / benchmark.name)
                 if iccad_dir.exists():
-                    # A2 retry refined 2026-05-24: 2-DP setup diversifying on
-                    # soft_movable (was: diversifying on target_density 0.85/0.65).
-                    # A3 diagnostic already showed hi/lo target_density
-                    # mostly converged to similar congestion (lo's plc-state
-                    # mutation was the real value, not its placement quality).
-                    # A2 --all then showed soft_macros_movable=True is a big
-                    # win on most benchmarks (ibm03 −0.10, ibm06 −0.12) but
-                    # regresses on ibm01/ibm09/ibm13 where initial.plc was
-                    # already dense (D > 0.87) → DP NLP compacts softs further
-                    # → density spikes. Solution: launch BOTH soft_movable
-                    # variants at same target_density. Best-of-both per
-                    # benchmark. Tag "fixed"/"movable" for clarity.
-                    # A2 refined 2026-05-25: 3-DP setup diversifying across
-                    # both target_density and soft_movable axes. Phase 7
-                    # RNG isolation (commit adaf693) made adding a 3rd DP
-                    # safe - the original 3-DP attempt 2026-05-24 had to
-                    # be reverted because the extra Phase 7 chain caused
-                    # rng_cong drift, regressing ibm10 +0.036. Isolation
-                    # now contains those effects.
-                    #
-                    # DP roles:
-                    #   lo-fix: td=0.65, soft_movable=False
-                    #     - ibm01 dense-init benefits from lo-td spreading.
-                    #   hi-mov: td=0.85, soft_movable=True
-                    #     - ibm03/06/10 wins via DP-optimized softs.
-                    #   hi-fix: td=0.85, soft_movable=False
-                    #     - ibm09/13 - need fixed softs at hi-td. Was
-                    #       missing from the 2-DP setup, causing those
-                    #       benchmarks to regress by +0.007 to +0.012.
+                    # 3 DP configs spanning target_density x soft_movable, for
+                    # best-of-both per benchmark (initial.plc density varies, so
+                    # no single config wins everywhere):
+                    #   lo-fix: td=0.65, soft fixed   - dense-init spreading (ibm01).
+                    #   hi-mov: td=0.85, soft movable - DP-optimized softs (ibm03/06/10).
+                    #   hi-fix: td=0.85, soft fixed   - dense-init at hi-td (ibm09/13).
                     for tag, td, root, soft_mv in (
                         ("lo-fix",  0.65, "/tmp/dreamplace_v1_lofix",   False),
                         ("hi-mov",  0.85, "/tmp/dreamplace_v1_himov",   True),
@@ -1046,42 +958,19 @@ class MacroPlacer:
                 break
 
         # -- Phase 7: DP-rescue cong-grad chain (additive, after noise) -------
-        # Diagnostic (_dp_diagnostic.py 2026-05-21) showed DP loses on 9/12
-        # benchmarks purely on congestion (dC +0.02 to +0.16). 2026-05-21
-        # single-iter tests on ibm01/04/07/12/02 confirmed 1 iter is not
-        # enough to close gaps that large - the rescue candidates scored
-        # WORSE than current best every time, because legalization shuffles
-        # macros enough that one gradient step gets reset.
+        # DP loses on most benchmarks purely on congestion, and a single
+        # gradient step can't close gaps that large (legalization resets it).
+        # This chains up to MAX_P7_ITERS cong-grad iterations per DP placement,
+        # each starting from the previous iter's legalized output, breaking when
+        # an iter fails to improve. Runs after noise so it only spends leftover
+        # budget. The iter-1-margin gate abandons chains whose first iter is far
+        # worse than the pre-P7 best (most chains contribute no win).
         #
-        # Multi-iter (this version): chain up to MAX_P7_ITERS cong-grad
-        # iterations per DP placement, each starting from the previous
-        # iter's legalized output. Greedy descent: stop the chain when an
-        # iter fails to improve over the previous iter (gradient direction
-        # is no longer productive). Each iter's plc state reflects the
-        # prior iter's scoring, so the gradient is recomputed fresh.
-        #
-        # Phase 6 (2026-05-20) ran similar multi-iter BEFORE the noise loop
-        # and was rejected for displacing noise winners. Phase 7 runs AFTER
-        # noise - purely additive, only consumes leftover budget.
-        # Phase 7 retro-eval 2026-05-25 (90-iter sample, monotonic-clock
-        # --all log): 7 wins / 90 iters = 7.8% hit rate. Big wins on
-        # ibm02 (−0.060 at hi-mov iter 3) and ibm10 (−0.07 across lo-fix
-        # chain). 13 of 17 benchmarks contribute 0 wins. Iter-1-margin
-        # gate (threshold 0.06) abandons chains where iter 1 is far
-        # worse than pre-P7 best; preserves all 7 wins (largest winning
-        # iter-1 margin was 0.0555) while gating ~14 zero-win chains.
-        #
-        # RNG isolation 2026-05-25: snapshot rng_cong before Phase 7 and
-        # restore after. Without this, the variable-length Phase 7 chains
-        # (greedy break, iter-1-margin gate, MAX_P7_ITERS cap) consume
-        # rng_cong by different amounts across benchmarks, causing the
-        # downstream Phase 8/9 perturbations to diverge - initial gate
-        # test showed ibm10 regressed +0.0193 purely from this RNG drift.
-        # The isolation makes Phase 7 a closed compartment w.r.t. rng_cong,
-        # so changes to Phase 7's internal logic (gating, chain length,
-        # adding/removing DPs) no longer affect downstream phases.
+        # RNG isolation: snapshot/restore rng_cong around Phase 7 so its
+        # variable-length chains don't consume rng_cong by benchmark-dependent
+        # amounts and drift the downstream Phase 8/9 perturbations.
         rng_cong_pre_p7 = rng_cong.get_state()
-        P7_ITER1_MARGIN_GATE = 0.06  # tested 2026-05-25, see ISSUES.md A5
+        P7_ITER1_MARGIN_GATE = 0.06
         MAX_P7_ITERS = 3
         for tag, _dp_score_unused, dp_pl_saved in dp_placements:
             current_pos = np.stack(
@@ -2202,32 +2091,15 @@ class MacroPlacer:
             else:
                 _r2_tiny_streak = 0
 
-        # -- N-change (2026-06-02): Post-R2 soft-reloc using leftover budget ---------
-        # Phase 11 (post-R2 cong-grad hard-macro perturb → legalize → exact_proxy)
-        # is replaced with a soft-reloc[cong] + soft-reloc[density] pass that uses
-        # the same leftover budget (~2–3 × t_one_score) that R2's round-break guard
-        # leaves behind.
+        # -- Post-R2 soft-reloc using leftover budget ---------
+        # When R2's round-break guard exits mid-round it leaves ~2-3 x t_one_score
+        # of budget. A soft-reloc[cong] + soft-reloc[density] pass continues
+        # exactly where R2 left off (strictly accept-only, no legalization, no
+        # score wasted on rejections), typically 10-50 more moves. This replaces
+        # the old cong-grad-perturb Phase 11, whose legalization cascade destroyed
+        # R2's soft layout and got every candidate rejected.
         #
-        # Why Phase 11 was ineffective:
-        #   (a) For benchmarks where t_one_score is small, R2 exhausts the entire
-        #       budget inside its round loop and Phase 11 exits immediately (rem ≈ 0).
-        #   (b) For benchmarks where t_one_score is larger (ibm15–18), R2's round-
-        #       break guard fires with ~2–3 × t_one_score remaining. Phase 11 runs
-        #       1–2 score evaluations, all rejected: the legalization cascade from
-        #       cong-grad perturb destroys the R2-optimized soft macro layout, so
-        #       candidates score ~0.25–0.35 worse than R2's best.
-        #
-        # Why post-R2 soft-reloc works:
-        #   After R2 exits mid-round (budget cut during soft-reloc or 2-opt), the
-        #   hard-macro state from the last reloc pass is not yet fully exploited.
-        #   A soft-reloc[cong] + soft-reloc[density] pass using the leftover time
-        #   continues exactly where R2 left off (strictly accept-only, no legalization,
-        #   no score wasted on rejections). Observed in R2 late rounds: 10–50 moves,
-        #   −0.002 to −0.015 improvement per pass.
-        #
-        # plc is guaranteed synced to best_pl at R2 exit: K-change analysis proved
-        # every R2 exit path calls _exact_proxy(best_pl) - either via an accept
-        # verify, a fail-verify resync, or the round-0 scorer init. No resync needed.
+        # plc is guaranteed synced to best_pl at every R2 exit path, so no resync.
         if _n_soft > 0:
             for _post_field, _post_ud in (("cong", False), ("density", True)):
                 rem_post = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)

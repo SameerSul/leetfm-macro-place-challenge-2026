@@ -4,6 +4,8 @@ import time
 
 import numpy as np
 
+from placer.local_search.fields import _congestion_field, _density_field
+
 def _relocation_moves(
     pos: np.ndarray,
     sizes: np.ndarray,
@@ -45,35 +47,18 @@ def _relocation_moves(
     if use_combined:
         # Combined field: each of cong/density normalized to [0,1] by its own
         # max, then geometric-meaned so a cell ranks hot iff both terms are high.
-        try:
-            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
-            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
-        except Exception:
+        cong_field = _congestion_field(plc, nr, nc)
+        dens_field = _density_field(incremental_scorer, nr, nc)
+        if cong_field is None or dens_field is None:
             return pos, 0, initial_score
-        if h_arr.size != nr * nc or v_arr.size != nr * nc:
-            return pos, 0, initial_score
-        cong_field = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
-        go = getattr(incremental_scorer, "grid_occupied", None)
-        if go is None or go.size != nr * nc:
-            return pos, 0, initial_score
-        dens_field = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
         cong_max = max(float(cong_field.max()), 1e-12)
         dens_max = max(float(dens_field.max()), 1e-12)
         cell_cong = np.sqrt((cong_field / cong_max) * (dens_field / dens_max))
-    elif use_density:
-        go = getattr(incremental_scorer, "grid_occupied", None)
-        if go is None or go.size != nr * nc:
-            return pos, 0, initial_score
-        cell_cong = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
     else:
-        try:
-            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
-            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
-        except Exception:
+        cell_cong = (_density_field(incremental_scorer, nr, nc) if use_density
+                     else _congestion_field(plc, nr, nc))
+        if cell_cong is None:
             return pos, 0, initial_score
-        if h_arr.size != nr * nc or v_arr.size != nr * nc:
-            return pos, 0, initial_score
-        cell_cong = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
     cell_w, cell_h = cw / nc, ch / nr
 
     # Per-macro local congestion → pick the hottest movable macros to relocate.
@@ -195,21 +180,10 @@ def _soft_relocation_moves(
     if num_soft == 0:
         return soft_pos, 0, initial_score
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    if use_density:
-        # Density field = occupancy grid maintained by the scorer (same nr×nc grid).
-        go = getattr(incremental_scorer, "grid_occupied", None)
-        if go is None or go.size != nr * nc:
-            return soft_pos, 0, initial_score
-        cell_field = (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
-    else:
-        try:
-            h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
-            v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)
-        except Exception:
-            return soft_pos, 0, initial_score
-        if h_arr.size != nr * nc or v_arr.size != nr * nc:
-            return soft_pos, 0, initial_score
-        cell_field = np.maximum(h_arr.reshape(nr, nc), v_arr.reshape(nr, nc))
+    cell_field = (_density_field(incremental_scorer, nr, nc) if use_density
+                  else _congestion_field(plc, nr, nc))
+    if cell_field is None:
+        return soft_pos, 0, initial_score
     cell_w, cell_h = cw / nc, ch / nr
 
     ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
