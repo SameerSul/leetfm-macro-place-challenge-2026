@@ -11,7 +11,7 @@ take a hard timeout cleanly. Cost: ~5-10s of Python startup per call.
 For each benchmark we materialise a scratch dir under `/tmp/dreamplace_v1/`
 holding the 5 Bookshelf files + JSON config + DREAMPlace's results dir.
 The dir is reused across calls (positions are deterministic given a fixed
-random_seed), so a second call is fast — actually no, we still re-run
+random_seed), so a second call is fast - actually no, we still re-run
 DREAMPlace every call. Caching to a `.npy` would be a future optimization.
 """
 
@@ -40,7 +40,7 @@ from macro_place._plc import PlacementCost  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Disk cache — DREAMPlace output is deterministic given fingerprint inputs.
+# Disk cache - DREAMPlace output is deterministic given fingerprint inputs.
 # ---------------------------------------------------------------------------
 # The (hard_pos, soft_pos) result depends only on: input netlist + initial
 # placement + config (iterations, seed, num_threads, soft_macros_movable,
@@ -105,7 +105,7 @@ def _write_cache(work_dir: Path, key: str, hard: np.ndarray, soft: np.ndarray) -
         # Cache write is best-effort; never fail the placer because of it.
         pass
 
-# Sibling-module imports — work whether this package is loaded as
+# Sibling-module imports - work whether this package is loaded as
 # `dreamplace_bridge.run_bridge` (placer-side, after sys.path injection)
 # or as `submissions.varrahan.v1.dreamplace_bridge.run_bridge` (CLI from repo root).
 try:
@@ -192,12 +192,12 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
         # computes a RUDY/RISA routing-congestion map mid-placement (once
         # overflow drops below node_area_adjust_overflow) and inflates node
         # areas in congested regions, so the density penalty spreads cells out
-        # of routing hotspots. This bakes congestion INTO the global objective —
+        # of routing hotspots. This bakes congestion INTO the global objective -
         # the DP_DIAG diagnostic showed our DP candidates lose to best purely on
         # congestion, and post-hoc repair can't fix it (trades away DP's wl/den
         # edge). route_num_bins is coarser than DREAMPlace's 512 default to
         # roughly match the ICCAD04 routing grids (~35-55 cols). Unit capacities
-        # are left at DREAMPlace defaults for the first cut — to be calibrated
+        # are left at DREAMPlace defaults for the first cut - to be calibrated
         # against the ICCAD04 routes-per-micron if the proxy-cong signal is weak.
         cfg.update({
             "routability_opt_flag": 1,
@@ -505,7 +505,7 @@ class AsyncDreamplaceHandle:
 
         Returns (hard_pos [num_hard, 2], soft_pos [num_soft, 2]) on success,
         None on timeout/failure. The soft positions are meaningful only if
-        the bridge was launched with `soft_macros_movable=True` — otherwise
+        the bridge was launched with `soft_macros_movable=True` - otherwise
         DREAMPlace treated softs as fixed and the back-converter falls back
         to `node.get_pos()` which equals their initial.plc positions.
         """
@@ -684,7 +684,7 @@ def launch_dreamplace_async(
 
     log_handle = (work_dir / "dreamplace.log").open("w")
     # start_new_session=True puts DP in its own process group so a kill can
-    # tear down any child threads DP might spawn (defensive — DREAMPlace
+    # tear down any child threads DP might spawn (defensive - DREAMPlace
     # doesn't typically spawn children, but cleanup safety matters when we
     # may kill it from a watchdog thread).
     popen = subprocess.Popen(

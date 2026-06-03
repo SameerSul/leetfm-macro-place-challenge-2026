@@ -31,7 +31,7 @@ def perturb_movable_positions(plc, rng, scale_frac=0.05):
     fixed_indices = set()
     for i in plc.hard_macro_indices:
         m = plc.modules_w_pins[i]
-        # Heuristic: ports & macros marked placed=False or absent — treat all hard macros as movable here
+        # Heuristic: ports & macros marked placed=False or absent - treat all hard macros as movable here
         pass
     for i in plc.hard_macro_indices + plc.soft_macro_indices:
         m = plc.modules_w_pins[i]

@@ -28,7 +28,7 @@ placement = torch.tensor(
     benchmark.macro_positions.detach().cpu().numpy(), dtype=torch.float32
 )
 
-# Warm up — install all patches + build caches
+# Warm up - install all patches + build caches
 v2._exact_proxy(placement, benchmark, plc)
 
 # Run a few iters with small jitter to force recompute

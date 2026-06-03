@@ -47,21 +47,17 @@ def _will_legalize(
     deadline: float | None = None,
     order: list | None = None,
 ) -> np.ndarray:
-    """
-    Min-displacement legalization with configurable macro placement order.
-    Macros are placed one by one at the nearest overlap-free position to their
-    target, found by expanding spiral search. Non-movable macros are fixed first.
+    """Min-displacement legalization with configurable placement order.
 
-    order: list of macro indices defining placement sequence. Default (None)
-    uses largest-area-first. Different orders explore different legal arrangements.
-    deadline: optional wall-clock time.monotonic() value; remaining macros keep pos[].
+    Places macros one by one at the nearest overlap-free position to their
+    target via expanding spiral search; non-movable macros are fixed first.
+    Per ring, all K candidates are tested against placed macros in one [K, P]
+    conflict matrix. With _ring_offsets' lex order + np.argmin first-occurrence,
+    the output is bit-equivalent to the original nested-loop version.
 
-    Spiral search is vectorized: per ring we build all K candidate positions at
-    once and run a single [K, P] conflict matrix against the P already-placed
-    macros (instead of K serial scalar comparisons inside Python loops). The
-    lex-order ring traversal in _ring_offsets combined with np.argmin's
-    first-occurrence semantics preserves the original tie-breaking, so the
-    output is bit-equivalent to the prior nested-loop version.
+    order: placement sequence (None = largest-area-first); different orders
+    explore different legal arrangements.
+    deadline: optional time.monotonic() cutoff; remaining macros keep pos[].
     """
     sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2  # [n, n]
     sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
@@ -123,18 +119,12 @@ def _will_legalize(
                 valid = np.ones(len(cand_x), dtype=bool)
             if not valid.any():
                 continue
-            # argmin returns first occurrence → matches original "first improvement wins".
-            # CRITICAL: d² must be computed in pos.dtype precision to match the original
-            # scalar code's `(cx - pos[idx, 0])` behavior. In the scalar, `cx` is a Python
-            # float (weak scalar) and `pos[idx, 0]` is a numpy scalar of dtype pos.dtype;
-            # numpy demotes the Python float to pos.dtype, so the subtraction (and d²)
-            # happens at pos.dtype precision. When pos is float32 (the iter≥2 cong-grad
-            # pipeline round-trips through best_pl as float32), this float32 precision
-            # breaks ties between symmetric candidates: e.g. (cx-pos_x)² vs (cy-pos_y)²
-            # round differently at small step. Without this match, argmin picks the
-            # lex-first candidate among true ties; the original scalar picks whichever
-            # has the (artifactually) smaller float32 d². Matching the artifact is
-            # required for bit-equivalence with sameer_v1.
+            # argmin returns first occurrence → matches "first improvement wins".
+            # CRITICAL: compute d² in pos.dtype, not float64. The original scalar
+            # subtracts a Python float from a pos.dtype numpy scalar, so d² lands at
+            # pos.dtype precision. When pos is float32, that precision decides ties
+            # between symmetric candidates differently than float64 would -
+            # matching it is required for bit-equivalence with sameer_v1.
             diff_x = cand_x.astype(pos.dtype, copy=False) - pos[idx, 0]
             diff_y = cand_y.astype(pos.dtype, copy=False) - pos[idx, 1]
             d2 = diff_x * diff_x + diff_y * diff_y

@@ -60,7 +60,7 @@ def _vectorized_get_grid_cells_density(plc) -> "list[float]":
         plc.grid_cells = [0.0] * n_cells
         return plc.grid_cells
 
-    # B3 (2026-05-23): use global pos cache instead of per-macro get_pos loop.
+    # Use the global pos cache instead of a per-macro get_pos loop.
     macro_indices = cache["macro_indices"]
     pos_cache = _ensure_pos_cache(plc)
     macro_indices_arr = (
@@ -95,12 +95,8 @@ def _vectorized_get_grid_cells_density(plc) -> "list[float]":
     ur_col = np.clip(ur_col, 0, grid_col - 1)
     ur_row = np.clip(ur_row, 0, grid_row - 1)
 
-    # Fully-batched scatter via np.bincount (weights). Mirrors the structure
-    # of _apply_macro_routing's vectorized rectangle expansion:
-    #   1. Filter to in-bounds macros.
-    #   2. Per-cell (macro_idx, row_offset, col_offset) via flat enumeration.
-    #   3. Compute per-cell overlap area = ox * oy.
-    #   4. bincount over flat cell indices.
+    # Fully-batched scatter via np.bincount: filter to in-bounds macros, expand
+    # each to its (row, col) cells, compute per-cell overlap area, bincount.
     if not in_bounds.any():
         grid_area = grid_w * grid_h
         plc.grid_occupied = grid_occupied.tolist()
@@ -171,26 +167,3 @@ def _patch_plc_density(plc, benchmark: Benchmark) -> None:
     _build_density_cache(plc, benchmark)
     plc.get_grid_cells_density = lambda _plc=plc: _vectorized_get_grid_cells_density(_plc)
     plc._density_vec_installed = True
-
-
-# ---------------------------------------------------------------------------
-# Vectorized congestion (get_routing)
-# ---------------------------------------------------------------------------
-# On ibm10 the scalar plc.get_routing takes ~24.6s per call — dominant cost
-# of every scoring call. The native Python loop processes ~50000 nets serially
-# with per-net Python overhead (4+ method calls per pin, set-build, branchy
-# L/T routing). This vectorized replacement:
-#   1. Reuses the per-pin cache built for wirelength (ref_idx + offset
-#      arrays) to compute all pin grid cells in one numpy gather.
-#   2. Buckets nets by unique-gcell count (1/2/3/many). 2-pin nets — the
-#      majority — get batched into flat (source_row/col, sink_row/col,
-#      weight) arrays and applied via the difference-array prefix-sum trick
-#      (O(strips + grid) rather than O(strip_length × strips)). 3-pin nets
-#      are rare; they get a small Python loop matching __three_pin_net_routing
-#      exactly. ≥4-gcell nets fan out into source→sink 2-pin edges.
-#   3. Hard-macro routing: vectorized per-cell overlap × vrouting/hrouting
-#      alloc, then partial-overlap correction.
-#   4. Smoothing: 1-D box-blur via cumsum.
-# Goal: 24.6s → <5s on ibm10; matches scalar output exactly (integer grid-
-# cell indices + sum-of-weights — no FP order sensitivity).
-# ---------------------------------------------------------------------------

@@ -7,15 +7,11 @@ from placer.routing.apply import _build_cong_cache, _vectorized_get_routing
 from placer.scoring.wirelength import _build_wl_cache
 
 def _vectorized_get_congestion_cost(plc) -> float:
-    """Numpy-fast replacement for `PlacementCost.get_congestion_cost` (B3 phase 3).
+    """Numpy-fast replacement for `PlacementCost.get_congestion_cost`.
 
-    The reference does
-        sorted(V_routing_cong + H_routing_cong, reverse=True)
-        return sum(top 5%) / cnt
-    on Python lists. With ~4500 elements that's ~3ms.
-
-    Numpy via `np.partition`: get the top-cnt elements (unordered) at O(n),
-    then mean. Same result (sum-of-top-cnt is order-independent), ~0.3ms.
+    The reference sorts V+H routing congestion and returns mean(top 5%). We
+    get the top-cnt elements via np.partition (unordered, but the mean is
+    order-independent) - same result at O(n) instead of an O(n log n) sort.
     """
     if plc.FLAG_UPDATE_CONGESTION:
         plc.get_routing()  # patched to _vectorized_get_routing
@@ -44,7 +40,6 @@ def _patch_plc_congestion(plc, benchmark: Benchmark) -> None:
     _build_wl_cache(plc)
     _build_cong_cache(plc, benchmark)
     plc.get_routing = lambda _plc=plc: _vectorized_get_routing(_plc)
-    # B3 phase 3 (2026-05-23): replace get_congestion_cost with numpy-fast version.
     plc.get_congestion_cost = lambda _plc=plc: _vectorized_get_congestion_cost(_plc)
     plc._cong_vec_installed = True
 
@@ -53,9 +48,7 @@ def _ensure_congestion_arrays(plc) -> None:
     """Mirror objective._ensure_congestion_arrays without re-importing."""
     expected_size = plc.grid_col * plc.grid_row
     if len(plc.H_routing_cong) != expected_size:
-        # B3 phase 3 (2026-05-23): use numpy arrays to match the new
-        # `_vectorized_get_routing` output type. Saves the .tolist()
-        # conversion on every score call.
+        # numpy arrays (not lists) to match _vectorized_get_routing's output.
         plc.V_routing_cong = np.zeros(expected_size, dtype=np.float64)
         plc.H_routing_cong = np.zeros(expected_size, dtype=np.float64)
         plc.V_macro_routing_cong = np.zeros(expected_size, dtype=np.float64)

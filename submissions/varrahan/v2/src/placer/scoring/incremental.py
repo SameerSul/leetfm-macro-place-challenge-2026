@@ -17,7 +17,7 @@ from placer.scoring.wirelength import _build_wl_cache
 class IncrementalScorer:
     """Per-swap incremental proxy scorer used inside `_two_opt_proxy_swap`.
 
-    Phase 2 (this) does incremental wirelength only — `density` and
+    Phase 2 (this) does incremental wirelength only - `density` and
     `congestion` still come from `plc.get_density_cost` /
     `plc.get_congestion_cost` (full recompute via the dirty-flag path).
     Phase 3 will tackle congestion incremental.
@@ -56,7 +56,7 @@ class IncrementalScorer:
         # O5 fix (2026-05-25): force a FULL set, never trust the idempotency
         # cache here. `_apply_pos` (used by score_swap/commit_swap) keeps
         # `_global_pos_cache` in sync but NOT `_last_pos_cache`, so after a
-        # prior 2-opt mutated plc, `_last_pos_cache` is stale — and
+        # prior 2-opt mutated plc, `_last_pos_cache` is stale - and
         # `_fast_set_placement` would skip macros whose stale cache value
         # coincidentally matches, leaving plc in a mixed state and computing the
         # WL baseline against the wrong positions (the seed-dependent "drift"
@@ -148,7 +148,7 @@ class IncrementalScorer:
         # move). The box filter is SEPARABLE (H along columns, V along rows,
         # each cell independent of the other axis), so we cache the smoothed
         # NORMALIZED H/V (2D, grid_row×grid_col) and, per move, recompute only
-        # the columns/rows inside the touched-net bbox FROM the raw flats — each
+        # the columns/rows inside the touched-net bbox FROM the raw flats - each
         # recomputed value is identical to a full re-smooth (no delta
         # accumulation → no drift, preserving the bit-exact non-regression
         # guarantee). The window (lp/up/cnt) is fixed by the grid, so precompute.
@@ -191,7 +191,7 @@ class IncrementalScorer:
         # ---- P3 (2026-05-26): incremental density state. ----
         # Density was the last full-recompute in score_swap (~28-36% of its time
         # per _profile_density.py): it scatters ALL soft+hard macros into the
-        # occupancy grid every call. But a 2-opt swap moves only macros i, j —
+        # occupancy grid every call. But a 2-opt swap moves only macros i, j -
         # all soft + other-hard occupancy is invariant. So maintain `grid_occupied`
         # as state; per swap subtract i,j's old footprints and add their new ones
         # (a handful of cells each), then take the top-10% over the full grid.
@@ -274,19 +274,19 @@ class IncrementalScorer:
             return 0.5 * float(nz.mean() / self.dens_grid_area)
         k = min(cnt, nz.size)
         # np.partition is ~50 µs for these array sizes (<2K elements). GPU topk
-        # dispatch (>1 ms on DirectML) is 20x slower here — always use CPU.
+        # dispatch (>1 ms on DirectML) is 20x slower here - always use CPU.
         top = np.partition(nz, nz.size - k)[nz.size - k:]
         return 0.5 * float(top.sum()) / self.dens_grid_area / cnt
 
     def _compute_cong_cost(self) -> float:
         """B3 phase 4 + incremental cost (2026-05-29): congestion cost from the
         cached smoothed normalized routing (`H_smoothed`/`V_smoothed`) plus the
-        live macro flats. The cache must be current for the touched region —
+        live macro flats. The cache must be current for the touched region -
         callers re-smooth the touched bbox (see `_resmooth_bbox`) before this.
         Mirrors the final transform in `_vectorized_get_congestion_cost`.
 
         Always runs on CPU: np.partition on <5K float64 elements is ~50 µs,
-        while GPU topk dispatch overhead is >1 ms on DirectML — 20x slower.
+        while GPU topk dispatch overhead is >1 ms on DirectML - 20x slower.
         """
         Hm = self.H_macro_flat / self.grid_h_routes
         Vm = self.V_macro_flat / self.grid_v_routes
@@ -311,7 +311,7 @@ class IncrementalScorer:
     def _resmooth_h_cols(self, c_lo: int, c_hi: int) -> None:
         """Recompute `H_smoothed[:, c_lo:c_hi+1]` from raw `H_flat` (axis_h=True:
         per-column box filter). Bit-identical to a full `_smooth_routing_cong_vec`
-        of those columns — H smoothing mixes only rows within a column, so each
+        of those columns - H smoothing mixes only rows within a column, so each
         column is independent and a full re-smooth of just these columns matches.
 
         Uses pure cumsum instead of np.add.at: avoids the O(grid_row) Python
@@ -332,7 +332,7 @@ class IncrementalScorer:
 
     def _resmooth_v_rows(self, r_lo: int, r_hi: int) -> None:
         """Recompute `V_smoothed[r_lo:r_hi+1, :]` from raw `V_flat` (axis_h=False:
-        per-row box filter). Bit-identical to a full re-smooth of those rows — V
+        per-row box filter). Bit-identical to a full re-smooth of those rows - V
         smoothing mixes only columns within a row, so each row is independent.
 
         Uses pure cumsum instead of 2D np.add.at: fully vectorized, no Python loop.
@@ -448,7 +448,7 @@ class IncrementalScorer:
         return np.union1d(a, b)
 
     def _touched_nets3(self, m1: int, m2: int, m3: int) -> np.ndarray:
-        """Union of nets touched by 3 modules — for HS3 hard-soft-soft cycle."""
+        """Union of nets touched by 3 modules - for HS3 hard-soft-soft cycle."""
         a = self.macro_to_nets.get(m1)
         b = self.macro_to_nets.get(m2)
         c = self.macro_to_nets.get(m3)
@@ -752,7 +752,7 @@ class IncrementalScorer:
     def score_move(self, i_hard: int, new_xy) -> float:
         """Trial: proxy as if hard macro i_hard RELOCATED to new_xy, then revert.
 
-        Single-macro analogue of score_swap (relocation, not exchange) — used by
+        Single-macro analogue of score_swap (relocation, not exchange) - used by
         the congestion-directed relocation pass. Only macro i's contributions
         change: WL over i's touched nets, congestion over those nets + i's macro
         routing slot, density over i's footprint cells.
@@ -874,7 +874,7 @@ class IncrementalScorer:
     def score_move_soft(self, soft_k: int, new_xy) -> float:
         """Trial: proxy as if SOFT macro `soft_k` (0..num_soft-1) relocated to
         new_xy, then revert. Softs contribute to WL + net-routing congestion +
-        density, but NOT macro-routing blockage (only hard macros block) — so
+        density, but NOT macro-routing blockage (only hard macros block) - so
         there is no macro_subset term. No legality constraint (softs may overlap).
         """
         s_module = self.soft_indices[soft_k]
@@ -978,7 +978,7 @@ class IncrementalScorer:
     #   else:
     #     revert_prep(prep)                ── re-add old (restore committed state)
     # Per-macro routing-apply calls: 1 + 2·n_targets (current) vs 2·n_targets
-    # (current score_move) — wait, score_move's per-trial cost is 2 applies
+    # (current score_move) - wait, score_move's per-trial cost is 2 applies
     # (subtract-old + add-new). prep+trial saves 1 of those × (n_targets−1).
     # Bit-exact with score_move/commit_move (same float ops, different order).
     # ------------------------------------------------------------------
@@ -1115,7 +1115,7 @@ class IncrementalScorer:
     def _revert_prep(self, prep: dict) -> None:
         """S1 revert (no candidate won). Re-applies i's old contributions at
         the OLD position to restore the committed state. Bit-exact inverse of
-        prep — the +1 routing apply at OLD pin gcells exactly undoes prep's −1,
+        prep - the +1 routing apply at OLD pin gcells exactly undoes prep's −1,
         and the density add-back exactly undoes the np.subtract.at."""
         struct = prep["struct"]
         macro_subset = prep["macro_subset"]
@@ -1135,7 +1135,7 @@ class IncrementalScorer:
 
     def _prepare_move_soft(self, soft_k: int) -> dict:
         """S1 prep for SOFT relocation. Same as _prepare_move but without
-        macro blockage (softs don't block routing) — only net routing +
+        macro blockage (softs don't block routing) - only net routing +
         density + smoothed cache need 'k removed' updates."""
         s_module = self.soft_indices[soft_k]
         old_x = float(self.committed_soft_pos[soft_k, 0])
@@ -1252,7 +1252,7 @@ class IncrementalScorer:
     # ------------------------------------------------------------------
     # A1 (2026-05-29): soft-soft 2-opt swap. Pair-swap two softs' positions.
     # Single soft relocation can't find moves where two softs need to
-    # EXCHANGE places — this pass adds that move type. Softs don't block
+    # EXCHANGE places - this pass adds that move type. Softs don't block
     # routing, so no macro_subset / macro-blockage handling (vs score_swap).
     # Softs may overlap, so no legality check on the swapped destinations.
     # Bit-exact analogue of score_swap; same accept-on-true-proxy guarantee.
@@ -1264,7 +1264,7 @@ class IncrementalScorer:
         Speedup #30 (2026-05-30): used as a prefilter before the much more
         expensive `score_swap_soft`. Computes the per-net HPWL change for
         the touched nets WITHOUT touching routing or density state.
-        Bypasses `_apply_pos` (which dirties plc flags) — instead transiently
+        Bypasses `_apply_pos` (which dirties plc flags) - instead transiently
         overwrites `_global_pos_cache` rows for k1, k2 then restores them.
         Returns the NORMALIZED WL delta (matches proxy's WL term scale).
         """

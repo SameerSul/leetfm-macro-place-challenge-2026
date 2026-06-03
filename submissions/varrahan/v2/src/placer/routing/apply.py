@@ -44,7 +44,7 @@ def _build_cong_cache(plc, benchmark: Benchmark):
     # on net topology (not positions). Each call to `_vectorized_get_routing`
     # previously rebuilt these via np.where / np.repeat / np.cumsum / etc.
     # Caching saves ~1-3ms per call on ibm10 (profile: dispatch_len_big was
-    # 3.49ms / 28% of cost — most of it was these rebuilds).
+    # 3.49ms / 28% of cost - most of it was these rebuilds).
     idx2_cache = np.where(lengths == 2)[0]
     s2_cache = starts[idx2_cache] if idx2_cache.size else np.zeros(0, dtype=np.int64)
     s2p1_cache = s2_cache + 1
@@ -168,7 +168,7 @@ def _apply_h_strips_batch(H_flat: np.ndarray, row: np.ndarray,
     if row.size == 0:
         return
     if HAS_NUMBA:
-        # Numba dispatch — ensures contiguous int64 / float64 arrays.
+        # Numba dispatch - ensures contiguous int64 / float64 arrays.
         _apply_h_strips_batch_jit(
             H_flat,
             np.ascontiguousarray(row, dtype=np.int64),
@@ -250,7 +250,7 @@ if HAS_NUMBA:
         Bit-equivalent to `_apply_3pin_routing_vec_numpy` (the original
         numpy gather/scatter version). For each net:
           1. Convert 3 flat gcells to (row, col) pairs.
-          2. Sort by (col asc, row asc) — manual 3-element insertion sort.
+          2. Sort by (col asc, row asc) - manual 3-element insertion sort.
           3. Classify into the 4 cases (3 with the col-sorted order,
              T-routing/case 4 needs a row-sorted re-sort).
           4. Apply H/V strip adds directly into the flat arrays.
@@ -260,7 +260,7 @@ if HAS_NUMBA:
         meaningful overhead beyond the actual arithmetic; collapsing it
         into a single per-net loop turns it into a small, tight JIT'd
         kernel with no temporary allocations. Float accumulation order
-        matches a left-to-right per-cell scalar accumulation — within
+        matches a left-to-right per-cell scalar accumulation - within
         the move verifier tolerance (≤4.4e-16) by design.
         """
         n = g0_flat.shape[0]
@@ -271,7 +271,7 @@ if HAS_NUMBA:
             yc = g2_flat[k] // grid_col; xc = g2_flat[k] % grid_col
             w = weights[k]
 
-            # Sort 3 (x, y) pairs by (x asc, y asc). Manual 3-pass swap —
+            # Sort 3 (x, y) pairs by (x asc, y asc). Manual 3-pass swap -
             # equivalent to a 3-element insertion / bubble sort.
             x1 = xa; y1 = ya
             x2 = xb; y2 = yb
@@ -286,7 +286,7 @@ if HAS_NUMBA:
                 tx = x1; x1 = x2; x2 = tx
                 ty = y1; y1 = y2; y2 = ty
 
-            # Case 1: L-routing — x1<x2<x3 AND y2 strictly between y1 and y3.
+            # Case 1: L-routing - x1<x2<x3 AND y2 strictly between y1 and y3.
             if x1 < x2 and x2 < x3:
                 ymn13 = y1 if y1 < y3 else y3
                 ymx13 = y1 if y1 > y3 else y3
@@ -338,7 +338,7 @@ if HAS_NUMBA:
                     V_flat[r * grid_col + x2] += w
                 continue
 
-            # Case 4: T-routing — re-sort by (row asc, col asc).
+            # Case 4: T-routing - re-sort by (row asc, col asc).
             # Restart from the ORIGINAL (xa, ya), (xb, yb), (xc, yc).
             x1t = xa; y1t = ya
             x2t = xb; y2t = yb
@@ -398,7 +398,7 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
                                     g0_flat: np.ndarray, g1_flat: np.ndarray,
                                     g2_flat: np.ndarray, weights: np.ndarray,
                                     grid_row: int, grid_col: int) -> None:
-    """Vectorized __three_pin_net_routing — bit-equivalent to the scalar
+    """Vectorized __three_pin_net_routing - bit-equivalent to the scalar
     reference (_apply_3pin_routing). Numpy gather/scatter fallback kept for
     when numba isn't installed.
 
@@ -421,7 +421,7 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
     y1 = y[:, 0]; y2 = y[:, 1]; y3 = y[:, 2]
     x1 = x[:, 0]; x2 = x[:, 1]; x3 = x[:, 2]
 
-    # Case 1: L-routing — x1<x2<x3 AND y2 strictly between y1 and y3
+    # Case 1: L-routing - x1<x2<x3 AND y2 strictly between y1 and y3
     case1 = (x1 < x2) & (x2 < x3) & (np.minimum(y1, y3) < y2) & (np.maximum(y1, y3) > y2)
     # Case 2: x2==x3, x1<x2, y1 < min(y2,y3), NOT case1
     case2 = (~case1) & (x2 == x3) & (x1 < x2) & (y1 < np.minimum(y2, y3))
@@ -464,7 +464,7 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
     if case4.any():
         m = case4
         wm = w[m]
-        # Re-sort by (row asc, col asc) — matches scalar's `sorted(temp)` which
+        # Re-sort by (row asc, col asc) - matches scalar's `sorted(temp)` which
         # sorts tuples lexicographically by (row, col).
         y_t = y_all[m]; x_t = x_all[m]
         key_t = y_t * BIG + x_t
@@ -557,14 +557,14 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
     edges, divided by the window size). axis_h=True smooths along columns
     (V-routing-style); axis_h=False smooths along rows (H-routing-style).
 
-    Implemented via difference-array prefix-sum trick — O(grid + events)
+    Implemented via difference-array prefix-sum trick - O(grid + events)
     rather than O(grid × window).
 
     NOTE on the reference's quirk: __smooth_routing_cong smooths V along
     COLUMNS (the V loop iterates `for ptr in range(lp, rp+1)` with lp/rp
     clamped to grid_col), and smooths H along ROWS (H loop iterates rows
     via `for ptr in range(lp, up+1)`). The naming is swapped vs intuition
-    — V_routing gets a column-axis smooth, H_routing gets a row-axis smooth.
+    - V_routing gets a column-axis smooth, H_routing gets a row-axis smooth.
     `axis_h=False` means smooth along the column axis (V-style behavior);
     `axis_h=True` means smooth along the row axis (H-style).
 
@@ -739,7 +739,7 @@ def _apply_macro_routing(V_macro_flat: np.ndarray, H_macro_flat: np.ndarray,
     # top/bottom rows is a partial overlap (y_dist != grid_h), subtract the
     # per-column x_dist from V at the top (ur_row) row. Symmetric for H/cols.
     #
-    # With grid alignment, only bl_row and ur_row can be partial — middle
+    # With grid alignment, only bl_row and ur_row can be partial - middle
     # rows always have y_dist == grid_h. The trigger reduces to:
     #   ur_row != bl_row AND (y_min != grid_h*bl_row OR y_max != grid_h*(ur_row+1)).
     tol = 1e-5
@@ -774,7 +774,7 @@ def _apply_macro_routing(V_macro_flat: np.ndarray, H_macro_flat: np.ndarray,
 
 def _build_net_routing_struct(plc, net_indices: np.ndarray):
     """Idea 2 (2026-05-29): the position-INDEPENDENT structure of the subset
-    routing apply — which flat pins the touched nets span, their macro refs,
+    routing apply - which flat pins the touched nets span, their macro refs,
     net-length classification (2/3/≥4-pin), and the ≥4-pin sink index layout.
 
     Depends only on the netlist topology + `net_indices`, NOT on placement, so it
@@ -847,7 +847,7 @@ def _apply_net_routing_struct(plc, struct, weight_mult: float,
     """Idea 2: position-DEPENDENT routing apply using a prebuilt topology struct.
     Computes pin_gcell from current positions, dispatches the 2/3/≥4-pin fills
     with a signed weight, and returns the touched-pin bbox (or None). The math is
-    identical to `_apply_net_routing_subset`'s second half — only the
+    identical to `_apply_net_routing_subset`'s second half - only the
     position-independent bookkeeping has been hoisted into the struct.
     """
     if struct is None:
@@ -1219,7 +1219,7 @@ def _vectorized_get_routing(plc) -> None:
 
     Replaces the inner ~25-second Python loop on ibm10 with a vectorized
     numpy pipeline. Sets plc.V_routing_cong / H_routing_cong as Python lists
-    (matching the reference's API — `get_horizontal/vertical_routing_congestion`
+    (matching the reference's API - `get_horizontal/vertical_routing_congestion`
     return them directly).
     """
     cache = plc._cong_cache
@@ -1326,7 +1326,7 @@ def _vectorized_get_routing(plc) -> None:
                 bucket_2_src_flat.append(src_2)
                 bucket_2_snk_flat.append(sink_2)
                 bucket_2_w_arrs.append(net_weights[idx3][mask2])
-            # 3-uniq case: pass to vectorized 3-pin handler — directly append
+            # 3-uniq case: pass to vectorized 3-pin handler - directly append
             # the per-axis flat gcell arrays (no per-net Python loop).
             if uniq3.any():
                 idx3_uniq3 = idx3[uniq3]

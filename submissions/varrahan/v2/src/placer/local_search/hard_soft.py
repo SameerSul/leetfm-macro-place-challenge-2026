@@ -26,7 +26,7 @@ def _two_opt_hard_soft_swap(
 ) -> "tuple[np.ndarray, np.ndarray, int, float]":
     """HXS (2026-05-30): hard ⇄ soft cross-swap. Exchanges one hard macro's
     position with one soft macro's position. The hard-2opt swaps only hards,
-    and the soft-2opt swaps only softs — neither can find a hard/soft pair
+    and the soft-2opt swaps only softs - neither can find a hard/soft pair
     whose configurations would be improved by trading places (e.g., a routing-
     heavy hard sitting in a quiet area + a high-density soft in a congested
     corridor).
@@ -37,7 +37,7 @@ def _two_opt_hard_soft_swap(
 
     Legality: the hard's new position (the soft's old position) must satisfy
     in-bounds + no overlap with OTHER hard macros (overlap with the hard's own
-    old footprint is fine — that's where it came from). The soft going to the
+    old footprint is fine - that's where it came from). The soft going to the
     hard's old slot has no legality check (softs may overlap). Accept-on-true-
     proxy via score_swap_hard_soft / commit_swap_hard_soft.
 
@@ -180,7 +180,7 @@ def _three_opt_hard_soft_soft(
     them.
 
     Cost: O(top_hot × k_inner²) trials. With top_hot=15, k_inner=5 →
-    ~375 trials × ~10ms = ~3.8s/pass — gated by a tight deadline."""
+    ~375 trials × ~10ms = ~3.8s/pass - gated by a tight deadline."""
     num_soft = incremental_scorer.num_soft
     if num_soft < 2:
         return hard_pos, soft_pos, 0, initial_score
@@ -236,7 +236,7 @@ def _three_opt_hard_soft_soft(
         if deadline is not None and time.monotonic() > deadline:
             break
 
-        # kNN softs around hard i — candidates for S1.
+        # kNN softs around hard i - candidates for S1.
         d2_h = ((movable_soft_pos[:, 0] - hard_pos[i, 0]) ** 2 +
                 (movable_soft_pos[:, 1] - hard_pos[i, 1]) ** 2)
         s1_order = np.argsort(d2_h)[:k_inner]
@@ -262,7 +262,7 @@ def _three_opt_hard_soft_soft(
             if ((np.abs(hx - ox) < sxi + EPS) & (np.abs(hy - oy) < syi + EPS)).any():
                 continue
 
-            # kNN softs around k1 — candidates for S2.
+            # kNN softs around k1 - candidates for S2.
             d2_k1 = ((movable_soft_pos[:, 0] - soft_pos[k1, 0]) ** 2 +
                      (movable_soft_pos[:, 1] - soft_pos[k1, 1]) ** 2)
             # +1 in case k1 is in its own neighbor list.

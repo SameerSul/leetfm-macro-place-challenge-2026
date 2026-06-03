@@ -1,7 +1,7 @@
 """cProfile the internals of score_move_soft to attribute the ~78% of per-move
 time that P5 (_profile_move.py) left unbroken-down (cong=20%, density=0.7%).
 Tells us whether the snapshot copies, the touched-net routing apply
-(_apply_net_routing_subset), _apply_pos, or the per-net HPWL dominate — i.e.
+(_apply_net_routing_subset), _apply_pos, or the per-net HPWL dominate - i.e.
 what a per-move speedup should target.
 
     uv run python submissions/varrahan/v2/test/diagnostic/_profile_move_internals.py ibm10

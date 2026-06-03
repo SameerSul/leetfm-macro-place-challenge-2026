@@ -1,5 +1,5 @@
 """
-Differentiable Macro Placer — Submission
+Differentiable Macro Placer - Submission
 
 Algorithm overview:
 1. Connectivity-aware circular initialization (macros sorted by net degree)
@@ -61,7 +61,7 @@ def _lse_hpwl(
     positions: torch.Tensor, net_data: Dict, gamma: float = 0.01
 ) -> torch.Tensor:
     """
-    Log-sum-exp HPWL approximation — differentiable surrogate for HPWL.
+    Log-sum-exp HPWL approximation - differentiable surrogate for HPWL.
 
     LSE-max(x, γ) = γ · log(Σ exp(xᵢ/γ))   (numerically stable via logsumexp)
     LSE-min(x, γ) = -γ · log(Σ exp(-xᵢ/γ))
@@ -433,7 +433,7 @@ class DifferentialMacroPlacerV1:
             # Compute overlap contribution before move
             old_contrib = _overlap_contribution(idx, px, py, hw, hh, num_hard)
 
-            # Propose move — scale decreases with temperature
+            # Propose move - scale decreases with temperature
             scale = max(hw[idx], hh[idx]) * (1.0 + 3.0 * T)
             new_x = old_x + random.gauss(0.0, scale)
             new_y = old_y + random.gauss(0.0, scale)
