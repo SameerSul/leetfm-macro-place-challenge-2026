@@ -11,6 +11,23 @@ from placer.plc.loader import _load_plc
 from placer.scoring.exact import _exact_proxy
 from placer.scoring.incremental import IncrementalScorer
 
+
+def _force_worker_cpu() -> None:
+    """Disable every GPU-gated code path in this (forked) process.
+
+    `_USE_GPU` is read as a module global in each module that imported it from
+    placer.config, so flipping config alone wouldn't help — patch each holder.
+    Safe to call repeatedly; a no-op when the build is already CPU-only.
+    """
+    import placer.config as _cfg
+    import placer.routing.apply as _apply
+    import placer.local_search.two_opt as _two_opt
+
+    _cfg._USE_GPU = False
+    _apply._USE_GPU = False
+    _two_opt._USE_GPU = False
+
+
 def _multiseed_2opt_worker(
     name: str,
     iccad_path: str,
@@ -34,7 +51,16 @@ def _multiseed_2opt_worker(
     picklable, so it can't be shared) and runs the full 2-opt path. Returns a
     picklable result dict. Running the DP seeds in parallel with the main-thread
     "best" seed turns ~60s of sequential 2-opt into ~18s.
+
+    The pool is forked, and CUDA contexts do NOT survive fork — so this worker
+    must stay CPU-only or it crashes with a CUDA init error the moment the 2-opt
+    kNN (or the routing smoothing) touches the GPU. We force every GPU-gated
+    module to CPU here. The worker's heavy cost is CPU scoring anyway; only the
+    kNN distance matrix was on GPU, and the CPU path is a tiny fraction of a 2-opt
+    pass on these sizes.
     """
+    _force_worker_cpu()
+
     # Lazy import inside the worker (avoid top-level circulars on parallel boot).
     from macro_place.loader import load_benchmark_from_dir
 
