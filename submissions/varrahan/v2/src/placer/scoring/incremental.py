@@ -15,35 +15,24 @@ from placer.scoring.density import _build_density_cache, _vectorized_get_grid_ce
 from placer.scoring.wirelength import _build_wl_cache
 
 class IncrementalScorer:
-    """Per-swap incremental proxy scorer used inside `_two_opt_proxy_swap`.
+    """Stateful incremental proxy scorer for local-search moves.
 
-    Phase 2 (this) does incremental wirelength only - `density` and
-    `congestion` still come from `plc.get_density_cost` /
-    `plc.get_congestion_cost` (full recompute via the dirty-flag path).
-    Phase 3 will tackle congestion incremental.
+    Maintains all three proxy terms as state and updates only what a move
+    touches, so a 1-2 macro move costs ~1ms instead of a full recompute:
+      - wirelength: recompute HPWL only for the moved macros' nets (touched_nets
+        = union of their net sets), via gather + reduceat over a compact range.
+      - congestion: maintain the H/V routing flats + a smoothed cache; re-apply
+        only the touched-net routing demand and re-smooth only the affected bbox.
+      - density: maintain the occupancy grid; update only the moved macro's cells.
 
-    WL incremental:
-      - Build `macro_to_nets[macro_idx] = array of net indices` once.
-      - Cache per-net HPWL (`per_net_hpwl`) once after baseline.
-      - For a swap (i_hard, j_hard): touched_nets = macro_to_nets[i] ∪
-        macro_to_nets[j] (typically ~50-200 of ~28k nets).
-      - Recompute HPWL for touched nets only via gather + reduceat over a
-        compact pin range.
-      - `delta_wl = sum((new_hpwl - per_net_hpwl) * net_weights) for touched`.
-      - `new_total_wl = total_wl + delta_wl`.
+    Each move type has a score_* (apply / compute / revert) and commit_* (apply /
+    persist) pair; the scorer mirrors plc's set_pos calls, so a reverted trial
+    leaves plc unchanged and the caller need only commit after an accept. Verified
+    bit-exact against `_exact_proxy`.
 
-    State management:
-      - The scorer mirrors plc's set_pos calls: `score_swap` applies the
-        swap to plc, computes, then reverts. `commit_swap` applies and
-        persists the state (also updates `per_net_hpwl`).
-      - Caller (2-opt) must call `commit_swap` after an accept; reject
-        requires no action because score_swap already reverted plc.
-
-    Indexing notes:
-      - `i_hard`, `j_hard` are indices into `benchmark.hard_macro_indices`
-        (i.e., 0 ≤ i_hard < n_hard, the same indexing used by
-        `_two_opt_proxy_swap`).
-      - Internally translated to plc module indices via `hard_indices[i_hard]`.
+    Hard indices (i_hard) are into `benchmark.hard_macro_indices`
+    (0 <= i_hard < n_hard); soft indices are into the soft-macro block. Both are
+    translated to plc module indices internally.
     """
 
     def __init__(self, plc, benchmark: Benchmark, current_placement_np: np.ndarray):
@@ -52,16 +41,11 @@ class IncrementalScorer:
         self.n_hard = benchmark.num_hard_macros
         self.hard_indices = list(benchmark.hard_macro_indices)
 
-        # Make sure plc + global pos cache reflect current_placement_np.
-        # O5 fix (2026-05-25): force a FULL set, never trust the idempotency
-        # cache here. `_apply_pos` (used by score_swap/commit_swap) keeps
-        # `_global_pos_cache` in sync but NOT `_last_pos_cache`, so after a
-        # prior 2-opt mutated plc, `_last_pos_cache` is stale - and
-        # `_fast_set_placement` would skip macros whose stale cache value
-        # coincidentally matches, leaving plc in a mixed state and computing the
-        # WL baseline against the wrong positions (the seed-dependent "drift"
-        # that regressed ibm01 in the first multi-seed cut). Invalidating the
-        # cache guarantees every macro is re-set to current_placement_np.
+        # Force a FULL set: `_apply_pos` keeps `_global_pos_cache` in sync but not
+        # `_last_pos_cache`, so after a prior move mutated plc the stale
+        # `_last_pos_cache` could make `_fast_set_placement` skip macros and build
+        # the WL baseline against wrong positions. Invalidate it to re-set every
+        # macro to current_placement_np.
         plc._last_pos_cache = None
         _fast_set_placement(plc, current_placement_np, benchmark)
 
@@ -109,7 +93,7 @@ class IncrementalScorer:
             .astype(np.float64).copy()
         )
 
-        # ---- B3 phase 4 (2026-05-24): congestion incremental state. ----
+        # ---- Congestion incremental state. ----
         cong_cache = plc._cong_cache
         self.grid_col = int(plc.grid_col)
         self.grid_row = int(plc.grid_row)
@@ -142,7 +126,7 @@ class IncrementalScorer:
                 self.V_macro_flat, self.H_macro_flat,
             )
 
-        # ---- Incremental congestion COST cache (2026-05-29). ----
+        # ---- Incremental congestion COST cache. ----
         # `_compute_cong_cost` used to full-re-smooth H/V + re-partition every
         # move-eval; the smoothing was ~85% of the cong cost (~14% of a whole
         # move). The box filter is SEPARABLE (H along columns, V along rows,
@@ -182,13 +166,13 @@ class IncrementalScorer:
             int(m): k for k, m in enumerate(cong_cache["hard_indices"])
         }
 
-        # Idea 2 (2026-05-29): per-module topology routing-struct cache. A macro's
-        # touched-net structure is placement-independent, so build it once and
-        # reuse across that macro's score/commit calls AND the −1/+1 applies of
-        # each. Keyed by module index; value may be None (macro has no nets).
+        # Per-module topology routing-struct cache. A macro's touched-net
+        # structure is placement-independent, so build it once and reuse across
+        # that macro's score/commit calls and the -1/+1 applies of each. Keyed by
+        # module index; value may be None (macro has no nets).
         self._route_struct_cache: "dict[int, object]" = {}
 
-        # ---- P3 (2026-05-26): incremental density state. ----
+        # ---- Incremental density state. ----
         # Density was the last full-recompute in score_swap (~28-36% of its time
         # per _profile_density.py): it scatters ALL soft+hard macros into the
         # occupancy grid every call. But a 2-opt swap moves only macros i, j -
@@ -279,14 +263,12 @@ class IncrementalScorer:
         return 0.5 * float(top.sum()) / self.dens_grid_area / cnt
 
     def _compute_cong_cost(self) -> float:
-        """B3 phase 4 + incremental cost (2026-05-29): congestion cost from the
-        cached smoothed normalized routing (`H_smoothed`/`V_smoothed`) plus the
-        live macro flats. The cache must be current for the touched region -
-        callers re-smooth the touched bbox (see `_resmooth_bbox`) before this.
-        Mirrors the final transform in `_vectorized_get_congestion_cost`.
-
-        Always runs on CPU: np.partition on <5K float64 elements is ~50 µs,
-        while GPU topk dispatch overhead is >1 ms on DirectML - 20x slower.
+        """Congestion cost from the cached smoothed routing (`H_smoothed`/
+        `V_smoothed`) plus the live macro flats. The cache must be current for the
+        touched region - callers re-smooth the touched bbox (`_resmooth_bbox`)
+        first. Mirrors the final transform in `_vectorized_get_congestion_cost`.
+        Runs on CPU (np.partition on <5K elements is ~50us; GPU topk dispatch is
+        >1ms).
         """
         Hm = self.H_macro_flat / self.grid_h_routes
         Vm = self.V_macro_flat / self.grid_v_routes

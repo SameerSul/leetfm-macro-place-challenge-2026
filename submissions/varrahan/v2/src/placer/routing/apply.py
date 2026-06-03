@@ -40,11 +40,8 @@ def _build_cong_cache(plc, benchmark: Benchmark):
         hard_half_w[k] = float(m.get_width()) * 0.5
         hard_half_h[k] = float(m.get_height()) * 0.5
 
-    # B4 (2026-05-24): pre-compute the dispatch structures that only depend
-    # on net topology (not positions). Each call to `_vectorized_get_routing`
-    # previously rebuilt these via np.where / np.repeat / np.cumsum / etc.
-    # Caching saves ~1-3ms per call on ibm10 (profile: dispatch_len_big was
-    # 3.49ms / 28% of cost - most of it was these rebuilds).
+    # Pre-compute the dispatch structures that depend only on net topology (not
+    # positions), so _vectorized_get_routing doesn't rebuild them every call.
     idx2_cache = np.where(lengths == 2)[0]
     s2_cache = starts[idx2_cache] if idx2_cache.size else np.zeros(0, dtype=np.int64)
     s2p1_cache = s2_cache + 1
@@ -245,23 +242,15 @@ if HAS_NUMBA:
     @_numba_njit(cache=True, fastmath=False)
     def _apply_3pin_routing_vec_jit(H_flat, V_flat, g0_flat, g1_flat, g2_flat,
                                       weights, grid_col):
-        """Speedup #35 (2026-05-31): JIT explicit-per-net 3-pin routing.
+        """JIT explicit-per-net 3-pin routing.
 
-        Bit-equivalent to `_apply_3pin_routing_vec_numpy` (the original
-        numpy gather/scatter version). For each net:
-          1. Convert 3 flat gcells to (row, col) pairs.
-          2. Sort by (col asc, row asc) - manual 3-element insertion sort.
-          3. Classify into the 4 cases (3 with the col-sorted order,
-             T-routing/case 4 needs a row-sorted re-sort).
-          4. Apply H/V strip adds directly into the flat arrays.
-
-        Profile said `_apply_3pin_routing_vec` was 38% of per-move time.
-        The numpy version's per-case mask/concat/strip-batch fanout has
-        meaningful overhead beyond the actual arithmetic; collapsing it
-        into a single per-net loop turns it into a small, tight JIT'd
-        kernel with no temporary allocations. Float accumulation order
-        matches a left-to-right per-cell scalar accumulation - within
-        the move verifier tolerance (≤4.4e-16) by design.
+        Bit-equivalent to `_apply_3pin_routing_vec_numpy`. For each net: decode
+        the 3 flat gcells to (row, col), sort by (col asc, row asc), classify
+        into the 4 routing cases (case 4 / T-route needs a row-sorted re-sort),
+        and apply H/V strip adds directly into the flat arrays. Collapsing the
+        numpy version's per-case mask/concat/strip-batch fanout into one tight
+        JIT'd per-net loop removes its overhead (it was 38% of per-move time);
+        accumulation order stays within the verifier tolerance (<=4.4e-16).
         """
         n = g0_flat.shape[0]
         for k in range(n):
@@ -1245,7 +1234,7 @@ def _vectorized_get_routing(plc) -> None:
 
     n_nets = wl["n_nets"]
     if n_nets > 0:
-        # B3 (2026-05-23): use global pos cache instead of per-node get_pos loop.
+        # Use the global pos cache instead of a per-node get_pos loop.
         unique_ref = wl["unique_ref"]
         pos_cache = _ensure_pos_cache(plc)
         node_x = pos_cache[unique_ref, 0]
@@ -1417,7 +1406,7 @@ def _vectorized_get_routing(plc) -> None:
     # Hard-macro routing contributions
     n_hard = cache["n_hard"]
     if n_hard > 0:
-        # B3 (2026-05-23): use global pos cache instead of per-macro get_pos loop.
+        # Use the global pos cache instead of a per-macro get_pos loop.
         hard_indices = cache["hard_indices"]
         hard_indices_arr = cache.get("hard_indices_arr")
         if hard_indices_arr is None:
@@ -1448,7 +1437,7 @@ def _vectorized_get_routing(plc) -> None:
     V_total = V_flat + V_macro_flat
     H_total = H_flat + H_macro_flat
 
-    # B3 phase 3 (2026-05-23): store as numpy arrays instead of Python lists.
+    # Store as numpy arrays instead of Python lists.
     # Saves ~2ms/call on .tolist() conversion. The patched get_congestion_cost
     # (`_patch_plc_congestion_cost`) consumes them via numpy ops, and
     # `_routing_congestion_perturb` already does `np.asarray(...).reshape(...)`
