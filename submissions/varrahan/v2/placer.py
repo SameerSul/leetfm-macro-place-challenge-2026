@@ -3880,7 +3880,7 @@ class MacroPlacer:
         n_restarts: int = 50,
         noise_fracs: Optional[List[float]] = None,
         seed: int = 42,
-        time_budget_s: float = 200.0,
+        time_budget_s: float = 150.0,
     ):
         self.n_restarts = n_restarts
         # Budget check in _try_restart terminates the loop early; n_restarts is an upper cap.
@@ -3926,6 +3926,14 @@ class MacroPlacer:
         # `_benchmarks_done >= 1`.
         self._first_place_call_time: Optional[float] = None
         self._benchmarks_done: int = 0
+        # L-change (2026-05-31): track cumulative place()-execution time (not
+        # wall-clock). Large-grid benchmarks (ibm10/12/14) cause 100-170s of
+        # harness evaluation overhead *outside* place() that inflates the
+        # monotonic-clock cumulative and starves ibm15-18 of budget (observed:
+        # wall-clock cumulative=3416s at ibm15 start while place()-time was
+        # only ~2595s). The harness enforces its 3600s cap on sum-of-place()
+        # times, so _total_place_time_s is the correct quantity to guard.
+        self._total_place_time_s: float = 0.0
         # 3300s leaves 300s headroom under the 3600s harness cap for setup /
         # teardown / final-benchmark spillover. HARNESS_TOTAL_BENCHMARKS is
         # the standard --all set; a per-call override would let the harness
@@ -3942,6 +3950,11 @@ class MacroPlacer:
         # pass with 256 hot macros finishes in ~7.7s instead of 15s, leaving
         # ~0.3s after round 7 density — just below the 2.4s 2-opt guard.
         # An 8s increase enables round 7's 2-opt (~20 swaps, −0.0003).
+        # M1-change (2026-05-31): ibm01 budget reduced 200→150s. Rounds 10-11 of R2
+        # improve proxy by only 0.0002 total; the 50s saved brings total place time
+        # to (150+83)+(16×193)=233+3088=3321s vs prior 3371s, keeping wall-clock
+        # comfortably under 3600s and freeing headroom so ibm18's hard_cap guard
+        # no longer triggers (ibm18 gets full 110s floor instead of ~86s cap).
         # 17×(110+83)=3281 < 3300s harness total → --all safe.
         self.BUDGET_OVERRUN_S: float = 83.0
         # Floor-reservation (2026-05-29): every benchmark in an --all run is
@@ -3981,7 +3994,9 @@ class MacroPlacer:
         # baseline-only.
         if self._first_place_call_time is None:
             self._first_place_call_time = t0
-        cumulative_elapsed = t0 - self._first_place_call_time
+        # L-change: use sum-of-place()-times as cumulative (not wall-clock).
+        # See _total_place_time_s in __init__ for rationale.
+        cumulative_elapsed = self._total_place_time_s
         if self._benchmarks_done >= 1:
             remaining_total = self.HARNESS_TOTAL_BUDGET_S - cumulative_elapsed
             remaining_benchmarks = max(
@@ -4300,6 +4315,7 @@ class MacroPlacer:
                                 _log(f"  [large-DP] DP wins ({dp_score_large:.4f} < "
                                      f"{base_score:.4f}); returning DP placement")
                                 _log(f"  total={time.monotonic()-t0:.1f}s")
+                                self._total_place_time_s += time.monotonic() - t0
                                 self._benchmarks_done += 1
                                 return dp_pl_large
                             else:
@@ -4323,6 +4339,7 @@ class MacroPlacer:
                             pass
 
             _log(f"  total={time.monotonic()-t0:.1f}s")
+            self._total_place_time_s += time.monotonic() - t0
             self._benchmarks_done += 1
             return pl_scratch  # safe: no more in-place writes will happen
 
@@ -4333,7 +4350,8 @@ class MacroPlacer:
         # 95%-of-3300 cumulative test, which collapsed the final benchmark to
         # the raw baseline even when budget remained — that's the bug the
         # allocator fix is meant to prevent.
-        cumulative_now = time.monotonic() - self._first_place_call_time
+        # cumulative_now uses place()-time (L-change), same as cumulative_elapsed
+        cumulative_now = self._total_place_time_s
         if effective_budget_s < 45.0:
             _log(f"  [--all guard] tight budget "
                  f"(eff={effective_budget_s:.0f}s, cumulative={cumulative_now:.0f}s"
@@ -4344,6 +4362,7 @@ class MacroPlacer:
                 except Exception:
                     pass
             _log(f"  total={time.monotonic()-t0:.1f}s")
+            self._total_place_time_s += time.monotonic() - t0
             self._benchmarks_done += 1
             return pl_scratch
 
@@ -4368,6 +4387,7 @@ class MacroPlacer:
                 except Exception:
                     pass
             _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
+            self._total_place_time_s += time.monotonic() - t0
             self._benchmarks_done += 1
             return best_pl
 
@@ -4470,7 +4490,7 @@ class MacroPlacer:
         cong_pos = baseline_pos
         cong_improved = False
         cong_frac = 0.04
-        for cong_iter in range(12):
+        for cong_iter in range(12):  # I-change revert: was 15; extra iters shifted ibm01's 2-opt into worse basin
             if cong_iter > 0:
                 # Use relaxed cap (matches _try_restart's allow_overrun=True path)
                 # so a transient spike on iter=0 doesn't block the whole loop.
@@ -5116,12 +5136,16 @@ class MacroPlacer:
         # converged best_pl, so a fresh 2-opt finds nothing until relocation moves
         # something). Budget-gated; a round needs slack for a relocation (~cheap)
         # + a short 2-opt pass.
-        R2_MAX_ROUNDS = 12  # budget-guarded; converges + breaks on no-improvement.
-        # (Previously 6: GPU topk overhead left only ~57s after 6 rounds, but the
-        # hard cap 6 was the binding constraint, not budget. With topk on CPU, later
-        # rounds are faster (diminishing moves) and fit comfortably in the surplus.)
+        R2_MAX_ROUNDS = 20  # budget-guarded; converges + breaks on no-improvement.
+        # (Previously 12: increased to 20 (H-change, 2026-06-01) — budget-gated so
+        # no regression risk; allows more rounds on budget-flush fast benchmarks.)
         # R2_HOT/R2_TGT widen the relocation candidate set per round so large
         # benchmarks (ibm10 786 macros) relieve more than ~3% of hot macros/round.
+        # I-change REVERTED (2026-06-01): R2_HOT=96 for n>300 tested but reverted.
+        # Doubling reloc evals (768→1536) added ~4s/round overhead, reducing R2
+        # round throughput (ibm10: 1.1457→1.2029, ibm12: 1.3641→1.4063 regressions).
+        # The reloc deadline (15s) doesn't prevent the extra time from eating into
+        # partial rounds, cutting ibm12 from 2.4 to 2.0 complete R2 rounds.
         R2_HOT = 48
         R2_TGT = 16
         R2_2OPT_SLICE = 8.0
@@ -5140,8 +5164,9 @@ class MacroPlacer:
         # softs (ibm01 894→100%, ibm04 1085→94%, ibm10 1982→52%).  4096 evals/pass unchanged.
         # Risk: nearest-4 may miss moves that nearest-8 would find (targets 5-8 cut).
         # The density field is spatially smooth; nearest-4 should capture most value.
-        R3_SOFT_HOT = 1024   # was 512 (F): cover top-1024 hot softs (capped at num_soft)
-        R3_SOFT_TGT = 4      # was 8: halved to keep 1024×4=4096 evals ≈ 12.3s/pass
+        R3_SOFT_HOT = 1024   # G-params (2026-05-30). H-change (2048/2) was tested but reverted
+        #                     (slower per R2 round, ibm17 regressed 1.4519→1.5085).
+        R3_SOFT_TGT = 4      # G-params. Inline adaptive code uses _top_hot_this/_n_tgt_this.
         # A+C (2026-05-29): the cong soft-reloc pass saturates at different rates
         # per benchmark. ibm09 saturates by round 3 (round 4+ ≤2 moves, ~zero
         # gain). ibm01/ibm04 are still active at round 5 (ibm01: 47 moves in
@@ -5153,9 +5178,8 @@ class MacroPlacer:
         # with H at cong_max=5). Capping at 6 keeps the ibm01 round-6 gain
         # (44 moves → ~0.001) without the severe budget-squeeze on larger/slower
         # benchmarks. The time-deadline mechanism cuts near-instant if converged.
-        R3_SOFT_HOT_BOOSTED = 1024  # same as base (G); kept for code clarity
-        # G: boosted rounds also use 4 targets and 1024 hot — same as base.
-        R3_SOFT_TGT_BOOSTED = 4    # same as base (G); kept for code clarity
+        R3_SOFT_HOT_BOOSTED = 1024  # G-params (1024/4); doc-only constant, not referenced in logic
+        R3_SOFT_TGT_BOOSTED = 4    # G-params (1024/4); doc-only constant, not referenced in logic
         R3_CONG_MAX_ROUNDS = 6     # K: lowered 7→6 (round 7 squeezes budget on ibm06/ibm08)
         # Soft-macro half-sizes (for the soft relocation pass — R3, 2026-05-28).
         _n_soft = benchmark.num_soft_macros
@@ -5199,10 +5223,31 @@ class MacroPlacer:
             # commits moves, the scorer's state is already at the new best position
             # (the post-accept _exact_proxy keeps plc in sync). Only if a verify
             # unexpectedly fails do we rebuild from the known-good best_pl.
+            #
+            # K-change (2026-06-01): skip the round-start _exact_proxy for rounds
+            # 1+ (index ≥ 1). Analysis shows plc is ALWAYS synced to best_pl at
+            # every round boundary:
+            #   - Reloc/cong/density accepts: verify calls _exact_proxy(cand=best_pl) → sync.
+            #   - Reloc/cong/density fail-verify: explicit _exact_proxy(best_pl) resync.
+            #   - Reloc/cong/density 0 moves: plc unchanged = previous sync.
+            #   - 2-opt accepts: _exact_proxy(cand) → if improved: plc=new best_pl;
+            #     if verify fails: explicit _exact_proxy(best_pl) resync.
+            #   - 2-opt 0 swaps: 2-opt uses incremental scorer (NOT _exact_proxy) →
+            #     plc unchanged from density/cong/reloc verify → still synced.
+            #   - Budget breaks BETWEEN passes: last pass's verify left plc synced.
+            # Round 0 always re-scores: the outer 2-opt leaves plc at the last
+            # scored kick candidate (not best_pl after multi-seed processing).
+            # Savings: (n_rounds - 1) × t_one_score per benchmark.
+            # For ibm17 (t_one_score≈5s, 4 rounds): ~15s freed for 1 more round.
             _r2_base = None
             _r2_shared = None
             try:
-                _r2_base = float(_exact_proxy(best_pl, benchmark, plc))
+                if _r2 == 0:
+                    # First round: outer 2-opt left plc at last kick candidate — resync.
+                    _r2_base = float(_exact_proxy(best_pl, benchmark, plc))
+                else:
+                    # Rounds 1+: plc proven synced to best_pl at all round boundaries.
+                    _r2_base = best_score
                 _r2_shared = IncrementalScorer(
                     plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
                 )
@@ -5290,24 +5335,24 @@ class MacroPlacer:
                 # C: on rounds after the cong cap, the density pass gets a wider
                 # candidate set (top_hot 128 → 192) so the freed ~4-5s is spent
                 # on more density attempts instead of returning early.
-                # I (2026-05-30): adaptive split — always G (1024/4) for cong; density
-                # uses F (512/8) on small benchmarks and G (1024/4) on large ones.
-                # Analysis of round-1 data:
-                #   cong always: G 1024/4 wins (wider hotspot coverage, +55% accepts ibm01)
-                #   density small (<1000 softs, e.g. ibm01 894): F 512/8 wins (quality
-                #     compounding across rounds; ibm01 H=0.9345 vs G=0.9396, F=0.9359)
-                #   density large (≥1000 softs, e.g. ibm04 1085): G 1024/4 wins (coverage
-                #     gain dominates quality loss; ibm04 G=1.0374 vs H=1.0478, F=1.0510)
-                # This gives both benchmarks their individually optimal parameters without
-                # branching on benchmark name (uses only num_soft_macros, a size property).
+                # Adaptive split (2026-06-01): always G (1024/4) for cong;
+                # density uses F (512/8) for small benchmarks (<1000 softs),
+                # G (1024/4) for large benchmarks (≥1000 softs).
+                # Note: H (2048/2) was tested for large-benchmark density but reverted —
+                # it made each R2 round ~2x slower, cutting ibm17 from 6 to 2 rounds
+                # within budget (1.4519 → 1.5085 regression). G balances speed vs coverage.
                 _n_soft_movable = int(_soft_movable.sum()) if _soft_movable is not None else _n_soft
                 _is_density_pass = (_sfield == "density")
                 if _is_density_pass and _n_soft_movable < 1000:
                     # Small benchmark: F-quality density — precise moves compound better
                     _top_hot_this = 512
                     _n_tgt_this = 8
+                elif _is_density_pass:
+                    # Large benchmark density: G-coverage (1024/4) — H(2048/2) was slower per round, hurt ibm17
+                    _top_hot_this = 1024
+                    _n_tgt_this = 4
                 else:
-                    # Cong always, and large-benchmark density: G-coverage (1024/4)
+                    # Cong always: G-coverage (1024/4) — focused hotspot targeting
                     _top_hot_this = 1024
                     _n_tgt_this = 4
                 try:
@@ -5388,6 +5433,81 @@ class MacroPlacer:
 
             if not round_improved:
                 break
+
+        # -- N-change (2026-06-02): Post-R2 soft-reloc using leftover budget ---------
+        # Phase 11 (post-R2 cong-grad hard-macro perturb → legalize → exact_proxy)
+        # is replaced with a soft-reloc[cong] + soft-reloc[density] pass that uses
+        # the same leftover budget (~2–3 × t_one_score) that R2's round-break guard
+        # leaves behind.
+        #
+        # Why Phase 11 was ineffective:
+        #   (a) For benchmarks where t_one_score is small, R2 exhausts the entire
+        #       budget inside its round loop and Phase 11 exits immediately (rem ≈ 0).
+        #   (b) For benchmarks where t_one_score is larger (ibm15–18), R2's round-
+        #       break guard fires with ~2–3 × t_one_score remaining. Phase 11 runs
+        #       1–2 score evaluations, all rejected: the legalization cascade from
+        #       cong-grad perturb destroys the R2-optimized soft macro layout, so
+        #       candidates score ~0.25–0.35 worse than R2's best.
+        #
+        # Why post-R2 soft-reloc works:
+        #   After R2 exits mid-round (budget cut during soft-reloc or 2-opt), the
+        #   hard-macro state from the last reloc pass is not yet fully exploited.
+        #   A soft-reloc[cong] + soft-reloc[density] pass using the leftover time
+        #   continues exactly where R2 left off (strictly accept-only, no legalization,
+        #   no score wasted on rejections). Observed in R2 late rounds: 10–50 moves,
+        #   −0.002 to −0.015 improvement per pass.
+        #
+        # plc is guaranteed synced to best_pl at R2 exit: K-change analysis proved
+        # every R2 exit path calls _exact_proxy(best_pl) — either via an accept
+        # verify, a fail-verify resync, or the round-0 scorer init. No resync needed.
+        if _n_soft > 0:
+            for _post_field, _post_ud in (("cong", False), ("density", True)):
+                rem_post = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+                # Need ≥ 1.5 × t_one_score: ~1 × t_one_score for the verify call
+                # after soft-reloc + 0.5 × margin for scorer init and the pass itself.
+                if rem_post < t_one_score * 1.5:
+                    break
+                try:
+                    _post_base = best_score
+                    _post_shared = IncrementalScorer(
+                        plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
+                    )
+                    _post_sr_pos = np.stack(
+                        [best_pl[n:n + _n_soft, 0].numpy(),
+                         best_pl[n:n + _n_soft, 1].numpy()], axis=1
+                    ).astype(np.float64)
+                    t_post = time.monotonic()
+                    _post_max = min(rem_post - t_one_score * 1.0, 15.0)
+                    if _post_max < 0.5:
+                        break
+                    _post_sr_pos, _post_acc, _ = _soft_relocation_moves(
+                        _post_sr_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark,
+                        _post_shared, _post_base,
+                        deadline=t_post + _post_max,
+                        top_hot=1024, n_targets=4,
+                        soft_movable=_soft_movable, use_density=_post_ud,
+                    )
+                    if _post_acc > 0:
+                        _post_cand = best_pl.clone()
+                        _post_cand[n:n + _n_soft, 0] = torch.tensor(
+                            _post_sr_pos[:, 0], dtype=torch.float32)
+                        _post_cand[n:n + _n_soft, 1] = torch.tensor(
+                            _post_sr_pos[:, 1], dtype=torch.float32)
+                        _post_true = float(_exact_proxy(_post_cand, benchmark, plc))
+                        if _post_true < best_score - 1e-6:
+                            _log(f"  Post-R2 soft-reloc[{_post_field}]: {_post_acc} moves, "
+                                 f"{best_score:.4f} -> {_post_true:.4f}")
+                            best_score = _post_true
+                            best_pl = _post_cand
+                        else:
+                            # Verify failed: restore plc to best_pl.
+                            float(_exact_proxy(best_pl, benchmark, plc))
+                except Exception as _post_exc:
+                    _log(f"  Post-R2 soft-reloc[{_post_field}] failed: {_post_exc}")
+                    try:
+                        float(_exact_proxy(best_pl, benchmark, plc))
+                    except Exception:
+                        pass
 
         # DP_DIAG (2026-05-26): decompose where the DP basin loses to "best".
         # Logs the WEIGHTED proxy split (wl, 0.5*den, 0.5*cong) for each raw DP
@@ -5545,5 +5665,6 @@ class MacroPlacer:
                 traceback.print_exc()
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
+        self._total_place_time_s += time.monotonic() - t0
         self._benchmarks_done += 1
         return best_pl
