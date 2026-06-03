@@ -1,7 +1,7 @@
 # Research Papers: Code Analysis and Implementation Notes
 
 > Tracks what we extracted from each paper's code, how it works, and what we implemented.
-> Updated: 2026-05-02
+> Updated: 2026-05-03
 
 ---
 
@@ -11,13 +11,14 @@
 |---|-------|-------|--------------|-------|
 | 1 | **WireMask-BBO** | NeurIPS 2023 | ✅ Yes | `_wire_pull_perturb()` in placer.py |
 | 2 | **MaskRegulate** | NeurIPS 2024 | ✅ Yes | `_density_gradient_perturb()` in placer.py |
-| 3 | **TILOS SA Assessment** | TCAD 2024 | 🔲 Next | GWTW multi-start + macro-swap move operator |
+| 3 | **TILOS SA Assessment** | TCAD 2024 | ✅ Partial | Macro-swap Phase 4 implemented in v16 |
 | 4 | **Hybro / WireMask Sweep** | arXiv 2024 | 🔲 Next | Per-macro greedy congestion-move sweep |
 | 5 | **IncreMacro** | TCAD 2025 | 🔲 Next | Hill-climbing local search after restarts |
 | 6 | **RUDY Demand Map** | ePlace-MS (TCAD 2015) | 🔲 Next | Fast in-loop congestion estimation |
-| 7 | **ChiPFormer** | ICML 2023 | 🔲 Future | `submissions/ml_placer/` (Role B) |
-| 8 | DREAMPlace | DAC 2019 | 🔲 Future | `scripts/pb_to_bookshelf.py` (Role C) |
-| 9 | MaskPlace | NeurIPS 2022 | 🔲 Future | Foundation for ChiPFormer |
+| 7 | **Congestion-aware legalization** | UCSD/general | 🔲 Next | Weight displacement by congestion in legalize |
+| 8 | **ChiPFormer** | ICML 2023 | 🔲 Future | `submissions/ml_placer/` (Role B) |
+| 9 | DREAMPlace | DAC 2019 | 🔲 Future | `scripts/pb_to_bookshelf.py` (Role C) |
+| 10 | MaskPlace | NeurIPS 2022 | 🔲 Future | Foundation for ChiPFormer |
 
 ---
 
@@ -633,10 +634,77 @@ submissions/ml_placer/
 
 ---
 
+## NEW: 2026-05-03 Survey — Google Circuit Training & TILOS SA Follow-up
+
+### J: Google Circuit Training (Nature 2021) — Key Insights for v18
+
+**Title:** "A graph placement methodology for fast chip design"
+**Venue:** Nature 591, 2021
+**Authors:** Mirhoseini et al. (Google Brain)
+
+**What they do**: Train a GNN-based RL policy (PPO) to sequentially place macros on a
+canvas grid. The policy learns to minimize the proxy cost = WL + 0.5×density + 0.5×congestion
+— exactly our objective function. Their proxy IS our proxy cost.
+
+**Insights for our placer:**
+1. **Proxy cost formula**: Confirmed that their exact formula matches ours (weights: WL=1.0,
+   density=0.5, congestion=0.5). Our compute_proxy_cost is a faithful implementation.
+2. **Sequential placement matters**: They place macros one-by-one in connectivity order
+   (highest-connectivity first). This is like our legalization ORDER — we use largest-area first.
+   **Trying connectivity-order legalization** might be a quick win.
+3. **Canvas gridding**: They use a fixed grid (typically 32×32 or 64×64). All placements snap
+   to grid centers. Our legalization already does this effectively (spiral search on discrete grid).
+4. **Congestion smoothing**: Their congestion uses SMOOTH_RANGE=2 (we see this in our plc data).
+   The smoothing means congestion is spread over a 5×5 cell neighborhood, making the signal smoother.
+
+**Key actionable idea**: Try legalization in **connectivity order** (place macros with most nets first).
+This naturally keeps highly-connected macros near their net partners, reducing WL without SA.
+Implementation: 1 line change in `_will_legalize` — change the sort key from area to net_degree.
+
+### K: TILOS SA + "Go-With-The-Winners" (TCAD 2024 / IEEE 11300304)
+
+**What they found**: Carefully implemented SA with 5 move operators beats Circuit Training RL.
+The key differentiator: "Go-with-the-winners" (GWTW) allocates more iterations to SA chains
+that are performing well, avoiding wasted effort on stuck chains.
+
+**Insights for v18:**
+- **Connectivity-order placement** (same as Google's insight): their SA uses connectivity
+  order for the initial placement; we can adopt this for legalization order.
+- **Move schedule**: 24% swap, 24% shift, 17% scale, 17% rotate, 18% wiggle.
+  Our Phase 4 only does SWAP. SHIFT (move one macro by delta) is essentially what noise
+  restarts do, but globally. A LOCAL shift (move 1 macro only) might be more targeted.
+- **Per-macro greedy move**: after finding a good placement, try moving EACH macro to the
+  best alternative position one at a time (like a greedy descent). This is O(n) swaps from
+  best_pl, each targeting a specific macro.
+
+**Actionable (easy, 2h)**: Add "targeted single-macro shift" to Phase 4:
+For each macro i in descending congestion order:
+  Try moving macro i to nearest lower-congestion cell, re-legalize, score.
+  Keep if better. This is a focused greedy descent from best_pl.
+
+### L: UCSD Min-Displacement Legalization Paper (Conferences/396)
+
+The UCSD c396 paper appears to be on FPGA macro placement or min-cost flow assignment.
+Key technique: ILP/cost-flow to optimally assign macros to regions before legalization.
+
+**Insight for us**: Our legalization is greedy (largest-first spiral). An ILP pre-assignment
+step could reduce total displacement by globally optimizing the macro-to-region assignment.
+This is complex but the concept is: instead of greedy sequential placement, solve a small
+bipartite matching (macros → grid regions) to minimize expected displacement, then legalize
+each macro within its assigned region.
+
+**Feasibility**: Medium-hard. Would need scipy.optimize or a custom solver. The benefit
+over greedy legalization is unclear for our use case (we're already doing many restarts).
+
 ## Implementation Changelog
 
 | Date | What Changed | Files Modified |
 |------|-------------|----------------|
+| 2026-05-03 | v17: parallel scoring workers (N workers, own PlacementCost each) | `placer.py` |
+| 2026-05-03 | v16: Phase 4 macro-swap + PHASE4_RESERVE_S time split | `placer.py` |
+| 2026-05-03 | New test scripts for all remaining TBD benchmarks (ibm02-09) | `scripts/` |
+| 2026-05-02 | Literature survey 9 papers; RUDY/GWTW/swap identified as next | `PAPERS_NOTES.md` |
+| 2026-05-02 | v15: 3300s budget, raised thresholds, 395 fracs, SKIP_EXACT empty | `placer.py` |
 | 2026-04-08 | WireMask-BBO wire-pull + MaskRegulate density-gradient restarts | `placer.py` |
 | 2026-04-08 | This notes file created | `PAPERS_NOTES.md` |
 | 2026-04-07 | Adaptive time budget + macro threshold (n>350 use density fallback) | `placer.py` |
