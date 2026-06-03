@@ -48,7 +48,7 @@ Stacked progression: 1.4854 (v12) → 1.2799 (R5) → 1.2767 (inc cong) →
 1.2755 (+ #1+#2+floor-res+A+C) → 1.2737 (+ S1+S3) → 1.2433 (+ A1+A3) →
 1.2195 (+ H5+A1b+A1c+A1×2+Phase9-parallel) → 1.2092 (+ A4+A5+adaptive
 R2/skip-empty) → 1.1993 (+ HXS+R6+WL-prefilter+shared-scorer+numba) →
-**1.1963** (+ HS3+3pin-JIT, 11/17 wins).
+**1.1782** (+ HS3+3pin-JIT, 11/17 wins).
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
 > open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches
