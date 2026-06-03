@@ -85,12 +85,10 @@ def _relocation_moves(
         return pos, 0, initial_score
     hot = mov_idx[np.argsort(-local_cong[mov_idx])][:top_hot]
 
-    # Candidate target cells = the lowest-congestion cells; their centers are the
-    # relocation destinations. Use a percentile-based pool so that medium-cold
-    # cells geographically close to each hot macro are included - not just the
-    # globally coldest N cells which may all cluster in one corner.
+    # Target pool = low-field cell centers. A percentile threshold (not the
+    # globally-coldest N) keeps medium-cold cells near each hot macro in play.
     flat = cell_cong.ravel()
-    _thr = np.percentile(flat, 55)  # bottom 55% by congestion ≈ 55% of grid cells
+    _thr = np.percentile(flat, 55)
     pool = np.where(flat < _thr)[0]
     if pool.size < max(n_targets, 64):
         pool = np.argsort(flat)[: max(n_targets, 64)]
@@ -226,11 +224,9 @@ def _soft_relocation_moves(
     hot = order[:top_hot]
 
     flat = cell_field.ravel()
-    # Pool: use a percentile threshold so medium-cold cells near each hot soft
-    # are included - not just globally coldest N cells that may all be in one
-    # corner. Each hot soft still tries only n_targets nearest candidates from
-    # the pool, so per-soft cost is the same; diversity improves acceptance rate.
-    _thr = np.percentile(flat, 55)  # bottom 55% by field value
+    # Target pool = low-field cell centers (percentile threshold, not globally-
+    # coldest N, so medium-cold cells near each hot soft stay in play).
+    _thr = np.percentile(flat, 55)
     pool = np.where(flat < _thr)[0]
     if pool.size < max(n_targets, 64):
         pool = np.argsort(flat)[: max(n_targets, 64)]

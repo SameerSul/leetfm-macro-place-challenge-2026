@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from macro_place.loader import load_benchmark_from_dir
 from macro_place.objective import compute_proxy_cost
 
-V2_PATH = Path(__file__).resolve().parents[2] / "src" / "submit.py"
+V2_PATH = Path(__file__).resolve().parents[2] / "src" / "main.py"
 
 
 def _load_v2_module():
