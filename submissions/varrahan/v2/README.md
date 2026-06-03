@@ -210,21 +210,95 @@ the same-macro / nearby pattern vs the cache-defeating random-k pattern).
 | **R4** WL-aware hard-relocation (net-centroid target bias) | DISPROVEN — slightly worse than nearest-to-current; scaffolding kept inert (`wl_blend`, `hard_net_centroids()`, `WLAWARE_PROBE`). |
 | **Shared-scorer interleave refactor** (the original P5 plan) | RETIRED — `_profile_init.py` measured the per-pass fixed overhead at 0.1–0.28 s/round (not the projected 60–75 s), so the refactor would save <1.7 s/benchmark and risk the bit-exact core. Replaced by the incremental-cong-cost + #1 + #2 stack above. |
 
-## File / docs index
+## Source layout
+
+The submission now lives under `src/`. `src/submit.py` is the evaluator-facing
+entrypoint; it imports `MacroPlacer` from `placer.pipeline.macro_placer` and
+keeps compatibility delegation for diagnostics that still reach private helpers
+through the submission module.
+
+```
+submissions/varrahan/v2/
+├── README.md
+├── docs/
+├── test/
+└── src/
+    ├── submit.py
+    ├── dreamplace_bridge/
+    │   ├── bookshelf_to_pb.py
+    │   ├── pb_to_bookshelf.py
+    │   └── run_bridge.py
+    └── placer/
+        ├── config.py
+        ├── pipeline/
+        │   └── macro_placer.py
+        ├── scoring/
+        │   ├── exact.py
+        │   ├── incremental.py
+        │   ├── wirelength.py
+        │   ├── density.py
+        │   └── congestion.py
+        ├── routing/
+        │   └── apply.py
+        ├── plc/
+        │   ├── loader.py
+        │   └── placement.py
+        ├── legalize/
+        │   ├── spiral.py
+        │   └── swap.py
+        ├── local_search/
+        │   ├── two_opt.py
+        │   ├── relocation.py
+        │   ├── soft_moves.py
+        │   ├── hard_soft.py
+        │   └── workers.py
+        └── perturb/
+            └── congestion_gradient.py
+```
+
+### Module responsibilities
 
 | Path | Purpose |
 |---|---|
-| `placer.py` | **The submission** (~5000 lines). Pipeline above + `IncrementalScorer` + `_two_opt_proxy_swap` + `_relocation_moves`. |
-| `docs/ARCHITECTURE.md` | **Design overview + pipeline visualization + algorithm explanations** (incl. DREAMPlace integration). Start here for the "how it works" tour. |
+| `src/submit.py` | **Submission entrypoint** for `uv run evaluate`; wraps `MacroPlacer` so the evaluator sees class module `submit`. |
+| `src/placer/pipeline/macro_placer.py` | Top-level orchestration: budgeted candidate generation, DREAMPlace integration, R2 loop scheduling, final placement selection. |
+| `src/placer/config.py` | Runtime config, GPU backend detection, numba feature flag, and `_log`. |
+| `src/placer/scoring/exact.py` | Exact proxy wrapper over patched `PlacementCost`: WL + density + congestion. |
+| `src/placer/scoring/incremental.py` | `IncrementalScorer`, the stateful bit-exact scorer used by swaps and relocation moves. |
+| `src/placer/scoring/{wirelength,density,congestion}.py` | Vectorized PLC scoring patches and cost helpers. |
+| `src/placer/routing/apply.py` | Vectorized routing demand, strip batching, 2-pin/3-pin dispatch, smoothing, and routing subset/struct apply helpers. |
+| `src/placer/plc/loader.py` | `PlacementCost` loader. |
+| `src/placer/plc/placement.py` | Position cache and fast placement setter used by scoring. |
+| `src/placer/legalize/` | Minimum-displacement legalization and hard-macro swap legality helpers. |
+| `src/placer/local_search/` | 2-opt, relocation, soft moves, hard-soft moves, and multiprocessing workers. |
+| `src/placer/perturb/congestion_gradient.py` | Congestion-gradient perturbation used by global move phases. |
+| `src/dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async DREAMPlace subprocess launcher. |
+| `docs/ARCHITECTURE.md` | Design overview + pipeline visualization + algorithm explanations. Start here for the "how it works" tour. |
 | `docs/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
-| `docs/ISSUES.md` | Open issues + closed dead-ends with evidence (R1/R2/DP1/S1/S9/O3/P3…). |
-| `docs/DREAMPLACE_FIXES.md` | DREAMPlace bridge/source patches (gitignored vendor trees → recorded here for reapply). |
-| `dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async subprocess launcher (`launch_dreamplace_async`). |
-| `test/verification/` | Bit-exactness checks vs the scalar reference (`_verify_incremental_scorer.py`, `_verify_score_move.py`, …). |
-| `test/diagnostic/` | Profiling + analysis (`_profile_density.py`, `_term_breakdown.py`, `_reloc_leverage.py`, …). |
-| `test/dreamplace/` | DREAMPlace bridge tests + DP1 probes (`_routopt_poc.py`, `_routopt_calib.py`, …). |
+| `docs/ISSUES.md` | Open issues + closed dead-ends with evidence. |
+| `docs/DREAMPLACE_FIXES.md` | DREAMPlace bridge/source patches for gitignored vendor trees. |
+| `test/verification/` | Bit-exactness checks vs the scalar reference. |
+| `test/diagnostic/` | Profiling + analysis. |
+| `test/dreamplace/` | DREAMPlace bridge tests + DP1 probes. |
 
-### Env-gated diagnostics in `placer.py` (no effect unless set)
+### Recent system changes
+
+- Replaced the old monolithic `placer.py` submission with `src/submit.py` plus
+  a package under `src/placer/`.
+- Moved `dreamplace_bridge/` under `src/` and updated bridge root discovery so
+  it still finds the repository from the nested package location.
+- Split scoring, routing, PLC state management, legalization, local-search
+  moves, perturbation, and pipeline orchestration into separate modules.
+- Moved the multiprocessing 2-opt seed worker into
+  `src/placer/local_search/workers.py`; it is now importable as a normal module
+  instead of relying on the old synthetic pickle wrapper.
+- Updated package `__init__.py` exports for `scoring`, `routing`, `plc`,
+  `local_search`, `legalize`, `perturb`, and `pipeline`.
+- Verified the reorganized entrypoint with bytecode compilation, import smoke,
+  and `uv run evaluate submissions/varrahan/v2/src/submit.py -b ibm01`
+  (`VALID`, proxy `0.9078`, CUDA backend detected locally).
+
+### Env-gated diagnostics in `src/placer/pipeline/macro_placer.py` (no effect unless set)
 
 `DP_DIAG=1` (decompose DP candidates vs best), `DP_PROBE=1` (DP-basin
 recoverability ceiling test), `RELOC_PROBE=1` (relocation-on-best probe).
@@ -244,8 +318,8 @@ Plus the NCTUgr-map guard patch in `docs/DREAMPLACE_FIXES.md` if enabling
 ## Commands
 
 ```bash
-uv run evaluate submissions/varrahan/v2/placer.py -b ibm04      # single benchmark
-uv run evaluate submissions/varrahan/v2/placer.py --all         # headline (~25 min)
-uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/placer.py
+uv run evaluate submissions/varrahan/v2/src/submit.py -b ibm04      # single benchmark
+uv run evaluate submissions/varrahan/v2/src/submit.py --all         # headline (~25 min)
+uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/src/submit.py
 uv run python submissions/varrahan/v2/test/verification/_verify_score_move.py
 ```

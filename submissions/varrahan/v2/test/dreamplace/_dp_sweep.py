@@ -25,7 +25,7 @@ HERE = Path(__file__).resolve()
 REPO_ROOT = HERE.parents[5]
 V2_DIR = HERE.parents[2]
 
-for p in (str(REPO_ROOT), str(V2_DIR)):
+for p in (str(REPO_ROOT), str(V2_DIR / "src")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
