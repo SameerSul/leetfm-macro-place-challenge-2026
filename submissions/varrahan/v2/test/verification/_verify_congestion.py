@@ -17,7 +17,7 @@ from macro_place.loader import load_benchmark_from_dir
 
 import importlib.util
 
-V2 = ROOT / "submissions" / "varrahan" / "v2" / "src" / "submit.py"
+V2 = ROOT / "submissions" / "varrahan" / "v2" / "src" / "main.py"
 spec = importlib.util.spec_from_file_location("v2_placer", V2)
 v2 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v2)

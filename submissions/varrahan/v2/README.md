@@ -212,7 +212,7 @@ the same-macro / nearby pattern vs the cache-defeating random-k pattern).
 
 ## Source layout
 
-The submission now lives under `src/`. `src/submit.py` is the evaluator-facing
+The submission now lives under `src/`. `src/main.py` is the evaluator-facing
 entrypoint; it imports `MacroPlacer` from `placer.pipeline.macro_placer` and
 keeps compatibility delegation for diagnostics that still reach private helpers
 through the submission module.
@@ -223,7 +223,7 @@ submissions/varrahan/v2/
 ├── docs/
 ├── test/
 └── src/
-    ├── submit.py
+    ├── main.py
     ├── dreamplace_bridge/
     │   ├── bookshelf_to_pb.py
     │   ├── pb_to_bookshelf.py
@@ -260,7 +260,7 @@ submissions/varrahan/v2/
 
 | Path | Purpose |
 |---|---|
-| `src/submit.py` | **Submission entrypoint** for `uv run evaluate`; wraps `MacroPlacer` so the evaluator sees class module `submit`. |
+| `src/main.py` | **Submission entrypoint** for `uv run evaluate`; wraps `MacroPlacer` so the evaluator sees class module `submit`. |
 | `src/placer/pipeline/macro_placer.py` | Top-level orchestration: budgeted candidate generation, DREAMPlace integration, R2 loop scheduling, final placement selection. |
 | `src/placer/config.py` | Runtime config, GPU backend detection, numba feature flag, and `_log`. |
 | `src/placer/scoring/exact.py` | Exact proxy wrapper over patched `PlacementCost`: WL + density + congestion. |
@@ -283,7 +283,7 @@ submissions/varrahan/v2/
 
 ### Recent system changes
 
-- Replaced the old monolithic `placer.py` submission with `src/submit.py` plus
+- Replaced the old monolithic `placer.py` submission with `src/main.py` plus
   a package under `src/placer/`.
 - Moved `dreamplace_bridge/` under `src/` and updated bridge root discovery so
   it still finds the repository from the nested package location.
@@ -295,7 +295,7 @@ submissions/varrahan/v2/
 - Updated package `__init__.py` exports for `scoring`, `routing`, `plc`,
   `local_search`, `legalize`, `perturb`, and `pipeline`.
 - Verified the reorganized entrypoint with bytecode compilation, import smoke,
-  and `uv run evaluate submissions/varrahan/v2/src/submit.py -b ibm01`
+  and `uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01`
   (`VALID`, proxy `0.9078`, CUDA backend detected locally).
 
 ### Env-gated diagnostics in `src/placer/pipeline/macro_placer.py` (no effect unless set)
@@ -318,8 +318,8 @@ Plus the NCTUgr-map guard patch in `docs/DREAMPLACE_FIXES.md` if enabling
 ## Commands
 
 ```bash
-uv run evaluate submissions/varrahan/v2/src/submit.py -b ibm04      # single benchmark
-uv run evaluate submissions/varrahan/v2/src/submit.py --all         # headline (~25 min)
-uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/src/submit.py
+uv run evaluate submissions/varrahan/v2/src/main.py -b ibm04      # single benchmark
+uv run evaluate submissions/varrahan/v2/src/main.py --all         # headline (~25 min)
+uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/src/main.py
 uv run python submissions/varrahan/v2/test/verification/_verify_score_move.py
 ```

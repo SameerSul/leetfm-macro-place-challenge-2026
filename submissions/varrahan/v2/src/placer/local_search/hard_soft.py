@@ -24,24 +24,18 @@ def _two_opt_hard_soft_swap(
     soft_movable: "np.ndarray | None" = None,
     use_density: bool = False,
 ) -> "tuple[np.ndarray, np.ndarray, int, float]":
-    """HXS (2026-05-30): hard ⇄ soft cross-swap. Exchanges one hard macro's
-    position with one soft macro's position. The hard-2opt swaps only hards,
-    and the soft-2opt swaps only softs - neither can find a hard/soft pair
-    whose configurations would be improved by trading places (e.g., a routing-
-    heavy hard sitting in a quiet area + a high-density soft in a congested
-    corridor).
+    """Hard-soft cross-swap: exchange a hard macro's position with a soft's.
 
-    Hot list: top_hot hardest hards by the chosen field (max(H,V) congestion
-    when use_density=False, occupancy when True). For each hot hard, candidate
-    swap partners = its k_neighbors nearest movable softs.
+    Neither hard-2opt (hards only) nor soft-2opt (softs only) can find a
+    hard/soft pair that would improve by trading places. Hot list = top_hot
+    hardest hards by the chosen field (max(H,V) congestion, or occupancy when
+    use_density=True); for each, partners = its k_neighbors nearest movable softs.
 
-    Legality: the hard's new position (the soft's old position) must satisfy
-    in-bounds + no overlap with OTHER hard macros (overlap with the hard's own
-    old footprint is fine - that's where it came from). The soft going to the
-    hard's old slot has no legality check (softs may overlap). Accept-on-true-
-    proxy via score_swap_hard_soft / commit_swap_hard_soft.
-
-    Returns (hard_pos, soft_pos, accepts, best_score)."""
+    Legality: the hard's new position (the soft's old slot) must be in-bounds with
+    no overlap with OTHER hard macros; the soft has no legality check (may
+    overlap). Accept-on-true-proxy. Returns (hard_pos, soft_pos, accepts,
+    best_score).
+    """
     num_soft = incremental_scorer.num_soft
     if num_soft < 1:
         return hard_pos, soft_pos, 0, initial_score
@@ -162,25 +156,18 @@ def _three_opt_hard_soft_soft(
     soft_movable: "np.ndarray | None" = None,
     use_density: bool = False,
 ) -> "tuple[np.ndarray, np.ndarray, int, float]":
-    """HS3 (2026-05-31): hard-soft-soft 3-cycle rotation.
+    """Hard-soft-soft 3-cycle rotation: H takes S1's slot, S1 takes S2's, S2
+    takes H's.
 
-    For each hot hard H, considers the cycle H → S1 → S2 → H where S1 is
-    one of H's k_inner nearest movable softs, and S2 is one of S1's
-    k_inner nearest movable softs. The cycle is: H takes S1's old pos,
-    S1 takes S2's old pos, S2 takes H's old pos.
+    For each hot hard H, S1 ranges over H's k_inner nearest movable softs and S2
+    over S1's k_inner nearest. Captures patterns no 2-opt can: when H wants S1's
+    slot but H<->S1 hurts because S1's connections must move too, the single
+    combined 3-cycle reaches what separate swaps can't.
 
-    Captures patterns no 2-opt can: when a hard wants S1's slot but
-    swapping H↔S1 hurts because S1's current connections need to go
-    elsewhere, the 3-cycle finds a single combined move that 2-opt
-    (which would have to accept S1↔S2 separately) cannot reach.
-
-    Legality: hard's new position (S1's old position) must satisfy
-    in-bounds + no overlap with OTHER hard macros (overlap with hard's
-    own old footprint is OK). Softs may overlap, no legality check for
-    them.
-
-    Cost: O(top_hot × k_inner²) trials. With top_hot=15, k_inner=5 →
-    ~375 trials × ~10ms = ~3.8s/pass - gated by a tight deadline."""
+    Legality: hard's new position (S1's old slot) must be in-bounds with no
+    overlap with OTHER hard macros; softs may overlap (no check). Cost is
+    O(top_hot * k_inner^2) trials, gated by a tight deadline.
+    """
     num_soft = incremental_scorer.num_soft
     if num_soft < 2:
         return hard_pos, soft_pos, 0, initial_score

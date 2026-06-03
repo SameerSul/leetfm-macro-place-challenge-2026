@@ -42,7 +42,7 @@ from placer import _will_legalize  # type: ignore  # noqa: E402
 
 # Both sameer_v1 and v2 expose a module named `placer`; load v2's by path
 # under a distinct name to avoid the sys.modules cache collision above.
-_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "src" / "submit.py"))
+_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "src" / "main.py"))
 _v2 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_v2)
 _build_wl_cache = _v2._build_wl_cache
