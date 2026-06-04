@@ -21,9 +21,7 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
     _patch_plc_congestion(plc, benchmark)
     _patch_plc_density(plc, benchmark)
     placement_np = placement.cpu().numpy()
-    # Soft macros stay at the positions in `placement` (centroid re-snap was
-    # rejected). DP candidates carry DP-optimized softs in dp_pl[n:]; non-DP
-    # candidates keep the initial softs.
+    # The placement tensor carries both hard and soft macro positions.
     _fast_set_placement(plc, placement_np, benchmark)
     wl = plc.get_cost()
     dens = plc.get_density_cost()

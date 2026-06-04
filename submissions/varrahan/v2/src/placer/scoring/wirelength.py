@@ -4,21 +4,6 @@ import numpy as np
 
 from placer.plc.placement import _ensure_pos_cache
 
-def _build_macro_pin_map(plc):
-    """Cache MACRO_NAME -> [pin_indices] on plc (mirrors objective._set_placement's
-    one-time build, but built eagerly here so the fast path doesn't fork on the
-    hasattr check every call)."""
-    if hasattr(plc, "_macro_pin_map"):
-        return plc._macro_pin_map
-    pin_map: "dict[str, list[int]]" = {}
-    for idx, mod in enumerate(plc.modules_w_pins):
-        if mod.get_type() == "MACRO_PIN" and hasattr(mod, "get_macro_name"):
-            name = mod.get_macro_name()
-            pin_map.setdefault(name, []).append(idx)
-    plc._macro_pin_map = pin_map
-    return pin_map
-
-
 def _build_wl_cache(plc):
     """Precompute per-pin arrays used by the vectorized wirelength.
 

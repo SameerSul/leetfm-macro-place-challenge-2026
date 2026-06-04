@@ -13,13 +13,7 @@ else:
     _GPU_BACKEND = "cpu"
     _GPU_DEVICE_NAME = "CPU"
 
-# Speedup #34 (2026-05-31): numba JIT for the routing-apply hot loops
-# (_apply_h_strips_batch / _apply_v_strips_batch). Profile on ibm15 attributed
-# 10% of per-move time to these two strip-fillers alone, plus another 38%
-# inside _apply_3pin_routing_vec → strips. Numba-jitted explicit-loop
-# variants are ~3-5× the numpy version. Soft-import so the placer still
-# works in eval environments without numba installed (falls back to the
-# original numpy path).
+# Use numba for routing hot loops when available; otherwise use numpy fallbacks.
 try:
     from numba import njit as _numba_njit
     HAS_NUMBA = True
@@ -30,4 +24,3 @@ except ImportError:
 
 def _log(msg: str) -> None:
     print(msg, flush=True)
-

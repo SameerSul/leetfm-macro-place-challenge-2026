@@ -103,7 +103,7 @@ def _multiseed_2opt_worker(
     # Run 2-opt (same parameters as the inline path).
     pass_deadline = time.monotonic() + deadline_sec
     work_hard = seed_pl_full_np[:n].copy()
-    opt_pos, ac, fs, sc = _two_opt_proxy_swap(
+    opt_pos, ac, _, sc = _two_opt_proxy_swap(
         work_hard, sizes_np, hw_np, hh_np, cw, ch, movable_np, n,
         score_fn=_score_fn, initial_score=seed_score,
         k_neighbors=k_neighbors, max_iters=max_iters, deadline=pass_deadline,
