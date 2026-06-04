@@ -220,7 +220,7 @@ Target: beat RePlAce avg of 1.4578.
 > `monotonic` budget held — no benchmark returned baseline.)
 >
 > **Disproven this session:** the "shared scorer" lever — measure-first
-> profile (`_profile_init.py`) showed the per-pass fixed overhead is only
+> profiling showed the per-pass fixed overhead is only
 > ~0.1–0.28s/round (not the projected 60–75s), so a shared-scorer refactor
 > would save <1.7s/benchmark and risk correctness. NOT implemented. **Disproven:** R4 WL-aware hard
 > relocation (net-centroid target bias) — slightly worse, reverted (scaffolding

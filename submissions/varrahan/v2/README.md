@@ -192,7 +192,7 @@ The whole stack is **strictly bit-exact** (verified by the three move-path
 verifiers: `_verify_incremental_scorer.py`, `_verify_score_move.py`,
 `_verify_score_move_soft.py`) and **strictly non-regressing** (accept-on-true-
 proxy is preserved end-to-end). Diagnostics that produced and constrained the
-plan: `_profile_init.py` (retired the shared-scorer refactor — per-pass fixed
+plan: the fixed-overhead measurement (retired the shared-scorer refactor — per-pass fixed
 overhead is 0.1–0.28 s/round, not the 60–75 s estimated), `_profile_move.py`
 and `_profile_move_internals.py` (cong cost 17%, density 0.7%, routing-apply
 67% → the latter two are where the speedups were targeted), and
@@ -208,7 +208,7 @@ the same-macro / nearby pattern vs the cache-defeating random-k pattern).
 | **S1** basin-hopping 2-opt (cong-grad kick) | DISPROVEN — slicing the budget starves the deadline-bound search; 6/7 worse. |
 | **O3** soft-macro repositioning (bulk/gradient) | CLOSED for bulk methods — R5 discrete soft relocation is what works. |
 | **R4** WL-aware hard-relocation (net-centroid target bias) | DISPROVEN — slightly worse than nearest-to-current; scaffolding kept inert (`wl_blend`, `hard_net_centroids()`, `WLAWARE_PROBE`). |
-| **Shared-scorer interleave refactor** (the original P5 plan) | RETIRED — `_profile_init.py` measured the per-pass fixed overhead at 0.1–0.28 s/round (not the projected 60–75 s), so the refactor would save <1.7 s/benchmark and risk the bit-exact core. Replaced by the incremental-cong-cost + #1 + #2 stack above. |
+| **Shared-scorer interleave refactor** (the original P5 plan) | RETIRED — fixed-overhead profiling measured 0.1–0.28 s/round (not the projected 60–75 s), so the refactor would save <1.7 s/benchmark and risk the bit-exact core. Replaced by the incremental-cong-cost + #1 + #2 stack above. |
 
 ## Source layout
 
