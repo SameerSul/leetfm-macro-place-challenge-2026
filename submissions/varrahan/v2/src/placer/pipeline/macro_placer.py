@@ -33,6 +33,7 @@ from placer.local_search.relocation import _relocation_moves, _soft_relocation_m
 from placer.local_search.soft_moves import _two_opt_soft_swap
 from placer.local_search.two_opt import _two_opt_proxy_swap
 from placer.local_search.workers import _multiseed_2opt_worker
+from placer.ml.data_collection import get_candidate_trace
 from placer.perturb.congestion_gradient import _routing_congestion_perturb
 from placer.plc.loader import _load_plc
 from placer.scoring.exact import _exact_proxy, _proxy_decomp
@@ -240,6 +241,32 @@ class MacroPlacer:
                 f"done={self._benchmarks_done}/{self.HARNESS_TOTAL_BENCHMARKS})"
                 if self._benchmarks_done >= 1 else ""))
 
+        _ml_trace = get_candidate_trace()
+        if _ml_trace is not None:
+            _ml_trace.start_benchmark(
+                benchmark=benchmark,
+                seed=self.seed,
+                effective_budget_s=effective_budget_s,
+                benchmark_index=self._benchmarks_done,
+                config={
+                    "n_restarts": self.n_restarts,
+                    "noise_fracs": self.noise_fracs,
+                    "time_budget_s": self.time_budget_s,
+                    "budget_overrun_s": self.BUDGET_OVERRUN_S,
+                },
+            )
+            _ml_trace.set_context(phase="pipeline", elapsed_s=0.0)
+
+        def _ml_finish(reason: str, final_score=None) -> None:
+            if _ml_trace is not None:
+                _ml_trace.set_context(
+                    phase="complete",
+                    elapsed_s=time.monotonic() - t0,
+                    current_best_score=final_score,
+                )
+                _ml_trace.event("benchmark_end", reason=reason, final_score=final_score)
+                _ml_trace.flush()
+
         # Exact scoring cutoffs. After the congestion vectorization, even the
         # largest IBM benchmark scores fast enough to run the full restart
         # pipeline, so the thresholds admit all 17; the SLOW_SCORE_THRESHOLD_S
@@ -420,6 +447,7 @@ class MacroPlacer:
                                      f"{base_score:.4f}); returning DP placement")
                                 _log(f"  total={time.monotonic()-t0:.1f}s")
                                 self._total_place_time_s += time.monotonic() - t0
+                                _ml_finish("large_dp_early_return", float(dp_score_large))
                                 self._benchmarks_done += 1
                                 return dp_pl_large
                             else:
@@ -444,6 +472,7 @@ class MacroPlacer:
 
             _log(f"  total={time.monotonic()-t0:.1f}s")
             self._total_place_time_s += time.monotonic() - t0
+            _ml_finish("insufficient_budget")
             self._benchmarks_done += 1
             return pl_scratch  # safe: no more in-place writes will happen
 
@@ -462,6 +491,7 @@ class MacroPlacer:
                     pass
             _log(f"  total={time.monotonic()-t0:.1f}s")
             self._total_place_time_s += time.monotonic() - t0
+            _ml_finish("exact_scoring_unavailable")
             self._benchmarks_done += 1
             return pl_scratch
 
@@ -483,6 +513,7 @@ class MacroPlacer:
                     pass
             _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
             self._total_place_time_s += time.monotonic() - t0
+            _ml_finish("baseline_score_too_slow", best_score)
             self._benchmarks_done += 1
             return best_pl
 
@@ -999,6 +1030,15 @@ class MacroPlacer:
                 except Exception:
                     macro_cong = None
 
+                if _ml_trace is not None:
+                    _ml_trace.set_context(
+                        phase="multi_seed_2opt",
+                        pass_name="hard_2opt",
+                        seed_tag=seed_tag,
+                        elapsed_s=time.monotonic() - t0,
+                        remaining_budget_s=rem,
+                        current_best_score=work_score,
+                    )
                 opt_pos, ac, _fs, sc = _two_opt_proxy_swap(
                     work_hard, sizes, hw, hh, cw, ch, movable, n,
                     score_fn=_2opt_score, initial_score=work_score,
@@ -1228,6 +1268,20 @@ class MacroPlacer:
                 _round_scorer_dirty[0] = True
                 return False
 
+        def _ml_r2_context(pass_name: str, field: str | None, remaining_s: float, **extra):
+            if _ml_trace is not None:
+                _ml_trace.set_context(
+                    phase="r2",
+                    r2_round=_r2 + 1,
+                    pass_name=pass_name,
+                    field=field,
+                    elapsed_s=time.monotonic() - t0,
+                    remaining_budget_s=remaining_s,
+                    current_best_score=best_score,
+                    round_start_score=_r2_prev_best,
+                    **extra,
+                )
+
         for _r2 in range(R2_MAX_ROUNDS):
             rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if rem_r2 < 3.0 * t_one_score + 3.0:
@@ -1246,6 +1300,7 @@ class MacroPlacer:
             # since the outer 2-opt leaves plc at its last kick candidate. Saves
             # (n_rounds - 1) x t_one_score per benchmark.
             try:
+                _ml_r2_context("hard_relocation", "congestion", rem_r2)
                 t_rel = time.monotonic()
                 base_rel = float(_exact_proxy(best_pl, benchmark, plc))
                 rel_scorer = _round_scorer_get()
@@ -1278,6 +1333,7 @@ class MacroPlacer:
             # drops it after a zero-accept streak (it usually finds 0-3 moves).
             if _empty_streak["reloc_density"] < SKIP_EMPTY_AFTER:
                 try:
+                    _ml_r2_context("hard_relocation", "density", rem_r2)
                     t_rel_d = time.monotonic()
                     base_rel_d = float(_exact_proxy(best_pl, benchmark, plc))
                     rel_scorer_d = _round_scorer_get()
@@ -1316,6 +1372,7 @@ class MacroPlacer:
             # gate. Skip-if-empty after consecutive empty rounds. ---
             if _empty_streak["reloc_combined"] < SKIP_EMPTY_AFTER:
                 try:
+                    _ml_r2_context("hard_relocation", "combined", rem_r2)
                     t_rel_c = time.monotonic()
                     base_rel_c = float(_exact_proxy(best_pl, benchmark, plc))
                     rel_scorer_c = _round_scorer_get()
@@ -1376,6 +1433,12 @@ class MacroPlacer:
                     else R3_SOFT_TGT
                 )
                 try:
+                    _ml_r2_context(
+                        "soft_relocation",
+                        _sfield,
+                        rem_sr,
+                        congestion_saturated=_cong_saturated,
+                    )
                     t_sr = time.monotonic()
                     base_sr = float(_exact_proxy(best_pl, benchmark, plc))
                     sr_scorer = _round_scorer_get()
@@ -1437,6 +1500,12 @@ class MacroPlacer:
                         rem_ss = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
                         if rem_ss < 2.0 * t_one_score + 2.0:
                             break
+                        _ml_r2_context(
+                            "soft_2opt",
+                            _ssfield,
+                            rem_ss,
+                            inner_pass=_a5_pass + 1,
+                        )
                         t_ss = time.monotonic()
                         base_ss = float(_exact_proxy(best_pl, benchmark, plc))
                         ss_scorer = _round_scorer_get()
@@ -1503,6 +1572,7 @@ class MacroPlacer:
                 if rem_x < 2.0 * t_one_score + 2.0:
                     break
                 try:
+                    _ml_r2_context("hard_soft_swap", _xfield, rem_x)
                     t_x = time.monotonic()
                     base_x = float(_exact_proxy(best_pl, benchmark, plc))
                     x_scorer = _round_scorer_get()
@@ -1556,6 +1626,7 @@ class MacroPlacer:
                 if rem_h3 < 2.0 * t_one_score + 2.0:
                     break
                 try:
+                    _ml_r2_context("hard_soft_soft_cycle", _h3field, rem_h3)
                     t_h3 = time.monotonic()
                     base_h3 = float(_exact_proxy(best_pl, benchmark, plc))
                     h3_scorer = _round_scorer_get()
@@ -1596,6 +1667,7 @@ class MacroPlacer:
 
             # --- 2-opt cleanup pass (swaps around the relocated macros) ---
             try:
+                _ml_r2_context("hard_2opt", "congestion", rem_r2)
                 t_2o = time.monotonic()
                 base_2o = float(_exact_proxy(best_pl, benchmark, plc))
                 o_scorer = _round_scorer_get()
@@ -1660,6 +1732,15 @@ class MacroPlacer:
                 if rem_post < t_one_score * 1.5:
                     break
                 try:
+                    if _ml_trace is not None:
+                        _ml_trace.set_context(
+                            phase="post_r2",
+                            pass_name="soft_relocation",
+                            field=_post_field,
+                            elapsed_s=time.monotonic() - t0,
+                            remaining_budget_s=rem_post,
+                            current_best_score=best_score,
+                        )
                     _post_base = best_score
                     _post_shared = IncrementalScorer(
                         plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
@@ -1857,6 +1938,7 @@ class MacroPlacer:
                 traceback.print_exc()
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
+        _ml_finish("completed", best_score)
         self._total_place_time_s += time.monotonic() - t0
         self._benchmarks_done += 1
         return best_pl

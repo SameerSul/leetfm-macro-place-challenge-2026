@@ -13,6 +13,9 @@ ranker for each move family**:
 - hard relocation
 - soft relocation
 - hard 2-opt
+- soft 2-opt
+- hard-soft swap
+- hard-soft-soft cycle
 
 Start with XGBoost: compare a regressor that predicts exact proxy gain against a
 LambdaMART ranker trained on within-group ordinal relevance labels. For every
@@ -33,18 +36,50 @@ creates a much harder correctness and generalization problem.
 Tracing is opt-in and does not change placement decisions:
 
 ```bash
-ML_TRACE_PATH=/tmp/ibm_moves.jsonl \
+ML_TRACE_PATH=/tmp/ibm_moves.jsonl.gz \
   uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01
+```
+
+For any run that enables subprocess-based local search, use placeholders so
+each process writes its own valid JSONL stream:
+
+```bash
+ML_TRACE_PATH='/tmp/traces/{run_id}-{pid}.jsonl.gz' \
+  uv run evaluate submissions/varrahan/v2/src/main.py --all
 ```
 
 For broader data, run all public benchmarks across multiple seeds/configurations
 and write each run to a separate JSONL file. Each row contains:
 
+- `row_type`: `candidate` for model rows or `event` for metadata/summaries
+- `run_id`, seed, configuration, configuration hash, and benchmark dimensions
+- search context: phase, R2 round, pass, elapsed time, and remaining budget
 - `group_id`: candidates competing at the same decision state
-- `operator` and `field`
+- `operator`, `field`, heuristic rank, group size, and candidate source
 - normalized, inference-cheap candidate features
 - `score_gain = state_score - trial_score`, the supervised regression label
 - `improves`, a convenient binary label
+- group-summary events with generated/scored/rejected candidate counts
+
+Use a `.gz` suffix for full runs. Compression is transparent to the collector
+and dataset loader and substantially reduces the large candidate-level traces.
+Full configuration metadata is stored once in each `benchmark_start` event;
+candidate rows retain the stable run/config hash and numeric benchmark context.
+
+Training loaders must select only `row_type == "candidate"`. Event rows are for
+data-quality analysis, especially measuring legality and cheap-prefilter
+selection bias.
+
+`placer.ml.dataset` provides dependency-free helpers to load/flatten candidates,
+derive within-group LambdaMART relevance, and summarize trace quality:
+
+```python
+from placer.ml.dataset import add_group_relevance, load_candidates, trace_summary
+
+paths = ["/tmp/traces/run-a.jsonl", "/tmp/traces/run-b.jsonl"]
+rows = add_group_relevance(load_candidates(paths, operator="hard_relocation"))
+print(trace_summary(paths))
+```
 
 Split train/validation/test **by benchmark and run**, never by row. Row-level
 splits leak nearly identical states and overstate generalization. Hold out at

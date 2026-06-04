@@ -6,7 +6,8 @@ import numpy as np
 import torch
 
 from placer.config import _GPU_DEVICE, _USE_GPU
-from placer.ml.data_collection import get_candidate_trace
+from placer.local_search.fields import _density_field
+from placer.ml.data_collection import get_candidate_trace, net_degree_features
 
 def _two_opt_proxy_swap(
     legal_pos: np.ndarray,
@@ -44,6 +45,20 @@ def _two_opt_proxy_swap(
 
     pos = legal_pos.copy()
     trace = get_candidate_trace()
+    trace_density = None
+    trace_density_max = 1.0
+    trace_density_ri = trace_density_ci = None
+    if trace is not None and incremental_scorer is not None:
+        bm = incremental_scorer.benchmark
+        trace_density = _density_field(incremental_scorer, bm.grid_rows, bm.grid_cols)
+        if trace_density is not None:
+            trace_density_max = max(float(trace_density.max()), 1e-12)
+            trace_density_ci = np.clip(
+                (pos[:, 0] / (cw / bm.grid_cols)).astype(np.int64), 0, bm.grid_cols - 1
+            )
+            trace_density_ri = np.clip(
+                (pos[:, 1] / (ch / bm.grid_rows)).astype(np.int64), 0, bm.grid_rows - 1
+            )
     best_score = initial_score
     accept_count = 0
     score_calls = 0
@@ -120,7 +135,11 @@ def _two_opt_proxy_swap(
                 cand_js = neighbors[i]
             state_score = best_score
             group_id = trace.next_group_id("hard_2opt") if trace is not None else None
-            for j in cand_js:
+            rejected_bounds = 0
+            rejected_overlap = 0
+            scored = 0
+            spatial_set = set(int(x) for x in neighbors[i])
+            for candidate_rank, j in enumerate(cand_js):
                 j = int(j)
                 if not movable[j] or i == j:
                     continue
@@ -133,9 +152,11 @@ def _two_opt_proxy_swap(
                 # Bounds check
                 if (new_ix - hw[i] < -EPS or new_ix + hw[i] > cw + EPS or
                         new_iy - hh[i] < -EPS or new_iy + hh[i] > ch + EPS):
+                    rejected_bounds += 1
                     continue
                 if (new_jx - hw[j] < -EPS or new_jx + hw[j] > cw + EPS or
                         new_jy - hh[j] < -EPS or new_jy + hh[j] > ch + EPS):
+                    rejected_bounds += 1
                     continue
 
                 # Conflict check (vs all macros except i and j)
@@ -149,16 +170,19 @@ def _two_opt_proxy_swap(
                 conf_i = ((np.abs(new_ix - ox) < sxi + EPS) &
                           (np.abs(new_iy - oy) < syi + EPS)).any()
                 if conf_i:
+                    rejected_overlap += 1
                     continue
                 sxj = sep_x_mat[j, mask]
                 syj = sep_y_mat[j, mask]
                 conf_j = ((np.abs(new_jx - ox) < sxj + EPS) &
                           (np.abs(new_jy - oy) < syj + EPS)).any()
                 if conf_j:
+                    rejected_overlap += 1
                     continue
                 # i↔j separation (already legal pre-swap; verify defensively)
                 if (abs(new_ix - new_jx) < sep_x_mat[i, j] + EPS and
                         abs(new_iy - new_jy) < sep_y_mat[i, j] + EPS):
+                    rejected_overlap += 1
                     continue
 
                 # Apply swap tentatively, score, decide
@@ -176,40 +200,36 @@ def _two_opt_proxy_swap(
                 else:
                     trial_score = score_fn(pos)
                 score_calls += 1
+                scored += 1
                 if trace is not None:
-                    benchmark_name = (
-                        incremental_scorer.benchmark.name
-                        if incremental_scorer is not None
-                        else "unknown"
-                    )
+                    degree_features = {}
+                    if incremental_scorer is not None:
+                        degree_features.update(
+                            net_degree_features(
+                                incremental_scorer,
+                                incremental_scorer.hard_indices[i],
+                                "i_",
+                            )
+                        )
+                        degree_features.update(
+                            net_degree_features(
+                                incremental_scorer,
+                                incremental_scorer.hard_indices[j],
+                                "j_",
+                            )
+                        )
                     trace.record(
-                        benchmark=benchmark_name,
                         operator="hard_2opt",
                         field="congestion" if cong_aware else "spatial",
                         group_id=group_id,
                         state_score=state_score,
                         trial_score=trial_score,
+                        candidate_rank=candidate_rank,
+                        group_size=len(cand_js),
+                        candidate_source="spatial_knn" if j in spatial_set else "cold_teleport",
                         features={
-                            "i_net_degree_norm": float(
-                                len(
-                                    incremental_scorer.macro_to_nets.get(
-                                        incremental_scorer.hard_indices[i], ()
-                                    )
-                                )
-                                / max(incremental_scorer.n_nets, 1)
-                            )
-                            if incremental_scorer is not None
-                            else 0.0,
-                            "j_net_degree_norm": float(
-                                len(
-                                    incremental_scorer.macro_to_nets.get(
-                                        incremental_scorer.hard_indices[j], ()
-                                    )
-                                )
-                                / max(incremental_scorer.n_nets, 1)
-                            )
-                            if incremental_scorer is not None
-                            else 0.0,
+                            **degree_features,
+                            "accepted_in_pass": accept_count,
                             "i_w_norm": float(sizes[i, 0] / cw),
                             "i_h_norm": float(sizes[i, 1] / ch),
                             "j_w_norm": float(sizes[j, 0] / cw),
@@ -223,6 +243,25 @@ def _two_opt_proxy_swap(
                             ),
                             "i_congestion_norm": float(mc[i] / mc_scale) if cong_aware else 0.0,
                             "j_congestion_norm": float(mc[j] / mc_scale) if cong_aware else 0.0,
+                            "i_density_norm": (
+                                float(
+                                    trace_density[trace_density_ri[i], trace_density_ci[i]]
+                                    / trace_density_max
+                                )
+                                if trace_density is not None
+                                else 0.0
+                            ),
+                            "j_density_norm": (
+                                float(
+                                    trace_density[trace_density_ri[j], trace_density_ci[j]]
+                                    / trace_density_max
+                                )
+                                if trace_density is not None
+                                else 0.0
+                            ),
+                            "source_hot_rank_norm": float(
+                                np.where(outer_order == i)[0][0] / max(len(outer_order) - 1, 1)
+                            ),
                         },
                     )
                 if trial_score < best_score:
@@ -238,6 +277,18 @@ def _two_opt_proxy_swap(
                     # Revert (scorer already reverted plc internally)
                     pos[i, 0], pos[i, 1] = old_ix, old_iy
                     pos[j, 0], pos[j, 1] = old_jx, old_jy
+            if trace is not None:
+                trace.event(
+                    "candidate_group_summary",
+                    operator="hard_2opt",
+                    field="congestion" if cong_aware else "spatial",
+                    group_id=group_id,
+                    generated=int(len(cand_js)),
+                    scored=scored,
+                    rejected_bounds=rejected_bounds,
+                    rejected_overlap=rejected_overlap,
+                    stopped_after_accept=bool(improved_any),
+                )
 
         if not improved_any:
             break

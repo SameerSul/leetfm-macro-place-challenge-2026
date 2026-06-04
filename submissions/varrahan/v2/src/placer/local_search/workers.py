@@ -62,6 +62,24 @@ def _multiseed_2opt_worker(
 
     bm, _ = load_benchmark_from_dir(iccad_path)
     plc = _load_plc(name, bm)
+    from placer.ml.data_collection import get_candidate_trace
+
+    trace = get_candidate_trace()
+    if trace is not None:
+        trace.start_benchmark(
+            benchmark=bm,
+            seed=-1,
+            config={"worker": "multi_seed_2opt", "seed_tag": seed_tag},
+            effective_budget_s=deadline_sec,
+            benchmark_index=-1,
+        )
+        trace.set_context(
+            phase="multi_seed_2opt_worker",
+            pass_name="hard_2opt",
+            seed_tag=seed_tag,
+            remaining_budget_s=deadline_sec,
+            current_best_score=seed_score,
+        )
 
     # Reconstruct seed placement as a torch tensor matching bm.macro_positions.
     pl_full = bm.macro_positions.clone()
@@ -115,6 +133,10 @@ def _multiseed_2opt_worker(
     cand_pl[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
     cand_pl[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
     true_final = float(_exact_proxy(cand_pl, bm, plc))
+    if trace is not None:
+        trace.set_context(phase="complete", current_best_score=true_final)
+        trace.event("benchmark_end", reason="multi_seed_2opt_worker", final_score=true_final)
+        trace.flush()
 
     return {
         "tag": seed_tag,
