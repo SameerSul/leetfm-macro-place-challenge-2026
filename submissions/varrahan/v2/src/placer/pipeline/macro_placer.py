@@ -36,82 +36,8 @@ from placer.local_search.workers import _multiseed_2opt_worker
 from placer.ml.data_collection import get_candidate_trace
 from placer.perturb.congestion_gradient import _routing_congestion_perturb
 from placer.plc.loader import _load_plc
-from placer.scoring.exact import _exact_proxy, _proxy_decomp
+from placer.scoring.exact import _exact_proxy
 from placer.scoring.incremental import IncrementalScorer
-
-def _dp_recoverability_probe(
-    dp_placements, best_score, n, cw, ch, hw, hh, sizes, movable, plc, benchmark
-):
-    """DP_PROBE ceiling test (2026-05-26): can a GENEROUS, ungated post-hoc
-    congestion treatment of the best DP basin beat the cong-grad-from-baseline
-    'best'? Phase 7 caps cong-grad-from-DP at 3 iters / frac=0.04 with abandon-
-    gates; here we remove all gates - a multi-frac descent (0.08/0.04/0.02, up
-    to 25 iters each, accept-on-proxy) followed by a full 20s 2-opt from the
-    relieved basin. If this still loses to best, post-hoc repair is empirically
-    ruled out (relieving DP's congestion trades away its wl/den edge faster than
-    it gains), which justifies fusing congestion INTO the DREAMPlace objective.
-    """
-    if not dp_placements:
-        _log("  [DP_PROBE] no DP candidates; skipping")
-        return
-    dp_tag, dp_raw, dp_pl0 = min(dp_placements, key=lambda e: e[1])
-    _log(f"  [DP_PROBE] seed=dp[{dp_tag}] raw={dp_raw:.4f}  best={best_score:.4f}")
-    rng = np.random.RandomState(777)
-    cur_pl = dp_pl0.clone()
-    cur_hard = np.stack(
-        [dp_pl0[:n, 0].numpy(), dp_pl0[:n, 1].numpy()], axis=1
-    ).astype(np.float64)
-    cur_score = float(_exact_proxy(cur_pl, benchmark, plc))
-    for frac in (0.08, 0.04, 0.02):
-        no_improve = 0
-        for _it in range(25):
-            # Re-score cur so plc's congestion map matches cur_hard before the
-            # gradient step (correct gradient, not stale).
-            _exact_proxy(cur_pl, benchmark, plc)
-            perturbed = _routing_congestion_perturb(
-                cur_hard, plc, benchmark, n, cw, ch, hw, hh, movable,
-                frac=frac, rng=rng,
-            )
-            leg = _will_legalize(perturbed, movable, sizes, hw, hh, cw, ch, n)
-            trial = cur_pl.clone()
-            trial[:n, 0] = torch.tensor(leg[:, 0], dtype=torch.float32)
-            trial[:n, 1] = torch.tensor(leg[:, 1], dtype=torch.float32)
-            s = float(_exact_proxy(trial, benchmark, plc))
-            if s < cur_score - 1e-5:
-                cur_score, cur_pl, cur_hard = s, trial, leg.astype(np.float64)
-                no_improve = 0
-            else:
-                no_improve += 1
-                if no_improve >= 4:
-                    break
-    _log(f"  [DP_PROBE] after multi-frac cong-grad descent: {cur_score:.4f}")
-    # Full 2-opt from the congestion-relieved DP basin.
-    try:
-        scorer = IncrementalScorer(plc, benchmark, cur_pl.cpu().numpy().astype(np.float64))
-    except Exception:
-        scorer = None
-    scratch = cur_pl.clone()
-
-    def _ps(pa, _s=scratch):
-        p32 = torch.from_numpy(np.ascontiguousarray(pa)).float()
-        _s[:n, 0] = p32[:, 0]
-        _s[:n, 1] = p32[:, 1]
-        return float(_exact_proxy(_s, benchmark, plc))
-
-    opt_pos, ac, _, _ = _two_opt_proxy_swap(
-        cur_hard, sizes, hw, hh, cw, ch, movable, n,
-        score_fn=_ps, initial_score=cur_score, k_neighbors=20, max_iters=6,
-        deadline=time.monotonic() + 20.0, incremental_scorer=scorer,
-    )
-    final_pl = cur_pl.clone()
-    final_pl[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
-    final_pl[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
-    pf, wf, df, cf = _proxy_decomp(final_pl, benchmark, plc)
-    verdict = "BEATS best" if pf < best_score - 1e-4 else "LOSES to best"
-    _log(f"  [DP_PROBE] FINAL dp-basin post-hoc: proxy={pf:.4f} "
-         f"(wl={wf:.4f} den={df:.4f} cong={cf:.4f})  -> {verdict} "
-         f"(best={best_score:.4f}, {ac} 2opt accepts)")
-
 
 class MacroPlacer:
     """Budgeted multi-seed placer with congestion-directed local search.
@@ -954,8 +880,6 @@ class MacroPlacer:
             # which swaps to accept; finalists are re-scored exactly before compare.
             twoopt_best_pl = best_pl
             twoopt_best_score = float(_exact_proxy(best_pl, benchmark, plc))
-            _dp_diag_2opt = []  # (seed_tag, true_final, cand) when DP_DIAG set
-
             # Optional time-shifted multi-seed parallelism (env-gated). When on,
             # the inline loop runs only the "best" seed with solo CPU, then the DP
             # seeds run in a parallel pool after (they contend only with each
@@ -1067,8 +991,6 @@ class MacroPlacer:
                 if true_final < twoopt_best_score:
                     twoopt_best_score = true_final
                     twoopt_best_pl = cand
-                if os.environ.get("DP_DIAG"):
-                    _dp_diag_2opt.append((seed_tag, true_final, cand.clone()))
 
             # Speedup #3 v2: after the inline best-seed 2-opt completes, NOW
             # launch the DP seeds in a parallel subprocess pool. They contend
@@ -1138,12 +1060,6 @@ class MacroPlacer:
                                 _cand[:, 0] = torch.tensor(_opt_full[:, 0], dtype=torch.float32)
                                 _cand[:, 1] = torch.tensor(_opt_full[:, 1], dtype=torch.float32)
                                 twoopt_best_pl = _cand
-                            if os.environ.get("DP_DIAG"):
-                                _cand_diag = best_pl.clone()
-                                _opt_full = _res["opt_pos_full"]
-                                _cand_diag[:, 0] = torch.tensor(_opt_full[:, 0], dtype=torch.float32)
-                                _cand_diag[:, 1] = torch.tensor(_opt_full[:, 1], dtype=torch.float32)
-                                _dp_diag_2opt.append((_t, _res["true_final"], _cand_diag))
                         except Exception as exc:
                             _log(f"  2-opt seed {_t} subprocess failed: "
                                  f"{type(exc).__name__}: {exc}")
@@ -1781,161 +1697,6 @@ class MacroPlacer:
                         float(_exact_proxy(best_pl, benchmark, plc))
                     except Exception:
                         pass
-
-        # DP_DIAG (2026-05-26): decompose where the DP basin loses to "best".
-        # Logs the WEIGHTED proxy split (wl, 0.5*den, 0.5*cong) for each raw DP
-        # candidate, each cong-grad+2-opt-from-seed result, and the final best.
-        # Re-scores placements (mutates plc), so done last, right before return.
-        if os.environ.get("DP_DIAG"):
-            _log("  [DP_DIAG] ---- raw DP candidates (pre cong-grad/2-opt) ----")
-            for _t, _sc, _pl in dp_placements:
-                p, w, d, c = _proxy_decomp(_pl, benchmark, plc)
-                _log(f"  [DP_DIAG] raw dp[{_t}]: proxy={p:.4f}  wl={w:.4f} "
-                     f"den={d:.4f} cong={c:.4f}")
-            if "_dp_diag_2opt" in locals():
-                _log("  [DP_DIAG] ---- after cong-grad+2-opt from each seed ----")
-                for _t, _tf, _pl in _dp_diag_2opt:
-                    p, w, d, c = _proxy_decomp(_pl, benchmark, plc)
-                    _log(f"  [DP_DIAG] 2opt[{_t}]: proxy={p:.4f}  wl={w:.4f} "
-                         f"den={d:.4f} cong={c:.4f}")
-            p, w, d, c = _proxy_decomp(best_pl, benchmark, plc)
-            _log(f"  [DP_DIAG] FINAL best: proxy={p:.4f}  wl={w:.4f} "
-                 f"den={d:.4f} cong={c:.4f}")
-
-        if os.environ.get("DP_PROBE"):
-            _dp_recoverability_probe(
-                dp_placements, best_score, n, cw, ch, hw, hh, sizes,
-                movable, plc, benchmark,
-            )
-
-        # RELOC_PROBE (2026-05-27): congestion-directed relocation moves on the
-        # final best_pl. Builds a fresh scorer, runs _relocation_moves, reports
-        # the true proxy delta + decomposition. Diagnostic only (no production
-        # change) - measure whether relocations beat the 2-opt result.
-        if os.environ.get("RELOC_PROBE"):
-            try:
-                t_rp = time.monotonic()
-                base = float(_exact_proxy(best_pl, benchmark, plc))
-                bw = float(plc.get_cost()); bd = 0.5 * float(plc.get_density_cost())
-                bc = 0.5 * float(plc.get_congestion_cost())
-                rscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
-                rpos = np.stack([best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1).astype(np.float64)
-                rpos, racc, rsc = _relocation_moves(
-                    rpos, sizes, hw, hh, cw, ch, movable, n, plc, benchmark,
-                    rscorer, base, deadline=t_rp + 20.0,
-                )
-                rcand = best_pl.clone()
-                rcand[:n, 0] = torch.tensor(rpos[:, 0], dtype=torch.float32)
-                rcand[:n, 1] = torch.tensor(rpos[:, 1], dtype=torch.float32)
-                rp, rw, rd, rc = _proxy_decomp(rcand, benchmark, plc)
-                verdict = "BEATS best" if rp < base - 1e-4 else "no gain"
-                _log(f"  [RELOC_PROBE] base={base:.4f} (wl={bw:.4f} den={bd:.4f} "
-                     f"cong={bc:.4f}) -> {racc} relocs -> proxy={rp:.4f} "
-                     f"(wl={rw:.4f} den={rd:.4f} cong={rc:.4f}) {verdict} "
-                     f"in {time.monotonic()-t_rp:.1f}s")
-            except Exception as exc:
-                _log(f"  [RELOC_PROBE] failed: {type(exc).__name__}: {exc}")
-
-        # SOFT_RELOC_PROBE (2026-05-28): relocate hot SOFT clusters into low-
-        # congestion cells (R1 idea on softs). Targets the soft/net-dominated
-        # benchmarks (ibm17/18) that hard relocation can't help. Diagnostic only.
-        if os.environ.get("SOFT_RELOC_PROBE"):
-            try:
-                t_sp = time.monotonic()
-                n_soft = benchmark.num_soft_macros
-                base = float(_exact_proxy(best_pl, benchmark, plc))
-                bw = float(plc.get_cost()); bd = 0.5 * float(plc.get_density_cost())
-                bc = 0.5 * float(plc.get_congestion_cost())
-                sscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
-                spos = np.stack([best_pl[n:n + n_soft, 0].numpy(),
-                                 best_pl[n:n + n_soft, 1].numpy()], axis=1).astype(np.float64)
-                ssz = benchmark.macro_sizes[n:n + n_soft].numpy().astype(np.float64)
-                spos, sacc, _ssc = _soft_relocation_moves(
-                    spos, ssz[:, 0] / 2, ssz[:, 1] / 2, cw, ch, n, plc, benchmark,
-                    sscorer, base, deadline=t_sp + 30.0,
-                )
-                scand = best_pl.clone()
-                scand[n:n + n_soft, 0] = torch.tensor(spos[:, 0], dtype=torch.float32)
-                scand[n:n + n_soft, 1] = torch.tensor(spos[:, 1], dtype=torch.float32)
-                sp, sw, sd, sc = _proxy_decomp(scand, benchmark, plc)
-                verdict = "BEATS best" if sp < base - 1e-4 else "no gain"
-                _log(f"  [SOFT_RELOC_PROBE] base={base:.4f} (wl={bw:.4f} den={bd:.4f} "
-                     f"cong={bc:.4f}) -> {sacc} soft relocs -> proxy={sp:.4f} "
-                     f"(wl={sw:.4f} den={sd:.4f} cong={sc:.4f}) {verdict} "
-                     f"in {time.monotonic()-t_sp:.1f}s")
-            except Exception as exc:
-                import traceback
-                _log(f"  [SOFT_RELOC_PROBE] failed: {type(exc).__name__}: {exc}")
-                traceback.print_exc()
-
-        # WLAWARE_PROBE (2026-05-28): A/B WL-aware HARD relocation target selection
-        # on best_pl. For each wl_blend, run one hard relocation pass from the SAME
-        # best_pl (fresh scorer) and report the resulting true proxy. blend=0 is the
-        # current nearest-to-current sort; >0 biases toward each macro's net
-        # centroid (WL anchor). Isolates the target-selection effect. Diagnostic.
-        if os.environ.get("WLAWARE_PROBE"):
-            try:
-                base = float(_exact_proxy(best_pl, benchmark, plc))
-                _log(f"  [WLAWARE_PROBE] base={base:.4f}")
-                for blend in (0.0, 0.5, 1.0):
-                    t_wp = time.monotonic()
-                    wscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
-                    cent = wscorer.hard_net_centroids()
-                    wpos = np.stack([best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1).astype(np.float64)
-                    wpos, wacc, _ = _relocation_moves(
-                        wpos, sizes, hw, hh, cw, ch, movable, n, plc, benchmark,
-                        wscorer, base, deadline=t_wp + 20.0, top_hot=48, n_targets=16,
-                        net_centroid=cent, wl_blend=blend,
-                    )
-                    wcand = best_pl.clone()
-                    wcand[:n, 0] = torch.tensor(wpos[:, 0], dtype=torch.float32)
-                    wcand[:n, 1] = torch.tensor(wpos[:, 1], dtype=torch.float32)
-                    wp, ww, wd, wc = _proxy_decomp(wcand, benchmark, plc)
-                    _log(f"  [WLAWARE_PROBE] blend={blend:.1f}: {wacc} relocs -> "
-                         f"proxy={wp:.4f} (wl={ww:.4f} den={wd:.4f} cong={wc:.4f}) "
-                         f"Δ={wp-base:+.4f} in {time.monotonic()-t_wp:.1f}s")
-            except Exception as exc:
-                import traceback
-                _log(f"  [WLAWARE_PROBE] failed: {type(exc).__name__}: {exc}")
-                traceback.print_exc()
-
-        # DENS_SOFT_PROBE (R5, 2026-05-28): is there DENSITY headroom in the softs
-        # that the congestion-targeted soft pass (R3) missed? On best_pl (where the
-        # cong soft pass is already converged), run a DENSITY-targeted soft
-        # relocation (hot = softs in the densest cells, target = low-density cells)
-        # and report the true-proxy delta + decomposition. If it beats 0, a
-        # density-aware soft pass is worth adding to production. Diagnostic only.
-        if os.environ.get("DENS_SOFT_PROBE"):
-            try:
-                _n_soft = benchmark.num_soft_macros
-                if _n_soft > 0:
-                    base = float(_exact_proxy(best_pl, benchmark, plc))
-                    bw = float(plc.get_cost()); bd = 0.5 * float(plc.get_density_cost())
-                    bc = 0.5 * float(plc.get_congestion_cost())
-                    _ssz = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
-                    _smov = benchmark.get_movable_mask().numpy()[n:n + _n_soft]
-                    for tag, use_d in (("cong", False), ("density", True)):
-                        t_dp = time.monotonic()
-                        dscorer = IncrementalScorer(plc, benchmark, best_pl.cpu().numpy().astype(np.float64))
-                        dpos = np.stack([best_pl[n:n + _n_soft, 0].numpy(),
-                                         best_pl[n:n + _n_soft, 1].numpy()], axis=1).astype(np.float64)
-                        dpos, dacc, _ = _soft_relocation_moves(
-                            dpos, _ssz[:, 0] / 2, _ssz[:, 1] / 2, cw, ch, n, plc, benchmark,
-                            dscorer, base, deadline=t_dp + 30.0, top_hot=96, n_targets=24,
-                            soft_movable=_smov, use_density=use_d,
-                        )
-                        dcand = best_pl.clone()
-                        dcand[n:n + _n_soft, 0] = torch.tensor(dpos[:, 0], dtype=torch.float32)
-                        dcand[n:n + _n_soft, 1] = torch.tensor(dpos[:, 1], dtype=torch.float32)
-                        dp, dw, dd, dc = _proxy_decomp(dcand, benchmark, plc)
-                        _log(f"  [DENS_SOFT_PROBE] field={tag:7s}: {dacc} relocs -> "
-                             f"proxy={dp:.4f} (wl={dw:.4f} den={dd:.4f} cong={dc:.4f}) "
-                             f"Δ={dp-base:+.4f} in {time.monotonic()-t_dp:.1f}s")
-                    _log(f"  [DENS_SOFT_PROBE] base={base:.4f} (wl={bw:.4f} den={bd:.4f} cong={bc:.4f})")
-            except Exception as exc:
-                import traceback
-                _log(f"  [DENS_SOFT_PROBE] failed: {type(exc).__name__}: {exc}")
-                traceback.print_exc()
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
         _ml_finish("completed", best_score)

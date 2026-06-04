@@ -67,8 +67,7 @@ macros (softs may overlap). The proxy gate filters far moves that spike WL.
 −0.034, ibm02 −0.026, ibm01 −0.018, ibm15 −0.016, ibm10/13 −0.011), gain in the
 congestion term as designed, at ~0.1–0.2s/benchmark (~288 incremental score_move
 calls). Strictly non-regressing by construction (best_pl only updates on a true
-re-score improvement). RELOC_PROBE (env-gated) reproduces the per-benchmark
-measurement.
+re-score improvement).
 
 **Why it worked where DP1 didn't:** R1 relieves congestion with a DIRECT,
 proxy-gated move on the placement we already have, rather than trying to fix
@@ -81,7 +80,7 @@ R3 relocated softs by the **congestion** field. R5 adds a second soft pass per
 interleave round that relocates by the **density** field (softs in the densest
 cells → low-density cells). Softs are the bulk of BOTH terms, and — since softs
 may overlap — the cong pass can pile them into low-cong cells without relieving
-density. `DENS_SOFT_PROBE` proved the headroom: on the (cong-converged) best_pl
+density. The headroom measurement showed that on the (cong-converged) best_pl
 the cong field finds **0** more moves but the density field finds **22–68**, for
 −0.011 to −0.020, all in the density term. Implemented by adding `use_density` to
 `_soft_relocation_moves` (build the hot/cold field from the scorer's occupancy
@@ -106,8 +105,8 @@ of distance-to-current vs distance-to-centroid) so cong relief costs less WL.
 Post-hoc on best_pl was a no-op (hard relocation already converged → 0–2 moves);
 the in-loop production A/B (`WL_AWARE=0.5`) was **slightly worse** (ibm03 +0.0015,
 ibm07 +0.0025) — the centroid bias steers the greedy interleave to a worse local
-min, no upside. Reverted the production gate. Kept inert: `hard_net_centroids()`,
-the `wl_blend` option (default 0), and the `WLAWARE_PROBE` diagnostic. (Consistent
+min, no upside. Reverted the production gate and removed the probe scaffolding.
+(Consistent
 with O3's finding that the WL-centroid blend on *softs* gave ~0 — things sit near
 their centroids already.)
 
@@ -129,8 +128,7 @@ congestion term: ibm06 −0.102, ibm07 −0.080, ibm03 −0.067, ibm12/14 −0.0
 ibm17 −0.061. All VALID / 0 overlaps (softs are movable — 0 fixed softs on IBM,
 confirmed; a `soft_movable` guard defends NG45/other inputs). 2350s. The
 interleave makes the gain 2–4× a single soft pass (each soft move opens new
-hard/2-opt moves). `SOFT_RELOC_PROBE` (env-gated) reproduces the single-pass
-measurement.
+hard/2-opt moves).
 
 **This corrects O3.** O3 closed soft-repositioning, but only tested *bulk* moves
 (WL-centroid blends, gradient spreads). Discrete, proxy-gated, R1-style soft
@@ -174,7 +172,7 @@ larger 2-opt slice on benchmarks that hit the round cap with budget to spare.
 
 ### DP1. Congestion-aware DREAMPlace — the leaderboard gap is pure congestion (CLOSED 2026-05-27 — routopt can't move the proxy)
 
-**Diagnosis (DP_DIAG, env-gated logging in `place()`).** Our DREAMPlace (DP)
+**Diagnosis.** Our DREAMPlace (DP)
 candidates lose to the cong-grad "best" seed 15/17. Decomposing why, on the
 congestion-heavy benchmarks, shows the loss is **entirely congestion** —
 DREAMPlace is *better* on wirelength and density (it optimizes those) and only
@@ -189,8 +187,8 @@ loses on the term it can't see:
 | ibm12 final best | 0.0608 | 0.4017 | **1.1749** | 1.6375 |
 | Δ (dp − best) | +0.002 | −0.005 | **+0.075** | +0.071 |
 
-**Post-hoc repair ruled out (mostly).** DP_PROBE (env-gated ceiling test) ran a
-generous ungated cong-grad descent + 2-opt on the raw DP basin. ibm10 *did*
+**Post-hoc repair ruled out (mostly).** A ceiling test ran a generous ungated
+cong-grad descent + 2-opt on the raw DP basin. ibm10 *did*
 recover below best (1.3279 vs 1.3337) — but the production realization (Phase 7b)
 was REVERTED: the descent is budget-hungry (~30s/bench), high-variance, and not
 even reproducible at fixed seed (plc-state-dependent on pipeline position — seed
@@ -233,7 +231,7 @@ best is **not closable** via the built-in routability opt.
 
 **Kept (gated off, no pipeline change):** the bridge `routability_opt` knob +
 calibration params (default off), the NCTUgr-guard source patch (genuine bug
-fix), and the diagnostics (`_routopt_poc`, `_routopt_calib`, `DP_DIAG`/`DP_PROBE`).
+fix), and the diagnostics (`_routopt_poc`, `_routopt_calib`).
 v2 stays at **1.4422**.
 
 **Not pursued (low EV / big build):** `soft_macros_movable=True` + routopt (the

@@ -192,10 +192,8 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
         # computes a RUDY/RISA routing-congestion map mid-placement (once
         # overflow drops below node_area_adjust_overflow) and inflates node
         # areas in congested regions, so the density penalty spreads cells out
-        # of routing hotspots. This bakes congestion INTO the global objective -
-        # the DP_DIAG diagnostic showed our DP candidates lose to best purely on
-        # congestion, and post-hoc repair can't fix it (trades away DP's wl/den
-        # edge). route_num_bins is coarser than DREAMPlace's 512 default to
+        # of routing hotspots. This bakes congestion INTO the global objective.
+        # route_num_bins is coarser than DREAMPlace's 512 default to
         # roughly match the ICCAD04 routing grids (~35-55 cols). Unit capacities
         # are left at DREAMPlace defaults for the first cut - to be calibrated
         # against the ICCAD04 routes-per-micron if the proxy-cong signal is weak.
