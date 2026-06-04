@@ -173,8 +173,8 @@ class IncrementalScorer:
         self._route_struct_cache: "dict[int, object]" = {}
 
         # ---- Incremental density state. ----
-        # Density was the last full-recompute in score_swap (~28-36% of its time
-        # per _profile_density.py): it scatters ALL soft+hard macros into the
+        # Density was the last full-recompute in score_swap (~28-36% of its time):
+        # it scatters ALL soft+hard macros into the
         # occupancy grid every call. But a 2-opt swap moves only macros i, j -
         # all soft + other-hard occupancy is invariant. So maintain `grid_occupied`
         # as state; per swap subtract i,j's old footprints and add their new ones

@@ -321,8 +321,7 @@ and the cheap candidate #2 already recovered the regression.
 
 **Status: closed, no headroom.** Soft macros stay at `initial.plc`
 throughout the non-DP pipeline; the earlier estimate was ~0.01-0.02 of
-recoverable proxy. A measure-first investigation
-(`test/diagnostic/_soft_headroom.py`) closed it: `initial.plc` soft
+recoverable proxy. A measure-first investigation closed it: `initial.plc` soft
 positions sit at a robust local proxy optimum, and every repositioning
 method tested makes proxy equal-or-worse.
 
@@ -605,7 +604,7 @@ takes top-10% over the grid, then reverts the touched cells;
 **Verified:** `_verify_incremental_scorer.py` — score_swap (incl. density)
 matches `_exact_proxy` to ≤4.4e-16 (machine eps) on ibm01/04/10, both
 trial swaps and sequential commits (no drift).
-**Measured speedup** (`_profile_density.py`): score_swap −22% to −29%
+**Measured speedup:** score_swap −22% to −29%
 (ibm01 1.77→1.36ms, ibm04 1.46→1.14ms, ibm10 2.03→1.44ms, ibm16
 1.99→1.47ms). Translates to ~40–56% more 2-opt scores in the 15s
 deadline (ibm04 7914→11058; ibm10 4784→7482).
@@ -632,7 +631,7 @@ state computation.
 
 **Final outcome (different from the original proposal):** the original P5 plan
 ("shared scorer eliminates ~60–75 s/benchmark of redundant inits") was retired
-when `_profile_init.py` showed the per-pass `IncrementalScorer.__init__` is
+when fixed-overhead profiling showed the per-pass `IncrementalScorer.__init__` is
 21–48 ms (not seconds) and `_exact_proxy` is 5–12 ms — total per-pass fixed
 overhead ~0.1–0.28 s/round / ~0.7–1.7 s/benchmark, not the projected 60–75 s.
 A shared-scorer refactor would have saved <1.7 s/benchmark and put the
@@ -676,8 +675,7 @@ wins vs the cong-only baseline, biggest movers ibm17 −0.034, ibm16 −0.019, i
 −0.015. WSL run reported 3860s wall (host-suspend O4 inflated ibm06 to 1509s
 wall vs ~125s real); `monotonic` budget held — no benchmark returned baseline.
 
-**Diagnostics retained** (`v2/test/diagnostic/`): `_profile_init.py` (the
-measurement that retired the shared-scorer plan), `_profile_move.py` (per-move
+**Diagnostics retained** (`v2/test/diagnostic/`): `_profile_move.py` (per-move
 breakdown — cong=20%, density=0.7%, routing-apply=67%), `_profile_move_internals.py`
 (cProfile attribution that pointed at `_apply_net_routing_subset`),
 `_profile_move_realistic.py` (same-macro/nearby vs random-k pattern, isolates
