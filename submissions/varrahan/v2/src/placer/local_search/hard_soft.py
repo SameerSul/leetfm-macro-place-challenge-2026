@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
-from placer.ml.data_collection import get_candidate_trace, net_degree_features
+from placer.ml.data_collection import TraceFields, get_candidate_trace, net_degree_features
 
 if TYPE_CHECKING:
     from macro_place.benchmark import Benchmark
@@ -53,15 +54,12 @@ def _two_opt_hard_soft_swap(
     if cell_field is None:
         return hard_pos, soft_pos, 0, initial_score
     field_max = max(float(cell_field.max()), 1e-12)
-    trace_cong = trace_dens = None
-    trace_cong_max = trace_dens_max = 1.0
+    tf = None
     if trace is not None:
-        trace_cong = _congestion_field(plc, nr, nc)
-        trace_dens = _density_field(incremental_scorer, nr, nc)
-        if trace_cong is not None:
-            trace_cong_max = max(float(trace_cong.max()), 1e-12)
-        if trace_dens is not None:
-            trace_dens_max = max(float(trace_dens.max()), 1e-12)
+        tf = TraceFields(
+            cong=_congestion_field(plc, nr, nc),
+            dens=_density_field(incremental_scorer, nr, nc),
+        )
 
     # Hot hards by chosen field.
     hci = np.clip((hard_pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
@@ -83,8 +81,7 @@ def _two_opt_hard_soft_swap(
     movable_soft_pos = soft_pos[movable_soft_idx]
 
     # Pairwise hard-hard separation (for legality of the hard's destination).
-    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
-    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    sep_x_mat, sep_y_mat = separation_matrices(sizes)
     EPS = 0.05
     all_hard_idx = np.arange(n)
 
@@ -165,26 +162,10 @@ def _two_opt_hard_soft_swap(
                         "hard_h_norm": float(sizes[i, 1] / ch),
                         "distance_norm": float(np.hypot(hx - sx, hy - sy) / np.hypot(cw, ch)),
                         "hard_field_norm": float(local_h[i] / field_max),
-                        "hard_congestion_norm": (
-                            float(trace_cong[hri[i], hci[i]] / trace_cong_max)
-                            if trace_cong is not None
-                            else 0.0
-                        ),
-                        "soft_congestion_norm": (
-                            float(trace_cong[sri[k_soft], sci[k_soft]] / trace_cong_max)
-                            if trace_cong is not None
-                            else 0.0
-                        ),
-                        "hard_density_norm": (
-                            float(trace_dens[hri[i], hci[i]] / trace_dens_max)
-                            if trace_dens is not None
-                            else 0.0
-                        ),
-                        "soft_density_norm": (
-                            float(trace_dens[sri[k_soft], sci[k_soft]] / trace_dens_max)
-                            if trace_dens is not None
-                            else 0.0
-                        ),
+                        "hard_congestion_norm": tf.cong_at(hri[i], hci[i]),
+                        "soft_congestion_norm": tf.cong_at(sri[k_soft], sci[k_soft]),
+                        "hard_density_norm": tf.dens_at(hri[i], hci[i]),
+                        "soft_density_norm": tf.dens_at(sri[k_soft], sci[k_soft]),
                         "source_hot_rank_norm": float(
                             np.where(hot == i)[0][0] / max(len(hot) - 1, 1)
                         ),
@@ -258,15 +239,12 @@ def _three_opt_hard_soft_soft(
     if cell_field is None:
         return hard_pos, soft_pos, 0, initial_score
     field_max = max(float(cell_field.max()), 1e-12)
-    trace_cong = trace_dens = None
-    trace_cong_max = trace_dens_max = 1.0
+    tf = None
     if trace is not None:
-        trace_cong = _congestion_field(plc, nr, nc)
-        trace_dens = _density_field(incremental_scorer, nr, nc)
-        if trace_cong is not None:
-            trace_cong_max = max(float(trace_cong.max()), 1e-12)
-        if trace_dens is not None:
-            trace_dens_max = max(float(trace_dens.max()), 1e-12)
+        tf = TraceFields(
+            cong=_congestion_field(plc, nr, nc),
+            dens=_density_field(incremental_scorer, nr, nc),
+        )
 
     # Hot hards by chosen field.
     hci = np.clip((hard_pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
@@ -287,8 +265,7 @@ def _three_opt_hard_soft_soft(
         return hard_pos, soft_pos, 0, initial_score
     movable_soft_pos = soft_pos[movable_soft_idx]
 
-    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
-    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    sep_x_mat, sep_y_mat = separation_matrices(sizes)
     EPS = 0.05
     all_hard_idx = np.arange(n)
 
@@ -402,36 +379,12 @@ def _three_opt_hard_soft_soft(
                                 / np.hypot(cw, ch)
                             ),
                             "hard_field_norm": float(local_h[i] / field_max),
-                            "hard_congestion_norm": (
-                                float(trace_cong[hri[i], hci[i]] / trace_cong_max)
-                                if trace_cong is not None
-                                else 0.0
-                            ),
-                            "s1_congestion_norm": (
-                                float(trace_cong[sri[k1], sci[k1]] / trace_cong_max)
-                                if trace_cong is not None
-                                else 0.0
-                            ),
-                            "s2_congestion_norm": (
-                                float(trace_cong[sri[k2], sci[k2]] / trace_cong_max)
-                                if trace_cong is not None
-                                else 0.0
-                            ),
-                            "hard_density_norm": (
-                                float(trace_dens[hri[i], hci[i]] / trace_dens_max)
-                                if trace_dens is not None
-                                else 0.0
-                            ),
-                            "s1_density_norm": (
-                                float(trace_dens[sri[k1], sci[k1]] / trace_dens_max)
-                                if trace_dens is not None
-                                else 0.0
-                            ),
-                            "s2_density_norm": (
-                                float(trace_dens[sri[k2], sci[k2]] / trace_dens_max)
-                                if trace_dens is not None
-                                else 0.0
-                            ),
+                            "hard_congestion_norm": tf.cong_at(hri[i], hci[i]),
+                            "s1_congestion_norm": tf.cong_at(sri[k1], sci[k1]),
+                            "s2_congestion_norm": tf.cong_at(sri[k2], sci[k2]),
+                            "hard_density_norm": tf.dens_at(hri[i], hci[i]),
+                            "s1_density_norm": tf.dens_at(sri[k1], sci[k1]),
+                            "s2_density_norm": tf.dens_at(sri[k2], sci[k2]),
                             "source_hot_rank_norm": float(
                                 np.where(hot == i)[0][0] / max(len(hot) - 1, 1)
                             ),

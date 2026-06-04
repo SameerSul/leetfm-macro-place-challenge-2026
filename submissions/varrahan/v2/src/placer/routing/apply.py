@@ -394,7 +394,6 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
     """
     if g0_flat.size == 0:
         return
-    n = g0_flat.size
     # Convert flat → (row, col) and stack
     y_all = np.stack([g0_flat // grid_col, g1_flat // grid_col, g2_flat // grid_col], axis=1).astype(np.int64)
     x_all = np.stack([g0_flat % grid_col, g1_flat % grid_col, g2_flat % grid_col], axis=1).astype(np.int64)
@@ -1179,8 +1178,6 @@ def _vectorized_get_routing(plc) -> None:
         pin_row = np.clip((pin_y / grid_h).astype(np.int64), 0, grid_row - 1)
         pin_gcell = pin_row * grid_col + pin_col  # flat per-pin gcell idx
 
-        starts = cache["starts"]
-        lengths = cache["lengths"]
         net_weights = wl["net_weights"]
 
         # Per-net dispatch (v1's np.unique-per-net loop was 663ms on ibm10).

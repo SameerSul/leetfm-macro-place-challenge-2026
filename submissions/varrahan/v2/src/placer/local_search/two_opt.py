@@ -6,8 +6,9 @@ import numpy as np
 import torch
 
 from placer.config import _GPU_DEVICE, _USE_GPU
+from placer.geometry import separation_matrices
 from placer.local_search.fields import _density_field
-from placer.ml.data_collection import get_candidate_trace, net_degree_features
+from placer.ml.data_collection import TraceFields, get_candidate_trace, net_degree_features
 
 def _two_opt_proxy_swap(
     legal_pos: np.ndarray,
@@ -39,20 +40,17 @@ def _two_opt_proxy_swap(
 
     Returns: (pos, accept_count, final_score, score_calls).
     """
-    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
-    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    sep_x_mat, sep_y_mat = separation_matrices(sizes)
     EPS = 0.05
 
     pos = legal_pos.copy()
     trace = get_candidate_trace()
-    trace_density = None
-    trace_density_max = 1.0
+    tf = None
     trace_density_ri = trace_density_ci = None
     if trace is not None and incremental_scorer is not None:
         bm = incremental_scorer.benchmark
-        trace_density = _density_field(incremental_scorer, bm.grid_rows, bm.grid_cols)
-        if trace_density is not None:
-            trace_density_max = max(float(trace_density.max()), 1e-12)
+        tf = TraceFields(dens=_density_field(incremental_scorer, bm.grid_rows, bm.grid_cols))
+        if tf.dens is not None:
             trace_density_ci = np.clip(
                 (pos[:, 0] / (cw / bm.grid_cols)).astype(np.int64), 0, bm.grid_cols - 1
             )
@@ -242,19 +240,13 @@ def _two_opt_proxy_swap(
                             "i_congestion_norm": float(mc[i] / mc_scale) if cong_aware else 0.0,
                             "j_congestion_norm": float(mc[j] / mc_scale) if cong_aware else 0.0,
                             "i_density_norm": (
-                                float(
-                                    trace_density[trace_density_ri[i], trace_density_ci[i]]
-                                    / trace_density_max
-                                )
-                                if trace_density is not None
+                                tf.dens_at(trace_density_ri[i], trace_density_ci[i])
+                                if tf.dens is not None
                                 else 0.0
                             ),
                             "j_density_norm": (
-                                float(
-                                    trace_density[trace_density_ri[j], trace_density_ci[j]]
-                                    / trace_density_max
-                                )
-                                if trace_density is not None
+                                tf.dens_at(trace_density_ri[j], trace_density_ci[j])
+                                if tf.dens is not None
                                 else 0.0
                             ),
                             "source_hot_rank_norm": float(

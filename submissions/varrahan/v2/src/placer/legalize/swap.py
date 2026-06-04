@@ -4,6 +4,9 @@ import time
 
 import numpy as np
 
+from placer.geometry import separation_matrices
+
+
 def _two_opt_swap(
     legal_pos: np.ndarray,
     init_pos: np.ndarray,
@@ -38,8 +41,7 @@ def _two_opt_swap(
 
     Returns (new_pos, swap_count).
     """
-    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2  # [n, n]
-    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    sep_x_mat, sep_y_mat = separation_matrices(sizes)
     EPS = 0.05
 
     pos = legal_pos.copy()

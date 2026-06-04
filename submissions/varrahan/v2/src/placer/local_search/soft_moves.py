@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from placer.local_search.fields import _congestion_field, _density_field
-from placer.ml.data_collection import get_candidate_trace, net_degree_features
+from placer.ml.data_collection import TraceFields, get_candidate_trace, net_degree_features
 
 if TYPE_CHECKING:
     from macro_place.benchmark import Benchmark
@@ -55,15 +55,12 @@ def _two_opt_soft_swap(
     if cell_field is None:
         return soft_pos, 0, initial_score
     field_max = max(float(cell_field.max()), 1e-12)
-    trace_cong = trace_dens = None
-    trace_cong_max = trace_dens_max = 1.0
+    tf = None
     if trace is not None:
-        trace_cong = _congestion_field(plc, nr, nc)
-        trace_dens = _density_field(incremental_scorer, nr, nc)
-        if trace_cong is not None:
-            trace_cong_max = max(float(trace_cong.max()), 1e-12)
-        if trace_dens is not None:
-            trace_dens_max = max(float(trace_dens.max()), 1e-12)
+        tf = TraceFields(
+            cong=_congestion_field(plc, nr, nc),
+            dens=_density_field(incremental_scorer, nr, nc),
+        )
 
     ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
@@ -168,26 +165,10 @@ def _two_opt_soft_swap(
                         ),
                         "k1_field_norm": float(local_field[k1] / field_max),
                         "k2_field_norm": float(local_field[k2] / field_max),
-                        "k1_congestion_norm": (
-                            float(trace_cong[ri[k1], ci[k1]] / trace_cong_max)
-                            if trace_cong is not None
-                            else 0.0
-                        ),
-                        "k2_congestion_norm": (
-                            float(trace_cong[ri[k2], ci[k2]] / trace_cong_max)
-                            if trace_cong is not None
-                            else 0.0
-                        ),
-                        "k1_density_norm": (
-                            float(trace_dens[ri[k1], ci[k1]] / trace_dens_max)
-                            if trace_dens is not None
-                            else 0.0
-                        ),
-                        "k2_density_norm": (
-                            float(trace_dens[ri[k2], ci[k2]] / trace_dens_max)
-                            if trace_dens is not None
-                            else 0.0
-                        ),
+                        "k1_congestion_norm": tf.cong_at(ri[k1], ci[k1]),
+                        "k2_congestion_norm": tf.cong_at(ri[k2], ci[k2]),
+                        "k1_density_norm": tf.dens_at(ri[k1], ci[k1]),
+                        "k2_density_norm": tf.dens_at(ri[k2], ci[k2]),
                         "wl_delta": float(wl_d),
                         "source_hot_rank_norm": float(
                             np.where(hot == k1)[0][0] / max(len(hot) - 1, 1)
