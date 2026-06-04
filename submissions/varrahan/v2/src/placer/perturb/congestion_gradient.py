@@ -1,6 +1,14 @@
 """Congestion-gradient placement perturbations."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
+
+if TYPE_CHECKING:
+    from macro_place.benchmark import Benchmark
+
 
 def _routing_congestion_perturb(
     pos: np.ndarray,
@@ -14,7 +22,7 @@ def _routing_congestion_perturb(
     movable: np.ndarray,
     frac: float = 0.04,
     rng: np.random.RandomState | None = None,
-    top_k: Optional[int] = None,
+    top_k: int | None = None,
 ) -> np.ndarray:
     """Step macros away from high routing-congestion cells.
 

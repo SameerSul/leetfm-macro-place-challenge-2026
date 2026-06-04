@@ -4,6 +4,9 @@ import time
 
 import numpy as np
 
+from placer.geometry import separation_matrices
+
+
 def _ring_offsets(r: int) -> np.ndarray:
     """Offsets (ddx, ddy) on the spiral ring at radius r, in the same lex
     order as the original nested-loop traversal: for ddx in -r..r, for ddy in
@@ -59,8 +62,7 @@ def _will_legalize(
     explore different legal arrangements.
     deadline: optional time.monotonic() cutoff; remaining macros keep pos[].
     """
-    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2  # [n, n]
-    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    sep_x_mat, sep_y_mat = separation_matrices(sizes)
     if order is None:
         order = sorted(range(n), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
     placed = np.zeros(n, dtype=bool)

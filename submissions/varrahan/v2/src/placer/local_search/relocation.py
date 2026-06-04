@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
-from placer.ml.data_collection import get_candidate_trace, net_degree_features
+from placer.ml.data_collection import TraceFields, get_candidate_trace, net_degree_features
 
 if TYPE_CHECKING:
     from macro_place.benchmark import Benchmark
@@ -65,15 +66,12 @@ def _relocation_moves(
                      else _congestion_field(plc, nr, nc))
         if cell_cong is None:
             return pos, 0, initial_score
-    trace_cong = trace_dens = None
-    trace_cong_max = trace_dens_max = 1.0
+    tf = None
     if trace is not None:
-        trace_cong = _congestion_field(plc, nr, nc)
-        trace_dens = _density_field(incremental_scorer, nr, nc)
-        if trace_cong is not None:
-            trace_cong_max = max(float(trace_cong.max()), 1e-12)
-        if trace_dens is not None:
-            trace_dens_max = max(float(trace_dens.max()), 1e-12)
+        tf = TraceFields(
+            cong=_congestion_field(plc, nr, nc),
+            dens=_density_field(incremental_scorer, nr, nc),
+        )
     cell_w, cell_h = cw / nc, ch / nr
     field_max = max(float(cell_cong.max()), 1e-12)
 
@@ -99,8 +97,7 @@ def _relocation_moves(
     tgt_y = (tgt_r + 0.5) * cell_h
     tgt_cong = flat[pool]
 
-    sep_x_mat = (sizes[:, 0:1] + sizes[:, 0:1].T) / 2
-    sep_y_mat = (sizes[:, 1:2] + sizes[:, 1:2].T) / 2
+    sep_x_mat, sep_y_mat = separation_matrices(sizes)
     EPS = 0.05
 
     best_score = initial_score
@@ -152,26 +149,10 @@ def _relocation_moves(
                 scored += 1
                 if trace is not None:
                     target_flat = int(pool[t])
-                    source_cong = (
-                        float(trace_cong[ri_all[i], ci_all[i]] / trace_cong_max)
-                        if trace_cong is not None
-                        else 0.0
-                    )
-                    target_cong = (
-                        float(trace_cong.ravel()[target_flat] / trace_cong_max)
-                        if trace_cong is not None
-                        else 0.0
-                    )
-                    source_dens = (
-                        float(trace_dens[ri_all[i], ci_all[i]] / trace_dens_max)
-                        if trace_dens is not None
-                        else 0.0
-                    )
-                    target_dens = (
-                        float(trace_dens.ravel()[target_flat] / trace_dens_max)
-                        if trace_dens is not None
-                        else 0.0
-                    )
+                    source_cong = tf.cong_at(ri_all[i], ci_all[i])
+                    target_cong = tf.cong_flat(target_flat)
+                    source_dens = tf.dens_at(ri_all[i], ci_all[i])
+                    target_dens = tf.dens_flat(target_flat)
                     trace.record(
                         operator="hard_relocation",
                         field=trace_field,
@@ -275,15 +256,12 @@ def _soft_relocation_moves(
                   else _congestion_field(plc, nr, nc))
     if cell_field is None:
         return soft_pos, 0, initial_score
-    trace_cong = trace_dens = None
-    trace_cong_max = trace_dens_max = 1.0
+    tf = None
     if trace is not None:
-        trace_cong = _congestion_field(plc, nr, nc)
-        trace_dens = _density_field(incremental_scorer, nr, nc)
-        if trace_cong is not None:
-            trace_cong_max = max(float(trace_cong.max()), 1e-12)
-        if trace_dens is not None:
-            trace_dens_max = max(float(trace_dens.max()), 1e-12)
+        tf = TraceFields(
+            cong=_congestion_field(plc, nr, nc),
+            dens=_density_field(incremental_scorer, nr, nc),
+        )
     cell_w, cell_h = cw / nc, ch / nr
     field_max = max(float(cell_field.max()), 1e-12)
 
@@ -360,26 +338,10 @@ def _soft_relocation_moves(
                             "dy_norm": float((ny - soft_pos[k, 1]) / ch),
                             "source_field_norm": float(local_cong[k] / field_max),
                             "target_field_norm": float(tgt_cong[t] / field_max),
-                            "source_congestion_norm": (
-                                float(trace_cong[ri[k], ci[k]] / trace_cong_max)
-                                if trace_cong is not None
-                                else 0.0
-                            ),
-                            "target_congestion_norm": (
-                                float(trace_cong.ravel()[target_flat] / trace_cong_max)
-                                if trace_cong is not None
-                                else 0.0
-                            ),
-                            "source_density_norm": (
-                                float(trace_dens[ri[k], ci[k]] / trace_dens_max)
-                                if trace_dens is not None
-                                else 0.0
-                            ),
-                            "target_density_norm": (
-                                float(trace_dens.ravel()[target_flat] / trace_dens_max)
-                                if trace_dens is not None
-                                else 0.0
-                            ),
+                            "source_congestion_norm": tf.cong_at(ri[k], ci[k]),
+                            "target_congestion_norm": tf.cong_flat(target_flat),
+                            "source_density_norm": tf.dens_at(ri[k], ci[k]),
+                            "target_density_norm": tf.dens_flat(target_flat),
                             "source_hot_rank_norm": float(
                                 np.where(hot == k)[0][0] / max(len(hot) - 1, 1)
                             ),

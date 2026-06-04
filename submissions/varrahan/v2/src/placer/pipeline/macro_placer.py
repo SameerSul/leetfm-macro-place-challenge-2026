@@ -109,6 +109,89 @@ class MacroPlacer:
         # Leave headroom under the 3600s hard harness cap for setup/teardown.
         self.HARD_CAP_SAFE_S: float = 3540.0
 
+    def _effective_budget(self, t0: float) -> "tuple[float, float]":
+        """Per-benchmark wall budget. The first call uses the full time_budget_s;
+        in --all mode (_benchmarks_done >= 1) the cap shrinks as the cumulative
+        place() time approaches HARNESS_TOTAL_BUDGET_S, reserving (floor + overrun)
+        for every other remaining benchmark plus overrun for this one so an
+        early/large benchmark can't eat the tail's budget. The hard-cap clamp keeps
+        this benchmark's worst case under HARD_CAP_SAFE_S.
+
+        Returns (effective_budget_s, cumulative_elapsed).
+        """
+        if self._first_place_call_time is None:
+            self._first_place_call_time = t0
+        cumulative_elapsed = self._total_place_time_s
+        if self._benchmarks_done >= 1:
+            remaining_total = self.HARNESS_TOTAL_BUDGET_S - cumulative_elapsed
+            remaining_benchmarks = max(
+                1, self.HARNESS_TOTAL_BENCHMARKS - self._benchmarks_done
+            )
+            reserve_others = (
+                (self.PER_BENCH_FLOOR_S + self.BUDGET_OVERRUN_S)
+                * (remaining_benchmarks - 1)
+            )
+            this_cap = remaining_total - reserve_others - self.BUDGET_OVERRUN_S
+            effective_budget_s = min(
+                self.time_budget_s, max(self.PER_BENCH_FLOOR_S, this_cap)
+            )
+            hard_headroom = (
+                self.HARD_CAP_SAFE_S - cumulative_elapsed - self.BUDGET_OVERRUN_S
+            )
+            effective_budget_s = min(effective_budget_s, hard_headroom)
+        else:
+            effective_budget_s = self.time_budget_s
+        return effective_budget_s, cumulative_elapsed
+
+    def _launch_dreamplace_seeds(self, benchmark: Benchmark, plc) -> list:
+        """Launch async DREAMPlace global-placement seeds (varying target density
+        and soft-macro mobility to produce distinct candidates) alongside the main
+        pipeline. Returns a list of (tag, target_density, handle); empty if the
+        bridge is unavailable or launch fails.
+        """
+        dp_handles = []
+        try:
+            import sys as _sys
+            _v1_dir = str(Path(__file__).resolve().parents[2])
+            if _v1_dir not in _sys.path:
+                _sys.path.insert(0, _v1_dir)
+            from dreamplace_bridge.run_bridge import (  # noqa: E402
+                launch_dreamplace_async, is_available as _dp_available,
+            )
+            if _dp_available():
+                iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
+                             / benchmark.name)
+                if iccad_dir.exists():
+                    # Vary density and soft-macro mobility to produce distinct seeds.
+                    for tag, td, root, soft_mv in (
+                        ("lo-fix",  0.65, "/tmp/dreamplace_v1_lofix",   False),
+                        ("hi-mov",  0.85, "/tmp/dreamplace_v1_himov",   True),
+                        ("hi-fix",  0.85, "/tmp/dreamplace_v1_hifix",   False),
+                    ):
+                        try:
+                            h = launch_dreamplace_async(
+                                str(iccad_dir), plc=plc,
+                                scratch_root=root,
+                                timeout_s=120.0,
+                                iterations=300,
+                                num_threads=1,
+                                soft_macros_movable=soft_mv,
+                                target_density=td,
+                            )
+                            dp_handles.append((tag, td, h))
+                        except Exception as exc:
+                            _log(f"  DREAMPlace[{tag}] launch failed: "
+                                 f"{type(exc).__name__}: {exc}")
+                    if dp_handles:
+                        _log(f"  DREAMPlace launched async x{len(dp_handles)} "
+                             f"(target_density="
+                             f"{','.join(f'{td:.2f}' for _,td,_ in dp_handles)}, "
+                             f"iter=300, will check after Phase 3)")
+        except Exception as exc:
+            _log(f"  DREAMPlace launch failed: {type(exc).__name__}: {exc}")
+            dp_handles = []
+        return dp_handles
+
     def place(self, benchmark: Benchmark) -> torch.Tensor:
         np.random.seed(self.seed)
         random.seed(self.seed)
@@ -124,36 +207,7 @@ class MacroPlacer:
         movable = (benchmark.get_movable_mask() & benchmark.get_hard_macro_mask())[:n].numpy()
         init_pos = benchmark.macro_positions[:n].numpy().copy().astype(np.float64)
 
-        # Compute the effective per-benchmark budget. The first call uses the full
-        # time_budget_s; in --all mode (_benchmarks_done >= 1) the cap shrinks as
-        # the cumulative place() time approaches HARNESS_TOTAL_BUDGET_S.
-        if self._first_place_call_time is None:
-            self._first_place_call_time = t0
-        cumulative_elapsed = self._total_place_time_s
-        if self._benchmarks_done >= 1:
-            remaining_total = self.HARNESS_TOTAL_BUDGET_S - cumulative_elapsed
-            remaining_benchmarks = max(
-                1, self.HARNESS_TOTAL_BENCHMARKS - self._benchmarks_done
-            )
-            # Reserve (FLOOR + OVERRUN) for every other remaining benchmark plus
-            # OVERRUN for this one, so an early/large benchmark can't eat the
-            # tail's budget. Only bites near the tail; slack when many remain.
-            reserve_others = (
-                (self.PER_BENCH_FLOOR_S + self.BUDGET_OVERRUN_S)
-                * (remaining_benchmarks - 1)
-            )
-            this_cap = remaining_total - reserve_others - self.BUDGET_OVERRUN_S
-            effective_budget_s = min(
-                self.time_budget_s, max(self.PER_BENCH_FLOOR_S, this_cap)
-            )
-            # Hard-cap safety: never let this benchmark's worst case
-            # (effective_budget_s + BUDGET_OVERRUN_S) push past HARD_CAP_SAFE_S.
-            hard_headroom = (
-                self.HARD_CAP_SAFE_S - cumulative_elapsed - self.BUDGET_OVERRUN_S
-            )
-            effective_budget_s = min(effective_budget_s, hard_headroom)
-        else:
-            effective_budget_s = self.time_budget_s
+        effective_budget_s, cumulative_elapsed = self._effective_budget(t0)
 
         _log(f"  [{benchmark.name}] hard={n}  movable={movable.sum()}  "
              f"budget={effective_budget_s:.0f}s"
@@ -225,50 +279,10 @@ class MacroPlacer:
             return float(_exact_proxy(pl_scratch, benchmark, plc))
 
         # Launch DREAMPlace seeds while the main pipeline runs.
-        dp_handles = []
-        try:
-            import sys as _sys
-            _v1_dir = str(Path(__file__).resolve().parents[2])
-            if _v1_dir not in _sys.path:
-                _sys.path.insert(0, _v1_dir)
-            from dreamplace_bridge.run_bridge import (  # noqa: E402
-                launch_dreamplace_async, is_available as _dp_available,
-            )
-            if _dp_available():
-                iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
-                             / benchmark.name)
-                if iccad_dir.exists():
-                    # Vary density and soft-macro mobility to produce distinct seeds.
-                    for tag, td, root, soft_mv in (
-                        ("lo-fix",  0.65, "/tmp/dreamplace_v1_lofix",   False),
-                        ("hi-mov",  0.85, "/tmp/dreamplace_v1_himov",   True),
-                        ("hi-fix",  0.85, "/tmp/dreamplace_v1_hifix",   False),
-                    ):
-                        try:
-                            h = launch_dreamplace_async(
-                                str(iccad_dir), plc=plc,
-                                scratch_root=root,
-                                timeout_s=120.0,
-                                iterations=300,
-                                num_threads=1,
-                                soft_macros_movable=soft_mv,
-                                target_density=td,
-                            )
-                            dp_handles.append((tag, td, h))
-                        except Exception as exc:
-                            _log(f"  DREAMPlace[{tag}] launch failed: "
-                                 f"{type(exc).__name__}: {exc}")
-                    if dp_handles:
-                        _log(f"  DREAMPlace launched async x{len(dp_handles)} "
-                             f"(target_density="
-                             f"{','.join(f'{td:.2f}' for _,td,_ in dp_handles)}, "
-                             f"iter=300, will check after Phase 3)")
-        except Exception as exc:
-            _log(f"  DREAMPlace launch failed: {type(exc).__name__}: {exc}")
-            dp_handles = []
+        dp_handles = self._launch_dreamplace_seeds(benchmark, plc)
 
         # Baseline
-        _log(f"  Restart 0 (baseline)...")
+        _log("  Restart 0 (baseline)...")
         t1 = time.monotonic()
         baseline_pos = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
         _log(f"    Legalized in {time.monotonic()-t1:.1f}s")
@@ -347,9 +361,7 @@ class MacroPlacer:
                                 dp_pl_large[n:n + n_soft_l, 1] = torch.tensor(
                                     dp_soft_l[:n_soft_l, 1], dtype=torch.float32
                                 )
-                            t_dp_score_start = time.monotonic()
                             dp_score_large = float(_exact_proxy(dp_pl_large, benchmark, plc))
-                            t_dp_score_large = time.monotonic() - t_dp_score_start
                             _log(f"  [large-DP] dreamplace exact proxy={dp_score_large:.4f}  "
                                  f"(leg+score {time.monotonic()-t_dp_leg:.1f}s)")
                             if dp_score_large < base_score:

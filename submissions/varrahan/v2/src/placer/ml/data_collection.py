@@ -23,6 +23,37 @@ def net_degree_features(incremental_scorer, module_idx: int, prefix: str = "") -
     }
 
 
+class TraceFields:
+    """Normalized congestion/density grids used to build candidate features.
+
+    Holds the raw congestion/density grids plus their maxima so each feature
+    lookup collapses to one call. The local-search operators only construct this
+    when tracing is active; when a grid is unavailable (``None``) every lookup
+    returns ``0.0``, matching the inline ``... if field is not None else 0.0``
+    guards the operators used before this helper existed.
+    """
+
+    __slots__ = ("cong", "dens", "cong_max", "dens_max")
+
+    def __init__(self, cong=None, dens=None):
+        self.cong = cong
+        self.dens = dens
+        self.cong_max = max(float(cong.max()), 1e-12) if cong is not None else 1.0
+        self.dens_max = max(float(dens.max()), 1e-12) if dens is not None else 1.0
+
+    def cong_at(self, ri, ci) -> float:
+        return float(self.cong[ri, ci] / self.cong_max) if self.cong is not None else 0.0
+
+    def dens_at(self, ri, ci) -> float:
+        return float(self.dens[ri, ci] / self.dens_max) if self.dens is not None else 0.0
+
+    def cong_flat(self, idx) -> float:
+        return float(self.cong.ravel()[idx] / self.cong_max) if self.cong is not None else 0.0
+
+    def dens_flat(self, idx) -> float:
+        return float(self.dens.ravel()[idx] / self.dens_max) if self.dens is not None else 0.0
+
+
 class CandidateTrace:
     """Buffered JSONL writer for candidate labels and search-policy events."""
 

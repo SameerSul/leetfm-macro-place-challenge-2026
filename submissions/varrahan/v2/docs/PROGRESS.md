@@ -3,6 +3,29 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-04 — readability refactor, no algorithm change):**
+> **Avg 1.1500 — all 17 VALID / 0 overlaps, 3300.10s.** Pure code-simplification
+> pass, validated non-degrading via `--all`. No move-generation, scoring, or RNG
+> logic was touched, so the 1.1500 is a favorable full-budget run within normal
+> timing variance — not an algorithmic gain. Changes:
+> 1. **ML-trace consolidation.** The per-candidate congestion/density feature
+>    lookups scattered through `two_opt`/`relocation`/`hard_soft`/`soft_moves`
+>    (5 setup blocks + ~30 verbose `float(field[ri,ci]/max) if … else 0.0`
+>    ternaries) collapsed into a `TraceFields` helper in `ml/data_collection.py`.
+>    Data collection stays fully functional and byte-identical (pinned by
+>    `test/verification/test_trace_fields_equivalence.py`). Search files −111 lines.
+> 2. **`separation_matrices()` helper** (`placer/geometry.py`) replaces the
+>    7×-duplicated `(sizes[:,0:1]+sizes[:,0:1].T)/2` across the legalizer + 2-opt
+>    / relocation passes.
+> 3. **`place()` setup extracted** into `_effective_budget()` and
+>    `_launch_dreamplace_seeds()` methods (the cong-grad phase descent left intact).
+> 4. pyflakes now clean across `src`; fixed `congestion_gradient.py` annotations.
+>
+> Verification note: ibm01's single-bench score is **timing-sensitive**
+> (0.9084–0.9094 depending on wall-time via deadline-gated R2 passes), so it is
+> not a bit-identity oracle — non-degradation was confirmed at the `--all`
+> aggregate instead.
+>
 > **Status (2026-05-31 — full-stack `--all` incl. HS3 hard-soft 3-cycle + 3-pin routing JIT):**
 > **Avg 1.1963 — beats RePlAce (1.4578) by 0.262 (−17.9%), and beats the UT
 > Austin DREAMPlace leaderboard (1.4076) by 0.211 (−15.0%).** All 17 VALID /
