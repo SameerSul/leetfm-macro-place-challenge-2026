@@ -129,6 +129,8 @@ test/                     Project-level pytest smoke tests. READ-ONLY for v2 wor
 - Numpy `float64` for placement math; convert to `torch.float32` only at the API boundary.
 - Position arrays are `[N, 2]` with `(x, y)` in canvas microns. Centers, not corners.
 - Avoid premature abstraction - submissions are short-lived experiments. Inline beats refactor here.
+- When writing comments and docstrings, ensure simplicity with all descriptions for functions and code blocks
+- Simplicity of code first. Our code must be human readable, and as such, we should prioritize the simplicity of our code and program structure, while ensuring that simplicity does not dampen our programs performance
 
 ## Workflow
 
