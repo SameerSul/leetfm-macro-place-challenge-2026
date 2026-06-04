@@ -387,9 +387,7 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
                                     g0_flat: np.ndarray, g1_flat: np.ndarray,
                                     g2_flat: np.ndarray, weights: np.ndarray,
                                     grid_row: int, grid_col: int) -> None:
-    """Vectorized __three_pin_net_routing - bit-equivalent to the scalar
-    reference (_apply_3pin_routing). Numpy gather/scatter fallback kept for
-    when numba isn't installed.
+    """Numpy gather/scatter fallback for three-pin routing.
 
     Each net's 3 gcells are first sorted by (col, row). Cases 1-3 use that
     ordering; case 4 (T-routing) requires a second sort by (row, col).
@@ -484,58 +482,6 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
         nz = rlos != rhis
         if nz.any():
             _apply_v_strips_batch(V_flat, cols[nz], rlos[nz], rhis[nz], ws_v[nz], grid_row, grid_col)
-
-
-def _apply_3pin_routing(H_flat: np.ndarray, V_flat: np.ndarray,
-                         gcells_per_net: "list[list[tuple[int, int]]]",
-                         weights: "list[float]",
-                         grid_col: int) -> None:
-    """Match __three_pin_net_routing exactly. Per-net Python loop; only
-    fires on nets with exactly 3 unique gcells (uncommon).
-
-    Kept for reference / fallback; the vectorized dispatch (_apply_3pin_routing_vec)
-    is what _vectorized_get_routing actually calls.
-    """
-    for gcells, weight in zip(gcells_per_net, weights):
-        temp = sorted(gcells, key=lambda x: (x[1], x[0]))
-        y1, x1 = temp[0]
-        y2, x2 = temp[1]
-        y3, x3 = temp[2]
-        if x1 < x2 and x2 < x3 and min(y1, y3) < y2 and max(y1, y3) > y2:
-            # L-routing
-            t = sorted(temp, key=lambda x: (x[1], x[0]))
-            y1, x1 = t[0]; y2, x2 = t[1]; y3, x3 = t[2]
-            for col in range(x1, x2):
-                H_flat[y1 * grid_col + col] += weight
-            for col in range(x2, x3):
-                H_flat[y2 * grid_col + col] += weight
-            for row in range(min(y1, y2), max(y1, y2)):
-                V_flat[row * grid_col + x2] += weight
-            for row in range(min(y2, y3), max(y2, y3)):
-                V_flat[row * grid_col + x3] += weight
-        elif x2 == x3 and x1 < x2 and y1 < min(y2, y3):
-            for col in range(x1, x2):
-                H_flat[y1 * grid_col + col] += weight
-            for row in range(y1, max(y2, y3)):
-                V_flat[row * grid_col + x2] += weight
-        elif y2 == y3:
-            for col in range(x1, x2):
-                H_flat[y1 * grid_col + col] += weight
-            for col in range(x2, x3):
-                H_flat[y2 * grid_col + col] += weight
-            for row in range(min(y2, y1), max(y2, y1)):
-                V_flat[row * grid_col + x2] += weight
-        else:
-            # T-routing
-            t = sorted(temp)
-            y1, x1 = t[0]; y2, x2 = t[1]; y3, x3 = t[2]
-            xmin = min(x1, x2, x3); xmax = max(x1, x2, x3)
-            for col in range(xmin, xmax):
-                H_flat[y2 * grid_col + col] += weight
-            for row in range(min(y1, y2), max(y1, y2)):
-                V_flat[row * grid_col + x1] += weight
-            for row in range(min(y2, y3), max(y2, y3)):
-                V_flat[row * grid_col + x3] += weight
 
 
 def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,

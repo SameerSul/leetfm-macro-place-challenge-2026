@@ -13,7 +13,6 @@ from .density import (
 from .exact import _exact_proxy, _proxy_decomp
 from .incremental import IncrementalScorer
 from .wirelength import (
-    _build_macro_pin_map,
     _build_wl_cache,
     _patch_plc_wirelength,
     _vectorized_wirelength,
@@ -22,7 +21,6 @@ from .wirelength import (
 __all__ = [
     "IncrementalScorer",
     "_build_density_cache",
-    "_build_macro_pin_map",
     "_build_wl_cache",
     "_ensure_congestion_arrays",
     "_exact_proxy",

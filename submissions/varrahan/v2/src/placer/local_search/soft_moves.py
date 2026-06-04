@@ -100,9 +100,7 @@ def _two_opt_soft_swap(
                 nbrs = np.concatenate([nbrs, extra])
 
         best_pair = None  # (k2, xy1, xy2)
-        # WL-delta prefilter: the ~50µs WL predictor skips the ~5-10ms full
-        # score_swap_soft when the WL delta alone is too large to be a net win.
-        # Threshold is loose enough to keep every historically-accepted swap.
+        # Skip full scoring when the WL delta alone is too large to recover.
         WL_PREFILTER = 0.01
         for k2 in nbrs:
             k2 = int(k2)
@@ -128,5 +126,4 @@ def _two_opt_soft_swap(
             swapped[k2_win] = True
             accepts += 1
     return soft_pos, accepts, best_score
-
 

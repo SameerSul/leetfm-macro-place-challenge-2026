@@ -402,20 +402,7 @@ class _CachedDreamplaceHandle:
 
 
 class AsyncDreamplaceHandle:
-    """Handle to a DREAMPlace subprocess launched via `launch_dreamplace_async`.
-
-    Use `is_done()`/`poll()` to check completion without blocking, then
-    `wait_for_result(max_wait_s)` to retrieve positions. `kill()` aborts a
-    still-running subprocess (call at place() exit if DREAMPlace hasn't
-    finished and we don't want to wait).
-
-    The async pattern saves the v13 failure mode: v13 ran DREAMPlace
-    synchronously BEFORE Phase 1, paying 30-90s of subprocess time that
-    displaced cong-grad/noise restarts on most benchmarks. Async overlaps
-    that subprocess time with our own scoring (which is C++-side and can
-    release the GIL), so DREAMPlace becomes "free" budget on benchmarks
-    where scoring is also slow (ibm08/11/15/etc).
-    """
+    """Non-blocking DREAMPlace subprocess handle."""
 
     def __init__(self, popen: "subprocess.Popen", work_dir: Path,
                  design: str, plc: PlacementCost, start_time: float,
@@ -429,29 +416,21 @@ class AsyncDreamplaceHandle:
         self.timeout_s = timeout_s
         self._log_handle = log_handle
         self._cache_key = cache_key
-        # Internally stores the (hard_pos, soft_pos) tuple from
-        # read_dreamplace_positions_full once the subprocess completes.
-        # wait_for_result extracts the hard component for backward-compatible callers.
+        # wait_for_result extracts the hard component for compatibility.
         self._result: "Optional[tuple[np.ndarray, np.ndarray]]" = None
         self._failed = False
         self._kill_called = False
         self._watchdog_thread = None
 
     def _start_watchdog(self) -> None:
-        """Spawn a daemon thread that enforces timeout_s by killing the DP
-        subprocess if it runs past the deadline. Necessary because the placer
-        may be blocked in scoring (which doesn't release the GIL fast enough
-        for wait_for_result to fire) while DP keeps eating CPU. Without this,
-        a hung or slow DP can saturate cores and slow scoring 100x (verified
-        2026-05-20 on ibm06 in --all)."""
+        """Kill the subprocess from a daemon thread if it exceeds timeout_s."""
         import threading
 
         def _watch():
             try:
                 self.popen.wait(timeout=self.timeout_s)
             except subprocess.TimeoutExpired:
-                # Subprocess exceeded its budget; tear it (and its process group)
-                # down so it stops competing for CPU.
+                # Kill the process group so child processes also stop.
                 self._kill_called = True
                 try:
                     import os, signal
@@ -674,8 +653,7 @@ def launch_dreamplace_async(
     env["OPENBLAS_NUM_THREADS"] = nt
     env["NUMEXPR_NUM_THREADS"] = nt
 
-    # Lazy-load plc for back-conversion (done before launch so we don't pay
-    # this cost on the critical path when the user calls wait_for_result).
+    # Load PLC before launch so result conversion stays off the wait path.
     if plc is None:
         plc = PlacementCost(str(benchmark_dir_p / "netlist.pb.txt"))
         init_plc = benchmark_dir_p / "initial.plc"
@@ -683,10 +661,7 @@ def launch_dreamplace_async(
             plc.restore_placement(str(init_plc), ifInital=True, ifReadComment=True)
 
     log_handle = (work_dir / "dreamplace.log").open("w")
-    # start_new_session=True puts DP in its own process group so a kill can
-    # tear down any child threads DP might spawn (defensive - DREAMPlace
-    # doesn't typically spawn children, but cleanup safety matters when we
-    # may kill it from a watchdog thread).
+    # Use a process group so the watchdog can terminate all descendants.
     popen = subprocess.Popen(
         [str(VENV_PYTHON), str(DREAMPLACE_PLACER), str(cfg_path)],
         cwd=str(DREAMPLACE_INSTALL),

@@ -217,9 +217,7 @@ def _soft_relocation_moves(
         cand = np.where(tgt_cong < local_cong[k] - 1e-9)[0]
         if cand.size == 0:
             continue
-        # Nearest-first target ordering (coldness-first regressed: scattered cold
-        # cells spike WL and the proxy gate then rejects the move). Optionally
-        # blended toward k's WL anchor (net_centroid); wl_blend=0 = nearest-only.
+        # Order targets by distance, optionally blended toward the WL anchor.
         d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[k, 0]) ** 2 + (tgt_y[cand] - net_centroid[k, 1]) ** 2
@@ -246,5 +244,4 @@ def _soft_relocation_moves(
             incremental_scorer._revert_prep_soft(prep)
             raise
     return soft_pos, accepts, best_score
-
 

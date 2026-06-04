@@ -2,7 +2,6 @@
 
 from .apply import (
     _apply_2pin_routing,
-    _apply_3pin_routing,
     _apply_3pin_routing_vec,
     _apply_macro_routing,
     _apply_macro_routing_subset,
@@ -16,7 +15,6 @@ from .apply import (
 
 __all__ = [
     "_apply_2pin_routing",
-    "_apply_3pin_routing",
     "_apply_3pin_routing_vec",
     "_apply_macro_routing",
     "_apply_macro_routing_subset",
