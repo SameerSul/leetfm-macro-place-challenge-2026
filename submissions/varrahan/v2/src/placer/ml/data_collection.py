@@ -101,9 +101,6 @@ class CandidateTrace:
     def set_context(self, **context) -> None:
         self._context = {key: value for key, value in context.items() if value is not None}
 
-    def update_context(self, **context) -> None:
-        self._context.update({key: value for key, value in context.items() if value is not None})
-
     def record(
         self,
         *,

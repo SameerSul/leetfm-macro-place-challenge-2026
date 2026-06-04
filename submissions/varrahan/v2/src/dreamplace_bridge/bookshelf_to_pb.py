@@ -22,7 +22,6 @@ hard-macro-only restart slot. The caller can layer soft macros from
 
 from __future__ import annotations
 
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,19 +37,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from macro_place._plc import PlacementCost  # noqa: E402
 
-# Same character set as forward converter's _sanitize() - keep in sync.
-_BOOKSHELF_TOKEN_RE = re.compile(r"^[A-Za-z0-9_/.\-]+$")
-
-
-def _sanitize(name: str) -> str:
-    """Mirror of pb_to_bookshelf._sanitize. Replace illegal chars with _."""
-    out = []
-    for ch in name:
-        if ch.isalnum() or ch in "_/-.":
-            out.append(ch)
-        else:
-            out.append("_")
-    return "".join(out)
+try:  # source of truth lives in the forward converter
+    from .pb_to_bookshelf import _sanitize  # noqa: E402
+except ImportError:  # standalone (non-package) invocation
+    from pb_to_bookshelf import _sanitize  # type: ignore  # noqa: E402
 
 
 @dataclass
