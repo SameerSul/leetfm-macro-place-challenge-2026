@@ -5,6 +5,7 @@ import time
 import numpy as np
 
 from placer.local_search.fields import _congestion_field, _density_field
+from placer.ml.data_collection import get_candidate_trace
 
 def _relocation_moves(
     pos: np.ndarray,
@@ -44,6 +45,8 @@ def _relocation_moves(
     Returns (pos, accepts, best_score).
     """
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    trace = get_candidate_trace()
+    trace_field = "combined" if use_combined else ("density" if use_density else "congestion")
     if use_combined:
         # Combined field: each of cong/density normalized to [0,1] by its own
         # max, then geometric-meaned so a cell ranks hot iff both terms are high.
@@ -60,6 +63,7 @@ def _relocation_moves(
         if cell_cong is None:
             return pos, 0, initial_score
     cell_w, cell_h = cw / nc, ch / nr
+    field_max = max(float(cell_cong.max()), 1e-12)
 
     # Per-macro local congestion → pick the hottest movable macros to relocate.
     ci_all = np.clip((pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
@@ -117,6 +121,8 @@ def _relocation_moves(
         # routing-apply per trial (~30% per-move on this hot path).
         prep = incremental_scorer._prepare_move(i)
         best_i_xy = None
+        state_score = best_score
+        group_id = trace.next_group_id("hard_relocation") if trace is not None else None
         try:
             for t in cand:
                 nx, ny = float(tgt_x[t]), float(tgt_y[t])
@@ -127,6 +133,35 @@ def _relocation_moves(
                 if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
                     continue
                 s = incremental_scorer._trial_at(prep, (nx, ny))
+                if trace is not None:
+                    trace.record(
+                        benchmark=benchmark.name,
+                        operator="hard_relocation",
+                        field=trace_field,
+                        group_id=group_id,
+                        state_score=state_score,
+                        trial_score=s,
+                        features={
+                            "net_degree_norm": float(
+                                len(
+                                    incremental_scorer.macro_to_nets.get(
+                                        incremental_scorer.hard_indices[i], ()
+                                    )
+                                )
+                                / max(incremental_scorer.n_nets, 1)
+                            ),
+                            "macro_w_norm": float(sizes[i, 0] / cw),
+                            "macro_h_norm": float(sizes[i, 1] / ch),
+                            "x_norm": float(pos[i, 0] / cw),
+                            "y_norm": float(pos[i, 1] / ch),
+                            "target_x_norm": float(nx / cw),
+                            "target_y_norm": float(ny / ch),
+                            "dx_norm": float((nx - pos[i, 0]) / cw),
+                            "dy_norm": float((ny - pos[i, 1]) / ch),
+                            "source_field_norm": float(local_cong[i] / field_max),
+                            "target_field_norm": float(tgt_cong[t] / field_max),
+                        },
+                    )
                 if s < best_score - 1e-9:
                     best_score = s
                     best_i_xy = (nx, ny)
@@ -180,11 +215,14 @@ def _soft_relocation_moves(
     if num_soft == 0:
         return soft_pos, 0, initial_score
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    trace = get_candidate_trace()
+    trace_field = "density" if use_density else "congestion"
     cell_field = (_density_field(incremental_scorer, nr, nc) if use_density
                   else _congestion_field(plc, nr, nc))
     if cell_field is None:
         return soft_pos, 0, initial_score
     cell_w, cell_h = cw / nc, ch / nr
+    field_max = max(float(cell_field.max()), 1e-12)
 
     ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
@@ -226,11 +264,42 @@ def _soft_relocation_moves(
         # Prep k once, trial each candidate, commit-or-revert (see _relocation_moves).
         prep = incremental_scorer._prepare_move_soft(k)
         best_k_xy = None
+        state_score = best_score
+        group_id = trace.next_group_id("soft_relocation") if trace is not None else None
         try:
             for t in cand:
                 nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
                 ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
                 s = incremental_scorer._trial_at_soft(prep, (nx, ny))
+                if trace is not None:
+                    trace.record(
+                        benchmark=benchmark.name,
+                        operator="soft_relocation",
+                        field=trace_field,
+                        group_id=group_id,
+                        state_score=state_score,
+                        trial_score=s,
+                        features={
+                            "net_degree_norm": float(
+                                len(
+                                    incremental_scorer.macro_to_nets.get(
+                                        incremental_scorer.soft_indices[k], ()
+                                    )
+                                )
+                                / max(incremental_scorer.n_nets, 1)
+                            ),
+                            "macro_w_norm": float(2.0 * soft_hw[k] / cw),
+                            "macro_h_norm": float(2.0 * soft_hh[k] / ch),
+                            "x_norm": float(soft_pos[k, 0] / cw),
+                            "y_norm": float(soft_pos[k, 1] / ch),
+                            "target_x_norm": float(nx / cw),
+                            "target_y_norm": float(ny / ch),
+                            "dx_norm": float((nx - soft_pos[k, 0]) / cw),
+                            "dy_norm": float((ny - soft_pos[k, 1]) / ch),
+                            "source_field_norm": float(local_cong[k] / field_max),
+                            "target_field_norm": float(tgt_cong[t] / field_max),
+                        },
+                    )
                 if s < best_score - 1e-9:
                     best_score = s
                     best_k_xy = (nx, ny)
@@ -244,4 +313,3 @@ def _soft_relocation_moves(
             incremental_scorer._revert_prep_soft(prep)
             raise
     return soft_pos, accepts, best_score
-
