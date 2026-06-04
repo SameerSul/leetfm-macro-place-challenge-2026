@@ -119,11 +119,9 @@ def _will_legalize(
                 valid = np.ones(len(cand_x), dtype=bool)
             if not valid.any():
                 continue
-            # argmin returns first occurrence → matches "first improvement wins".
-            # CRITICAL: compute d² in pos.dtype, not float64. The original scalar
-            # subtracts a Python float from a pos.dtype numpy scalar, so d² lands at
-            # pos.dtype precision. When pos is float32, that precision decides ties
-            # between symmetric candidates differently than float64 would -
+            # argmin first-occurrence → "first improvement wins". CRITICAL:
+            # compute d² in pos.dtype, not float64 - on float32 pos the lower
+            # precision breaks ties between symmetric candidates differently, and
             # matching it is required for bit-equivalence with sameer_v1.
             diff_x = cand_x.astype(pos.dtype, copy=False) - pos[idx, 0]
             diff_y = cand_y.astype(pos.dtype, copy=False) - pos[idx, 1]

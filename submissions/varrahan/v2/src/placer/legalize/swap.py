@@ -53,10 +53,9 @@ def _two_opt_swap(
             break
         improved_any = False
 
-        # For each macro i (in fixed order), find K nearest movable peers and
-        # try swap with each. We re-derive kNN per outer iter - positions
-        # change across iters, so the neighborhood changes too.
-        # Pairwise sq distances (vectorized): O(n²) memory but n<=800 is fine.
+        # For each macro i, try swapping with its K nearest movable peers. kNN is
+        # re-derived per outer iter since positions (and the neighborhood) change.
+        # Pairwise sq distances: O(n²) memory, fine for n<=800.
         dx = pos[:, 0:1] - pos[:, 0:1].T
         dy = pos[:, 1:2] - pos[:, 1:2].T
         d_pair = dx * dx + dy * dy

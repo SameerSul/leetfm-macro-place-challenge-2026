@@ -42,12 +42,10 @@ from macro_place._plc import PlacementCost  # noqa: E402
 # ---------------------------------------------------------------------------
 # Disk cache - DREAMPlace output is deterministic given fingerprint inputs.
 # ---------------------------------------------------------------------------
-# The (hard_pos, soft_pos) result depends only on: input netlist + initial
-# placement + config (iterations, seed, num_threads, soft_macros_movable,
-# random_center_init). Threads affect determinism only via NUM_THREADS env
-# (deterministic_flag=1 + fixed seed gives bit-identical output on same
-# threads). We fingerprint the input files by (size, mtime_ns) so dev edits
-# invalidate the cache automatically, and bake config into the key.
+# The (hard_pos, soft_pos) result depends only on the input netlist + initial
+# placement + config (and thread count, via deterministic_flag=1 + fixed seed).
+# Input files are fingerprinted by (size, mtime_ns) so edits invalidate the
+# cache, and the config is baked into the key.
 CACHE_VERSION = "v1"
 
 
@@ -188,15 +186,12 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
         "result_dir": result_dir,
     }
     if routability_opt:
-        # DP1 (2026-05-27): congestion-aware global placement. DREAMPlace
-        # computes a RUDY/RISA routing-congestion map mid-placement (once
-        # overflow drops below node_area_adjust_overflow) and inflates node
-        # areas in congested regions, so the density penalty spreads cells out
-        # of routing hotspots. This bakes congestion INTO the global objective.
-        # route_num_bins is coarser than DREAMPlace's 512 default to
-        # roughly match the ICCAD04 routing grids (~35-55 cols). Unit capacities
-        # are left at DREAMPlace defaults for the first cut - to be calibrated
-        # against the ICCAD04 routes-per-micron if the proxy-cong signal is weak.
+        # Congestion-aware global placement: DREAMPlace builds a RUDY/RISA
+        # routing-congestion map mid-placement and inflates node areas in
+        # congested regions, baking congestion into the global objective.
+        # route_num_bins is coarser than the 512 default to roughly match the
+        # ICCAD04 grids (~35-55 cols); unit capacities stay at DREAMPlace
+        # defaults (calibrate vs ICCAD04 routes-per-micron if the signal is weak).
         cfg.update({
             "routability_opt_flag": 1,
             "route_num_bins_x": route_num_bins_x or route_num_bins,
@@ -590,10 +585,8 @@ def launch_dreamplace_async(
     work_dir = Path(scratch_root).resolve() / design
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Disk-cache check: DREAMPlace output is deterministic given fingerprint
-    # (input files + iterations + seed + threads + softs + rci). If we have
-    # a matching .npz, skip the whole subprocess pipeline and return a stub
-    # handle that produces the cached arrays immediately.
+    # Disk-cache check: on a matching .npz (same fingerprint) skip the whole
+    # subprocess and return a stub handle with the cached arrays.
     routopt_sig = (
         f"rb={route_num_bins_x or route_num_bins}x{route_num_bins_y or route_num_bins}"
         f"|uh={unit_h_cap}|uv={unit_v_cap}|rate={max_route_opt_adjust_rate}"
@@ -639,12 +632,10 @@ def launch_dreamplace_async(
     if env.get("PYTHONPATH"):
         pythonpath = pythonpath + ":" + env["PYTHONPATH"]
     env["PYTHONPATH"] = pythonpath
-    # Cap DP's CPU footprint to match its declared num_threads. Without this,
-    # DREAMPlace's internal OMP/MKL pools default to all available cores and
-    # oversubscribe alongside the parent's scoring (torch + PlacementCost C++),
-    # causing 100x scoring slowdowns on contended runs (ibm06 in --all 2026-05-20
-    # saw scoring take 1599s vs the typical 14s, triggering the SLOW_SCORE_THRESHOLD
-    # safety bail and regressing -0.051 from the v8 PROGRESS.md result).
+    # Cap DP's CPU footprint to num_threads. Otherwise its OMP/MKL pools grab all
+    # cores and oversubscribe against the parent's scoring (torch + PlacementCost),
+    # causing ~100x scoring slowdowns under contention (ibm06 once hit 1599s vs
+    # ~14s, tripping the SLOW_SCORE_THRESHOLD bail and regressing -0.051).
     nt = str(max(1, int(num_threads)))
     env["OMP_NUM_THREADS"] = nt
     env["MKL_NUM_THREADS"] = nt

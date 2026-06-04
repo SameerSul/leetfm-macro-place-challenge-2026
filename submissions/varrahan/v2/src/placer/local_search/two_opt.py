@@ -63,16 +63,14 @@ def _two_opt_proxy_swap(
     accept_count = 0
     score_calls = 0
 
-    # S9 congestion-aware candidate selection (when `macro_cong`, per-macro local
-    # routing congestion, is supplied):
-    #   * outer ordering: iterate macros hot→cold so the budget is spent on the
-    #     congestion hotspots that dominate the proxy.
-    #   * neighbor augmentation: spatial kNN can only swap nearby macros, so for
-    #     the cong_hot_k hottest macros append the cong_cold_k coldest as extra
-    #     "teleport" candidates (size-incompatible ones fail the free conflict
-    #     check before scoring).
+    # Congestion-aware candidate selection (when per-macro `macro_cong` is given):
+    #   * order macros hot→cold so the budget goes to the hotspots that dominate
+    #     the proxy.
+    #   * for the cong_hot_k hottest, append the cong_cold_k coldest as "teleport"
+    #     candidates beyond the spatial kNN (size-incompatible ones fail the
+    #     conflict check before scoring).
     # The proxy gate validates every swap, so this only changes which candidates
-    # are tried; macro_cong=None reproduces the index-order / spatial-only path.
+    # are tried; macro_cong=None is the index-order / spatial-only path.
     cong_aware = macro_cong is not None and n > 1
     if cong_aware:
         mc = np.asarray(macro_cong, dtype=np.float64)

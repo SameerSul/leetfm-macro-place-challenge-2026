@@ -518,11 +518,9 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
             dev = _GPU_DEVICE
             g2d = torch.from_numpy(grid_2d).to(dev)
             if axis_h:
-                # H-style: smooth along rows (axis 0).
-                # For source row r the window spans [max(0,r-sr), min(gr-1,r+sr)].
-                # cnts[r] = window width; w[r,:] = grid_2d[r,:] / cnts[r].
-                # cs[j,:] = cumsum(w)[j] with a prepended zero row.
-                # smoothed[p,:] = cs[min(gr,p+sr+1),:] - cs[max(0,p-sr),:]
+                # H-style: smooth along rows. Window for source row r is
+                # [max(0,r-sr), min(gr-1,r+sr)]; cumsum gives
+                # smoothed[p] = cs[min(gr,p+sr+1)] - cs[max(0,p-sr)].
                 rows = torch.arange(grid_row, dtype=torch.int64, device=dev)
                 cnts = (torch.clamp(rows + sr, max=grid_row - 1)
                         - torch.clamp(rows - sr, min=0) + 1).to(g2d.dtype)
@@ -546,13 +544,9 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
                 smoothed = cs[:, hi_idx] - cs[:, lo_idx]  # [gr, gc]
             return smoothed.contiguous().cpu().numpy().ravel()
     if axis_h:
-        # H-style: each cell's value spreads across rows in window
-        # [max(0, row-sr), min(grid_row-1, row+sr)].
-        # Difference array along axis 0:
-        #   events[lp[r], c] += weighted[r, c]
-        #   events[up[r]+1, c] -= weighted[r, c]
-        # Multiple r values can share the same lp/up (clipping at edges),
-        # so np.add.at is required to accumulate duplicates.
+        # H-style: each cell spreads across rows [max(0,row-sr), min(gr-1,row+sr)]
+        # via a difference array along axis 0 (events +=/-= weighted at lp/up+1).
+        # Edge clipping makes lp/up collide, so np.add.at accumulates duplicates.
         rows = np.arange(grid_row, dtype=np.int64)
         lp = np.maximum(rows - sr, 0)
         up = np.minimum(rows + sr, grid_row - 1)
@@ -563,12 +557,8 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
         np.subtract.at(events, up + 1, weighted)
         smoothed = np.cumsum(events, axis=0)[:grid_row]
     else:
-        # V-style: each cell's value spreads across cols in window
-        # [max(0, col-sr), min(grid_col-1, col+sr)].
-        # Difference array along axis 1:
-        #   events[r, lp[c]] += weighted[r, c]
-        #   events[r, up[c]+1] -= weighted[r, c]
-        # Vectorize via tuple-of-arrays advanced indexing.
+        # V-style: each cell spreads across cols [max(0,col-sr), min(gc-1,col+sr)]
+        # via a difference array along axis 1, vectorized with advanced indexing.
         cols = np.arange(grid_col, dtype=np.int64)
         lp = np.maximum(cols - sr, 0)
         up = np.minimum(cols + sr, grid_col - 1)
@@ -670,13 +660,9 @@ def _apply_macro_routing(V_macro_flat: np.ndarray, H_macro_flat: np.ndarray,
     np.add.at(H_macro_flat, flat_idx, y_dist * hrouting_alloc)
 
     # ----- PARTIAL_OVERLAP corrections ----------------------------------
-    # Mirror the scalar reference: when a macro spans >1 row AND any of its
-    # top/bottom rows is a partial overlap (y_dist != grid_h), subtract the
-    # per-column x_dist from V at the top (ur_row) row. Symmetric for H/cols.
-    #
-    # With grid alignment, only bl_row and ur_row can be partial - middle
-    # rows always have y_dist == grid_h. The trigger reduces to:
-    #   ur_row != bl_row AND (y_min != grid_h*bl_row OR y_max != grid_h*(ur_row+1)).
+    # Mirror the scalar reference: a macro spanning >1 row with a partial top/
+    # bottom row (y_dist != grid_h) subtracts per-column x_dist from V at ur_row.
+    # Only bl_row/ur_row can be partial (middle rows are full). Symmetric for H.
     tol = 1e-5
     spans_rows = ur_row_s != bl_row_s
     bot_partial = np.abs((grid_h * (bl_row_s + 1) - y_min_s) - grid_h) > tol
@@ -1197,13 +1183,11 @@ def _vectorized_get_routing(plc) -> None:
         lengths = cache["lengths"]
         net_weights = wl["net_weights"]
 
-        # Per-net dispatch. Original v1 implementation did np.unique per net
-        # in a 28k-iteration Python loop on ibm10 → 663ms. We partition nets
-        # by pin count and vectorize the common cases:
-        #   - length 2 (most nets): pure numpy, one fast-path.
-        #   - length 3: vectorize the "unique-count-from-3" classification,
-        #     then dispatch to per-bucket batches.
-        #   - length ≥4: fall back to per-net Python (small fraction).
+        # Per-net dispatch (v1's np.unique-per-net loop was 663ms on ibm10).
+        # Partition nets by pin count and vectorize the common cases:
+        #   - length 2 (most nets): pure-numpy fast path.
+        #   - length 3: vectorized unique-count classification → per-bucket batch.
+        #   - length ≥4: batched dispatch (per-net Python for the rare tail).
         bucket_2_src_flat: "list[np.ndarray]" = []  # accumulators of flat src gcells
         bucket_2_snk_flat: "list[np.ndarray]" = []
         bucket_2_w_arrs: "list[np.ndarray]" = []
@@ -1227,12 +1211,8 @@ def _vectorized_get_routing(plc) -> None:
                 bucket_2_w_arrs.append(net_weights[idx2][mask])
 
         # --- length-3 vectorized classification ------------------------------
-        # For each 3-pin net, count unique gcells among (g0, g1, g2).
-        # cases:
-        #   all three equal → skip
-        #   exactly two distinct → 2-pin edge
-        #   all three distinct → 3-pin handler
-        # B4: idx3/s3/s3p1/s3p2 from cache (topology-fixed).
+        # Count unique gcells among (g0, g1, g2): all equal → skip; two distinct
+        # → 2-pin edge; all distinct → 3-pin handler. (idx3/s3* from cache.)
         idx3 = cache["idx3"]
         if idx3.size > 0:
             g0 = pin_gcell[cache["s3"]]      # driver
@@ -1241,18 +1221,12 @@ def _vectorized_get_routing(plc) -> None:
             eq01 = g0 == g1
             eq02 = g0 == g2
             eq12 = g1 == g2
-            # Count of equal-pair conditions:
-            #   3 → all equal → n_uniq=1 → skip
-            #   1 → exactly one pair equal → n_uniq=2 → 2-pin edge
-            #   0 → all distinct → n_uniq=3 → 3-pin handler
+            # eq_count = #equal-pairs: 3 → all equal (skip); 1 → 2-pin edge;
+            # 0 → all distinct (3-pin).
             eq_count = eq01.astype(np.int64) + eq02.astype(np.int64) + eq12.astype(np.int64)
             uniq2 = eq_count == 1
             uniq3 = eq_count == 0
-            # 2-uniq case: choose the sink that's distinct from driver (g0).
-            #   if eq01 and !eq02 → sink = g2
-            #   if eq02 and !eq01 → sink = g1
-            #   if eq12 and !eq01 → sink = g1  (g1 == g2, distinct from g0)
-            # Driver gcell is g0 in all 2-uniq cases.
+            # 2-uniq: driver is g0; sink is whichever of g1/g2 differs from it.
             mask2 = uniq2
             if mask2.any():
                 src_2 = g0[mask2]
@@ -1271,12 +1245,10 @@ def _vectorized_get_routing(plc) -> None:
                 bucket_3_w_arrs.append(net_weights[idx3_uniq3])
 
         # --- length ≥4: vectorized batch dispatch ----------------------------
-        # Original per-net loop called np.unique 28k× on ibm10 (~62ms). Here
-        # we build flat (net_local_id, sink_gcell) pairs for ALL big nets at
-        # once, dedup via lexsort, then dispatch by per-net unique count.
-        # Source is filtered out of "sinks" before dedup; n_uniq_total = 1 + #unique_sinks.
-        # B4: idx_big / starts_big / lengths_big / sink_lens / sink_total / B /
-        # net_local_ids / cum_sink_starts / global_pin_idx all pre-cached.
+        # Per-net np.unique was 28k calls on ibm10 (~62ms). Instead build flat
+        # (net_local_id, sink_gcell) pairs for ALL big nets, dedup via lexsort,
+        # then dispatch by per-net unique count (source filtered out of sinks
+        # first; n_uniq = 1 + #unique_sinks). Cache holds idx_big/starts_big/etc.
         idx_big = cache["idx_big"]
         if idx_big.size > 0:
             starts_big = cache["starts_big"]
@@ -1383,11 +1355,9 @@ def _vectorized_get_routing(plc) -> None:
     V_total = V_flat + V_macro_flat
     H_total = H_flat + H_macro_flat
 
-    # Store as numpy arrays instead of Python lists.
-    # Saves ~2ms/call on .tolist() conversion. The patched get_congestion_cost
-    # (`_patch_plc_congestion_cost`) consumes them via numpy ops, and
-    # `_routing_congestion_perturb` already does `np.asarray(...).reshape(...)`
-    # so it transparently accepts arrays too.
+    # Store as numpy arrays, not Python lists (saves ~2ms/call on .tolist()).
+    # The patched get_congestion_cost and _routing_congestion_perturb both consume
+    # them via numpy ops, so arrays work transparently.
     plc.V_routing_cong = V_total
     plc.H_routing_cong = H_total
     plc.V_macro_routing_cong = V_macro_flat

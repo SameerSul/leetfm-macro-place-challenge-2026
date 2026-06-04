@@ -88,9 +88,8 @@ def _routing_congestion_perturb(
     grad_y = (cell_cong[r_up, c_idx] - cell_cong[r_down, c_idx]) / 2.0
     grad_len = np.sqrt(grad_x ** 2 + grad_y ** 2) + 1e-10
 
-    # move_scale is linear in local_cong (no cap - capping strangled motion on
-    # the cong>2 hotspots descent most wants to clear). noise draws in C order
-    # to match the original per-macro (dx, dy) sequence, keeping rng reproducible.
+    # move_scale linear in local_cong (no cap - capping strangled motion on the
+    # cong>2 hotspots). noise drawn in C order for rng reproducibility.
     move_scale = scale * local_cong
     noise = rng.normal(0.0, scale * 0.1, size=(int(mask.sum()), 2))
     dx = -(grad_x / grad_len) * move_scale + noise[:, 0]

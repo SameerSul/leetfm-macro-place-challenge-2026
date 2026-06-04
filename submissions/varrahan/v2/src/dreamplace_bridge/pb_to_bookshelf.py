@@ -293,10 +293,8 @@ def _write_scl(out_dir: Path, design: str, canvas_w: float, canvas_h: float,
     NumSites - even though .pl/.nodes accept floats. Site grid is 1x1 unit."""
     canvas_w_i = max(1, int(canvas_w) + 1)
     canvas_h_i = max(1, int(canvas_h) + 1)
-    # row_height = ceil(canvas_h / num_rows_target) so num_rows * row_height >= canvas_h
-    # but using floor + extra final row would cause out-of-canvas placement; instead,
-    # bump row_height up so num_rows * row_height fits as close to canvas_h as possible
-    # without overshoot beyond one row.
+    # row_height = ceil(canvas_h / num_rows_target) so num_rows * row_height covers
+    # canvas_h (floor would need an extra row that overshoots the canvas).
     row_height = max(1, (canvas_h_i + num_rows_target - 1) // num_rows_target)
     num_rows = num_rows_target
     sites = canvas_w_i

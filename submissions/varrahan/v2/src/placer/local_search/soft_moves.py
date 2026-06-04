@@ -31,17 +31,15 @@ def _two_opt_soft_swap(
 ) -> "tuple[np.ndarray, int, float]":
     """Pair-swap two SOFT macros' positions, accept-on-true-proxy.
 
-    The exchange move single-soft relocation can't make. Softs may overlap, so
-    destinations have no legality check - the proxy gate handles selection.
-    Picks the `top_hot` softs by the hotness field, and for each tries swapping
-    with its `k_neighbors` nearest movable softs plus `n_cold_teleports`
-    globally-coldest softs (long-range exchanges kNN can't reach). A macro is
-    skipped once swapped this pass.
+    The exchange single-soft relocation can't make. Softs may overlap (no legality
+    check; the proxy gate selects). Picks `top_hot` softs by the hotness field and
+    for each tries its `k_neighbors` nearest movable softs plus `n_cold_teleports`
+    coldest (long-range exchanges kNN can't reach). A macro is skipped once swapped.
 
-    use_density: hotness field - True = grid occupancy, False = max(H,V) routing
-        congestion. Running both fields per round finds moves the other can't.
-    net_centroid / wl_blend: blend distance-to-current with distance-to-WL-anchor
-        in the kNN sort so WL-aligned partners rank first (ordering only).
+    use_density: hotness field, occupancy (True) vs max(H,V) congestion (False);
+        running both per round finds moves the other can't.
+    net_centroid / wl_blend: blend toward the WL anchor in the kNN sort (ordering
+        only).
     """
     num_soft = incremental_scorer.num_soft
     if num_soft < 2:
