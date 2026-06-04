@@ -1,10 +1,15 @@
 """Local search move operators."""
 
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from placer.local_search.fields import _congestion_field, _density_field
+from placer.ml.data_collection import get_candidate_trace, net_degree_features
+
+if TYPE_CHECKING:
+    from macro_place.benchmark import Benchmark
 
 def _two_opt_soft_swap(
     soft_pos: np.ndarray,
@@ -42,6 +47,8 @@ def _two_opt_soft_swap(
     if num_soft < 2:
         return soft_pos, 0, initial_score
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    trace = get_candidate_trace()
+    trace_field = "density" if use_density else "congestion"
     cell_w, cell_h = cw / nc, ch / nr
 
     # Hotness field: density (occupancy) or congestion (plc routing).
@@ -49,6 +56,16 @@ def _two_opt_soft_swap(
                   else _congestion_field(plc, nr, nc))
     if cell_field is None:
         return soft_pos, 0, initial_score
+    field_max = max(float(cell_field.max()), 1e-12)
+    trace_cong = trace_dens = None
+    trace_cong_max = trace_dens_max = 1.0
+    if trace is not None:
+        trace_cong = _congestion_field(plc, nr, nc)
+        trace_dens = _density_field(incremental_scorer, nr, nc)
+        if trace_cong is not None:
+            trace_cong_max = max(float(trace_cong.max()), 1e-12)
+        if trace_dens is not None:
+            trace_dens_max = max(float(trace_dens.max()), 1e-12)
 
     ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
@@ -100,19 +117,85 @@ def _two_opt_soft_swap(
                 nbrs = np.concatenate([nbrs, extra])
 
         best_pair = None  # (k2, xy1, xy2)
+        state_score = best_score
+        group_id = trace.next_group_id("soft_2opt") if trace is not None else None
+        spatial_set = set(int(x) for x in nbrs[:k_neighbors])
+        rejected_already_swapped = 0
+        rejected_wl_prefilter = 0
+        scored = 0
         # Skip full scoring when the WL delta alone is too large to recover.
         WL_PREFILTER = 0.01
-        for k2 in nbrs:
+        for candidate_rank, k2 in enumerate(nbrs):
             k2 = int(k2)
             if swapped[k2]:
+                rejected_already_swapped += 1
                 continue
             # Swap: k1 takes k2's old position, k2 takes k1's old position.
             new_xy1 = (float(soft_pos[k2, 0]), float(soft_pos[k2, 1]))
             new_xy2 = (float(soft_pos[k1, 0]), float(soft_pos[k1, 1]))
             wl_d = incremental_scorer.wl_delta_swap_soft(k1, new_xy1, k2, new_xy2)
             if wl_d > WL_PREFILTER:
+                rejected_wl_prefilter += 1
                 continue
             s = incremental_scorer.score_swap_soft(k1, new_xy1, k2, new_xy2)
+            scored += 1
+            if trace is not None:
+                trace.record(
+                    operator="soft_2opt",
+                    field=trace_field,
+                    group_id=group_id,
+                    state_score=state_score,
+                    trial_score=s,
+                    candidate_rank=candidate_rank,
+                    group_size=len(nbrs),
+                    candidate_source="spatial_knn" if k2 in spatial_set else "cold_teleport",
+                    features={
+                        **net_degree_features(
+                            incremental_scorer,
+                            incremental_scorer.soft_indices[k1],
+                            "k1_",
+                        ),
+                        **net_degree_features(
+                            incremental_scorer,
+                            incremental_scorer.soft_indices[k2],
+                            "k2_",
+                        ),
+                        "accepted_in_pass": accepts,
+                        "distance_norm": float(
+                            np.hypot(
+                                soft_pos[k1, 0] - soft_pos[k2, 0],
+                                soft_pos[k1, 1] - soft_pos[k2, 1],
+                            )
+                            / np.hypot(cw, ch)
+                        ),
+                        "k1_field_norm": float(local_field[k1] / field_max),
+                        "k2_field_norm": float(local_field[k2] / field_max),
+                        "k1_congestion_norm": (
+                            float(trace_cong[ri[k1], ci[k1]] / trace_cong_max)
+                            if trace_cong is not None
+                            else 0.0
+                        ),
+                        "k2_congestion_norm": (
+                            float(trace_cong[ri[k2], ci[k2]] / trace_cong_max)
+                            if trace_cong is not None
+                            else 0.0
+                        ),
+                        "k1_density_norm": (
+                            float(trace_dens[ri[k1], ci[k1]] / trace_dens_max)
+                            if trace_dens is not None
+                            else 0.0
+                        ),
+                        "k2_density_norm": (
+                            float(trace_dens[ri[k2], ci[k2]] / trace_dens_max)
+                            if trace_dens is not None
+                            else 0.0
+                        ),
+                        "wl_delta": float(wl_d),
+                        "source_hot_rank_norm": float(
+                            np.where(hot == k1)[0][0] / max(len(hot) - 1, 1)
+                        ),
+                    },
+                )
             if s < best_score - 1e-9:
                 best_score = s
                 best_pair = (k2, new_xy1, new_xy2)
@@ -125,5 +208,15 @@ def _two_opt_soft_swap(
             swapped[k1] = True
             swapped[k2_win] = True
             accepts += 1
+        if trace is not None:
+            trace.event(
+                "candidate_group_summary",
+                operator="soft_2opt",
+                field=trace_field,
+                group_id=group_id,
+                generated=int(len(nbrs)),
+                scored=scored,
+                rejected_already_swapped=rejected_already_swapped,
+                rejected_wl_prefilter=rejected_wl_prefilter,
+            )
     return soft_pos, accepts, best_score
-

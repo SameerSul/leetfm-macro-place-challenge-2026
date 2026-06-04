@@ -1,10 +1,15 @@
 """Local search move operators."""
 
 import time
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from placer.local_search.fields import _congestion_field, _density_field
+from placer.ml.data_collection import get_candidate_trace, net_degree_features
+
+if TYPE_CHECKING:
+    from macro_place.benchmark import Benchmark
 
 def _two_opt_hard_soft_swap(
     hard_pos: np.ndarray,
@@ -42,17 +47,31 @@ def _two_opt_hard_soft_swap(
     if num_soft < 1:
         return hard_pos, soft_pos, 0, initial_score
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    trace = get_candidate_trace()
+    trace_field = "density" if use_density else "congestion"
     cell_w, cell_h = cw / nc, ch / nr
 
     cell_field = (_density_field(incremental_scorer, nr, nc) if use_density
                   else _congestion_field(plc, nr, nc))
     if cell_field is None:
         return hard_pos, soft_pos, 0, initial_score
+    field_max = max(float(cell_field.max()), 1e-12)
+    trace_cong = trace_dens = None
+    trace_cong_max = trace_dens_max = 1.0
+    if trace is not None:
+        trace_cong = _congestion_field(plc, nr, nc)
+        trace_dens = _density_field(incremental_scorer, nr, nc)
+        if trace_cong is not None:
+            trace_cong_max = max(float(trace_cong.max()), 1e-12)
+        if trace_dens is not None:
+            trace_dens_max = max(float(trace_dens.max()), 1e-12)
 
     # Hot hards by chosen field.
     hci = np.clip((hard_pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
     hri = np.clip((hard_pos[:n, 1] / cell_h).astype(np.int64), 0, nr - 1)
     local_h = cell_field[hri, hci]
+    sci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
+    sri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
     mov_hard = np.where(movable_hard)[0]
     if mov_hard.size == 0:
         return hard_pos, soft_pos, 0, initial_score
@@ -98,9 +117,16 @@ def _two_opt_hard_soft_swap(
         oy = hard_pos[mask, 1]
 
         best_pair = None  # (k_soft, hard_new_xy, soft_new_xy)
-        for k_soft in nbrs:
+        state_score = best_score
+        group_id = trace.next_group_id("hard_soft_swap") if trace is not None else None
+        rejected_bounds = 0
+        rejected_overlap = 0
+        rejected_already_swapped = 0
+        scored = 0
+        for candidate_rank, k_soft in enumerate(nbrs):
             k_soft = int(k_soft)
             if swapped_soft[k_soft]:
+                rejected_already_swapped += 1
                 continue
             # Hard takes the soft's position; soft takes the hard's position.
             hx, hy = float(soft_pos[k_soft, 0]), float(soft_pos[k_soft, 1])
@@ -108,11 +134,65 @@ def _two_opt_hard_soft_swap(
             # In-bounds for the hard at its new position.
             if (hx - hw[i] < -EPS or hx + hw[i] > cw + EPS or
                     hy - hh[i] < -EPS or hy + hh[i] > ch + EPS):
+                rejected_bounds += 1
                 continue
             # No overlap with other hard macros at (hx, hy).
             if ((np.abs(hx - ox) < sxi + EPS) & (np.abs(hy - oy) < syi + EPS)).any():
+                rejected_overlap += 1
                 continue
             s = incremental_scorer.score_swap_hard_soft(i, (hx, hy), k_soft, (sx, sy))
+            scored += 1
+            if trace is not None:
+                trace.record(
+                    operator="hard_soft_swap",
+                    field=trace_field,
+                    group_id=group_id,
+                    state_score=state_score,
+                    trial_score=s,
+                    candidate_rank=candidate_rank,
+                    group_size=len(nbrs),
+                    candidate_source="spatial_knn",
+                    features={
+                        **net_degree_features(
+                            incremental_scorer,
+                            incremental_scorer.hard_indices[i],
+                            "hard_",
+                        ),
+                        **net_degree_features(
+                            incremental_scorer,
+                            incremental_scorer.soft_indices[k_soft],
+                            "soft_",
+                        ),
+                        "accepted_in_pass": accepts,
+                        "hard_w_norm": float(sizes[i, 0] / cw),
+                        "hard_h_norm": float(sizes[i, 1] / ch),
+                        "distance_norm": float(np.hypot(hx - sx, hy - sy) / np.hypot(cw, ch)),
+                        "hard_field_norm": float(local_h[i] / field_max),
+                        "hard_congestion_norm": (
+                            float(trace_cong[hri[i], hci[i]] / trace_cong_max)
+                            if trace_cong is not None
+                            else 0.0
+                        ),
+                        "soft_congestion_norm": (
+                            float(trace_cong[sri[k_soft], sci[k_soft]] / trace_cong_max)
+                            if trace_cong is not None
+                            else 0.0
+                        ),
+                        "hard_density_norm": (
+                            float(trace_dens[hri[i], hci[i]] / trace_dens_max)
+                            if trace_dens is not None
+                            else 0.0
+                        ),
+                        "soft_density_norm": (
+                            float(trace_dens[sri[k_soft], sci[k_soft]] / trace_dens_max)
+                            if trace_dens is not None
+                            else 0.0
+                        ),
+                        "source_hot_rank_norm": float(
+                            np.where(hot == i)[0][0] / max(len(hot) - 1, 1)
+                        ),
+                    },
+                )
             if s < best_score - 1e-9:
                 best_score = s
                 best_pair = (k_soft, (hx, hy), (sx, sy))
@@ -125,6 +205,18 @@ def _two_opt_hard_soft_swap(
             swapped_hard[i] = True
             swapped_soft[k_win] = True
             accepts += 1
+        if trace is not None:
+            trace.event(
+                "candidate_group_summary",
+                operator="hard_soft_swap",
+                field=trace_field,
+                group_id=group_id,
+                generated=int(len(nbrs)),
+                scored=scored,
+                rejected_bounds=rejected_bounds,
+                rejected_overlap=rejected_overlap,
+                rejected_already_swapped=rejected_already_swapped,
+            )
     return hard_pos, soft_pos, accepts, best_score
 
 
@@ -164,17 +256,31 @@ def _three_opt_hard_soft_soft(
     if num_soft < 2:
         return hard_pos, soft_pos, 0, initial_score
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    trace = get_candidate_trace()
+    trace_field = "density" if use_density else "congestion"
     cell_w, cell_h = cw / nc, ch / nr
 
     cell_field = (_density_field(incremental_scorer, nr, nc) if use_density
                   else _congestion_field(plc, nr, nc))
     if cell_field is None:
         return hard_pos, soft_pos, 0, initial_score
+    field_max = max(float(cell_field.max()), 1e-12)
+    trace_cong = trace_dens = None
+    trace_cong_max = trace_dens_max = 1.0
+    if trace is not None:
+        trace_cong = _congestion_field(plc, nr, nc)
+        trace_dens = _density_field(incremental_scorer, nr, nc)
+        if trace_cong is not None:
+            trace_cong_max = max(float(trace_cong.max()), 1e-12)
+        if trace_dens is not None:
+            trace_dens_max = max(float(trace_dens.max()), 1e-12)
 
     # Hot hards by chosen field.
     hci = np.clip((hard_pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
     hri = np.clip((hard_pos[:n, 1] / cell_h).astype(np.int64), 0, nr - 1)
     local_h = cell_field[hri, hci]
+    sci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
+    sri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
     mov_hard = np.where(movable_hard)[0]
     if mov_hard.size == 0:
         return hard_pos, soft_pos, 0, initial_score
@@ -219,16 +325,27 @@ def _three_opt_hard_soft_soft(
         oy = hard_pos[mask, 1]
 
         best_triple = None
-        for k1 in s1_cands:
+        state_score = best_score
+        group_id = trace.next_group_id("hard_soft_soft_cycle") if trace is not None else None
+        generated = 0
+        rejected_bounds = 0
+        rejected_overlap = 0
+        rejected_already_swapped = 0
+        scored = 0
+        candidate_rank = 0
+        for k1_rank, k1 in enumerate(s1_cands):
             k1 = int(k1)
             if swapped_soft[k1]:
+                rejected_already_swapped += 1
                 continue
             # Hard's new position = S1's old position. Check legality.
             hx, hy = float(soft_pos[k1, 0]), float(soft_pos[k1, 1])
             if (hx - hw[i] < -EPS or hx + hw[i] > cw + EPS or
                     hy - hh[i] < -EPS or hy + hh[i] > ch + EPS):
+                rejected_bounds += 1
                 continue
             if ((np.abs(hx - ox) < sxi + EPS) & (np.abs(hy - oy) < syi + EPS)).any():
+                rejected_overlap += 1
                 continue
 
             # kNN softs around k1 - candidates for S2.
@@ -241,13 +358,94 @@ def _three_opt_hard_soft_soft(
             for k2 in s2_cands:
                 k2 = int(k2)
                 if k2 == k1 or swapped_soft[k2]:
+                    rejected_already_swapped += 1
                     continue
+                generated += 1
                 # Cycle: H → S1's old, S1 → S2's old, S2 → H's old.
                 s1_new_xy = (float(soft_pos[k2, 0]), float(soft_pos[k2, 1]))
                 s2_new_xy = (float(hard_pos[i, 0]), float(hard_pos[i, 1]))
                 s = incremental_scorer.score_cycle_hard_soft_soft(
                     i, (hx, hy), k1, s1_new_xy, k2, s2_new_xy
                 )
+                scored += 1
+                if trace is not None:
+                    trace.record(
+                        operator="hard_soft_soft_cycle",
+                        field=trace_field,
+                        group_id=group_id,
+                        state_score=state_score,
+                        trial_score=s,
+                        candidate_rank=candidate_rank,
+                        group_size=k_inner * k_inner,
+                        candidate_source="nested_spatial_knn",
+                        features={
+                            **net_degree_features(
+                                incremental_scorer,
+                                incremental_scorer.hard_indices[i],
+                                "hard_",
+                            ),
+                            **net_degree_features(
+                                incremental_scorer,
+                                incremental_scorer.soft_indices[k1],
+                                "s1_",
+                            ),
+                            **net_degree_features(
+                                incremental_scorer,
+                                incremental_scorer.soft_indices[k2],
+                                "s2_",
+                            ),
+                            "accepted_in_pass": accepts,
+                            "hard_w_norm": float(sizes[i, 0] / cw),
+                            "hard_h_norm": float(sizes[i, 1] / ch),
+                            "hard_s1_distance_norm": float(
+                                np.hypot(hx - hard_pos[i, 0], hy - hard_pos[i, 1])
+                                / np.hypot(cw, ch)
+                            ),
+                            "s1_s2_distance_norm": float(
+                                np.hypot(
+                                    soft_pos[k2, 0] - soft_pos[k1, 0],
+                                    soft_pos[k2, 1] - soft_pos[k1, 1],
+                                )
+                                / np.hypot(cw, ch)
+                            ),
+                            "hard_field_norm": float(local_h[i] / field_max),
+                            "hard_congestion_norm": (
+                                float(trace_cong[hri[i], hci[i]] / trace_cong_max)
+                                if trace_cong is not None
+                                else 0.0
+                            ),
+                            "s1_congestion_norm": (
+                                float(trace_cong[sri[k1], sci[k1]] / trace_cong_max)
+                                if trace_cong is not None
+                                else 0.0
+                            ),
+                            "s2_congestion_norm": (
+                                float(trace_cong[sri[k2], sci[k2]] / trace_cong_max)
+                                if trace_cong is not None
+                                else 0.0
+                            ),
+                            "hard_density_norm": (
+                                float(trace_dens[hri[i], hci[i]] / trace_dens_max)
+                                if trace_dens is not None
+                                else 0.0
+                            ),
+                            "s1_density_norm": (
+                                float(trace_dens[sri[k1], sci[k1]] / trace_dens_max)
+                                if trace_dens is not None
+                                else 0.0
+                            ),
+                            "s2_density_norm": (
+                                float(trace_dens[sri[k2], sci[k2]] / trace_dens_max)
+                                if trace_dens is not None
+                                else 0.0
+                            ),
+                            "source_hot_rank_norm": float(
+                                np.where(hot == i)[0][0] / max(len(hot) - 1, 1)
+                            ),
+                            "s1_rank_norm": float(k1_rank / max(len(s1_cands) - 1, 1)),
+                        },
+                    )
+                candidate_rank += 1
                 if s < best_score - 1e-9:
                     best_score = s
                     best_triple = (k1, (hx, hy), s1_new_xy, k2, s2_new_xy)
@@ -264,6 +462,16 @@ def _three_opt_hard_soft_soft(
             swapped_soft[k1_win] = True
             swapped_soft[k2_win] = True
             accepts += 1
+        if trace is not None:
+            trace.event(
+                "candidate_group_summary",
+                operator="hard_soft_soft_cycle",
+                field=trace_field,
+                group_id=group_id,
+                generated=generated,
+                scored=scored,
+                rejected_bounds=rejected_bounds,
+                rejected_overlap=rejected_overlap,
+                rejected_already_swapped=rejected_already_swapped,
+            )
     return hard_pos, soft_pos, accepts, best_score
-
-
