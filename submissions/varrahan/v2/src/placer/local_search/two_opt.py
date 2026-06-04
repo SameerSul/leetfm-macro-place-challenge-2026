@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from placer.config import _GPU_DEVICE, _USE_GPU
+from placer.ml.data_collection import get_candidate_trace
 
 def _two_opt_proxy_swap(
     legal_pos: np.ndarray,
@@ -42,6 +43,7 @@ def _two_opt_proxy_swap(
     EPS = 0.05
 
     pos = legal_pos.copy()
+    trace = get_candidate_trace()
     best_score = initial_score
     accept_count = 0
     score_calls = 0
@@ -67,10 +69,12 @@ def _two_opt_proxy_swap(
         hot_rows = set(int(x) for x in outer_order[:n_hot])
         n_cold = min(cong_cold_k, mov_idx.size)
         cold_pool = mov_idx[np.argsort(mc[mov_idx], kind="stable")][:n_cold]
+        mc_scale = max(float(np.max(np.abs(mc[mov_idx]))), 1e-12)
     else:
         outer_order = np.arange(n)
         hot_rows = set()
         cold_pool = np.empty(0, dtype=np.int64)
+        mc_scale = 1.0
 
     it = 0
     while it < max_iters:
@@ -114,6 +118,8 @@ def _two_opt_proxy_swap(
                 cand_js = np.concatenate([neighbors[i], extra]) if extra.size else neighbors[i]
             else:
                 cand_js = neighbors[i]
+            state_score = best_score
+            group_id = trace.next_group_id("hard_2opt") if trace is not None else None
             for j in cand_js:
                 j = int(j)
                 if not movable[j] or i == j:
@@ -170,6 +176,55 @@ def _two_opt_proxy_swap(
                 else:
                     trial_score = score_fn(pos)
                 score_calls += 1
+                if trace is not None:
+                    benchmark_name = (
+                        incremental_scorer.benchmark.name
+                        if incremental_scorer is not None
+                        else "unknown"
+                    )
+                    trace.record(
+                        benchmark=benchmark_name,
+                        operator="hard_2opt",
+                        field="congestion" if cong_aware else "spatial",
+                        group_id=group_id,
+                        state_score=state_score,
+                        trial_score=trial_score,
+                        features={
+                            "i_net_degree_norm": float(
+                                len(
+                                    incremental_scorer.macro_to_nets.get(
+                                        incremental_scorer.hard_indices[i], ()
+                                    )
+                                )
+                                / max(incremental_scorer.n_nets, 1)
+                            )
+                            if incremental_scorer is not None
+                            else 0.0,
+                            "j_net_degree_norm": float(
+                                len(
+                                    incremental_scorer.macro_to_nets.get(
+                                        incremental_scorer.hard_indices[j], ()
+                                    )
+                                )
+                                / max(incremental_scorer.n_nets, 1)
+                            )
+                            if incremental_scorer is not None
+                            else 0.0,
+                            "i_w_norm": float(sizes[i, 0] / cw),
+                            "i_h_norm": float(sizes[i, 1] / ch),
+                            "j_w_norm": float(sizes[j, 0] / cw),
+                            "j_h_norm": float(sizes[j, 1] / ch),
+                            "i_x_norm": float(old_ix / cw),
+                            "i_y_norm": float(old_iy / ch),
+                            "j_x_norm": float(old_jx / cw),
+                            "j_y_norm": float(old_jy / ch),
+                            "distance_norm": float(
+                                np.hypot(old_ix - old_jx, old_iy - old_jy) / np.hypot(cw, ch)
+                            ),
+                            "i_congestion_norm": float(mc[i] / mc_scale) if cong_aware else 0.0,
+                            "j_congestion_norm": float(mc[j] / mc_scale) if cong_aware else 0.0,
+                        },
+                    )
                 if trial_score < best_score:
                     if incremental_scorer is not None:
                         incremental_scorer.commit_swap(
@@ -189,5 +244,3 @@ def _two_opt_proxy_swap(
         it += 1
 
     return pos, accept_count, best_score, score_calls
-
-
