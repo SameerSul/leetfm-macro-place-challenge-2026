@@ -657,46 +657,9 @@ class IncrementalScorer:
             cache[m] = _build_net_routing_struct(self.plc, self._macro_nets(m))
         return cache[m]
 
-    def hard_net_centroids(self) -> np.ndarray:
-        """[n_hard, 2] WL-anchor per hard macro = mean over its pins of the
-        centroid of that pin's net (net centroid = mean pin position). This is
-        roughly where the macro wants to sit to minimize its wirelength, used by
-        WL-aware relocation to pick cold cells that don't spike WL. Computed from
-        current committed positions. Macros with no pins get their current pos.
-        """
-        pos = _ensure_pos_cache(self.plc)
-        ref_idx = self.wl_cache["ref_idx"]
-        pin_to_net = self.wl_cache["pin_to_net"]
-        starts = self.net_starts
-        out = np.empty((self.n_hard, 2), dtype=np.float64)
-        for k in range(self.n_hard):
-            out[k, 0] = self.committed_hard_pos[k, 0]
-            out[k, 1] = self.committed_hard_pos[k, 1]
-        if ref_idx.size == 0 or starts.size == 0:
-            return out
-        pin_x = pos[ref_idx, 0] + self.x_off
-        pin_y = pos[ref_idx, 1] + self.y_off
-        counts = (self.net_ends - self.net_starts).astype(np.float64)
-        counts[counts == 0] = 1.0
-        net_cx = np.add.reduceat(pin_x, starts) / counts
-        net_cy = np.add.reduceat(pin_y, starts) / counts
-        n_mod = int(ref_idx.max()) + 1
-        msx = np.zeros(n_mod, dtype=np.float64)
-        msy = np.zeros(n_mod, dtype=np.float64)
-        mc = np.zeros(n_mod, dtype=np.float64)
-        np.add.at(msx, ref_idx, net_cx[pin_to_net])
-        np.add.at(msy, ref_idx, net_cy[pin_to_net])
-        np.add.at(mc, ref_idx, 1.0)
-        for k, m in enumerate(self.hard_indices):
-            if m < n_mod and mc[m] > 0:
-                out[k, 0] = msx[m] / mc[m]
-                out[k, 1] = msy[m] / mc[m]
-        return out
-
     def soft_net_centroids(self) -> np.ndarray:
         """[num_soft, 2] WL-anchor per soft macro = mean over its pins of the
-        centroid of that pin's net. Analog of `hard_net_centroids` for the soft
-        side. Used by A3 (2026-05-29) candidate ordering in
+        centroid of that pin's net. Used by A3 (2026-05-29) candidate ordering in
         `_soft_relocation_moves`: targets are sorted by a blend of
         distance-to-current and distance-to-centroid, so moves toward the
         macro's connections are tried earlier and the WL gate sees friendlier

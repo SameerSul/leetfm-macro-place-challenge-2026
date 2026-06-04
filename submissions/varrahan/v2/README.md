@@ -129,8 +129,8 @@ into the vacated hot spot). Relocation adds exactly that missing move:
 - **R3b / R5 — soft DENSITY relocation (the dominant win of the relocation family).**
   Softs are the bulk of the *density* term too (and may overlap, so the cong pass
   can pile them). A second soft pass targeting the **density** field
-  (`use_density`) finds moves the cong pass can't (`DENS_SOFT_PROBE`: cong-converged
-  best_pl still yields 22–68 density moves). Interleaved (hard ⇄ soft-cong ⇄
+  (`use_density`) finds moves the cong pass can't: a cong-converged best_pl
+  still yielded 22–68 density moves. Interleaved (hard ⇄ soft-cong ⇄
   soft-density ⇄ 2-opt) + widened candidates (top_hot 128): **`1.3764 → 1.2799`**,
   all 17 improved (ibm13/02/08 −0.122, ibm18 −0.21).
 
@@ -207,7 +207,7 @@ the same-macro / nearby pattern vs the cache-defeating random-k pattern).
 | **Phase 7b** post-hoc DP-basin repair | REVERTED — recoverable in a probe but budget-hungry, high-variance, not reproducible at fixed seed. |
 | **S1** basin-hopping 2-opt (cong-grad kick) | DISPROVEN — slicing the budget starves the deadline-bound search; 6/7 worse. |
 | **O3** soft-macro repositioning (bulk/gradient) | CLOSED for bulk methods — R5 discrete soft relocation is what works. |
-| **R4** WL-aware hard-relocation (net-centroid target bias) | DISPROVEN — slightly worse than nearest-to-current; scaffolding kept inert (`wl_blend`, `hard_net_centroids()`, `WLAWARE_PROBE`). |
+| **R4** WL-aware hard-relocation (net-centroid target bias) | DISPROVEN — slightly worse than nearest-to-current; probe scaffolding removed. |
 | **Shared-scorer interleave refactor** (the original P5 plan) | RETIRED — fixed-overhead profiling measured 0.1–0.28 s/round (not the projected 60–75 s), so the refactor would save <1.7 s/benchmark and risk the bit-exact core. Replaced by the incremental-cong-cost + #1 + #2 stack above. |
 
 ## Source layout
@@ -297,11 +297,6 @@ submissions/varrahan/v2/
 - Verified the reorganized entrypoint with bytecode compilation, import smoke,
   and `uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01`
   (`VALID`, proxy `0.9078`, CUDA backend detected locally).
-
-### Env-gated diagnostics in `src/placer/pipeline/macro_placer.py` (no effect unless set)
-
-`DP_DIAG=1` (decompose DP candidates vs best), `DP_PROBE=1` (DP-basin
-recoverability ceiling test), `RELOC_PROBE=1` (relocation-on-best probe).
 
 ## Reproducing the DREAMPlace build (`dreamplace_build/`, gitignored ~500MB)
 

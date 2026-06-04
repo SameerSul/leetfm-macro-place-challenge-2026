@@ -511,7 +511,6 @@ Move methods:
 | `commit_move(i, xy)` | Same | Persist |
 | `score_move_soft(k, xy)` | One soft macro + new position | Soft trial (no macro-routing blockage) |
 | `commit_move_soft(k, xy)` | Same | Persist |
-| `hard_net_centroids()` | — | `[n_hard, 2]` WL-anchor per hard macro (mean of connected nets' centroids); kept inert after R4 was disproven |
 
 ### 5.8 Verification regime (the foundation)
 

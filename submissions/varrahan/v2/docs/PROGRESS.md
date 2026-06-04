@@ -172,7 +172,7 @@ Target: beat RePlAce avg of 1.4578.
 > softs, accept-on-true-proxy, ~6s budget slice. Bit-exact verified
 > (`_verify_score_swap_soft.py`: Δ ≤ 2.2e-16 machine eps across trials and
 > sequential commits). **A3 (smart soft candidate ordering):** new
-> `soft_net_centroids()` method (analog of `hard_net_centroids`);
+> `soft_net_centroids()` method;
 > `_soft_relocation_moves` now blends Euclidean distance with distance-to-
 > net-centroid via `wl_blend=0.3` so candidates aligned with the soft's
 > WL anchor are tried first. Pure ordering change — strictly non-regressing.

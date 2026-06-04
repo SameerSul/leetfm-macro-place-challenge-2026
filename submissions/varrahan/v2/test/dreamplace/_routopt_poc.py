@@ -2,7 +2,8 @@
 optimization (routability_opt_flag + adjust_rudy_area_flag) reduce the TILOS
 PROXY congestion term?
 
-DP_DIAG established our DREAMPlace candidates lose to 'best' purely on congestion.
+Prior decomposition established our DREAMPlace candidates lose to 'best' purely
+on congestion.
 DREAMPlace can place congestion-aware (RUDY map → inflate node areas in hotspots),
 but it optimizes ITS routing estimate, not the proxy's. This test runs the same
 DP config (hi-fix: td=0.85, soft_movable=False) with routopt OFF vs ON, legalizes
