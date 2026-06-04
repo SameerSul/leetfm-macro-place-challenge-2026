@@ -1,14 +1,28 @@
 """S2 — batched candidate evaluation for hard-macro relocation (reference only).
 
-Scores all K candidate positions of one macro at once instead of K sequential
-`_trial_at`s, sharing the prep base state (macro removed): WL is vectorized over
-K, congestion uses the base+delta decomposition (box-filter smoothing is linear),
-density batches the footprint occupancy.
+`_score_candidates_hard(scorer, prep, cand_xy)` scores all K candidate positions
+of one macro in one call instead of K sequential `_trial_at`s. The candidates
+share the prep base state (macro removed), so the work batches:
 
-Verified bit-exact vs the sequential loop (`_verify_batch_eval.py`, Δ ≤ 4.4e-16,
-identical argmin), but NOT a win on the small IBM grids — kept as isolated,
-zero-impact reference code, not wired into the pipeline. See ARCHITECTURE.md §6.2
-for the full investigation.
+  - WL  : vectorized over K — only macro i's pins move (reduceat on axis=1).
+  - cong: base + smooth(net delta) + (base macro blockage + macro delta), then
+          top-5% — the linearity decomposition proven by _verify_batch_cong_decomp.
+  - dens: base grid_occupied + i's footprint at each candidate, top-10%.
+
+STATUS: explored end-to-end, verified, but NOT a win on the IBM grids — kept as
+correct, isolated reference code with zero production impact. Both retained
+variants are bit-exact vs sequential `_trial_at` (`_verify_batch_eval.py`,
+Δ ≤ 4.4e-16):
+  - `_score_candidates_hard`      CPU reference          0.21× (gate only)
+  - `_score_candidates_hard_gpu`  CPU fill → GPU reduce  0.97× (transfer-bound)
+A third GPU-RESIDENT variant (strips scattered on GPU) reached 0.67×; it required
+a `collect` mode on the hot-path routing fill, which was reverted to keep that
+path lean — so that variant was removed here (its result is recorded in
+ARCHITECTURE.md §6.2). Root cause of the no-win: the per-candidate CPU
+strip-generation loop is ~4.9 ms/macro (~73% of the sequential cost), and IBM's
+~2000-cell grids + per-macro K≈24 are too small to amortize GPU launch overhead.
+The GPU compute ceiling is ~12× but unreachable at this granularity. Larger grids
+may amortize the overhead. See ARCHITECTURE.md §6.2.
 """
 
 import numpy as np

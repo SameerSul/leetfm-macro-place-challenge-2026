@@ -618,9 +618,9 @@ eliminating the core risk — the rest is engineering on a proven foundation.
    2/3/4-pin dispatch + strip-fill become K-batched).
 3. Batched smooth (separable box filter → GPU cumsum) + add base + `torch.topk`
    for the top-5% (cong) / top-10% (density) + the WL reduceat → `scores[K]`.
-4. Wire `_score_candidates_hard(prep, cand_xy)` into `_relocation_moves`,
-   replacing the per-candidate `_trial_at` loop. The commit still goes through
-   `_commit_after_prep`, so the committed state is unchanged.
+4. Test wiring `_score_candidates_hard(prep, cand_xy)` into
+   `_relocation_moves`, replacing the per-candidate `_trial_at` loop. This was
+   measured and reverted after it failed to improve the IBM-grid hot path.
 
 **Outcome: explored end-to-end and verified — but NOT a win on the IBM grids.**
 Three batched variants were built and all verify bit-exact vs the sequential
@@ -671,8 +671,9 @@ IBM grids are simply too small.
 - **numba** must be installed for full speed (~2× per move; soft import with a
   numpy fallback — see requirements.txt). Published scores assume it active.
 - **S1 / S2 speedups — see §6.** S1 multi-core fork-after-CUDA fix is done
-  (env-gated); S2 GPU candidate-batch decomposition is verified, implementation
-  pending a free machine.
+  (env-gated). S2 GPU candidate batching was implemented and verified, but the
+  production integration was reverted after it failed to improve IBM-grid
+  performance; isolated reference variants remain.
 - ibm17 (1.4519) and ibm18 (1.4615) still above 1.4 -- main remaining targets.
 - WireMask-BBO greedy evaluator: highest-leverage non-GPU idea not yet implemented.
 - Timing tight at 61 min. Reducing BUDGET_OVERRUN_S 83->65 is the safe fix.
