@@ -580,85 +580,34 @@ GPU (the 2-opt kNN and the routing smoothing both gate on `_USE_GPU`).
 child — workers are CPU-only (the GPU kNN is a tiny fraction of a 2-opt pass).
 Still env-gated; enable + validate `V2_MULTISEED_MP=1` on a free machine.
 
-### 6.2 S2 — GPU-batched candidate evaluation (the GPU payoff)
+### 6.2 S2 — GPU-batched candidate evaluation (explored, NOT a win — removed)
 
 The relocation / 2-opt passes try `n_targets` (16–24) candidate positions per hot
 macro **sequentially**, each a full `_trial_at`. They are independent trials from
-a shared base (the macro removed), so they batch into one op — target 10–50× on
-candidate throughput. A *single* 0.5 ms move is too small for the GPU (launch +
-transfer dominate); the K-candidate batch is the right granularity.
+a shared base (the macro removed), so in principle they batch into one GPU op. This
+was built end-to-end (three variants), verified bit-exact against the sequential
+`_trial_at` loop, measured — and then **removed**, because none beat the numba
+sequential path on the IBM grids. The keystone that made it sound: box-filter
+smoothing is **linear**, so a candidate's congestion decomposes into a shared base
+(macro removed) plus a localized, batchable delta — verified bit-exact (Δ ≤ 6.7e-16).
 
-A candidate's `proxy_k = wl_k + 0.5·dens_k + 0.5·cong_k`:
+**Root cause it lost (measured).** The GPU compute ceiling is ~12×, but it's
+unreachable at this granularity: per-candidate **strip generation** (routing
+bucketing, looped K on CPU) is **~4.9 ms/macro — ~73% of the whole sequential
+cost** — and dominates regardless of how fast the GPU reductions run. The IBM
+grids are small (~2000 cells) and the per-macro batch (K≈24) is too small to
+amortize kernel-launch overhead, while the numba sequential fill is already
+well-optimized. Best variant landed at 0.97× (CPU fill → GPU smooth/topk); the
+GPU-resident variant was 0.67× (the CPU strip loop became the bottleneck).
 
-| Term | Needs routing flats? | Batches how |
-|---|---|---|
-| WL (~6%) | no (pin positions) | `maximum.reduceat(pin_x_2d, starts, axis=1)` over `[pins, K]`; only macro *i*'s pins vary with `k` |
-| density (~5%) | no (occupancy grid) | base `grid_occupied` + i's footprint at `k` (≤9 cells); batched top-10% over `[K, n_cells]` |
-| **congestion (~74%)** | yes (the fill) | see decomposition below |
-
-**Keystone (verified bit-exact).** Box-filter smoothing is **linear**, so a
-candidate's congestion = a shared base (macro removed) plus a localized,
-batchable delta:
-
-```
-H_smoothed_k = base_H_smoothed + smooth(netH_delta_k)     # net routing, smoothed
-Hm_k         = base_Hm        + macroH_delta_k            # macro blockage, NOT smoothed
-cong_k       = top5%( concat(V_total_k, H_total_k) )       # V analogous
-```
-
-`base_*` are shared; the deltas are localized to i's nets' bbox. `_verify_batch_cong_decomp.py`
-proves `cong_decomp == cong_direct` bit-exact (Δ ≤ 6.7e-16, ibm01 + ibm10),
-eliminating the core risk — the rest is engineering on a proven foundation.
-
-**Implementation steps** (each independently verifiable):
-1. Delta-emitting fill — apply the routing struct to a fresh zero grid (reuses
-   `_apply_net_routing_struct`); verify base + delta == in-place.
-2. Batch the fill over K candidate positions (pin gcells → `[K, n_pins]`; the
-   2/3/4-pin dispatch + strip-fill become K-batched).
-3. Batched smooth (separable box filter → GPU cumsum) + add base + `torch.topk`
-   for the top-5% (cong) / top-10% (density) + the WL reduceat → `scores[K]`.
-4. Test wiring `_score_candidates_hard(prep, cand_xy)` into
-   `_relocation_moves`, replacing the per-candidate `_trial_at` loop. This was
-   measured and reverted after it failed to improve the IBM-grid hot path.
-
-**Outcome: explored end-to-end and verified — but NOT a win on the IBM grids.**
-Three batched variants were built and all verify bit-exact vs the sequential
-`_trial_at` loop (`_verify_batch_eval.py`, Δ ≤ 4.4e-16, identical argmin), yet
-none beats the numba sequential path:
-
-| Variant (`scoring/batch_eval`) | ibm10 K=24 | Why |
-|---|---|---|
-| `_score_candidates_hard` (CPU ref) | 0.21× | loops fill + full-grid CPU re-smooth (loses bbox locality) — reference only |
-| `_score_candidates_hard_gpu` (CPU fill → GPU smooth+topk) | 0.97× | CPU fill + per-macro `[K, cells]` transfer cancels the GPU gain |
-| `_score_candidates_hard_gpu2` (GPU-resident: strips scattered on GPU) | 0.67× | the **CPU strip-generation loop** is now the bottleneck |
-| pure GPU reduction floor (inputs resident, fused) | ~12× | 0.235 ms/macro — the ceiling, unreachable in practice |
-
-**Root cause (measured).** The GPU *compute* ceiling is ~12×, but it's
-unreachable at this granularity: the per-candidate **strip generation** (the
-routing bucketing, looped K on CPU) is **4.9 ms/macro — ~73% of the whole
-sequential cost** — and it dominates regardless of how fast the GPU reductions
-are. The IBM grids are small (~2000 cells) and the per-macro batch (K≈24) is too
-small to amortize GPU kernel-launch overhead, while the numba sequential fill is
-already well-optimized. So **per-macro GPU candidate-batching does not speed up
-IBM.**
-
-**What's left (not pursued).** The only avenue that could win is **cross-macro
-batching** — evaluate *all* hot macros' candidates (top_hot × n_targets ≈ 1000+)
-in one GPU batch to amortize launch overhead and vectorize strip-gen across the
-whole batch. That requires restructuring relocation from sequential
-prep→trial→commit into evaluate-all-then-commit, which changes the accept
-semantics (a different algorithm) — speculative, deferred.
-
-**Artifacts kept (correct, isolated, zero production impact):** the CPU reference
-`_score_candidates_hard` + the `_score_candidates_hard_gpu` variant in
-`scoring/batch_eval.py`, plus `_verify_batch_eval.py` and
-`_verify_batch_cong_decomp.py`. The GPU-RESIDENT variant needed a `collect` mode
-on the hot-path routing fill (`_apply_net_routing_struct` / `_apply_macro_routing*`);
-that was **reverted to keep the hot path lean** (production path verified
-byte-identical before and after), so the resident variant was removed — its 0.67×
-result is recorded above. The approach would win on **much larger grids** (large
-industrial / NG45 designs) where the per-batch work amortizes GPU overhead; the
-IBM grids are simply too small.
+**What could still win (not pursued).** Only **cross-macro batching** — evaluate
+*all* hot macros' candidates (top_hot × n_targets ≈ 1000+) in one GPU batch to
+amortize launch overhead and vectorize strip-gen — and that requires restructuring
+relocation from sequential prep→trial→commit into evaluate-all-then-commit, which
+changes accept semantics (a different algorithm). The approach would also pay off
+on **much larger grids** (industrial / NG45) where per-batch work amortizes GPU
+overhead; IBM is simply too small. The implementation + verifiers were deleted
+(zero production impact) — this section records the finding so it isn't re-run.
 
 ---
 
@@ -670,9 +619,9 @@ IBM grids are simply too small.
 - **numba** must be installed for full speed (~2× per move; soft import with a
   numpy fallback — see requirements.txt). Published scores assume it active.
 - **S1 / S2 speedups — see §6.** S1 multi-core fork-after-CUDA fix is done
-  (env-gated). S2 GPU candidate batching was implemented and verified, but the
-  production integration was reverted after it failed to improve IBM-grid
-  performance; isolated reference variants remain.
+  (env-gated). S2 GPU candidate batching was implemented, verified bit-exact, and
+  measured a net loss on IBM grids; the code + verifiers were removed (the §6.2
+  finding is kept so it isn't re-run).
 - ibm17 (1.4519) and ibm18 (1.4615) still above 1.4 -- main remaining targets.
 - WireMask-BBO greedy evaluator: highest-leverage non-GPU idea not yet implemented.
 - Timing tight at 61 min. Reducing BUDGET_OVERRUN_S 83->65 is the safe fix.
