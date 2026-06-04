@@ -84,6 +84,23 @@ Budget per benchmark in --all mode:
 
 ## Change History
 
+### Readability refactor (2026-06-04) -- no algorithm change, `--all` avg 1.1500
+
+Pure code-simplification pass; move generation, scoring, and RNG untouched, so the
+1.1500 / 17-VALID / 0-overlap `--all` reflects a favorable full-budget run within
+normal timing variance, not an algorithmic gain. (a) ML-trace per-candidate
+congestion/density feature lookups consolidated into a `TraceFields` helper in
+`ml/data_collection.py` — data collection stays byte-identical, pinned by
+`test/verification/test_trace_fields_equivalence.py`; the local-search files shed
+~110 lines of trace boilerplate. (b) The 7×-duplicated pairwise separation matrices
+deduped into `geometry.separation_matrices`. (c) `place()`'s budget math and
+DREAMPlace-launch block extracted into the `_effective_budget()` and
+`_launch_dreamplace_seeds()` methods (the cong-grad phase descent kept inline — its
+mutable `best_*`/RNG state makes extraction disproportionately risky). pyflakes now
+clean across `src`. NB: ibm01's single-bench score is timing-sensitive
+(0.9084–0.9094 by wall-time, deadline-gated R2), so non-degradation was confirmed at
+the `--all` aggregate, not by single-benchmark bit-identity.
+
 ### L-change (2026-05-31) -- avg 1.2593 -> 1.1782
 
 Replaces wall-clock cumulative tracking with _total_place_time_s. Prior K-change
