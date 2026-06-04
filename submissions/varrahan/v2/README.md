@@ -230,6 +230,7 @@ submissions/varrahan/v2/
     │   └── run_bridge.py
     └── placer/
         ├── config.py
+        ├── geometry.py
         ├── pipeline/
         │   └── macro_placer.py
         ├── scoring/
@@ -247,13 +248,17 @@ submissions/varrahan/v2/
         │   ├── spiral.py
         │   └── swap.py
         ├── local_search/
+        │   ├── fields.py
         │   ├── two_opt.py
         │   ├── relocation.py
         │   ├── soft_moves.py
         │   ├── hard_soft.py
         │   └── workers.py
-        └── perturb/
-            └── congestion_gradient.py
+        ├── perturb/
+        │   └── congestion_gradient.py
+        └── ml/
+            ├── data_collection.py
+            └── dataset.py
 ```
 
 ### Module responsibilities
@@ -263,6 +268,7 @@ submissions/varrahan/v2/
 | `src/main.py` | **Submission entrypoint** for `uv run evaluate`; wraps `MacroPlacer` so the evaluator sees class module `main`. |
 | `src/placer/pipeline/macro_placer.py` | Top-level orchestration: budgeted candidate generation, DREAMPlace integration, R2 loop scheduling, final placement selection. |
 | `src/placer/config.py` | Runtime config, GPU backend detection, numba feature flag, and `_log`. |
+| `src/placer/geometry.py` | Shared geometry helpers — `separation_matrices` (pairwise minimum non-overlap separations used by the legalizer + 2-opt / relocation conflict checks). |
 | `src/placer/scoring/exact.py` | Exact proxy wrapper over patched `PlacementCost`: WL + density + congestion. |
 | `src/placer/scoring/incremental.py` | `IncrementalScorer`, the stateful bit-exact scorer used by swaps and relocation moves. |
 | `src/placer/scoring/{wirelength,density,congestion}.py` | Vectorized PLC scoring patches and cost helpers. |
@@ -270,8 +276,9 @@ submissions/varrahan/v2/
 | `src/placer/plc/loader.py` | `PlacementCost` loader. |
 | `src/placer/plc/placement.py` | Position cache and fast placement setter used by scoring. |
 | `src/placer/legalize/` | Minimum-displacement legalization and hard-macro swap legality helpers. |
-| `src/placer/local_search/` | 2-opt, relocation, soft moves, hard-soft moves, and multiprocessing workers. |
+| `src/placer/local_search/` | 2-opt, relocation, soft moves, hard-soft moves, hot/cold cell fields (`fields.py`), and multiprocessing workers. |
 | `src/placer/perturb/congestion_gradient.py` | Congestion-gradient perturbation used by global move phases. |
+| `src/placer/ml/` | Opt-in training-data collection for a learned candidate ranker — `data_collection.py` (`CandidateTrace`, the `TraceFields` feature helper, `net_degree_features`; active only when `ML_TRACE_PATH` is set, otherwise inert) + `dataset.py` (trace-JSONL loaders). |
 | `src/dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async DREAMPlace subprocess launcher. |
 | `docs/ARCHITECTURE.md` | Design overview + pipeline visualization + algorithm explanations. Start here for the "how it works" tour. |
 | `docs/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
@@ -283,6 +290,14 @@ submissions/varrahan/v2/
 
 ### Recent system changes
 
+- **Readability refactor (2026-06-04, no algorithm change).** Consolidated the
+  ML-trace per-candidate congestion/density feature lookups into a `TraceFields`
+  helper (`ml/data_collection.py`); deduped the 7× pairwise separation matrices
+  into `geometry.separation_matrices`; extracted `place()`'s budget and
+  DREAMPlace-launch setup into `_effective_budget` / `_launch_dreamplace_seeds`
+  methods (the cong-grad phase descent kept inline). Pure code-motion, ML data
+  collection byte-identical (`test/verification/test_trace_fields_equivalence.py`),
+  validated non-degrading at `--all` (avg 1.1500, 17/17 VALID, 0 overlaps).
 - Replaced the old monolithic `placer.py` submission with `src/main.py` plus
   a package under `src/placer/`.
 - Moved `dreamplace_bridge/` under `src/` and updated bridge root discovery so
