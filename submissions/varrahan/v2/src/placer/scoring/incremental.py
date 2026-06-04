@@ -41,11 +41,9 @@ class IncrementalScorer:
         self.n_hard = benchmark.num_hard_macros
         self.hard_indices = list(benchmark.hard_macro_indices)
 
-        # Force a FULL set: `_apply_pos` keeps `_global_pos_cache` in sync but not
-        # `_last_pos_cache`, so after a prior move mutated plc the stale
-        # `_last_pos_cache` could make `_fast_set_placement` skip macros and build
-        # the WL baseline against wrong positions. Invalidate it to re-set every
-        # macro to current_placement_np.
+        # Force a FULL set: a stale `_last_pos_cache` (kept out of sync by a prior
+        # `_apply_pos`) would let `_fast_set_placement` skip macros and build the
+        # WL baseline against wrong positions. Invalidate it to re-set every macro.
         plc._last_pos_cache = None
         _fast_set_placement(plc, current_placement_np, benchmark)
 
@@ -73,9 +71,8 @@ class IncrementalScorer:
         self.wl_normalizer = float((cw_ + ch_) * max(plc.net_cnt, 1))
 
         # Initial per-net HPWL + total WL (full recompute, ~3ms one-time).
-        # `per_net_hpwl` is RAW HPWL (max-min); `total_wl_raw` is the
-        # weighted sum BEFORE normalization. The normalized WL used in
-        # proxy is `total_wl_raw / wl_normalizer`.
+        # per_net_hpwl is RAW HPWL (max-min); total_wl_raw is the weighted sum
+        # before normalization (proxy uses total_wl_raw / wl_normalizer).
         self.per_net_hpwl = self._compute_per_net_hpwl_full()
         self.total_wl_raw = float(np.sum(self.per_net_hpwl * self.net_weights))
 
@@ -104,11 +101,9 @@ class IncrementalScorer:
         self.smooth_range = int(plc.smooth_range)
         n_cells = self.grid_row * self.grid_col
 
-        # Build initial RAW (pre-normalize, pre-smooth) routing flats from
-        # the current plc state. We call _vectorized_get_routing to
-        # populate plc.V_routing_cong / etc (final smoothed+normalized),
-        # then build our own state by calling the subset helpers with the
-        # FULL net + macro sets.
+        # Build initial RAW (pre-normalize, pre-smooth) routing flats from the
+        # current plc state, by calling the subset helpers with the FULL net +
+        # macro sets.
         plc.get_congestion_cost()  # ensure routing populated
         self.H_flat = np.zeros(n_cells, dtype=np.float64)
         self.V_flat = np.zeros(n_cells, dtype=np.float64)
@@ -127,15 +122,11 @@ class IncrementalScorer:
             )
 
         # ---- Incremental congestion COST cache. ----
-        # `_compute_cong_cost` used to full-re-smooth H/V + re-partition every
-        # move-eval; the smoothing was ~85% of the cong cost (~14% of a whole
-        # move). The box filter is SEPARABLE (H along columns, V along rows,
-        # each cell independent of the other axis), so we cache the smoothed
-        # NORMALIZED H/V (2D, grid_row×grid_col) and, per move, recompute only
-        # the columns/rows inside the touched-net bbox FROM the raw flats - each
-        # recomputed value is identical to a full re-smooth (no delta
-        # accumulation → no drift, preserving the bit-exact non-regression
-        # guarantee). The window (lp/up/cnt) is fixed by the grid, so precompute.
+        # The box filter is SEPARABLE (H along columns, V along rows), so cache the
+        # smoothed normalized H/V (2D) and per move re-smooth only the touched-net
+        # bbox FROM the raw flats. Recomputing from raw (not accumulating deltas)
+        # means each value matches a full re-smooth - bit-exact, no drift. The
+        # window (lp/up/cnt) is grid-fixed, so precompute it.
         sr = self.smooth_range
         if sr > 0:
             _rows = np.arange(self.grid_row, dtype=np.int64)
@@ -166,19 +157,15 @@ class IncrementalScorer:
             int(m): k for k, m in enumerate(cong_cache["hard_indices"])
         }
 
-        # Per-module topology routing-struct cache. A macro's touched-net
-        # structure is placement-independent, so build it once and reuse across
-        # that macro's score/commit calls and the -1/+1 applies of each. Keyed by
-        # module index; value may be None (macro has no nets).
+        # Per-module routing-struct cache. A macro's touched-net structure is
+        # placement-independent, so build once and reuse across its score/commit
+        # calls. Keyed by module index; value may be None (macro has no nets).
         self._route_struct_cache: "dict[int, object]" = {}
 
         # ---- Incremental density state. ----
-        # Density was the last full-recompute in score_swap (~28-36% of its time):
-        # it scatters ALL soft+hard macros into the
-        # occupancy grid every call. But a 2-opt swap moves only macros i, j -
-        # all soft + other-hard occupancy is invariant. So maintain `grid_occupied`
-        # as state; per swap subtract i,j's old footprints and add their new ones
-        # (a handful of cells each), then take the top-10% over the full grid.
+        # A move touches only macros i, j; all other occupancy is invariant. So
+        # maintain `grid_occupied` as state, per move subtract i,j's old footprints
+        # and add the new ones (a few cells each), then top-10% over the grid.
         dens_cache = _build_density_cache(plc, benchmark)
         self.dens_grid_col = int(plc.grid_col)
         self.dens_grid_row = int(plc.grid_row)
@@ -201,12 +188,11 @@ class IncrementalScorer:
         self._dens_empty_area = np.empty(0, dtype=np.float64)
 
     def _macro_occ(self, module_idx: int, cx: float, cy: float):
-        """Per-cell occupancy-area contribution of one macro centered at (cx, cy).
+        """Per-cell occupancy-area of one macro centered at (cx, cy).
 
         Returns (flat_cell_indices, areas), mirroring the per-macro overlap math
-        in `_vectorized_get_grid_cells_density` exactly (floor → bounds skip →
-        clip → per-cell intersection area). The footprint is small (~1-9 cells),
-        so this is a tiny outer-product, not a grid-wide scatter.
+        in `_vectorized_get_grid_cells_density` exactly. The footprint is ~1-9
+        cells, so this is a tiny outer-product, not a grid-wide scatter.
         """
         hw_, hh_ = self._dens_half[int(module_idx)]
         gw, gh = self.dens_grid_w, self.dens_grid_h
@@ -237,17 +223,11 @@ class IncrementalScorer:
         return flat, area
 
     def _compute_density_cost(self) -> float:
-        """Density cost from the maintained `grid_occupied` (P3).
+        """Density cost from the maintained `grid_occupied`.
 
-        Mirrors PlacementCost.get_density_cost: 0.5 × mean of the top-10% (by
-        count = floor(n_cells·0.1)) densest NONZERO grid cells. grid_cells =
-        grid_occupied / grid_area is a monotone scaling, so the top-k set is the
-        same; we scale at the end.
-
-        GPU path: torch.topk replaces np.partition for the top-k selection.
-        Beneficial on large grids (grid_cells > ~2000) where the partition cost
-        is meaningful. Small grids fall back to the NumPy path to avoid H2D
-        overhead.
+        Mirrors PlacementCost.get_density_cost: 0.5 × mean of the top-10%
+        (floor(n_cells·0.1)) densest NONZERO cells. grid_occupied / grid_area is a
+        monotone scaling, so the top-k set is unchanged; scale at the end.
         """
         cnt = self.dens_density_cnt
         go = self.grid_occupied
@@ -264,11 +244,9 @@ class IncrementalScorer:
 
     def _compute_cong_cost(self) -> float:
         """Congestion cost from the cached smoothed routing (`H_smoothed`/
-        `V_smoothed`) plus the live macro flats. The cache must be current for the
-        touched region - callers re-smooth the touched bbox (`_resmooth_bbox`)
-        first. Mirrors the final transform in `_vectorized_get_congestion_cost`.
-        Runs on CPU (np.partition on <5K elements is ~50us; GPU topk dispatch is
-        >1ms).
+        `V_smoothed`) plus the live macro flats. Callers must re-smooth the
+        touched bbox (`_resmooth_bbox`) first. Mirrors the final transform in
+        `_vectorized_get_congestion_cost`.
         """
         Hm = self.H_macro_flat / self.grid_h_routes
         Vm = self.V_macro_flat / self.grid_v_routes
@@ -291,14 +269,12 @@ class IncrementalScorer:
                 min(b[2] for b in bbs), max(b[3] for b in bbs))
 
     def _resmooth_h_cols(self, c_lo: int, c_hi: int) -> None:
-        """Recompute `H_smoothed[:, c_lo:c_hi+1]` from raw `H_flat` (axis_h=True:
-        per-column box filter). Bit-identical to a full `_smooth_routing_cong_vec`
-        of those columns - H smoothing mixes only rows within a column, so each
-        column is independent and a full re-smooth of just these columns matches.
+        """Recompute `H_smoothed[:, c_lo:c_hi+1]` from raw `H_flat` (per-column
+        box filter). Bit-identical to a full re-smooth of those columns - H mixes
+        only rows within a column, so each column is independent.
 
-        Uses pure cumsum instead of np.add.at: avoids the O(grid_row) Python
-        overhead from duplicate-index accumulation. smoothed[p] = cs[hi(p)] - cs[lo(p)]
-        where lo(p)=max(0,p-sr), hi(p)=min(grid_row,p+sr+1), cs=cumsum([0, w]).
+        cumsum, not np.add.at: smoothed[p] = cs[hi(p)] - cs[lo(p)], where
+        lo(p)=max(0,p-sr), hi(p)=min(grid_row,p+sr+1), cs=cumsum([0, w]).
         """
         H2d = self.H_flat.reshape(self.grid_row, self.grid_col)
         sub = H2d[:, c_lo:c_hi + 1] / self.grid_h_routes
@@ -313,13 +289,12 @@ class IncrementalScorer:
         self.H_smoothed[:, c_lo:c_hi + 1] = cs[self._sm_row_up + 1] - cs[self._sm_row_lp]
 
     def _resmooth_v_rows(self, r_lo: int, r_hi: int) -> None:
-        """Recompute `V_smoothed[r_lo:r_hi+1, :]` from raw `V_flat` (axis_h=False:
-        per-row box filter). Bit-identical to a full re-smooth of those rows - V
-        smoothing mixes only columns within a row, so each row is independent.
+        """Recompute `V_smoothed[r_lo:r_hi+1, :]` from raw `V_flat` (per-row box
+        filter). Bit-identical to a full re-smooth of those rows - V mixes only
+        columns within a row, so each row is independent.
 
-        Uses pure cumsum instead of 2D np.add.at: fully vectorized, no Python loop.
-        smoothed[r, q] = cs[r, hi(q)] - cs[r, lo(q)]
-        where lo(q)=max(0,q-sr), hi(q)=min(grid_col,q+sr+1), cs=cumsum([0, w], axis=1).
+        cumsum, not 2D np.add.at: smoothed[r, q] = cs[r, hi(q)] - cs[r, lo(q)],
+        with lo/hi as in _resmooth_h_cols but along columns.
         """
         V2d = self.V_flat.reshape(self.grid_row, self.grid_col)
         sub = V2d[r_lo:r_hi + 1, :] / self.grid_v_routes
@@ -382,10 +357,9 @@ class IncrementalScorer:
     def _compute_per_net_hpwl_subset(self, net_indices: np.ndarray) -> np.ndarray:
         """Recompute HPWL for a subset of nets only.
 
-        Strategy: build a contiguous pin-index gather array over the subset
-        nets (using cached net_lengths via repeat + cumulative offsets), then
-        a single `reduceat` over that compact array. O(len(touched pins)),
-        not O(n_pins).
+        Builds a contiguous pin-index gather over the subset nets (cached
+        net_lengths via repeat + cumulative offsets), then one `reduceat` over
+        that compact array. O(touched pins), not O(n_pins).
         """
         if len(net_indices) == 0:
             return np.empty(0, dtype=np.float64)
@@ -396,10 +370,8 @@ class IncrementalScorer:
         if total == 0:
             return np.zeros(len(net_indices), dtype=np.float64)
 
-        # Build the per-pin gather array: for net k with pin range
-        # [starts_t[k], starts_t[k]+lengths_t[k]), expand to that integer range.
-        # Implementation: cumulative within-net index (0..lengths_t[k]-1) for
-        # each output position, plus the corresponding net's start offset.
+        # Per-pin gather: each net k expands to its pin range
+        # [starts_t[k], starts_t[k]+lengths_t[k]) via within-net index + start.
         pin_indices = np.repeat(starts_t, lengths_t) + (
             np.arange(total) - np.repeat(np.concatenate([[0], np.cumsum(lengths_t)[:-1]]), lengths_t)
         )
@@ -455,11 +427,9 @@ class IncrementalScorer:
     def score_swap(self, i_hard: int, new_i_xy, j_hard: int, new_j_xy) -> float:
         """Trial: compute proxy as if (i_hard, j_hard) were swapped, then revert.
 
-        B3 phase 4: WL via per-net incremental (phase 2). Congestion via
-        per-net subset routing (phase 4): subtract OLD touched-net + i,j
-        macro contributions, apply set_pos, add NEW contributions, smooth +
-        compute cost, then RESTORE the raw flats from snapshot. Density
-        still via plc.get_density_cost (full recompute).
+        WL via touched-net incremental; congestion by subtracting OLD touched-net
+        + i,j macro routing, applying set_pos, adding NEW, re-smoothing, then
+        restoring the raw flats from snapshot; density via the maintained grid.
         """
         i_module = self.hard_indices[i_hard]
         j_module = self.hard_indices[j_hard]
@@ -481,9 +451,8 @@ class IncrementalScorer:
             [s for s in (i_slot, j_slot) if s is not None], dtype=np.int64
         )
 
-        # 1. Subtract OLD contributions (using current/committed positions).
-        # The union net-set isn't per-module, so build the topology struct once
-        # for this swap (idea 2) and reuse it for the −1/+1 applies.
+        # 1. Subtract OLD contributions. The union net-set isn't per-module, so
+        # build the topology struct once and reuse it for the −1/+1 applies.
         struct = _build_net_routing_struct(self.plc, touched)
         bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
@@ -492,8 +461,7 @@ class IncrementalScorer:
                 self.V_macro_flat, self.H_macro_flat,
             )
 
-        # 2. Apply trial positions (pos_cache updated → next subset compute
-        #    uses new positions).
+        # 2. Apply trial positions (next subset compute uses new positions).
         new_ix, new_iy = float(new_i_xy[0]), float(new_i_xy[1])
         new_jx, new_jy = float(new_j_xy[0]), float(new_j_xy[1])
         self._apply_pos(i_module, new_ix, new_iy)
@@ -649,8 +617,8 @@ class IncrementalScorer:
         return a if a is not None else np.empty(0, dtype=np.int64)
 
     def _route_struct(self, module_idx: int):
-        """Cached topology routing-struct for one macro's touched nets (idea 2).
-        Built once per module (placement-independent), reused across calls."""
+        """Cached topology routing-struct for one macro's touched nets. Built once
+        per module (placement-independent), reused across calls."""
         cache = self._route_struct_cache
         m = int(module_idx)
         if m not in cache:
@@ -910,22 +878,13 @@ class IncrementalScorer:
             self.total_wl_raw += delta
 
     # ------------------------------------------------------------------
-    # S1 (2026-05-29): loop-invariant subtract-old for relocation passes.
-    # Across a macro's n_targets candidate trials, the "subtract old routing
-    # + subtract old density footprint + resmooth at old-bbox" step is
-    # IDENTICAL. score_move/score_move_soft re-do it on every trial. The
-    # prep/trial/commit/revert quartet hoists it out of the candidate loop:
-    #   prep(i)              ── subtract old once     (1 routing-apply)
-    #   for each target:
-    #     trial_at(prep, t)  ── add new + score + revert add (1 routing-apply)
-    #   if any target won:
-    #     commit_after_prep(prep, best)    ── persist add-new + per-net HPWL
-    #   else:
-    #     revert_prep(prep)                ── re-add old (restore committed state)
-    # Per-macro routing-apply calls: 1 + 2·n_targets (current) vs 2·n_targets
-    # (current score_move) - wait, score_move's per-trial cost is 2 applies
-    # (subtract-old + add-new). prep+trial saves 1 of those × (n_targets−1).
-    # Bit-exact with score_move/commit_move (same float ops, different order).
+    # Loop-invariant subtract-old for relocation passes. A macro's "subtract old
+    # routing + density + resmooth at old-bbox" is identical across its n_targets
+    # trials, so prep/trial/commit/revert hoists it out of the candidate loop:
+    #   prep(i)              ── subtract old once
+    #   for each target: trial_at(prep, t)  ── add new + score + revert add
+    #   commit_after_prep(prep, best)  if a target won, else revert_prep(prep)
+    # Saves one routing-apply per trial vs score_move. Bit-exact (same float ops).
     # ------------------------------------------------------------------
 
     def _prepare_move(self, i_hard: int) -> dict:
@@ -1195,23 +1154,18 @@ class IncrementalScorer:
             self._resmooth_bbox(*bb_old)
 
     # ------------------------------------------------------------------
-    # A1 (2026-05-29): soft-soft 2-opt swap. Pair-swap two softs' positions.
-    # Single soft relocation can't find moves where two softs need to
-    # EXCHANGE places - this pass adds that move type. Softs don't block
-    # routing, so no macro_subset / macro-blockage handling (vs score_swap).
-    # Softs may overlap, so no legality check on the swapped destinations.
-    # Bit-exact analogue of score_swap; same accept-on-true-proxy guarantee.
+    # Soft-soft 2-opt swap: exchange two softs' positions (single relocation can't
+    # find exchanges). Softs don't block routing (no macro_subset vs score_swap)
+    # and may overlap (no legality check). Bit-exact analogue of score_swap.
     # ------------------------------------------------------------------
 
     def wl_delta_swap_soft(self, k1: int, new_xy1, k2: int, new_xy2) -> float:
         """Cheap WL-only delta for a hypothetical (k1, k2) soft swap.
 
-        Speedup #30 (2026-05-30): used as a prefilter before the much more
-        expensive `score_swap_soft`. Computes the per-net HPWL change for
-        the touched nets WITHOUT touching routing or density state.
-        Bypasses `_apply_pos` (which dirties plc flags) - instead transiently
-        overwrites `_global_pos_cache` rows for k1, k2 then restores them.
-        Returns the NORMALIZED WL delta (matches proxy's WL term scale).
+        A prefilter before the costlier `score_swap_soft`: per-net HPWL change for
+        the touched nets only, with no routing/density work. Bypasses `_apply_pos`
+        (which dirties plc flags) by transiently overwriting the k1/k2 pos_cache
+        rows. Returns the NORMALIZED WL delta (proxy's WL scale).
         """
         s_mod1 = self.soft_indices[k1]
         s_mod2 = self.soft_indices[k2]

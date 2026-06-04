@@ -34,26 +34,25 @@ def _relocation_moves(
 ) -> "tuple[np.ndarray, int, float]":
     """Congestion-directed single-macro RELOCATION of hard macros.
 
-    The move 2-opt can't make: 2-opt only exchanges two macros, so it can never
-    move a routing-heavy macro into an empty low-congestion gap. For the hottest
-    macros (by the chosen field), this tries moving each into a handful of the
-    lowest-field legal cell centers and accepts iff the true incremental proxy
-    strictly drops. Legality = in-bounds + no overlap with other HARD macros
-    (softs may overlap and are ignored).
+    The move 2-opt can't make: it only swaps two macros, never moving a
+    routing-heavy macro into an empty gap. For the hottest macros (by the chosen
+    field) this trials each into a few of the lowest-field legal cell centers and
+    accepts iff the true incremental proxy strictly drops. Legal = in-bounds + no
+    overlap with other HARD macros (softs may overlap, ignored).
 
-    use_density: hot/cold field - False = max(H,V) routing congestion, True =
-        grid occupancy. use_combined: geometric mean of normalized cong × density,
-        which favours macros moderately hot on both over pure-field extremes.
+    use_density: field is grid occupancy (True) vs max(H,V) routing congestion
+        (False). use_combined: geometric mean of both (normalized), favouring
+        macros moderately hot on both.
     net_centroid / wl_blend: blend distance-to-current with distance-to-WL-anchor
-        in target ordering (wl_blend=0 = nearest-to-current; ordering only).
+        in target ordering (0 = nearest-to-current).
     Returns (pos, accepts, best_score).
     """
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     trace = get_candidate_trace()
     trace_field = "combined" if use_combined else ("density" if use_density else "congestion")
     if use_combined:
-        # Combined field: each of cong/density normalized to [0,1] by its own
-        # max, then geometric-meaned so a cell ranks hot iff both terms are high.
+        # cong and density each normalized to [0,1], geometric-meaned: a cell
+        # ranks hot only if both terms are high.
         cong_field = _congestion_field(plc, nr, nc)
         dens_field = _density_field(incremental_scorer, nr, nc)
         if cong_field is None or dens_field is None:
@@ -129,9 +128,8 @@ def _relocation_moves(
         syi = sep_y_mat[i, mask]
         ox = pos[mask, 0]
         oy = pos[mask, 1]
-        # Prep i once (subtract old routing + density), trial each candidate via
-        # add-new + snapshot/restore, then commit the winner or revert. Saves one
-        # routing-apply per trial (~30% per-move on this hot path).
+        # Prep i once (subtract its routing+density), trial each candidate, then
+        # commit the winner or revert. Saves a routing-apply per trial (~30%/move).
         prep = incremental_scorer._prepare_move(i)
         best_i_xy = None
         state_score = best_score
@@ -257,16 +255,15 @@ def _soft_relocation_moves(
     """Congestion-directed SOFT-macro relocation.
 
     Relocates the hottest movable soft clusters into low-field cells, accept-on-
-    true-proxy via the soft prep/trial path. Softs may overlap, so there's no
-    conflict check - only a half-size clip to keep them in canvas bounds.
+    true-proxy via the soft prep/trial path. Softs may overlap, so no conflict
+    check - just a half-size clip to keep them in bounds.
 
-    use_density: hot/cold field - False = max(H,V) routing congestion, True =
-        grid occupancy. Softs are the bulk of the density term and may overlap,
-        so a density-targeted pass finds moves the cong pass can't.
-    net_centroid / wl_blend: blend distance-to-current with distance-to-WL-anchor
-        in target ordering (wl_blend=0 = nearest-to-current; ordering only).
-    `soft_pos` is [num_soft, 2] (canvas coords). Returns (soft_pos, accepts,
-    best_score).
+    use_density: occupancy field (True) vs max(H,V) congestion (False). Softs are
+        the bulk of density and may overlap, so a density pass finds moves the
+        cong pass can't.
+    net_centroid / wl_blend: blend toward the WL anchor in target ordering
+        (0 = nearest-to-current).
+    `soft_pos` is [num_soft, 2] canvas coords. Returns (soft_pos, accepts, best_score).
     """
     num_soft = incremental_scorer.num_soft
     if num_soft == 0:

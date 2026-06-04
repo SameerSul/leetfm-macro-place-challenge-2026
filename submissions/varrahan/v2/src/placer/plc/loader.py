@@ -24,14 +24,10 @@ def _load_plc(name: str, benchmark: Optional[Benchmark] = None):
         if root.exists():
             _, plc = load_benchmark_from_dir(root.as_posix())
         else:
-            # NG45 designs all share the leaf-directory name
-            # "output_CT_Grouping" → benchmark.name doesn't disambiguate
-            # them. Two-step lookup:
-            #   1. Try the legacy "<design>_ng45" alias (kept for
-            #      backward compat with older harnesses).
-            #   2. If name is "output_CT_Grouping" or otherwise unmatched,
-            #      iterate the 4 NG45 designs and pick the one whose
-            #      plc matches `benchmark`'s canvas dimensions.
+            # NG45 designs share the leaf name "output_CT_Grouping", so
+            # benchmark.name can't disambiguate. Two-step lookup: (1) try the
+            # legacy "<design>_ng45" alias; (2) else iterate the 4 NG45 designs and
+            # pick the one whose plc matches benchmark's canvas dimensions.
             ng45_aliases = {
                 "ariane133_ng45": "ariane133",
                 "ariane136_ng45": "ariane136",

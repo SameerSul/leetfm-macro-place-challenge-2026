@@ -31,17 +31,14 @@ def _two_opt_hard_soft_swap(
     soft_movable: "np.ndarray | None" = None,
     use_density: bool = False,
 ) -> "tuple[np.ndarray, np.ndarray, int, float]":
-    """Hard-soft cross-swap: exchange a hard macro's position with a soft's.
+    """Hard-soft cross-swap: exchange a hard macro's position with a soft's -
+    pairs neither hard-2opt nor soft-2opt can find (each swaps within its kind).
 
-    Neither hard-2opt (hards only) nor soft-2opt (softs only) can find a
-    hard/soft pair that would improve by trading places. Hot list = top_hot
-    hardest hards by the chosen field (max(H,V) congestion, or occupancy when
-    use_density=True); for each, partners = its k_neighbors nearest movable softs.
-
-    Legality: the hard's new position (the soft's old slot) must be in-bounds with
-    no overlap with OTHER hard macros; the soft has no legality check (may
-    overlap). Accept-on-true-proxy. Returns (hard_pos, soft_pos, accepts,
-    best_score).
+    Hot list = top_hot hottest hards by the chosen field (max(H,V) congestion, or
+    occupancy when use_density=True); partners = each one's k_neighbors nearest
+    movable softs. Legality: the hard's new slot must be in-bounds with no overlap
+    vs OTHER hards (softs may overlap, no check). Accept-on-true-proxy.
+    Returns (hard_pos, soft_pos, accepts, best_score).
     """
     num_soft = incremental_scorer.num_soft
     if num_soft < 1:
@@ -240,17 +237,13 @@ def _three_opt_hard_soft_soft(
     soft_movable: "np.ndarray | None" = None,
     use_density: bool = False,
 ) -> "tuple[np.ndarray, np.ndarray, int, float]":
-    """Hard-soft-soft 3-cycle rotation: H takes S1's slot, S1 takes S2's, S2
-    takes H's.
+    """Hard-soft-soft 3-cycle: H takes S1's slot, S1 takes S2's, S2 takes H's.
 
     For each hot hard H, S1 ranges over H's k_inner nearest movable softs and S2
-    over S1's k_inner nearest. Captures patterns no 2-opt can: when H wants S1's
-    slot but H<->S1 hurts because S1's connections must move too, the single
-    combined 3-cycle reaches what separate swaps can't.
-
-    Legality: hard's new position (S1's old slot) must be in-bounds with no
-    overlap with OTHER hard macros; softs may overlap (no check). Cost is
-    O(top_hot * k_inner^2) trials, gated by a tight deadline.
+    over S1's. Reaches what 2-opt can't: when H wants S1's slot but H<->S1 alone
+    hurts (S1 must move too), the combined cycle accepts. Legality: H's new slot
+    in-bounds with no overlap vs OTHER hards (softs may overlap). Cost is
+    O(top_hot * k_inner^2), deadline-gated.
     """
     num_soft = incremental_scorer.num_soft
     if num_soft < 2:
