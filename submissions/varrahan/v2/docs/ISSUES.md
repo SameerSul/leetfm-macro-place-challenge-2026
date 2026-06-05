@@ -612,7 +612,8 @@ data matters most here)**, hard_soft_swap 71k, hard_soft_soft_cycle 62k. Trainin
 deps (`xgboost`, `scikit-learn`) are offline-only in `requirements.txt`. Next
 step is the offline training scaffold (rank + gater heads, recall@K curve) under
 `test/diagnostic/`, starting with hard_relocation. See README "ML candidate-ranker
-data collection" for the collection workflow.
+data collection" for the collection workflow, and `docs/ml_notes/` for the
+conceptual design (why it can improve, selection mechanism).
 
 ---
 

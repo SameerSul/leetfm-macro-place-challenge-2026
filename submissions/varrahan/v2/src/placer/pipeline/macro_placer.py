@@ -1050,6 +1050,15 @@ class MacroPlacer:
         # Hard relocation candidate limits per round.
         R2_HOT = 48
         R2_TGT = 16
+        _ml_hard_reloc_targets = os.environ.get("ML_HARD_RELOCATION_N_TARGETS")
+        if _ml_hard_reloc_targets:
+            try:
+                R2_TGT = max(R2_TGT, int(_ml_hard_reloc_targets))
+            except ValueError:
+                _log(
+                    f"  ignoring invalid ML_HARD_RELOCATION_N_TARGETS="
+                    f"{_ml_hard_reloc_targets!r}"
+                )
         R2_2OPT_SLICE = 8.0
         # Wider soft candidate set (softs number 900-2000, the dominant lever).
         R3_SOFT_HOT = 128
@@ -1156,6 +1165,7 @@ class MacroPlacer:
                     remaining_budget_s=remaining_s,
                     current_best_score=best_score,
                     round_start_score=_r2_prev_best,
+                    hard_relocation_n_targets=R2_TGT,
                     **extra,
                 )
 

@@ -90,3 +90,64 @@ def test_shadow_rank_group_ignores_missing_operator_model(tmp_path, monkeypatch)
         operator="soft_relocation",
         candidates=[{"features": {"dx_norm": 1.0}, "score_gain": 1.0}],
     ) is None
+
+
+def test_filter_candidate_indices_is_disabled_by_default(tmp_path, monkeypatch):
+    manifest_path = _write_manifest(tmp_path)
+    monkeypatch.setenv("ML_MODEL_MANIFEST", str(manifest_path))
+
+    selected = shadow.filter_candidate_indices(
+        operator="hard_relocation",
+        candidates=[
+            {"features": {"dx_norm": 0.1}},
+            {"features": {"dx_norm": 0.9}},
+        ],
+    )
+
+    assert selected == [0, 1]
+
+
+def test_filter_candidate_indices_selects_model_top_k_in_original_order(tmp_path, monkeypatch):
+    manifest_path = _write_manifest(tmp_path)
+    monkeypatch.setenv("ML_MODEL_MANIFEST", str(manifest_path))
+    monkeypatch.setenv("ML_FILTER_OPERATORS", "hard_relocation")
+    monkeypatch.setenv("ML_FILTER_TOP_K", "2")
+    monkeypatch.setenv("ML_FILTER_KEEP_HEURISTIC_FIRST", "1")
+    trace = CandidateTrace(str(tmp_path / "trace.jsonl"), flush_rows=1, run_id="run")
+
+    selected = shadow.filter_candidate_indices(
+        operator="hard_relocation",
+        candidates=[
+            {"features": {"dx_norm": 0.1}},
+            {"features": {"dx_norm": 0.9}},
+            {"features": {"dx_norm": 0.2}},
+        ],
+        trace=trace,
+        field="congestion",
+        group_id="g1",
+    )
+
+    assert selected == [0, 1]
+    row = json.loads((tmp_path / "trace.jsonl").read_text())
+    assert row["event"] == "ml_filter_group"
+    assert row["data"]["applied"] is True
+    assert row["data"]["generated"] == 3
+    assert row["data"]["selected"] == 2
+    assert row["data"]["skipped"] == 1
+    assert row["data"]["selected_indices"] == [0, 1]
+
+
+def test_filter_candidate_indices_falls_back_when_operator_model_missing(tmp_path, monkeypatch):
+    manifest_path = _write_manifest(tmp_path)
+    monkeypatch.setenv("ML_MODEL_MANIFEST", str(manifest_path))
+    monkeypatch.setenv("ML_FILTER_OPERATORS", "soft_relocation")
+
+    selected = shadow.filter_candidate_indices(
+        operator="soft_relocation",
+        candidates=[
+            {"features": {"dx_norm": 0.1}},
+            {"features": {"dx_norm": 0.9}},
+        ],
+    )
+
+    assert selected == [0, 1]

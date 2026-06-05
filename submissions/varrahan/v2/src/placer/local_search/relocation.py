@@ -8,7 +8,7 @@ import numpy as np
 from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
 from placer.ml.data_collection import TraceFields, get_candidate_trace, net_degree_features
-from placer.ml.shadow import shadow_rank_group
+from placer.ml.shadow import filter_candidate_indices, is_filter_enabled, shadow_rank_group
 
 if TYPE_CHECKING:
     from macro_place.benchmark import Benchmark
@@ -51,6 +51,7 @@ def _relocation_moves(
     """
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     trace = get_candidate_trace()
+    filter_hard_relocation = is_filter_enabled("hard_relocation")
     trace_field = "combined" if use_combined else ("density" if use_density else "congestion")
     if use_combined:
         # cong and density each normalized to [0,1], geometric-meaned: a cell
@@ -68,7 +69,7 @@ def _relocation_moves(
         if cell_cong is None:
             return pos, 0, initial_score
     tf = None
-    if trace is not None:
+    if trace is not None or filter_hard_relocation:
         tf = TraceFields(
             cong=_congestion_field(plc, nr, nc),
             dens=_density_field(incremental_scorer, nr, nc),
@@ -135,6 +136,7 @@ def _relocation_moves(
         rejected_bounds = 0
         rejected_overlap = 0
         scored = 0
+        legal_candidates = []
         shadow_candidates = []
         try:
             for candidate_rank, t in enumerate(cand):
@@ -147,14 +149,9 @@ def _relocation_moves(
                 if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
                     rejected_overlap += 1
                     continue
-                s = incremental_scorer._trial_at(prep, (nx, ny))
-                scored += 1
-                if trace is not None:
+                features = None
+                if trace is not None or filter_hard_relocation:
                     target_flat = int(pool[t])
-                    source_cong = tf.cong_at(ri_all[i], ci_all[i])
-                    target_cong = tf.cong_flat(target_flat)
-                    source_dens = tf.dens_at(ri_all[i], ci_all[i])
-                    target_dens = tf.dens_flat(target_flat)
                     features = {
                         **net_degree_features(
                             incremental_scorer, incremental_scorer.hard_indices[i]
@@ -170,15 +167,52 @@ def _relocation_moves(
                         "dy_norm": float((ny - pos[i, 1]) / ch),
                         "source_field_norm": float(local_cong[i] / field_max),
                         "target_field_norm": float(tgt_cong[t] / field_max),
-                        "source_congestion_norm": source_cong,
-                        "target_congestion_norm": target_cong,
-                        "source_density_norm": source_dens,
-                        "target_density_norm": target_dens,
+                        "source_congestion_norm": tf.cong_at(ri_all[i], ci_all[i]),
+                        "target_congestion_norm": tf.cong_flat(target_flat),
+                        "source_density_norm": tf.dens_at(ri_all[i], ci_all[i]),
+                        "target_density_norm": tf.dens_flat(target_flat),
                         "source_hot_rank_norm": float(
                             np.where(hot == i)[0][0] / max(len(hot) - 1, 1)
                         ),
                         "target_cold_rank_norm": float(candidate_rank / max(len(cand) - 1, 1)),
                     }
+                legal_candidates.append(
+                    {
+                        "target_index": int(t),
+                        "candidate_rank": int(candidate_rank),
+                        "nx": nx,
+                        "ny": ny,
+                        "features": features,
+                    }
+                )
+
+            candidate_views = [
+                {
+                    "operator": "hard_relocation",
+                    "features": item["features"] or {},
+                    "candidate_rank": item["candidate_rank"],
+                }
+                for item in legal_candidates
+            ]
+            selected_indices = filter_candidate_indices(
+                operator="hard_relocation",
+                candidates=candidate_views,
+                trace=trace,
+                field=trace_field,
+                group_id=group_id,
+            )
+            selected_set = set(selected_indices)
+
+            for legal_index, item in enumerate(legal_candidates):
+                if legal_index not in selected_set:
+                    continue
+                nx = item["nx"]
+                ny = item["ny"]
+                candidate_rank = item["candidate_rank"]
+                features = item["features"]
+                s = incremental_scorer._trial_at(prep, (nx, ny))
+                scored += 1
+                if trace is not None:
                     trace.record(
                         operator="hard_relocation",
                         field=trace_field,
@@ -188,12 +222,12 @@ def _relocation_moves(
                         candidate_rank=candidate_rank,
                         group_size=len(cand),
                         candidate_source="cold_cell",
-                        features=features,
+                        features=features or {},
                     )
                     shadow_candidates.append(
                         {
                             "operator": "hard_relocation",
-                            "features": features,
+                            "features": features or {},
                             "candidate_rank": candidate_rank,
                             "score_gain": float(state_score - s),
                         }
@@ -224,6 +258,7 @@ def _relocation_moves(
                     scored=scored,
                     rejected_bounds=rejected_bounds,
                     rejected_overlap=rejected_overlap,
+                    skipped_by_ml=max(0, len(legal_candidates) - scored),
                 )
         except Exception:
             # Defensive: restore committed state if anything blew up mid-trial.
