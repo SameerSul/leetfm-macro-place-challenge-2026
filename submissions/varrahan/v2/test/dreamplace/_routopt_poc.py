@@ -2,7 +2,8 @@
 optimization (routability_opt_flag + adjust_rudy_area_flag) reduce the TILOS
 PROXY congestion term?
 
-DP_DIAG established our DREAMPlace candidates lose to 'best' purely on congestion.
+Prior decomposition established our DREAMPlace candidates lose to 'best' purely
+on congestion.
 DREAMPlace can place congestion-aware (RUDY map → inflate node areas in hotspots),
 but it optimizes ITS routing estimate, not the proxy's. This test runs the same
 DP config (hi-fix: td=0.85, soft_movable=False) with routopt OFF vs ON, legalizes
@@ -22,11 +23,11 @@ THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
 REPO_ROOT = THIS.parents[5]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(V2_DIR))
+sys.path.insert(0, str(V2_DIR / "src"))
 
 from macro_place.loader import load_benchmark_from_dir  # noqa: E402
 
-_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "placer.py"))
+_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "src" / "main.py"))
 _v2 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_v2)
 _will_legalize = _v2._will_legalize

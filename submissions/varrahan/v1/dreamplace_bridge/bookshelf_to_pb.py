@@ -14,7 +14,7 @@ inverts both transforms:
     bookshelf_x_ll * (size / 2) → micron x_center
     micron_x = bookshelf_x_center / scale
 
-Soft macros and ports are NOT returned — they're either fixed in the
+Soft macros and ports are NOT returned - they're either fixed in the
 forward conversion (default) or out of scope for the active placer's
 hard-macro-only restart slot. The caller can layer soft macros from
 `benchmark.macro_positions[n:]` if it wants a complete `[num_macros, 2]`.
@@ -38,7 +38,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from macro_place._plc import PlacementCost  # noqa: E402
 
-# Same character set as forward converter's _sanitize() — keep in sync.
+# Same character set as forward converter's _sanitize() - keep in sync.
 _BOOKSHELF_TOKEN_RE = re.compile(r"^[A-Za-z0-9_/.\-]+$")
 
 

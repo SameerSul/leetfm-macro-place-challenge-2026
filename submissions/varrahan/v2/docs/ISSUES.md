@@ -67,8 +67,7 @@ macros (softs may overlap). The proxy gate filters far moves that spike WL.
 −0.034, ibm02 −0.026, ibm01 −0.018, ibm15 −0.016, ibm10/13 −0.011), gain in the
 congestion term as designed, at ~0.1–0.2s/benchmark (~288 incremental score_move
 calls). Strictly non-regressing by construction (best_pl only updates on a true
-re-score improvement). RELOC_PROBE (env-gated) reproduces the per-benchmark
-measurement.
+re-score improvement).
 
 **Why it worked where DP1 didn't:** R1 relieves congestion with a DIRECT,
 proxy-gated move on the placement we already have, rather than trying to fix
@@ -81,7 +80,7 @@ R3 relocated softs by the **congestion** field. R5 adds a second soft pass per
 interleave round that relocates by the **density** field (softs in the densest
 cells → low-density cells). Softs are the bulk of BOTH terms, and — since softs
 may overlap — the cong pass can pile them into low-cong cells without relieving
-density. `DENS_SOFT_PROBE` proved the headroom: on the (cong-converged) best_pl
+density. The headroom measurement showed that on the (cong-converged) best_pl
 the cong field finds **0** more moves but the density field finds **22–68**, for
 −0.011 to −0.020, all in the density term. Implemented by adding `use_density` to
 `_soft_relocation_moves` (build the hot/cold field from the scorer's occupancy
@@ -106,8 +105,8 @@ of distance-to-current vs distance-to-centroid) so cong relief costs less WL.
 Post-hoc on best_pl was a no-op (hard relocation already converged → 0–2 moves);
 the in-loop production A/B (`WL_AWARE=0.5`) was **slightly worse** (ibm03 +0.0015,
 ibm07 +0.0025) — the centroid bias steers the greedy interleave to a worse local
-min, no upside. Reverted the production gate. Kept inert: `hard_net_centroids()`,
-the `wl_blend` option (default 0), and the `WLAWARE_PROBE` diagnostic. (Consistent
+min, no upside. Reverted the production gate and removed the probe scaffolding.
+(Consistent
 with O3's finding that the WL-centroid blend on *softs* gave ~0 — things sit near
 their centroids already.)
 
@@ -129,8 +128,7 @@ congestion term: ibm06 −0.102, ibm07 −0.080, ibm03 −0.067, ibm12/14 −0.0
 ibm17 −0.061. All VALID / 0 overlaps (softs are movable — 0 fixed softs on IBM,
 confirmed; a `soft_movable` guard defends NG45/other inputs). 2350s. The
 interleave makes the gain 2–4× a single soft pass (each soft move opens new
-hard/2-opt moves). `SOFT_RELOC_PROBE` (env-gated) reproduces the single-pass
-measurement.
+hard/2-opt moves).
 
 **This corrects O3.** O3 closed soft-repositioning, but only tested *bulk* moves
 (WL-centroid blends, gradient spreads). Discrete, proxy-gated, R1-style soft
@@ -174,7 +172,7 @@ larger 2-opt slice on benchmarks that hit the round cap with budget to spare.
 
 ### DP1. Congestion-aware DREAMPlace — the leaderboard gap is pure congestion (CLOSED 2026-05-27 — routopt can't move the proxy)
 
-**Diagnosis (DP_DIAG, env-gated logging in `place()`).** Our DREAMPlace (DP)
+**Diagnosis.** Our DREAMPlace (DP)
 candidates lose to the cong-grad "best" seed 15/17. Decomposing why, on the
 congestion-heavy benchmarks, shows the loss is **entirely congestion** —
 DREAMPlace is *better* on wirelength and density (it optimizes those) and only
@@ -189,8 +187,8 @@ loses on the term it can't see:
 | ibm12 final best | 0.0608 | 0.4017 | **1.1749** | 1.6375 |
 | Δ (dp − best) | +0.002 | −0.005 | **+0.075** | +0.071 |
 
-**Post-hoc repair ruled out (mostly).** DP_PROBE (env-gated ceiling test) ran a
-generous ungated cong-grad descent + 2-opt on the raw DP basin. ibm10 *did*
+**Post-hoc repair ruled out (mostly).** A ceiling test ran a generous ungated
+cong-grad descent + 2-opt on the raw DP basin. ibm10 *did*
 recover below best (1.3279 vs 1.3337) — but the production realization (Phase 7b)
 was REVERTED: the descent is budget-hungry (~30s/bench), high-variance, and not
 even reproducible at fixed seed (plc-state-dependent on pipeline position — seed
@@ -233,7 +231,7 @@ best is **not closable** via the built-in routability opt.
 
 **Kept (gated off, no pipeline change):** the bridge `routability_opt` knob +
 calibration params (default off), the NCTUgr-guard source patch (genuine bug
-fix), and the diagnostics (`_routopt_poc`, `_routopt_calib`, `DP_DIAG`/`DP_PROBE`).
+fix), and the diagnostics (`_routopt_poc`, `_routopt_calib`).
 v2 stays at **1.4422**.
 
 **Not pursued (low EV / big build):** `soft_macros_movable=True` + routopt (the
@@ -321,8 +319,7 @@ and the cheap candidate #2 already recovered the regression.
 
 **Status: closed, no headroom.** Soft macros stay at `initial.plc`
 throughout the non-DP pipeline; the earlier estimate was ~0.01-0.02 of
-recoverable proxy. A measure-first investigation
-(`test/diagnostic/_soft_headroom.py`) closed it: `initial.plc` soft
+recoverable proxy. A measure-first investigation closed it: `initial.plc` soft
 positions sit at a robust local proxy optimum, and every repositioning
 method tested makes proxy equal-or-worse.
 
@@ -560,6 +557,66 @@ search → regressed), S9 keeps the full pass and only changes candidate choice
 
 ---
 
+### S10. ML candidate ranker — per-operator XGBoost (DATA COLLECTED 2026-06-04, ranker not yet wired)
+
+A learned filter to make the R2 local search spend its scoring budget on
+candidates likely to improve, while keeping the exact accept-on-true-proxy gate
+as the final arbiter (so the search stays **strictly non-regressing** — the
+model only reorders/prunes what gets scored, it never accepts a move).
+
+**Why it can help.** The search is deadline-bound, and the worst benchmarks
+(ibm12/14/15/17/18) are the slow-to-score large ones that get few R2 rounds.
+Pruning losers before scoring → more accepts per second → lower score where the
+headroom is. The exact gate means the only failure mode is *under-improvement*
+(model drops the true-best candidate), never a regression.
+
+**Where it plugs in (two ranking decisions, per `relocation.py` structure):**
+- **Across groups — which hot macros to `prep` and attempt.** `_prepare_move`
+  (the routing-apply, ~30%/move) is the per-group cost; gating which macros to
+  attempt is the *higher-leverage* lever.
+- **Within a group — which target cells to trial.** The "score only top-K"
+  decision. Lower leverage because each `_trial_at` is already cheap post-prep,
+  but free to add.
+
+**Design.** Separate models for **hard relocation**, **soft relocation**, and
+**hard 2-opt**, with the cong/density `field` as a feature (not separate models).
+Two heads per operator from the same trace:
+- *Target ranker* (within-group): LambdaMART (`rank:pairwise`/`rank:ndcg`),
+  groups = `group_id`, labels = `dataset.add_group_relevance`. → top-K targets.
+- *Group gater* (across-group): `binary:logistic` on "did this macro's group
+  contain any improving move?" (aggregate `improves` per group). → which macros
+  to prep.
+Features must be **pre-score and cheap** (already what `CandidateTrace` records:
+net degree, source/target cong & density, displacement, hot/cold rank, size,
+position). `state_score`/`trial_score` are labels, never features. Do **not**
+feed `benchmark.name` (leakage + the no-per-benchmark-branching rule).
+
+**Validation plan.** Train per operator with **whole-benchmark holdout** (never
+random rows — within-group rows are correlated). Pick K from an offline
+**recall@K of the true-best target per group** curve *before* any `--all`. Then
+confirm online: `--all` with the model but no tracing, per-benchmark
+non-regression, watching that freed budget beats predict overhead on the large
+benchmarks. Stratify the holdout across IBM **and** NG45 so the metric reflects
+cross-design transfer.
+
+**Known risk — distribution shift.** Models are trained on the states the greedy
+loop visits; once they reorder evaluation the loop visits different states and
+the model is off-distribution. Budget one **DAgger** cycle (train v0 → collect
+traces from the states it induces → retrain on the union).
+
+**Data status (2026-06-04).** `scripts/collect_ml_data.sh` produced
+~12.6M candidate rows across seeds 42/43/44 for IBM (`--all`) + NG45 (`--ng45`)
+in `ml_data/traces/`. Per-operator counts: hard_2opt 5.88M, soft_relocation
+3.97M, soft_2opt 2.38M, **hard_relocation 190k (the lean one — NG45 cross-design
+data matters most here)**, hard_soft_swap 71k, hard_soft_soft_cycle 62k. Training
+deps (`xgboost`, `scikit-learn`) are offline-only in `requirements.txt`. Next
+step is the offline training scaffold (rank + gater heads, recall@K curve) under
+`test/diagnostic/`, starting with hard_relocation. See README "ML candidate-ranker
+data collection" for the collection workflow, and `docs/ml_notes/` for the
+conceptual design (why it can improve, selection mechanism).
+
+---
+
 ## Speculative performance ideas (not started)
 
 ### P1. B5 GIL-aware parallel scoring
@@ -605,7 +662,7 @@ takes top-10% over the grid, then reverts the touched cells;
 **Verified:** `_verify_incremental_scorer.py` — score_swap (incl. density)
 matches `_exact_proxy` to ≤4.4e-16 (machine eps) on ibm01/04/10, both
 trial swaps and sequential commits (no drift).
-**Measured speedup** (`_profile_density.py`): score_swap −22% to −29%
+**Measured speedup:** score_swap −22% to −29%
 (ibm01 1.77→1.36ms, ibm04 1.46→1.14ms, ibm10 2.03→1.44ms, ibm16
 1.99→1.47ms). Translates to ~40–56% more 2-opt scores in the 15s
 deadline (ibm04 7914→11058; ibm10 4784→7482).
@@ -632,7 +689,7 @@ state computation.
 
 **Final outcome (different from the original proposal):** the original P5 plan
 ("shared scorer eliminates ~60–75 s/benchmark of redundant inits") was retired
-when `_profile_init.py` showed the per-pass `IncrementalScorer.__init__` is
+when fixed-overhead profiling showed the per-pass `IncrementalScorer.__init__` is
 21–48 ms (not seconds) and `_exact_proxy` is 5–12 ms — total per-pass fixed
 overhead ~0.1–0.28 s/round / ~0.7–1.7 s/benchmark, not the projected 60–75 s.
 A shared-scorer refactor would have saved <1.7 s/benchmark and put the
@@ -676,8 +733,7 @@ wins vs the cong-only baseline, biggest movers ibm17 −0.034, ibm16 −0.019, i
 −0.015. WSL run reported 3860s wall (host-suspend O4 inflated ibm06 to 1509s
 wall vs ~125s real); `monotonic` budget held — no benchmark returned baseline.
 
-**Diagnostics retained** (`v2/test/diagnostic/`): `_profile_init.py` (the
-measurement that retired the shared-scorer plan), `_profile_move.py` (per-move
+**Diagnostics retained** (`v2/test/diagnostic/`): `_profile_move.py` (per-move
 breakdown — cong=20%, density=0.7%, routing-apply=67%), `_profile_move_internals.py`
 (cProfile attribution that pointed at `_apply_net_routing_subset`),
 `_profile_move_realistic.py` (same-macro/nearby vs random-k pattern, isolates

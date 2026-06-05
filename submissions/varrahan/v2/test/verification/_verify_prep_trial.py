@@ -23,11 +23,11 @@ THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
 REPO_ROOT = THIS.parents[5]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(V2_DIR))
+sys.path.insert(0, str(V2_DIR / "src"))
 
 from macro_place.loader import load_benchmark_from_dir  # noqa: E402
 
-_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "placer.py"))
+_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "src" / "main.py"))
 _v2 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_v2)
 _will_legalize = _v2._will_legalize
@@ -89,7 +89,7 @@ def _run(name, n_trials=10):
         sc2 = IncrementalScorer(plc, bm, pl_np)
         # Make sure plc state is consistent: just rebuilt.
         # (Both scorers share the same plc, but they don't co-exist concurrently
-        # — we just use one then the other.)
+        # - we just use one then the other.)
         i = int(mov[rng.randint(0, mov.size)])
         target = (float(rng.uniform(0, cw)), float(rng.uniform(0, ch)))
         # Reference path: commit_move

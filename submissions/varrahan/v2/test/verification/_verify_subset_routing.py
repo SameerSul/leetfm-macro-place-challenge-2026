@@ -18,7 +18,7 @@ import numpy as np
 HERE = Path(__file__).resolve()
 V2_DIR = HERE.parents[2]
 REPO_ROOT = HERE.parents[5]
-for p in (str(REPO_ROOT), str(V2_DIR)):
+for p in (str(REPO_ROOT), str(V2_DIR / "src")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
@@ -256,7 +256,7 @@ def run_bench(bname):
     print(f"  Test 1 (subset=all): max|ΔH|={dH:.2e}, |ΔV|={dV:.2e}, |ΔHm|={dHm:.2e}, |ΔVm|={dVm:.2e}  {'PASS' if ok1 else 'FAIL'}",
           flush=True)
 
-    # Test 2: roundtrip — apply subset of N nets at +1, then -1, should net to zero.
+    # Test 2: roundtrip - apply subset of N nets at +1, then -1, should net to zero.
     n_nets = plc._wl_vec_cache["n_nets"]
     sample_nets = np.array(sorted(np.random.RandomState(7).choice(n_nets, size=min(200, n_nets), replace=False)),
                             dtype=np.int64)

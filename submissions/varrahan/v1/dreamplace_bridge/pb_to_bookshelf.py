@@ -166,7 +166,7 @@ def extract_bookshelf_data(
         bs_name = add_node(raw, w, h, x, y, terminal=fixed, fixed=fixed)
         tilos_to_bookshelf[raw] = bs_name
 
-    # Soft macros — by default mark as terminal+fixed
+    # Soft macros - by default mark as terminal+fixed
     for idx in plc.soft_macro_indices:
         m = plc.modules_w_pins[idx]
         raw = m.get_name()
@@ -177,7 +177,7 @@ def extract_bookshelf_data(
         bs_name = add_node(raw, w, h, x, y, terminal=is_terminal, fixed=is_fixed)
         tilos_to_bookshelf[raw] = bs_name
 
-    # I/O ports — tiny terminal nodes
+    # I/O ports - tiny terminal nodes
     for idx in plc.port_indices:
         p = plc.modules_w_pins[idx]
         raw = p.get_name()
@@ -291,7 +291,7 @@ def _write_scl(out_dir: Path, design: str, canvas_w: float, canvas_h: float,
     which was 20-50x too fine and made the NLP plateau at iter 1.
 
     The .scl parser requires INTEGER values for Height/Coordinate/SubrowOrigin/
-    NumSites — even though .pl/.nodes accept floats. Site grid is 1x1 unit."""
+    NumSites - even though .pl/.nodes accept floats. Site grid is 1x1 unit."""
     canvas_w_i = max(1, int(canvas_w) + 1)
     canvas_h_i = max(1, int(canvas_h) + 1)
     # row_height = ceil(canvas_h / num_rows_target) so num_rows * row_height >= canvas_h

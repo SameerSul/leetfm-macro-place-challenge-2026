@@ -2,7 +2,7 @@
 Simple Random Placer - Example Submission
 
 Places all movable macros at random positions within canvas bounds.
-Respects fixed macros. This is a minimal baseline — it typically
+Respects fixed macros. This is a minimal baseline - it typically
 performs worse than the initial placement.
 
 Usage:

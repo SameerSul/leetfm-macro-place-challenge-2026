@@ -12,7 +12,7 @@ import numpy as np
 from macro_place.loader import load_benchmark_from_dir
 import importlib.util
 
-V2 = ROOT / "submissions" / "varrahan" / "v2" / "placer.py"
+V2 = ROOT / "submissions" / "varrahan" / "v2" / "src" / "main.py"
 spec = importlib.util.spec_from_file_location("v2_placer", V2)
 v2 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v2)
@@ -31,7 +31,7 @@ def perturb_movable_positions(plc, rng, scale_frac=0.05):
     fixed_indices = set()
     for i in plc.hard_macro_indices:
         m = plc.modules_w_pins[i]
-        # Heuristic: ports & macros marked placed=False or absent — treat all hard macros as movable here
+        # Heuristic: ports & macros marked placed=False or absent - treat all hard macros as movable here
         pass
     for i in plc.hard_macro_indices + plc.soft_macro_indices:
         m = plc.modules_w_pins[i]
