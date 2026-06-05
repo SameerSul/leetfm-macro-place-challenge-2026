@@ -149,6 +149,24 @@ The model should initially reduce exact evaluations, not remove the interleave
 or its exact scorer. With the saved time, R2 can inspect wider candidate pools or
 run additional rounds.
 
+## Shadow mode
+
+The first live integration path is shadow-only. Set both trace output and a model
+manifest:
+
+```bash
+ML_TRACE_PATH='/tmp/traces/{run_id}-{pid}.jsonl.gz' \
+ML_MODEL_MANIFEST=submissions/varrahan/v2/ml_data/models/latest/manifest.json \
+ML_SHADOW_TOP_K=1,3,5,10,16 \
+  uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01
+```
+
+Shadow mode currently records `ml_shadow_group` events for hard and soft
+relocation candidate groups. It scores the exact same legal candidates already
+being evaluated, records model ordering, `best_recall@K`,
+`improving_recall@K`, regret, and model inference time, and then allows the
+existing exact scorer and accept gate to proceed unchanged.
+
 ## Offline training CLI
 
 `placer.ml.train` trains and evaluates the per-operator XGBoost artifacts from

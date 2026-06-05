@@ -1,31 +1,21 @@
 #!/usr/bin/env bash
 #
-# Collect candidate-ranking training data for the per-operator XGBoost models.
+# Collect candidate-ranking training data for the per-operator XGBoost rankers.
 #
-# Runs the placer with ML_TRACE_PATH set, so every local-search candidate trial
-# (hard relocation, soft relocation, hard 2-opt, and the other R2 passes) is
-# written as a JSONL row with its pre-score features + score_gain/improves
-# labels + group_id. See src/placer/ml/data_collection.py for the schema and
-# src/placer/ml/dataset.py for the loaders.
+# Runs the placer with ML_TRACE_PATH set so every local-search candidate trial is
+# written to JSONL (features + score_gain/improves labels + group_id). Schema:
+# src/placer/ml/data_collection.py; loaders: src/placer/ml/dataset.py.
 #
-# Data diversity comes from running --all (17 distinct benchmark trajectories)
-# across several seeds (V2_SEED), each a different legalization/perturbation path.
-# A single --all already emits millions of candidate rows, so a small seed sweep
-# is plenty; seeds give cross-trajectory variety, not just volume.
+# Diversity comes from a seed sweep (V2_SEED): each seed is a different trajectory.
+# NG45 traces get an "ng45_" filename prefix so the trainer can include or hold
+# them out by name; run both sets for cross-design variety.
 #
-# IMPORTANT (see memory: ml-trace-verification-gotcha): tracing perturbs timing,
-# which perturbs deadline-gated passes, which perturbs scores. These runs are for
+# IMPORTANT: tracing changes timing, which changes scores. Use these runs for
 # DATA ONLY -- never read a placement score off a traced run.
 #
-# Usage (run from the repo root):
-#   submissions/varrahan/v2/scripts/collect_ml_data.sh [--all|--ng45] [seed ...]
-#   submissions/varrahan/v2/scripts/collect_ml_data.sh 42 43 44          # IBM (default)
-#   submissions/varrahan/v2/scripts/collect_ml_data.sh --ng45 42 43 44   # NG45 (Tier 2)
-#
-# --ng45 traces are written with an "ng45_" filename prefix so they sit alongside
-# the IBM traces in the same directory and the trainer can include or hold them
-# out by name. Run both sets when you want cross-design variability (the NG45
-# designs are structurally different from IBM and guard against overfitting).
+# Usage (from the repo root):
+#   collect_ml_data.sh 42 43 44          # IBM (default)
+#   collect_ml_data.sh --ng45 42 43 44   # NG45 (Tier 2)
 #
 set -euo pipefail
 
