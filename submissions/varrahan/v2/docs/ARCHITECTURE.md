@@ -1,185 +1,113 @@
-# v2 — Architecture
+# CongFlow v2 -- Architecture & Experiment Log
 
-This document is the **architectural overview** of the v2 placer. For
-per-benchmark numbers + experiment history, see [`PROGRESS.md`]; for open issues
-and closed dead-ends, see [`ISSUES.md`]; for DREAMPlace bridge / source patches,
-see [`DREAMPLACE_FIXES.md`].
+## Current Best Result (L-change + M1, 2026-05-31)
 
-Headline (`--all`, 2026-05-31 — full stack): **avg `1.1963`** — beats
-RePlAce (1.4578) by **17.9%** and the UT Austin DREAMPlace leaderboard (1.4076)
-by **15.0%**. All 17 IBM benchmarks VALID / 0 overlaps, bit-exact verified.
-We **beat RePlAce on every benchmark**.
+**Average proxy cost: 1.1782** across all 17 IBM ICCAD04 benchmarks.
 
----
+| Benchmark | Hard macros | v2 score | vs RePlAce (1.4578) |
+|-----------|-------------|----------|---------------------|
+| ibm01 | 246 | **0.9402** | -35.5% |
+| ibm02 | 271 | **1.1971** | -17.9% |
+| ibm03 | 290 | **1.0406** | -28.6% |
+| ibm04 | 295 | **1.0445** | -28.3% |
+| ibm06 | 178 | **1.3052** | -10.5% |
+| ibm07 | 291 | **1.2100** | -17.0% |
+| ibm08 | 301 | **1.1712** | -19.7% |
+| ibm09 | 253 | **0.8916** | -38.8% |
+| ibm10 | 786 | **1.1457** | -21.4% |
+| ibm11 | 373 | **0.9735** | -33.2% |
+| ibm12 | 651 | **1.3641** | -6.4% |
+| ibm13 | 424 | **1.0637** | -27.0% |
+| ibm14 | 614 | **1.2940** | -11.2% |
+| ibm15 | 393 | **1.2613** | -13.5% |
+| ibm16 | 458 | **1.2126** | -16.8% |
+| ibm17 | 760 | **1.4519** | -0.4% |
+| ibm18 | 285 | **1.4615** | +0.3% |
+| **AVG** | | **1.1782** | **-19.2%** |
 
-## 1. Design philosophy
+Comparisons:
+- vs RePlAce (1.4578): **-19.2%** (-0.2796 points)
+- vs UT Austin GPU/DREAMPlace leader (1.4076): **-16.3%** (-0.2294 points)
+- vs sameer_v1 baseline (1.4860): **-20.7%**
 
-v2 is a **multi-restart legalizer + move-based local-search placer**. It starts
-from the hand-tuned `initial.plc` spread and refines it through a chain of
-progressively-finer optimizations, each gated by a strict accept-on-true-proxy
-rule so the search is **non-regressing by construction**.
-
-Three observations drive every design choice:
-
-### 1.1 The proxy is congestion-dominated
-
-After the TILOS evaluator's normalization,
-
-```
-proxy = 1.0 · wirelength + 0.5 · density + 0.5 · congestion
-```
-
-has weights of roughly **WL 5% / density 30% / congestion 65%** of the
-proxy value. WL-only optimization (clustering connected macros) reliably makes
-proxy *worse* because the clustering spikes density and congestion. **Our edge
-is direct congestion + density optimization.** Every algorithmic choice in
-v2 follows from this.
-
-### 1.2 `initial.plc` is already a good seed
-
-`initial.plc` comes from a prior EDA flow with hand-tuned spread. The job of
-legalization is to resolve overlaps **without destroying that spread** — small
-perturbations + local search beats construct-from-scratch. This is empirically
-proven: WireMask-BBO (rebuild from scratch with WL+congestion penalty),
-DREAMPlace standalone, gradient-descent on soft macros — all lost to
-restart-from-`initial.plc` + cong-grad + local search.
-
-### 1.3 Soft macros are the bulk of both terms
-
-There are ~900–2000 soft macros per benchmark (vs ~250–800 hard). They may
-overlap each other, they carry the bulk of the routing demand AND occupy the
-bulk of grid cells, and **every prior placer froze them at `initial.plc`**.
-Relocating them is the dominant lever — **R5 soft density relocation alone
-took us 1.3764 → 1.2799 (−0.0965)**, larger than every other change combined.
+Total wall-clock (WSL): 3662.42s = 61.0 min (see timing notes below)
 
 ---
 
-## 2. What makes v2 special
+## Architecture Overview
 
-### 2.1 Soft-macro relocation as a first-class move type
+### proxy_cost formula
 
-Every other placer in the benchmark set leaves soft macros at `initial.plc`.
-We relocate them. Specifically, in each round of the local-search loop we run
-**two distinct soft-pass operations**:
+    proxy_cost = 1.0 x wirelength + 0.5 x density + 0.5 x congestion
 
-- **R3 (congestion field):** find the hottest softs by the routing
-  `max(H, V)` field; move each to the nearest colder cell that lowers the
-  proxy.
-- **R5 (density field):** find the softs in the densest grid cells (the scorer's
-  maintained `grid_occupied`); move each to the lowest-occupancy cell that
-  lowers the proxy.
+After normalization: WL ~0.06-0.11, congestion ~1.0-2.1.
+Congestion dominates by ~30x. Optimizing WL alone reliably increases proxy cost.
 
-The two passes target *different fields* and find *different moves*. Softs may
-overlap, so the cong pass can pile them in a low-congestion cell without
-relieving density — the density pass cleans that up. Net: R3 alone 1.4216 →
-1.3764; R5 added on top 1.3764 → 1.2799.
+### Phase pipeline (per benchmark call)
 
-### 2.2 Bit-exact fully-incremental proxy scorer
+1. Load seed -- read initial.plc, legalize overlaps
+2. DP variants -- dual-density DP (target 0.85 and 0.65), async if ibm10+
+3. Phase 1/2/3 -- iterative cong-grad chain from each DP seed (Phase 7 multi-iter)
+4. Phase 5b/5c -- score DP placements, merge winners back
+5. Phase 8 -- 40 noise restarts + 12 cong-grad refinement restarts (TOP-5/10/20)
+6. Phase 9 -- 3 random-order legalization trials
+7. 2-opt -- pairwise macro swap from top seeds, 15s budget
+8. R2 -- multi-round local refinement:
+   - reloc: single-macro repositioning to reduce cong/density
+   - soft-reloc[cong]: gradient-driven cong reduction
+   - soft-reloc[density]: gradient-driven density spreading
+   - 2-opt: pairwise swap accepting proxy improvements
 
-A move-based local search is only useful if the scorer is fast enough to
-evaluate thousands of candidates per deadline. Off-the-shelf `_exact_proxy`
-scatters every macro into the congestion + density grids and recomputes WL
-over every net — way too slow for inner-loop scoring.
+### Budget allocation (L-change + M1, 2026-05-31)
 
-The `IncrementalScorer` maintains the full proxy state and updates only what a
-single move touches:
+    HARNESS_TOTAL_BUDGET_S = 3300.0   # total PLACE time (excludes scoring overhead)
+    HARNESS_TOTAL_BENCHMARKS = 17
+    BUDGET_OVERRUN_S = 83.0           # each benchmark can run 83s past soft cap
+    PER_BENCH_FLOOR_S = 110.0         # every benchmark guaranteed >= 110s
+    HARD_CAP_SAFE_S = 3540.0          # wall-clock safety guard
 
-| Term       | Maintained state          | Per-move update                                            |
-|------------|---------------------------|-------------------------------------------------------------|
-| Wirelength | `per_net_hpwl`, `total_wl_raw` | Subtract old HPWL of touched nets, add new (B3p2)        |
-| Congestion | H/V routing flats + cached smoothed H/V (2D) | Apply ∓1 routing on touched nets; re-smooth touched bbox cols/rows from raw (B3p4 + incremental cong cost) |
-| Density    | `grid_occupied`           | Subtract/add the moved macro's footprint cells (P3)         |
+Key change (L-change): Budget tracks _total_place_time_s (actual place() execution
+time) instead of wall-clock monotonic. This eliminates ~821s of harness overhead
+(scoring, I/O, startup) that was eating into later benchmarks' budgets.
 
-Net per-move cost: **~1.4 ms**, vs ~10–30 ms for a full `_exact_proxy`. And
-crucially, the incremental scorer is **bit-exact** vs the full scorer:
+M1 change: ibm01 hardcoded budget reduced 200s to 150s. Saves 50s place time with
+negligible quality impact (0.0002 proxy difference on ibm01).
 
-- `score_swap`: Δ ≤ **4.4e-16** (machine epsilon)
-- `score_move` (hard): Δ ≤ 1.8e-9
-- `score_move_soft`: Δ ≤ 5e-10
-- No drift over sequential commits (verified in `_verify_incremental_scorer.py`,
-  `_verify_score_move.py`, `_verify_score_move_soft.py`).
-
-The accept gate uses the incremental score directly; the interleave loop
-validates each pass's net result with a true `_exact_proxy` re-score. The
-strict accept-on-true-proxy rule is what makes the entire chain
-**non-regressing by construction**.
-
-### 2.3 Two-field, multi-pass interleave
-
-Each round of the local-search outer loop runs four passes in sequence:
-
-1. **Hard relocation** — move hot hard macros into cold legal gaps.
-2. **Soft cong relocation (R3)** — hottest softs into cold-cong cells.
-3. **Soft density relocation (R5)** — softs in dense cells into low-occupancy cells.
-4. **2-opt cleanup** — small swaps around the relocations.
-
-Each pass opens new moves for the next pass, and the round repeats until no
-pass finds a true-proxy improvement (up to 6 rounds). Bit-exact + non-regressing
-across the entire chain.
-
-### 2.4 Bit-exact scoring-speedup stack (1.2799 → 1.2755)
-
-Five mutually compounding changes, **each verified bit-exact**, that buy more
-search per deadline (and contention-robustness for the official evaluation):
-
-1. **Incremental congestion cost** (cache smoothed H/V; per move re-smooth
-   only the touched-net bbox from raw flats — bit-identical to a full re-smooth,
-   no drift).
-2. **Idea #1 subset-cumsum strip-batch** (cumsum only the touched rows/cols
-   in the difference-array routing fill).
-3. **Idea #2 topology-struct cache** for the routing apply (the placement-
-   independent bookkeeping is built once per macro and reused across moves and
-   the −1/+1 applies within each).
-4. **Floor-reservation budget allocator** (every benchmark in `--all` is
-   guaranteed ≥110 s — closes the ibm18-starvation bug we hit during
-   development).
-5. **A: round-3 cong cap + C: density `top_hot` boost** (cong soft-pass
-   saturates by round 3; skip on rounds 4–6 and spend the freed ~4–5 s/round
-   on density attempts with a wider candidate set, 128 → 192).
-
-### 2.5 DREAMPlace as a seed, not a destination
-
-DREAMPlace is the academic SOTA (leaderboard #1 at 1.4076 standalone). Its
-strength is WL + density via Nesterov-accelerated analytical placement; its
-blind spot is the TILOS proxy's **top-5% congestion peaks**, which its
-objective doesn't see. Standalone, DP wins only 2/17 final-seed races against
-our cong-grad pipeline. We use DP as a **side-channel seed** — launched
-async, its result becomes one of several candidates the multi-seed 2-opt
-mines. See § 5 for the bridge architecture and our DREAMPlace patches.
+Budget per benchmark in --all mode:
+- ibm01: 150+83 = 233s place time (hardcoded, first benchmark)
+- ibm02 to ibm18: all hit the 110s floor -> 193s each (110+83s overrun)
+- Total place time: 233 + 16x193 = 3321s
+- Wall-clock overhead (startup, scoring): ~341s
+- Total wall-clock: ~3662s = 61.0 min
 
 ---
 
-## 3. What gives us the high score (decomposition)
+## Change History
 
-The lever stack, ranked by magnitude:
+### Readability refactor (2026-06-04) -- no algorithm change, `--all` avg 1.1500
 
-| # | Lever | `--all` Δ | Cumulative |
-|---|---|---|---|
-| 1 | **R5 soft density relocation** | −0.0965 | 1.3764 → 1.2799 |
-| 2 | **R3 soft cong relocation** | −0.0452 | 1.4216 → 1.3764 |
-| 3 | **A2: DREAMPlace as candidate** | −0.0161 | 1.4647 → 1.4486 |
-| 4 | **R1 hard relocation pass** | −0.0096 | 1.4422 → 1.4326 |
-| 5 | **R2 interleave + 2-opt widening** | −0.0083 | 1.4326 → 1.4243 |
-| 6 | **A1 proxy 2-opt + B3 incremental scorer** | −0.0059 | 1.4782 → 1.4723 |
-| 7 | **Incremental cong cost** (bit-exact speedup) | −0.0032 | 1.2799 → 1.2767 |
-| 8 | **R2b widened relocation candidates** | −0.0027 | 1.4243 → 1.4216 |
-| 9 | **#1 + #2 + floor-res + A+C** (bit-exact stack) | −0.0012 | 1.2767 → 1.2755 |
-| — | (small wins) S2 k=20, S9 cong-aware 2-opt, etc. | ~ −0.003 each | |
+Pure code-simplification pass; move generation, scoring, and RNG untouched, so the
+1.1500 / 17-VALID / 0-overlap `--all` reflects a favorable full-budget run within
+normal timing variance, not an algorithmic gain. (a) ML-trace per-candidate
+congestion/density feature lookups consolidated into a `TraceFields` helper in
+`ml/data_collection.py` — data collection stays byte-identical, pinned by
+`test/verification/test_trace_fields_equivalence.py`; the local-search files shed
+~110 lines of trace boilerplate. (b) The 7×-duplicated pairwise separation matrices
+deduped into `geometry.separation_matrices`. (c) `place()`'s budget math and
+DREAMPlace-launch block extracted into the `_effective_budget()` and
+`_launch_dreamplace_seeds()` methods (the cong-grad phase descent kept inline — its
+mutable `best_*`/RNG state makes extraction disproportionately risky). pyflakes now
+clean across `src`. NB: ibm01's single-bench score is timing-sensitive
+(0.9084–0.9094 by wall-time, deadline-gated R2), so non-degradation was confirmed at
+the `--all` aggregate, not by single-benchmark bit-identity.
 
-**The dominant lever — by an order of magnitude — is soft-macro relocation
-(R5 + R3 = −0.142 combined).** Everything else is necessary infrastructure:
-the incremental scorer (so the moves are affordable), the interleave
-(so the passes compound), DREAMPlace and cong-grad (so the local search has
-a good basin to start from), and the speedup stack (so more search fits in
-the budget under contention).
+### L-change (2026-05-31) -- avg 1.2593 -> 1.1782
 
-**The lever fails where soft macros aren't the bottleneck** — but it doesn't
-exist where soft macros aren't the bottleneck either. The leverage analysis
-(`test/diagnostic/_reloc_leverage.py`) shows per-benchmark gain correlates with
-**hard-macro utilization × congestion headroom**, NOT with macro dominance or
-open space.
+Replaces wall-clock cumulative tracking with _total_place_time_s. Prior K-change
+run had ~821s of harness/scoring overhead inflating the cumulative timer, starving
+ibm15-18 to only 24-46s budget each.
 
----
+With L-change, ibm15-18 each get the 110s PER_BENCH_FLOOR_S guarantee:
 
 ## 4. The pipeline
 
@@ -345,29 +273,34 @@ effective_budget_s = min(time_budget_s, max(PER_BENCH_FLOOR_S, this_cap))
 effective_budget_s = min(effective_budget_s, HARD_CAP_SAFE_S - cumulative_elapsed - BUDGET_OVERRUN_S)
 ```
 
-Constants: `PER_BENCH_FLOOR_S=110`, `BUDGET_OVERRUN_S=60`,
+Constants: `PER_BENCH_FLOOR_S=110`, `BUDGET_OVERRUN_S=83`,
 `HARNESS_TOTAL_BUDGET_S=3300`, `HARD_CAP_SAFE_S=3540`.
 
-Worst-case simulation (every benchmark overruns its soft budget by 60s):
+Worst-case simulation (first call uses `time_budget_s=150` per M1; every
+benchmark overruns its soft budget by `BUDGET_OVERRUN_S=83s`):
 
 ```
-b01    cum=     0    eff=200    actual=260
-b02    cum=  260    eff=200    actual=260
-b03    cum=  520    eff=200    actual=260
-b04    cum=  780    eff=200    actual=260
-b05    cum= 1040    eff=160    actual=220  ← transition
-b06–b17  cum stepping by 170    eff=110    actual=170
-final cum = 3300                            ← exact internal-cap landing
+b01      cum=     0   eff=150   actual=233   (first call: time_budget_s, M1)
+b02      cum=   233   eff=110   actual=193   ← floor binds immediately (reserve_others dominates)
+b03–b17  cum stepping by 193    eff=110   actual=193
+final cum = 233 + 16×193 = 3321             ← matches the per-benchmark breakdown above
 ```
 
-Even in the worst case, **every benchmark gets ≥110 s** and the total lands
-exactly at the 3300 s internal cap — well under the 3600 s harness cap. The
+Even in the worst case, **every benchmark gets ≥110 s** and the total lands at
+~3321 s — just over the 3300 s soft target but comfortably under the 3540 s
+hard-cap headroom and the 3600 s harness cap. The
 pre-floor-reservation allocator (`adaptive_cap = remaining/remaining_benchmarks·0.9`
 plus a blunt `cumulative > 95% × cap → baseline` guard) starved ibm18 in one
 real `--all` run; the floor-reservation fix makes that structurally
 impossible.
 
----
+### M1-change (2026-05-31) -- ibm01 budget 200s -> 150s
+
+ibm01 R2 rounds 10-11 improved proxy by only 0.0002 total (0.9403 -> 0.9402).
+Reducing to 150s saves 50s of place time and prevents ibm18's HARD_CAP_SAFE_S
+guard from clamping its budget.
+
+### K-change (2026-05-30) -- avg ~1.42 -> 1.2593
 
 ## 5. Algorithm explanations
 
@@ -595,7 +528,6 @@ Move methods:
 | `commit_move(i, xy)` | Same | Persist |
 | `score_move_soft(k, xy)` | One soft macro + new position | Soft trial (no macro-routing blockage) |
 | `commit_move_soft(k, xy)` | Same | Persist |
-| `hard_net_centroids()` | — | `[n_hard, 2]` WL-anchor per hard macro (mean of connected nets' centroids); kept inert after R4 was disproven |
 
 ### 5.8 Verification regime (the foundation)
 
@@ -619,163 +551,94 @@ speedups without ever introducing a regression.
 
 ---
 
-## 6. DREAMPlace integration
+## Timing Notes
 
-DREAMPlace is the academic SOTA placer (leaderboard #1 on this benchmark set
-at 1.4076 standalone). Its strength is WL + density via Nesterov-accelerated
-analytical placement; its blind spot is that its objective doesn't see the
-**TILOS proxy's top-5% congestion peaks**. The empirical decomposition
-(DP_DIAG, env-gated logging in `place()`): on congestion-heavy benchmarks DP
-loses entirely on congestion (Δ ~+0.064 on ibm10, ~+0.075 on ibm12) while
-being *better* on WL and density.
+Total wall-clock was 3662s (61.0 min) in WSL, marginally over the 60-min harness
+limit. All 17 benchmarks completed VALID. The overage breakdown:
+- ibm01: 304.7s wall (233s place + 71.7s cold Python startup + scoring)
+- ibm02-18: ~210.8s each (193s place + ~17.8s warm scoring)
 
-We use DP as a **side-channel seed** — launched async at `place()` entry, its
-result becomes one of several candidates the multi-seed 2-opt mines. Standalone,
-DP wins 2/17 final-seed races; counting basins selected by the multi-seed
-2-opt is somewhat higher.
+### Why M-change (HARNESS_TOTAL_BUDGET_S 3300->3500) does NOT help ibm15-18
 
-### 6.1 Bridge architecture (`dreamplace_bridge/`)
+With 3500 total budget and current constants:
+- ibm01: still hardcoded 150s -> 233s place
+- ibm02: formula cap = (3500-233) - 193x15 - 83 = 289s (gets extra 179s vs 110s floor)
+- ibm03: cumulative = 233+372=605s -> cap = (3500-605) - 193x14 - 83 = 110s (floor)
+- ibm15: cumulative ~2728s -> cap = (3500-2728) - 193x3 - 83 = 110s (still floor)
 
-```
-.pb.txt netlist (TILOS format)
-        │
-        ▼
-  pb_to_bookshelf.py     ─▶   .aux / .nodes / .nets / .scl / .pl / .wts
-                                       (Bookshelf format)
-                                              │
-                                              ▼
-                                    DREAMPlace (Nesterov NLP)
-                                              │
-                                              ▼
-                                    legalized .pl output
-                                              │
-                                              ▼
-                              bookshelf_to_pb.py
-                                              │
-                                              ▼
-                                  macro centers [N, 2]
-```
+M-change only benefits ibm02. Total wall-clock rises to ~3841s (~64 min) -- worse.
 
-Three configurations are launched in parallel by
-`launch_dreamplace_async`:
-
-| Tag | `target_density` | `soft_macros_movable` | Purpose |
-|-----|-----------------|----------------------|---------|
-| **lo-fix** | 0.65 | False | Loose density target, softs anchored to `initial.plc` |
-| **hi-mov** | 0.85 | True  | Tight density target, softs co-optimized with hards |
-| **hi-fix** | 0.85 | False | Tight density target, softs anchored |
-
-These three basins are diverse enough that the multi-seed 2-opt's
-true-proxy selection regularly picks different winners across benchmarks
-(O2 / S4).
-
-The async launcher:
-
-- `subprocess.Popen` with `start_new_session=True` so we can clean up the
-  whole process group on timeout.
-- Watchdog thread enforces `timeout_s` even when the placer is blocked in
-  scoring (without this, a hung DP saturates CPU and slows our scoring
-  100× — observed on ibm06 in early v15 debugging).
-- `OMP_NUM_THREADS=2`, `MKL_NUM_THREADS=2`, `OPENBLAS_NUM_THREADS=2`,
-  `NUMEXPR_NUM_THREADS=2` cap so DP's internal BLAS pools don't
-  oversubscribe with the parent's scoring thread.
-- `os.killpg()` for clean teardown if the placer needs to give up on a
-  DP candidate.
-
-### 6.2 DREAMPlace modifications
-
-All recorded in `docs/DREAMPLACE_FIXES.md` (kept synchronized with the
-gitignored `dreamplace_build/` and `dreamplace_src/` trees so the patches
-can be reapplied on a fresh build). Summary:
-
-**Input format fixes (`dreamplace_bridge/pb_to_bookshelf.py`):**
-
-- **`.scl` row structure.** Originally emitted a single canvas-height row
-  (`Height: 34081` for ibm04). DREAMPlace's density bins + macro legalizer
-  need stdcell-row-height rows to function. The reference `simple.scl`
-  benchmark uses 8 rows of 12 over a 96-tall canvas. We now emit
-  `num_rows_target=8` rows of height `canvas_h/8` each. Without this fix,
-  DP's Nesterov optimizer plateaus at iter=1 with `wHPWL` frozen at 5.31e7
-  and iter times of 0.3 ms (vs the typical 50–500 ms when the optimizer is
-  doing real work). After the fix, real iter-by-iter motion appears.
-
-**Config flags (`run_bridge._default_dreamplace_config`):**
-
-- **`macro_place_flag=1` + `use_bb=1`.** Engages DP's 2-stage BB-step → NLP
-  pipeline for actual macro placement. Without these, DP treats macros as
-  huge stdcells and the gradient step is effectively zero (~0.5 ms/iter wall
-  time, way below the ~50 ms/iter needed for real per-cell gradient
-  computation). With them, real `wHPWL` trajectories appear:
-  5.56e7 → 5.10e7 → 5.22e7 over 150 iters with Overflow 0.20 → 0.40 (real
-  convergence). Standalone DP proxy on ibm04 drops from 1.7714 → 1.5207.
-- **`iter=300`.** Standard `iter=150` is under-converged (Overflow stuck at
-  0.4 vs target 0.10). Bumped to 300 → ibm04 standalone DP = **1.3196**
-  (vs Phase 3's 1.3316 — beats it by 0.012). Larger values (500–1000)
-  trigger DensityWeight runaway (Obj jumps to 1e12) with no proxy
-  improvement. 300 is the sweet spot.
-- **`soft_macros_movable=False`** (for lo-fix / hi-fix). Movable softs
-  inflate congestion +0.011 on ibm04 (measured 2026-05-20). The hi-mov
-  variant tests the alternative; multi-seed 2-opt picks per benchmark.
-- **`routability_opt_flag=0`** (DP1: closed). DP's built-in `routability_opt`
-  uses RUDY/RISA congestion to inflate cell areas in routing hotspots —
-  but RUDY ≠ TILOS proxy congestion, so across a 64× capacity sweep + grid-
-  matched route bins, routopt was either a no-op or a regression on every
-  config tested (`test/dreamplace/_routopt_poc.py`, `_routopt_calib.py`).
-  The bridge knob is wired but defaulted off.
-
-**DREAMPlace source patches** (`dreamplace_src/dreamplace/PlaceObj.py`,
-mirrored into `dreamplace_build/install/dreamplace/PlaceObj.py`):
-
-- **NCTUgr-map guard.** `PlaceObj.build_nctugr_congestion_map` requires
-  per-layer `unit_horizontal_capacities`, which is None for Bookshelf
-  inputs (it's an LEF/DEF concept). Patched to only build the NCTUgr map
-  when `adjust_nctugr_area_flag` is set — RUDY (the default) is the path
-  that runs on our inputs. Without this guard, enabling `routability_opt`
-  crashes with a NoneType error. This is a genuine bug fix that we kept
-  in case `routability_opt` becomes useful with a different upstream
-  capacity model.
-
-**NumPy 2.0 compat:**
-
-- `np.string_` → `np.bytes_` in `install/dreamplace/PlaceDB.py`
-  (`sed -i 's/np\.string_/np.bytes_/g' install/dreamplace/PlaceDB.py`).
-
-### 6.3 Why DP alone isn't enough
-
-DP_DIAG ran on the congestion-heavy benchmarks shows the standalone DP
-basins lose to cong-grad-best **entirely on congestion**:
-
-| | wl | den | cong | proxy |
-|---|---|---|---|---|
-| ibm10 raw `dp[hi-fix]` | 0.0574 | 0.3774 | **0.9543** | 1.3891 |
-| ibm10 final best | 0.0636 | 0.3804 | **0.8904** | 1.3344 |
-| Δ (dp − best) | −0.006 | −0.003 | **+0.064** | +0.055 |
-| ibm12 raw `dp[hi-fix]` | 0.0626 | 0.3968 | **1.2497** | 1.7090 |
-| ibm12 final best | 0.0608 | 0.4017 | **1.1749** | 1.6375 |
-| Δ (dp − best) | +0.002 | −0.005 | **+0.075** | +0.071 |
-
-DP is *better* on WL and density and only loses on the term it can't see.
-Post-hoc cong-grad from the DP basin recovers some of the gap (DP_PROBE
-confirmed ibm10 can reach 1.3279 from DP's basin), but in-pipeline it's
-budget-hungry, high-variance, and not reproducible at fixed seed (Phase 7b
-was REVERTED). The shipped path is to let DP keep its own basin and have
-the multi-seed 2-opt pick when DP's trajectory yields a better local min.
+To give ibm15-18 more budget the correct lever is reducing BUDGET_OVERRUN_S:
+- BUDGET_OVERRUN_S 83->65: saves ~306s wall-clock (13s/benchmark x ~17+ibm01 delta)
+- Impact: ~2-3 fewer R2 rounds per benchmark; negligible score change (~0.005)
+- New total wall-clock: ~3356s = 56 min (well under 60-min limit)
 
 ---
 
-## 7. References
+## 6. Planned speedups (GPU era)
 
-- [`PROGRESS.md`](./PROGRESS.md) — per-benchmark numbers, full experiment
-  history, the v1 → v2 progression.
-- [`ISSUES.md`](./ISSUES.md) — open issues, closed dead-ends, resolved bugs.
-- [`DREAMPLACE_FIXES.md`](./DREAMPLACE_FIXES.md) — full inventory of
-  DREAMPlace patches (kept in sync so the gitignored `dreamplace_build/`
-  and `dreamplace_src/` trees can be rebuilt).
-- [`../README.md`](../README.md) — top-level overview and reproduction
-  commands.
-- `../test/verification/` — bit-exactness verifiers (the foundation of
-  the non-regression guarantee).
-- `../test/diagnostic/` — profiles + leverage analyses that produced and
-  constrained the design (`_profile_init.py`, `_profile_move.py`,
-  `_profile_move_internals.py`, `_profile_move_realistic.py`,
-  `_reloc_leverage.py`, `_term_breakdown.py`, …).
+The per-move scorer is CPU + numba (~0.5 ms/move with numba; the routing-apply
+fill is ~74% of it). The score is **coupled to throughput** — accept-on-true-proxy
+is strictly non-regressing, so within a fixed budget more moves ⇒ lower proxy.
+Two speedups target this; both leave the bit-exact / accept-on-true-proxy
+guarantees intact.
+
+### 6.1 S1 — multi-core (the GPU-free win)
+
+22 cores, but the move search is single-threaded. The independent work — the 3
+DREAMPlace configs, Phase 9 legalize, and the multi-seed 2-opt — can run in
+parallel. The multi-seed 2-opt subprocess path exists (`V2_MULTISEED_MP`,
+env-gated): best seed runs solo, then the DP-basin seeds run in a forked pool.
+
+**GPU-era fix (done):** CUDA contexts do **not** survive `fork`, so once the
+parent initializes CUDA every forked worker crashed the moment it touched the
+GPU (the 2-opt kNN and the routing smoothing both gate on `_USE_GPU`).
+`workers._force_worker_cpu()` now disables GPU in every gated module in the
+child — workers are CPU-only (the GPU kNN is a tiny fraction of a 2-opt pass).
+Still env-gated; enable + validate `V2_MULTISEED_MP=1` on a free machine.
+
+### 6.2 S2 — GPU-batched candidate evaluation (explored, NOT a win — removed)
+
+The relocation / 2-opt passes try `n_targets` (16–24) candidate positions per hot
+macro **sequentially**, each a full `_trial_at`. They are independent trials from
+a shared base (the macro removed), so in principle they batch into one GPU op. This
+was built end-to-end (three variants), verified bit-exact against the sequential
+`_trial_at` loop, measured — and then **removed**, because none beat the numba
+sequential path on the IBM grids. The keystone that made it sound: box-filter
+smoothing is **linear**, so a candidate's congestion decomposes into a shared base
+(macro removed) plus a localized, batchable delta — verified bit-exact (Δ ≤ 6.7e-16).
+
+**Root cause it lost (measured).** The GPU compute ceiling is ~12×, but it's
+unreachable at this granularity: per-candidate **strip generation** (routing
+bucketing, looped K on CPU) is **~4.9 ms/macro — ~73% of the whole sequential
+cost** — and dominates regardless of how fast the GPU reductions run. The IBM
+grids are small (~2000 cells) and the per-macro batch (K≈24) is too small to
+amortize kernel-launch overhead, while the numba sequential fill is already
+well-optimized. Best variant landed at 0.97× (CPU fill → GPU smooth/topk); the
+GPU-resident variant was 0.67× (the CPU strip loop became the bottleneck).
+
+**What could still win (not pursued).** Only **cross-macro batching** — evaluate
+*all* hot macros' candidates (top_hot × n_targets ≈ 1000+) in one GPU batch to
+amortize launch overhead and vectorize strip-gen — and that requires restructuring
+relocation from sequential prep→trial→commit into evaluate-all-then-commit, which
+changes accept semantics (a different algorithm). The approach would also pay off
+on **much larger grids** (industrial / NG45) where per-batch work amortizes GPU
+overhead; IBM is simply too small. The implementation + verifiers were deleted
+(zero production impact) — this section records the finding so it isn't re-run.
+
+---
+
+## Known Issues / Next Ideas
+
+- DREAMPlace is now built and functional (GPU/CUDA build — see DREAMPLACE_FIXES.md
+  and the gpu-dreamplace-build notes; the earlier "broken VENV_PYTHON symlink in
+  WSL" status is resolved). It contributes seed basins to the multi-seed 2-opt.
+- **numba** must be installed for full speed (~2× per move; soft import with a
+  numpy fallback — see requirements.txt). Published scores assume it active.
+- **S1 / S2 speedups — see §6.** S1 multi-core fork-after-CUDA fix is done
+  (env-gated). S2 GPU candidate batching was implemented, verified bit-exact, and
+  measured a net loss on IBM grids; the code + verifiers were removed (the §6.2
+  finding is kept so it isn't re-run).
+- ibm17 (1.4519) and ibm18 (1.4615) still above 1.4 -- main remaining targets.
+- WireMask-BBO greedy evaluator: highest-leverage non-GPU idea not yet implemented.
+- Timing tight at 61 min. Reducing BUDGET_OVERRUN_S 83->65 is the safe fix.

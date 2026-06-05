@@ -56,7 +56,7 @@ def test_validate_placement(ibm01):
     """Validation function runs without errors on default placement."""
     benchmark, plc = ibm01
     is_valid, violations = validate_placement(benchmark.macro_positions, benchmark)
-    # Default placement may have overlaps — we just check the function works
+    # Default placement may have overlaps - we just check the function works
     assert isinstance(is_valid, bool)
     assert isinstance(violations, list)
 

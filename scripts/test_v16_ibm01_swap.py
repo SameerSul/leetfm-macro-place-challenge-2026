@@ -51,8 +51,8 @@ v15_best = 1.1854
 replace = 0.9976
 print(f"\n  v15_best=1.1854  RePlAce=0.9976  result={result:.4f}", flush=True)
 if result < v15_best - 0.001:
-    print(f"  SWAP IMPROVEMENT: {v15_best:.4f} → {result:.4f} (+{v15_best-result:.4f})", flush=True)
+    print(f"  SWAP IMPROVEMENT: {v15_best:.4f} -> {result:.4f} (+{v15_best-result:.4f})", flush=True)
 elif abs(result - v15_best) < 0.001:
     print(f"  SAME as v15 best (Phase 4 swaps could not improve on 1.1854)", flush=True)
 else:
-    print(f"  REGRESSION: {v15_best:.4f} → {result:.4f} — check Phase 4 code!", flush=True)
+    print(f"  REGRESSION: {v15_best:.4f} -> {result:.4f} — check Phase 4 code!", flush=True)

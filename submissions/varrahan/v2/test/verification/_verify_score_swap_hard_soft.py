@@ -15,11 +15,11 @@ THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
 REPO_ROOT = THIS.parents[5]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(V2_DIR))
+sys.path.insert(0, str(V2_DIR / "src"))
 
 from macro_place.loader import load_benchmark_from_dir  # noqa: E402
 
-_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "placer.py"))
+_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "src" / "main.py"))
 _v2 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_v2)
 _will_legalize = _v2._will_legalize

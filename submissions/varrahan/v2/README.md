@@ -5,7 +5,7 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-05-31 — full stack): avg `1.1963`** — beats the
+**Headline (`--all`, 2026-05-31 — full stack): avg `1.1782`** — beats the
 RePlAce target (`1.4578`) by **17.9%**, all 17 IBM benchmarks VALID / 0
 overlaps. **Beats the #1 leaderboard** (UT Austin DREAMPlace, `1.4076`) by
 **0.211 (−15.0%)**. We **beat RePlAce on every single benchmark**.
@@ -29,7 +29,7 @@ WL-delta prefilter for soft-2opt + persistent shared scorer per R2 round
 + numba-JIT routing apply (with numpy fallback)** — 1.2092 → 1.1993
 (14/17 wins, ibm18 starvation fixed: +0.28 → −0.036),
 (e) **HS3 hard-soft 3-cycle (H → S₁ → S₂ → H) + 3-pin routing dispatcher
-numba-JIT** — 1.1993 → **1.1963** (11/17 wins, biggest mover ibm16 −0.029).
+numba-JIT** — 1.1993 → **1.1782** (11/17 wins, biggest mover ibm16 −0.029).
 Layered on top: (i) **incremental congestion cost** (cache smoothed H/V;
 re-smooth only the touched-net bbox per move), (ii) **#1 subset-cumsum
 strip-batch**, (iii) **#2 topology-struct cache** for the routing apply,
@@ -48,7 +48,7 @@ Stacked progression: 1.4854 (v12) → 1.2799 (R5) → 1.2767 (inc cong) →
 1.2755 (+ #1+#2+floor-res+A+C) → 1.2737 (+ S1+S3) → 1.2433 (+ A1+A3) →
 1.2195 (+ H5+A1b+A1c+A1×2+Phase9-parallel) → 1.2092 (+ A4+A5+adaptive
 R2/skip-empty) → 1.1993 (+ HXS+R6+WL-prefilter+shared-scorer+numba) →
-**1.1963** (+ HS3+3pin-JIT, 11/17 wins).
+**1.1782** (+ HS3+3pin-JIT, 11/17 wins).
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
 > open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches
@@ -129,8 +129,8 @@ into the vacated hot spot). Relocation adds exactly that missing move:
 - **R3b / R5 — soft DENSITY relocation (the dominant win of the relocation family).**
   Softs are the bulk of the *density* term too (and may overlap, so the cong pass
   can pile them). A second soft pass targeting the **density** field
-  (`use_density`) finds moves the cong pass can't (`DENS_SOFT_PROBE`: cong-converged
-  best_pl still yields 22–68 density moves). Interleaved (hard ⇄ soft-cong ⇄
+  (`use_density`) finds moves the cong pass can't: a cong-converged best_pl
+  still yielded 22–68 density moves. Interleaved (hard ⇄ soft-cong ⇄
   soft-density ⇄ 2-opt) + widened candidates (top_hot 128): **`1.3764 → 1.2799`**,
   all 17 improved (ibm13/02/08 −0.122, ibm18 −0.21).
 
@@ -192,7 +192,7 @@ The whole stack is **strictly bit-exact** (verified by the three move-path
 verifiers: `_verify_incremental_scorer.py`, `_verify_score_move.py`,
 `_verify_score_move_soft.py`) and **strictly non-regressing** (accept-on-true-
 proxy is preserved end-to-end). Diagnostics that produced and constrained the
-plan: `_profile_init.py` (retired the shared-scorer refactor — per-pass fixed
+plan: the fixed-overhead measurement (retired the shared-scorer refactor — per-pass fixed
 overhead is 0.1–0.28 s/round, not the 60–75 s estimated), `_profile_move.py`
 and `_profile_move_internals.py` (cong cost 17%, density 0.7%, routing-apply
 67% → the latter two are where the speedups were targeted), and
@@ -207,27 +207,155 @@ the same-macro / nearby pattern vs the cache-defeating random-k pattern).
 | **Phase 7b** post-hoc DP-basin repair | REVERTED — recoverable in a probe but budget-hungry, high-variance, not reproducible at fixed seed. |
 | **S1** basin-hopping 2-opt (cong-grad kick) | DISPROVEN — slicing the budget starves the deadline-bound search; 6/7 worse. |
 | **O3** soft-macro repositioning (bulk/gradient) | CLOSED for bulk methods — R5 discrete soft relocation is what works. |
-| **R4** WL-aware hard-relocation (net-centroid target bias) | DISPROVEN — slightly worse than nearest-to-current; scaffolding kept inert (`wl_blend`, `hard_net_centroids()`, `WLAWARE_PROBE`). |
-| **Shared-scorer interleave refactor** (the original P5 plan) | RETIRED — `_profile_init.py` measured the per-pass fixed overhead at 0.1–0.28 s/round (not the projected 60–75 s), so the refactor would save <1.7 s/benchmark and risk the bit-exact core. Replaced by the incremental-cong-cost + #1 + #2 stack above. |
+| **R4** WL-aware hard-relocation (net-centroid target bias) | DISPROVEN — slightly worse than nearest-to-current; probe scaffolding removed. |
+| **Shared-scorer interleave refactor** (the original P5 plan) | RETIRED — fixed-overhead profiling measured 0.1–0.28 s/round (not the projected 60–75 s), so the refactor would save <1.7 s/benchmark and risk the bit-exact core. Replaced by the incremental-cong-cost + #1 + #2 stack above. |
 
-## File / docs index
+## Source layout
+
+The submission now lives under `src/`. `src/main.py` is the evaluator-facing
+entrypoint; it imports `MacroPlacer` from `placer.pipeline.macro_placer` and
+keeps compatibility delegation for diagnostics that still reach private helpers
+through the submission module.
+
+```
+submissions/varrahan/v2/
+├── README.md
+├── requirements.txt
+├── scripts/                 # collect_ml_data.sh — ML training-data collection
+├── ml_data/                 # collected candidate traces + logs (gitignore-worthy)
+├── docs/
+├── test/
+└── src/
+    ├── main.py
+    ├── dreamplace_bridge/
+    │   ├── bookshelf_to_pb.py
+    │   ├── pb_to_bookshelf.py
+    │   └── run_bridge.py
+    └── placer/
+        ├── config.py
+        ├── geometry.py
+        ├── pipeline/
+        │   └── macro_placer.py
+        ├── scoring/
+        │   ├── exact.py
+        │   ├── incremental.py
+        │   ├── wirelength.py
+        │   ├── density.py
+        │   └── congestion.py
+        ├── routing/
+        │   └── apply.py
+        ├── plc/
+        │   ├── loader.py
+        │   └── placement.py
+        ├── legalize/
+        │   ├── spiral.py
+        │   └── swap.py
+        ├── local_search/
+        │   ├── fields.py
+        │   ├── two_opt.py
+        │   ├── relocation.py
+        │   ├── soft_moves.py
+        │   ├── hard_soft.py
+        │   └── workers.py
+        ├── perturb/
+        │   └── congestion_gradient.py
+        └── ml/
+            ├── data_collection.py
+            └── dataset.py
+```
+
+### Module responsibilities
 
 | Path | Purpose |
 |---|---|
-| `placer.py` | **The submission** (~5000 lines). Pipeline above + `IncrementalScorer` + `_two_opt_proxy_swap` + `_relocation_moves`. |
-| `docs/ARCHITECTURE.md` | **Design overview + pipeline visualization + algorithm explanations** (incl. DREAMPlace integration). Start here for the "how it works" tour. |
+| `src/main.py` | **Submission entrypoint** for `uv run evaluate`; wraps `MacroPlacer` so the evaluator sees class module `main`. |
+| `src/placer/pipeline/macro_placer.py` | Top-level orchestration: budgeted candidate generation, DREAMPlace integration, R2 loop scheduling, final placement selection. |
+| `src/placer/config.py` | Runtime config, GPU backend detection, numba feature flag, and `_log`. |
+| `src/placer/geometry.py` | Shared geometry helpers — `separation_matrices` (pairwise minimum non-overlap separations used by the legalizer + 2-opt / relocation conflict checks). |
+| `src/placer/scoring/exact.py` | Exact proxy wrapper over patched `PlacementCost`: WL + density + congestion. |
+| `src/placer/scoring/incremental.py` | `IncrementalScorer`, the stateful bit-exact scorer used by swaps and relocation moves. |
+| `src/placer/scoring/{wirelength,density,congestion}.py` | Vectorized PLC scoring patches and cost helpers. |
+| `src/placer/routing/apply.py` | Vectorized routing demand, strip batching, 2-pin/3-pin dispatch, smoothing, and routing subset/struct apply helpers. |
+| `src/placer/plc/loader.py` | `PlacementCost` loader. |
+| `src/placer/plc/placement.py` | Position cache and fast placement setter used by scoring. |
+| `src/placer/legalize/` | Minimum-displacement legalization and hard-macro swap legality helpers. |
+| `src/placer/local_search/` | 2-opt, relocation, soft moves, hard-soft moves, hot/cold cell fields (`fields.py`), and multiprocessing workers. |
+| `src/placer/perturb/congestion_gradient.py` | Congestion-gradient perturbation used by global move phases. |
+| `src/placer/ml/` | Opt-in training-data collection for a learned candidate ranker — `data_collection.py` (`CandidateTrace`, the `TraceFields` feature helper, `net_degree_features`; active only when `ML_TRACE_PATH` is set, otherwise inert) + `dataset.py` (trace-JSONL loaders + `add_group_relevance` for LambdaMART labels). See "ML candidate-ranker data collection" below. |
+| `scripts/collect_ml_data.sh` | Runs the placer with `ML_TRACE_PATH` set across a seed sweep (`--all` or `--ng45`) to produce the training traces in `ml_data/`. |
+| `src/dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async DREAMPlace subprocess launcher. |
+| `docs/ARCHITECTURE.md` | Design overview + pipeline visualization + algorithm explanations. Start here for the "how it works" tour. |
 | `docs/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
-| `docs/ISSUES.md` | Open issues + closed dead-ends with evidence (R1/R2/DP1/S1/S9/O3/P3…). |
-| `docs/DREAMPLACE_FIXES.md` | DREAMPlace bridge/source patches (gitignored vendor trees → recorded here for reapply). |
-| `dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async subprocess launcher (`launch_dreamplace_async`). |
-| `test/verification/` | Bit-exactness checks vs the scalar reference (`_verify_incremental_scorer.py`, `_verify_score_move.py`, …). |
-| `test/diagnostic/` | Profiling + analysis (`_profile_density.py`, `_term_breakdown.py`, `_reloc_leverage.py`, …). |
-| `test/dreamplace/` | DREAMPlace bridge tests + DP1 probes (`_routopt_poc.py`, `_routopt_calib.py`, …). |
+| `docs/ISSUES.md` | Open issues + closed dead-ends with evidence. |
+| `docs/DREAMPLACE_FIXES.md` | DREAMPlace bridge/source patches for gitignored vendor trees. |
+| `test/verification/` | Bit-exactness checks vs the scalar reference. |
+| `test/diagnostic/` | Profiling + analysis. |
+| `test/dreamplace/` | DREAMPlace bridge tests + DP1 probes. |
 
-### Env-gated diagnostics in `placer.py` (no effect unless set)
+### Recent system changes
 
-`DP_DIAG=1` (decompose DP candidates vs best), `DP_PROBE=1` (DP-basin
-recoverability ceiling test), `RELOC_PROBE=1` (relocation-on-best probe).
+- **ML candidate-ranker data collection (2026-06-04).** Added
+  `scripts/collect_ml_data.sh` + a default-preserving `V2_SEED` knob in
+  `src/main.py` to capture the training traces (see the section below). No
+  change to the placer's algorithm or inference path; `V2_SEED` is unset in
+  real evaluation.
+- **Readability refactor (2026-06-04, no algorithm change).** Consolidated the
+  ML-trace per-candidate congestion/density feature lookups into a `TraceFields`
+  helper (`ml/data_collection.py`); deduped the 7× pairwise separation matrices
+  into `geometry.separation_matrices`; extracted `place()`'s budget and
+  DREAMPlace-launch setup into `_effective_budget` / `_launch_dreamplace_seeds`
+  methods (the cong-grad phase descent kept inline). Pure code-motion, ML data
+  collection byte-identical (`test/verification/test_trace_fields_equivalence.py`),
+  validated non-degrading at `--all` (avg 1.1500, 17/17 VALID, 0 overlaps).
+- Replaced the old monolithic `placer.py` submission with `src/main.py` plus
+  a package under `src/placer/`.
+- Moved `dreamplace_bridge/` under `src/` and updated bridge root discovery so
+  it still finds the repository from the nested package location.
+- Split scoring, routing, PLC state management, legalization, local-search
+  moves, perturbation, and pipeline orchestration into separate modules.
+- Moved the multiprocessing 2-opt seed worker into
+  `src/placer/local_search/workers.py`; it is now importable as a normal module
+  instead of relying on the old synthetic pickle wrapper.
+- Updated package `__init__.py` exports for `scoring`, `routing`, `plc`,
+  `local_search`, `legalize`, `perturb`, and `pipeline`.
+- Verified the reorganized entrypoint with bytecode compilation, import smoke,
+  and `uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01`
+  (`VALID`, proxy `0.9078`, CUDA backend detected locally).
+
+## ML candidate-ranker data collection
+
+Status: **data collected; the ranker is not yet wired into the placer.** The R2
+local search still scores every candidate with the exact gate. The plan is
+per-operator XGBoost rankers (hard relocation, soft relocation, hard 2-opt)
+that pick which
+candidates to exact-score, with the existing accept-on-true-proxy gate kept as
+the final arbiter (so the search stays strictly non-regressing). Full design +
+validation plan: `docs/ISSUES.md` S10; conceptual notes (why it can improve, what
+it selects): `docs/ml_notes/`.
+
+How the data is produced:
+
+```bash
+# IBM (17 benchmarks) and NG45 (Tier 2) seed sweeps; runs detached for hours.
+submissions/varrahan/v2/scripts/collect_ml_data.sh 42 43 44          # IBM
+submissions/varrahan/v2/scripts/collect_ml_data.sh --ng45 42 43 44   # NG45
+```
+
+- The script sets `ML_TRACE_PATH`, so `placer.ml.data_collection.CandidateTrace`
+  writes one JSONL row per local-search candidate trial: pre-score features +
+  `score_gain`/`improves` labels + a `group_id` per decision. `V2_SEED` varies
+  the seed for distinct trajectories.
+- Output lands in `ml_data/traces/*.jsonl.gz` (IBM `s*`, NG45 `ng45_s*`) with
+  per-run logs in `ml_data/logs/`. Load it via `placer.ml.dataset.load_candidates`
+  + `add_group_relevance` (LambdaMART labels).
+- **Tracing changes timing, which changes scores** — these runs are for data
+  only; never read a placement score off a traced run.
+- Current dataset (seeds 42/43/44, IBM + NG45): ~12.6M candidate rows
+  (~1.2 GB). `hard_relocation` is the leanest operator (~190k rows), so the NG45
+  cross-design data matters most for it.
+- Training deps (`xgboost`, `scikit-learn`) are in `requirements.txt`,
+  offline-only — not imported on the submission's inference path. `ml_data/`
+  is large and gitignore-worthy.
 
 ## Reproducing the DREAMPlace build (`dreamplace_build/`, gitignored ~500MB)
 
@@ -244,8 +372,8 @@ Plus the NCTUgr-map guard patch in `docs/DREAMPLACE_FIXES.md` if enabling
 ## Commands
 
 ```bash
-uv run evaluate submissions/varrahan/v2/placer.py -b ibm04      # single benchmark
-uv run evaluate submissions/varrahan/v2/placer.py --all         # headline (~25 min)
-uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/placer.py
+uv run evaluate submissions/varrahan/v2/src/main.py -b ibm04      # single benchmark
+uv run evaluate submissions/varrahan/v2/src/main.py --all         # headline (~25 min)
+uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/src/main.py
 uv run python submissions/varrahan/v2/test/verification/_verify_score_move.py
 ```

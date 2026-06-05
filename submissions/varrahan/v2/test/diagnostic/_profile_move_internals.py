@@ -1,7 +1,7 @@
 """cProfile the internals of score_move_soft to attribute the ~78% of per-move
 time that P5 (_profile_move.py) left unbroken-down (cong=20%, density=0.7%).
 Tells us whether the snapshot copies, the touched-net routing apply
-(_apply_net_routing_subset), _apply_pos, or the per-net HPWL dominate — i.e.
+(_apply_net_routing_subset), _apply_pos, or the per-net HPWL dominate - i.e.
 what a per-move speedup should target.
 
     uv run python submissions/varrahan/v2/test/diagnostic/_profile_move_internals.py ibm10
@@ -20,11 +20,11 @@ THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
 REPO_ROOT = THIS.parents[5]
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(V2_DIR))
+sys.path.insert(0, str(V2_DIR / "src"))
 
 from macro_place.loader import load_benchmark_from_dir  # noqa: E402
 
-_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "placer.py"))
+_spec = importlib.util.spec_from_file_location("v2_placer", str(V2_DIR / "src" / "main.py"))
 _v2 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_v2)
 _will_legalize = _v2._will_legalize

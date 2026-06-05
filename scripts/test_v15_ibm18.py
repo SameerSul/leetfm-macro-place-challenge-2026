@@ -28,7 +28,7 @@ n = benchmark.num_hard_macros
 grid_cells = benchmark.grid_rows * benchmark.grid_cols
 print(f"  n={n}, grid={benchmark.grid_rows}x{benchmark.grid_cols} ({grid_cells} cells)",
       flush=True)
-print(f"  EXACT_GRID_CELL_LIMIT=2200 → {'INCLUDED' if grid_cells <= 2200 else 'EXCLUDED'}",
+print(f"  EXACT_GRID_CELL_LIMIT=2200 -> {'INCLUDED' if grid_cells <= 2200 else 'EXCLUDED'}",
       flush=True)
 
 from submissions.sameer_v1.placer import MacroPlacer
@@ -52,10 +52,10 @@ replace = 1.7722
 result = costs['proxy_cost']
 print(f"\n  v14 baseline=1.7941  RePlAce=1.7722  result={result:.4f}", flush=True)
 if result < baseline - 0.001:
-    print(f"  IMPROVEMENT: {baseline:.4f} → {result:.4f} (+{baseline-result:.4f})", flush=True)
+    print(f"  IMPROVEMENT: {baseline:.4f} -> {result:.4f} (+{baseline-result:.4f})", flush=True)
 elif abs(result - baseline) < 0.001:
     print(f"  SAME as baseline (all restarts worse, or returned baseline)", flush=True)
 else:
-    print(f"  REGRESSION: {baseline:.4f} → {result:.4f}", flush=True)
+    print(f"  REGRESSION: {baseline:.4f} -> {result:.4f}", flush=True)
 if result < replace:
     print(f"  BEATS RePlAce ({replace:.4f})!", flush=True)

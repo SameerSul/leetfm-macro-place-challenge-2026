@@ -1,7 +1,7 @@
 """Verify IncrementalScorer.score_move_soft / commit_move_soft match _exact_proxy.
 
 Soft relocation touches WL + net-routing congestion + density but NOT macro-
-routing blockage (only hard macros block) — a distinct code path from the hard
+routing blockage (only hard macros block) - a distinct code path from the hard
 score_move. It must equal a full _exact_proxy recompute of the same soft-moved
 placement, with no drift over sequential commits.
 
@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 _V2_DIR = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_V2_DIR))
+sys.path.insert(0, str(_V2_DIR / "src"))
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
