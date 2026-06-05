@@ -220,6 +220,9 @@ through the submission module.
 ```
 submissions/varrahan/v2/
 ├── README.md
+├── requirements.txt
+├── scripts/                 # collect_ml_data.sh — ML training-data collection
+├── ml_data/                 # collected candidate traces + logs (gitignore-worthy)
 ├── docs/
 ├── test/
 └── src/
@@ -278,7 +281,8 @@ submissions/varrahan/v2/
 | `src/placer/legalize/` | Minimum-displacement legalization and hard-macro swap legality helpers. |
 | `src/placer/local_search/` | 2-opt, relocation, soft moves, hard-soft moves, hot/cold cell fields (`fields.py`), and multiprocessing workers. |
 | `src/placer/perturb/congestion_gradient.py` | Congestion-gradient perturbation used by global move phases. |
-| `src/placer/ml/` | Opt-in training-data collection for a learned candidate ranker — `data_collection.py` (`CandidateTrace`, the `TraceFields` feature helper, `net_degree_features`; active only when `ML_TRACE_PATH` is set, otherwise inert) + `dataset.py` (trace-JSONL loaders). |
+| `src/placer/ml/` | Opt-in training-data collection for a learned candidate ranker — `data_collection.py` (`CandidateTrace`, the `TraceFields` feature helper, `net_degree_features`; active only when `ML_TRACE_PATH` is set, otherwise inert) + `dataset.py` (trace-JSONL loaders + `add_group_relevance` for LambdaMART labels). See "ML candidate-ranker data collection" below. |
+| `scripts/collect_ml_data.sh` | Runs the placer with `ML_TRACE_PATH` set across a seed sweep (`--all` or `--ng45`) to produce the training traces in `ml_data/`. |
 | `src/dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async DREAMPlace subprocess launcher. |
 | `docs/ARCHITECTURE.md` | Design overview + pipeline visualization + algorithm explanations. Start here for the "how it works" tour. |
 | `docs/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
@@ -290,6 +294,11 @@ submissions/varrahan/v2/
 
 ### Recent system changes
 
+- **ML candidate-ranker data collection (2026-06-04).** Added
+  `scripts/collect_ml_data.sh` + a default-preserving `V2_SEED` knob in
+  `src/main.py` to capture the training traces (see the section below). No
+  change to the placer's algorithm or inference path; `V2_SEED` is unset in
+  real evaluation.
 - **Readability refactor (2026-06-04, no algorithm change).** Consolidated the
   ML-trace per-candidate congestion/density feature lookups into a `TraceFields`
   helper (`ml/data_collection.py`); deduped the 7× pairwise separation matrices
@@ -312,6 +321,40 @@ submissions/varrahan/v2/
 - Verified the reorganized entrypoint with bytecode compilation, import smoke,
   and `uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01`
   (`VALID`, proxy `0.9078`, CUDA backend detected locally).
+
+## ML candidate-ranker data collection
+
+Status: **data collected; the ranker is not yet wired into the placer.** The R2
+local search still scores every candidate with the exact gate. The plan is
+per-operator XGBoost rankers (hard relocation, soft relocation, hard 2-opt)
+that pick which
+candidates to exact-score, with the existing accept-on-true-proxy gate kept as
+the final arbiter (so the search stays strictly non-regressing). Full design +
+validation plan: `docs/ISSUES.md` S10.
+
+How the data is produced:
+
+```bash
+# IBM (17 benchmarks) and NG45 (Tier 2) seed sweeps; runs detached for hours.
+submissions/varrahan/v2/scripts/collect_ml_data.sh 42 43 44          # IBM
+submissions/varrahan/v2/scripts/collect_ml_data.sh --ng45 42 43 44   # NG45
+```
+
+- The script sets `ML_TRACE_PATH`, so `placer.ml.data_collection.CandidateTrace`
+  writes one JSONL row per local-search candidate trial: pre-score features +
+  `score_gain`/`improves` labels + a `group_id` per decision. `V2_SEED` varies
+  the seed for distinct trajectories.
+- Output lands in `ml_data/traces/*.jsonl.gz` (IBM `s*`, NG45 `ng45_s*`) with
+  per-run logs in `ml_data/logs/`. Load it via `placer.ml.dataset.load_candidates`
+  + `add_group_relevance` (LambdaMART labels).
+- **Tracing changes timing, which changes scores** — these runs are for data
+  only; never read a placement score off a traced run.
+- Current dataset (seeds 42/43/44, IBM + NG45): ~12.6M candidate rows
+  (~1.2 GB). `hard_relocation` is the leanest operator (~190k rows), so the NG45
+  cross-design data matters most for it.
+- Training deps (`xgboost`, `scikit-learn`) are in `requirements.txt`,
+  offline-only — not imported on the submission's inference path. `ml_data/`
+  is large and gitignore-worthy.
 
 ## Reproducing the DREAMPlace build (`dreamplace_build/`, gitignored ~500MB)
 

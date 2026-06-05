@@ -557,6 +557,65 @@ search → regressed), S9 keeps the full pass and only changes candidate choice
 
 ---
 
+### S10. ML candidate ranker — per-operator XGBoost (DATA COLLECTED 2026-06-04, ranker not yet wired)
+
+A learned filter to make the R2 local search spend its scoring budget on
+candidates likely to improve, while keeping the exact accept-on-true-proxy gate
+as the final arbiter (so the search stays **strictly non-regressing** — the
+model only reorders/prunes what gets scored, it never accepts a move).
+
+**Why it can help.** The search is deadline-bound, and the worst benchmarks
+(ibm12/14/15/17/18) are the slow-to-score large ones that get few R2 rounds.
+Pruning losers before scoring → more accepts per second → lower score where the
+headroom is. The exact gate means the only failure mode is *under-improvement*
+(model drops the true-best candidate), never a regression.
+
+**Where it plugs in (two ranking decisions, per `relocation.py` structure):**
+- **Across groups — which hot macros to `prep` and attempt.** `_prepare_move`
+  (the routing-apply, ~30%/move) is the per-group cost; gating which macros to
+  attempt is the *higher-leverage* lever.
+- **Within a group — which target cells to trial.** The "score only top-K"
+  decision. Lower leverage because each `_trial_at` is already cheap post-prep,
+  but free to add.
+
+**Design.** Separate models for **hard relocation**, **soft relocation**, and
+**hard 2-opt**, with the cong/density `field` as a feature (not separate models).
+Two heads per operator from the same trace:
+- *Target ranker* (within-group): LambdaMART (`rank:pairwise`/`rank:ndcg`),
+  groups = `group_id`, labels = `dataset.add_group_relevance`. → top-K targets.
+- *Group gater* (across-group): `binary:logistic` on "did this macro's group
+  contain any improving move?" (aggregate `improves` per group). → which macros
+  to prep.
+Features must be **pre-score and cheap** (already what `CandidateTrace` records:
+net degree, source/target cong & density, displacement, hot/cold rank, size,
+position). `state_score`/`trial_score` are labels, never features. Do **not**
+feed `benchmark.name` (leakage + the no-per-benchmark-branching rule).
+
+**Validation plan.** Train per operator with **whole-benchmark holdout** (never
+random rows — within-group rows are correlated). Pick K from an offline
+**recall@K of the true-best target per group** curve *before* any `--all`. Then
+confirm online: `--all` with the model but no tracing, per-benchmark
+non-regression, watching that freed budget beats predict overhead on the large
+benchmarks. Stratify the holdout across IBM **and** NG45 so the metric reflects
+cross-design transfer.
+
+**Known risk — distribution shift.** Models are trained on the states the greedy
+loop visits; once they reorder evaluation the loop visits different states and
+the model is off-distribution. Budget one **DAgger** cycle (train v0 → collect
+traces from the states it induces → retrain on the union).
+
+**Data status (2026-06-04).** `scripts/collect_ml_data.sh` produced
+~12.6M candidate rows across seeds 42/43/44 for IBM (`--all`) + NG45 (`--ng45`)
+in `ml_data/traces/`. Per-operator counts: hard_2opt 5.88M, soft_relocation
+3.97M, soft_2opt 2.38M, **hard_relocation 190k (the lean one — NG45 cross-design
+data matters most here)**, hard_soft_swap 71k, hard_soft_soft_cycle 62k. Training
+deps (`xgboost`, `scikit-learn`) are offline-only in `requirements.txt`. Next
+step is the offline training scaffold (rank + gater heads, recall@K curve) under
+`test/diagnostic/`, starting with hard_relocation. See README "ML candidate-ranker
+data collection" for the collection workflow.
+
+---
+
 ## Speculative performance ideas (not started)
 
 ### P1. B5 GIL-aware parallel scoring

@@ -8,6 +8,7 @@ import numpy as np
 from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
 from placer.ml.data_collection import TraceFields, get_candidate_trace, net_degree_features
+from placer.ml.shadow import shadow_rank_group
 
 if TYPE_CHECKING:
     from macro_place.benchmark import Benchmark
@@ -134,6 +135,7 @@ def _relocation_moves(
         rejected_bounds = 0
         rejected_overlap = 0
         scored = 0
+        shadow_candidates = []
         try:
             for candidate_rank, t in enumerate(cand):
                 nx, ny = float(tgt_x[t]), float(tgt_y[t])
@@ -153,6 +155,30 @@ def _relocation_moves(
                     target_cong = tf.cong_flat(target_flat)
                     source_dens = tf.dens_at(ri_all[i], ci_all[i])
                     target_dens = tf.dens_flat(target_flat)
+                    features = {
+                        **net_degree_features(
+                            incremental_scorer, incremental_scorer.hard_indices[i]
+                        ),
+                        "accepted_in_pass": accepts,
+                        "macro_w_norm": float(sizes[i, 0] / cw),
+                        "macro_h_norm": float(sizes[i, 1] / ch),
+                        "x_norm": float(pos[i, 0] / cw),
+                        "y_norm": float(pos[i, 1] / ch),
+                        "target_x_norm": float(nx / cw),
+                        "target_y_norm": float(ny / ch),
+                        "dx_norm": float((nx - pos[i, 0]) / cw),
+                        "dy_norm": float((ny - pos[i, 1]) / ch),
+                        "source_field_norm": float(local_cong[i] / field_max),
+                        "target_field_norm": float(tgt_cong[t] / field_max),
+                        "source_congestion_norm": source_cong,
+                        "target_congestion_norm": target_cong,
+                        "source_density_norm": source_dens,
+                        "target_density_norm": target_dens,
+                        "source_hot_rank_norm": float(
+                            np.where(hot == i)[0][0] / max(len(hot) - 1, 1)
+                        ),
+                        "target_cold_rank_norm": float(candidate_rank / max(len(cand) - 1, 1)),
+                    }
                     trace.record(
                         operator="hard_relocation",
                         field=trace_field,
@@ -162,30 +188,15 @@ def _relocation_moves(
                         candidate_rank=candidate_rank,
                         group_size=len(cand),
                         candidate_source="cold_cell",
-                        features={
-                            **net_degree_features(
-                                incremental_scorer, incremental_scorer.hard_indices[i]
-                            ),
-                            "accepted_in_pass": accepts,
-                            "macro_w_norm": float(sizes[i, 0] / cw),
-                            "macro_h_norm": float(sizes[i, 1] / ch),
-                            "x_norm": float(pos[i, 0] / cw),
-                            "y_norm": float(pos[i, 1] / ch),
-                            "target_x_norm": float(nx / cw),
-                            "target_y_norm": float(ny / ch),
-                            "dx_norm": float((nx - pos[i, 0]) / cw),
-                            "dy_norm": float((ny - pos[i, 1]) / ch),
-                            "source_field_norm": float(local_cong[i] / field_max),
-                            "target_field_norm": float(tgt_cong[t] / field_max),
-                            "source_congestion_norm": source_cong,
-                            "target_congestion_norm": target_cong,
-                            "source_density_norm": source_dens,
-                            "target_density_norm": target_dens,
-                            "source_hot_rank_norm": float(
-                                np.where(hot == i)[0][0] / max(len(hot) - 1, 1)
-                            ),
-                            "target_cold_rank_norm": float(candidate_rank / max(len(cand) - 1, 1)),
-                        },
+                        features=features,
+                    )
+                    shadow_candidates.append(
+                        {
+                            "operator": "hard_relocation",
+                            "features": features,
+                            "candidate_rank": candidate_rank,
+                            "score_gain": float(state_score - s),
+                        }
                     )
                 if s < best_score - 1e-9:
                     best_score = s
@@ -197,6 +208,13 @@ def _relocation_moves(
             else:
                 incremental_scorer._revert_prep(prep)
             if trace is not None:
+                shadow_rank_group(
+                    operator="hard_relocation",
+                    candidates=shadow_candidates,
+                    trace=trace,
+                    field=trace_field,
+                    group_id=group_id,
+                )
                 trace.event(
                     "candidate_group_summary",
                     operator="hard_relocation",
@@ -307,6 +325,7 @@ def _soft_relocation_moves(
         best_k_xy = None
         state_score = best_score
         group_id = trace.next_group_id("soft_relocation") if trace is not None else None
+        shadow_candidates = []
         try:
             for candidate_rank, t in enumerate(cand):
                 nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
@@ -314,6 +333,30 @@ def _soft_relocation_moves(
                 s = incremental_scorer._trial_at_soft(prep, (nx, ny))
                 if trace is not None:
                     target_flat = int(pool[t])
+                    features = {
+                        **net_degree_features(
+                            incremental_scorer, incremental_scorer.soft_indices[k]
+                        ),
+                        "accepted_in_pass": accepts,
+                        "macro_w_norm": float(2.0 * soft_hw[k] / cw),
+                        "macro_h_norm": float(2.0 * soft_hh[k] / ch),
+                        "x_norm": float(soft_pos[k, 0] / cw),
+                        "y_norm": float(soft_pos[k, 1] / ch),
+                        "target_x_norm": float(nx / cw),
+                        "target_y_norm": float(ny / ch),
+                        "dx_norm": float((nx - soft_pos[k, 0]) / cw),
+                        "dy_norm": float((ny - soft_pos[k, 1]) / ch),
+                        "source_field_norm": float(local_cong[k] / field_max),
+                        "target_field_norm": float(tgt_cong[t] / field_max),
+                        "source_congestion_norm": tf.cong_at(ri[k], ci[k]),
+                        "target_congestion_norm": tf.cong_flat(target_flat),
+                        "source_density_norm": tf.dens_at(ri[k], ci[k]),
+                        "target_density_norm": tf.dens_flat(target_flat),
+                        "source_hot_rank_norm": float(
+                            np.where(hot == k)[0][0] / max(len(hot) - 1, 1)
+                        ),
+                        "target_cold_rank_norm": float(candidate_rank / max(len(cand) - 1, 1)),
+                    }
                     trace.record(
                         operator="soft_relocation",
                         field=trace_field,
@@ -323,30 +366,15 @@ def _soft_relocation_moves(
                         candidate_rank=candidate_rank,
                         group_size=len(cand),
                         candidate_source="cold_cell",
-                        features={
-                            **net_degree_features(
-                                incremental_scorer, incremental_scorer.soft_indices[k]
-                            ),
-                            "accepted_in_pass": accepts,
-                            "macro_w_norm": float(2.0 * soft_hw[k] / cw),
-                            "macro_h_norm": float(2.0 * soft_hh[k] / ch),
-                            "x_norm": float(soft_pos[k, 0] / cw),
-                            "y_norm": float(soft_pos[k, 1] / ch),
-                            "target_x_norm": float(nx / cw),
-                            "target_y_norm": float(ny / ch),
-                            "dx_norm": float((nx - soft_pos[k, 0]) / cw),
-                            "dy_norm": float((ny - soft_pos[k, 1]) / ch),
-                            "source_field_norm": float(local_cong[k] / field_max),
-                            "target_field_norm": float(tgt_cong[t] / field_max),
-                            "source_congestion_norm": tf.cong_at(ri[k], ci[k]),
-                            "target_congestion_norm": tf.cong_flat(target_flat),
-                            "source_density_norm": tf.dens_at(ri[k], ci[k]),
-                            "target_density_norm": tf.dens_flat(target_flat),
-                            "source_hot_rank_norm": float(
-                                np.where(hot == k)[0][0] / max(len(hot) - 1, 1)
-                            ),
-                            "target_cold_rank_norm": float(candidate_rank / max(len(cand) - 1, 1)),
-                        },
+                        features=features,
+                    )
+                    shadow_candidates.append(
+                        {
+                            "operator": "soft_relocation",
+                            "features": features,
+                            "candidate_rank": candidate_rank,
+                            "score_gain": float(state_score - s),
+                        }
                     )
                 if s < best_score - 1e-9:
                     best_score = s
@@ -357,6 +385,14 @@ def _soft_relocation_moves(
                 accepts += 1
             else:
                 incremental_scorer._revert_prep_soft(prep)
+            if trace is not None:
+                shadow_rank_group(
+                    operator="soft_relocation",
+                    candidates=shadow_candidates,
+                    trace=trace,
+                    field=trace_field,
+                    group_id=group_id,
+                )
         except Exception:
             incremental_scorer._revert_prep_soft(prep)
             raise
