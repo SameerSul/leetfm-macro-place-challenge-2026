@@ -85,6 +85,51 @@ Split train/validation/test **by benchmark and run**, never by row. Row-level
 splits leak nearly identical states and overstate generalization. Hold out at
 least 3 IBM benchmarks and all NG45 designs from model selection.
 
+## Model framework
+
+`placer.ml.modeling` defines the inactive integration surface. It is not wired
+into the placer pipeline yet.
+
+- `OPERATORS` names the six independent model families:
+  `hard_relocation`, `soft_relocation`, `hard_2opt`, `soft_2opt`,
+  `hard_soft_swap`, and `hard_soft_soft_cycle`.
+- `feature_names_for(operator)` returns the stable feature order expected by
+  that operator's model.
+- `ModelSpec` describes one model artifact.
+- `CandidateRanker` vectorizes candidate rows, predicts scores, ranks
+  candidates, and returns top-K indices for later exact scoring.
+- `ModelBank` loads a manifest containing multiple independent operator models.
+- `build_training_matrix(rows, operator, label=...)` converts flattened trace
+  rows into `X`, `y`, and grouped row counts suitable for gain regression or
+  LambdaMART.
+
+The future pipeline integration should call a ranker immediately after cheap
+candidate generation and before exact incremental scoring. It should still keep
+the exact scorer and exact accept gate as the source of truth.
+
+Example manifest shape:
+
+```json
+{
+  "models": [
+    {
+      "operator": "soft_relocation",
+      "backend": "xgboost_json",
+      "feature_names": ["accepted_in_pass", "source_hot_rank_norm"],
+      "model_path": "soft_relocation.xgb.json",
+      "top_k_default": 16,
+      "keep_heuristic_first": 2,
+      "random_exploration_fraction": 0.05
+    }
+  ]
+}
+```
+
+`xgboost_json` loads `xgboost.Booster` lazily, so XGBoost is only required when
+real model artifacts are used. Tests use the `linear_json` backend as a tiny
+dependency-free stand-in; it is intended for integration tests and smoke checks,
+not as the production model.
+
 ## Training and rollout
 
 1. Collect unfiltered traces from the current policy. Preserve rejected moves;
@@ -103,3 +148,43 @@ least 3 IBM benchmarks and all NG45 designs from model selection.
 The model should initially reduce exact evaluations, not remove the interleave
 or its exact scorer. With the saved time, R2 can inspect wider candidate pools or
 run additional rounds.
+
+## Offline training CLI
+
+`placer.ml.train` trains and evaluates the per-operator XGBoost artifacts from
+trace files. It is offline-only and is not imported by the placer runtime.
+
+Small smoke run:
+
+```bash
+PYTHONPATH=submissions/varrahan/v2/src \
+uv run python -m placer.ml.train \
+  submissions/varrahan/v2/ml_data/traces/s42_20260604_181419.jsonl.gz \
+  --output-dir /tmp/v2_ml_models \
+  --operators soft_relocation,soft_2opt \
+  --objective ranker \
+  --max-rows-per-operator 50000 \
+  --rounds 20
+```
+
+Full run shape:
+
+```bash
+PYTHONPATH=submissions/varrahan/v2/src \
+uv run python -m placer.ml.train \
+  submissions/varrahan/v2/ml_data/traces/*.jsonl.gz \
+  --output-dir submissions/varrahan/v2/ml_data/models/latest \
+  --objective ranker \
+  --rounds 200
+```
+
+Outputs:
+
+- `manifest.json`: `ModelBank`-compatible list of model specs.
+- `metrics.json`: row counts, group counts, RMSE, `best_recall@K`,
+  `improving_recall@K`, and `mean_regret@K`.
+- one `*.xgb.json` model per trained operator.
+
+Splitting is by `(benchmark, run_id)`, never by row. By default, benchmarks whose
+name starts with `ng` are held out as test data and the remaining runs are split
+into train/validation.

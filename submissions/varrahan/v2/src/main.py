@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -10,7 +11,16 @@ from placer.pipeline.macro_placer import MacroPlacer as _MacroPlacer
 
 
 class MacroPlacer(_MacroPlacer):
-    pass
+    def __init__(self, *args, **kwargs):
+        # Seed override for ML data-collection sweeps: the evaluator instantiates
+        # the placer with no arguments, so without this the seed is pinned at the
+        # base-class default (42). V2_SEED lets the collection script run --all at
+        # several seeds for distinct trajectories. Unset in real evaluation, so
+        # the submission's behavior is unchanged.
+        env_seed = os.environ.get("V2_SEED")
+        if env_seed is not None and "seed" not in kwargs:
+            kwargs["seed"] = int(env_seed)
+        super().__init__(*args, **kwargs)
 
 
 __all__ = ["MacroPlacer"]
