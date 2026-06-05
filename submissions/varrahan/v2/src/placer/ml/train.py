@@ -31,21 +31,39 @@ def load_operator_rows(
     operators: Sequence[str],
     *,
     max_rows_per_operator: int = 0,
+    always_include_benchmarks: Sequence[str] = (),
 ) -> dict[str, list[dict]]:
-    """Load flattened candidate rows from traces, capped per operator if set."""
+    """Load flattened candidate rows from traces, capped per operator if set.
+
+    Rows from ``always_include_benchmarks`` do not count against the cap. This is
+    useful for exact held-out test benchmarks: a cap should bound training volume,
+    not accidentally discard the test split because it appears late in the files.
+    """
     wanted = set(operators)
+    always_include = {str(name).lower() for name in always_include_benchmarks}
     rows = {operator: [] for operator in operators}
+    capped_counts = {operator: 0 for operator in operators}
     for row in iter_trace_rows(paths):
         if row.get("row_type") != "candidate":
             continue
         operator = row.get("operator")
         if operator not in wanted:
             continue
-        if max_rows_per_operator and len(rows[operator]) >= max_rows_per_operator:
-            if all(len(v) >= max_rows_per_operator for v in rows.values()):
+        benchmark = str(row.get("benchmark") or "").lower()
+        is_always_included = benchmark in always_include
+        if (
+            max_rows_per_operator
+            and not is_always_included
+            and capped_counts[operator] >= max_rows_per_operator
+        ):
+            if not always_include and all(
+                capped_counts[op] >= max_rows_per_operator for op in rows
+            ):
                 break
             continue
         rows[operator].append(flatten_candidate(row))
+        if not is_always_included:
+            capped_counts[operator] += 1
     return rows
 
 
@@ -55,9 +73,11 @@ def split_rows(
     seed: int = 0,
     valid_fraction: float = 0.15,
     test_benchmark_prefix: str | None = "ng",
+    test_benchmarks: Sequence[str] = (),
 ) -> dict[str, list[Mapping]]:
     """Split by benchmark/run, never by row."""
     test_prefix = (test_benchmark_prefix or "").lower()
+    exact_test_benchmarks = {str(name).lower() for name in test_benchmarks}
     key_to_rows = defaultdict(list)
     for row in rows:
         key_to_rows[(row.get("benchmark"), row.get("run_id"))].append(row)
@@ -66,7 +86,9 @@ def split_rows(
     test_keys = []
     for key in key_to_rows:
         benchmark = str(key[0] or "").lower()
-        if test_prefix and benchmark.startswith(test_prefix):
+        if benchmark in exact_test_benchmarks or (
+            test_prefix and benchmark.startswith(test_prefix)
+        ):
             test_keys.append(key)
         else:
             train_keys.append(key)
@@ -206,6 +228,7 @@ def train_operator(
     rounds: int,
     valid_fraction: float,
     test_benchmark_prefix: str | None,
+    test_benchmarks: Sequence[str],
 ) -> dict:
     if not rows:
         return {"operator": operator, "status": "skipped", "reason": "no rows"}
@@ -214,6 +237,7 @@ def train_operator(
         seed=seed,
         valid_fraction=valid_fraction,
         test_benchmark_prefix=test_benchmark_prefix,
+        test_benchmarks=test_benchmarks,
     )
     if objective == "ranker":
         for name in ("train", "valid", "test"):
@@ -281,6 +305,10 @@ def _parse_csv_ints(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split(",") if part.strip())
 
 
+def _parse_csv_strings(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("traces", nargs="+", help="Trace JSONL/JSONL.GZ files")
@@ -291,6 +319,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-rows-per-operator", type=int, default=0)
     parser.add_argument("--valid-fraction", type=float, default=0.15)
     parser.add_argument("--test-benchmark-prefix", default="ng")
+    parser.add_argument(
+        "--test-benchmarks",
+        default="",
+        help="Comma-separated exact benchmark names to hold out as test data.",
+    )
     parser.add_argument("--top-k", default="1,3,5,10,16")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
@@ -302,15 +335,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     top_ks = _parse_csv_ints(args.top_k)
+    test_benchmarks = _parse_csv_strings(args.test_benchmarks)
 
     rows_by_operator = load_operator_rows(
         args.traces,
         operators,
         max_rows_per_operator=args.max_rows_per_operator,
+        always_include_benchmarks=test_benchmarks,
     )
 
     manifest = {"models": []}
-    metrics = {"objective": args.objective, "operators": {}}
+    metrics = {
+        "objective": args.objective,
+        "test_benchmark_prefix": args.test_benchmark_prefix,
+        "test_benchmarks": list(test_benchmarks),
+        "operators": {},
+    }
     for operator in operators:
         result = train_operator(
             rows_by_operator[operator],
@@ -322,6 +362,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             rounds=args.rounds,
             valid_fraction=args.valid_fraction,
             test_benchmark_prefix=args.test_benchmark_prefix,
+            test_benchmarks=test_benchmarks,
         )
         if result.get("spec") is not None:
             spec = result["spec"]

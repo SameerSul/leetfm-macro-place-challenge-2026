@@ -167,6 +167,33 @@ being evaluated, records model ordering, `best_recall@K`,
 `improving_recall@K`, regret, and model inference time, and then allows the
 existing exact scorer and accept gate to proceed unchanged.
 
+## Filter experiment
+
+Filtering is disabled by default. The first guarded experiment should use hard
+relocation only:
+
+```bash
+ML_TRACE_PATH='/tmp/traces/{run_id}-{pid}.jsonl.gz' \
+ML_MODEL_MANIFEST=submissions/varrahan/v2/ml_data/models/holdout-ibm01-ibm02-reloc-001/manifest.json \
+ML_FILTER_OPERATORS=hard_relocation \
+ML_FILTER_TOP_K=5 \
+ML_FILTER_KEEP_HEURISTIC_FIRST=2 \
+ML_HARD_RELOCATION_N_TARGETS=32 \
+  uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01
+```
+
+The filter chooses which legal hard-relocation candidates to exact-score, but
+keeps the selected candidates in the original heuristic order. Missing models,
+model errors, or disabled operators fall back to scoring every candidate.
+`candidate_group_summary` records `skipped_by_ml`, and `ml_filter_group` records
+whether filtering was applied, selected count, skipped count, top-K, and model
+inference time.
+
+`ML_HARD_RELOCATION_N_TARGETS` widens only the hard-relocation generated target
+pool. The default remains 16. The intended experiment is to generate more legal
+hard-relocation candidates, then keep exact scoring bounded with
+`ML_FILTER_TOP_K`.
+
 ## Offline training CLI
 
 `placer.ml.train` trains and evaluates the per-operator XGBoost artifacts from

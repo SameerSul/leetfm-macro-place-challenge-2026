@@ -7,7 +7,7 @@ import pytest
 from placer.ml.data_collection import CandidateTrace
 from placer.ml.dataset import flatten_candidate
 from placer.ml.modeling import ModelBank
-from placer.ml.train import ranking_metrics, split_rows
+from placer.ml.train import load_operator_rows, ranking_metrics, split_rows
 
 
 def _write_candidate(trace, *, benchmark, run_id, group, rank, gain, dx):
@@ -90,6 +90,61 @@ def test_split_rows_holds_out_ng_benchmarks(tmp_path):
 
     assert {row["benchmark"] for row in split["test"]} == {"ng45_a"}
     assert not ({row["run_id"] for row in split["train"]} & {row["run_id"] for row in split["valid"]})
+
+
+def test_split_rows_holds_out_exact_benchmark_names(tmp_path):
+    path = tmp_path / "trace.jsonl"
+    _make_trace(path)
+    rows = []
+    for line in path.read_text().splitlines():
+        rows.append(flatten_candidate(json.loads(line)))
+
+    split = split_rows(
+        rows,
+        seed=1,
+        valid_fraction=0.5,
+        test_benchmark_prefix="",
+        test_benchmarks=("ibm02",),
+    )
+
+    assert {row["benchmark"] for row in split["test"]} == {"ibm02"}
+    assert "ibm02" not in {row["benchmark"] for row in split["train"]}
+    assert "ibm02" not in {row["benchmark"] for row in split["valid"]}
+
+
+def test_load_operator_rows_does_not_cap_exact_holdout_benchmark(tmp_path):
+    path = tmp_path / "trace.jsonl"
+    trace = CandidateTrace(str(path), flush_rows=1, run_id="run-a")
+    for rank in range(3):
+        _write_candidate(
+            trace,
+            benchmark="ibm01",
+            run_id="run-a",
+            group="train",
+            rank=rank,
+            gain=0.01,
+            dx=0.1,
+        )
+    for rank in range(2):
+        _write_candidate(
+            trace,
+            benchmark="ibm02",
+            run_id="run-b",
+            group="test",
+            rank=rank,
+            gain=0.02,
+            dx=0.2,
+        )
+    trace.flush()
+
+    rows = load_operator_rows(
+        [path],
+        ("hard_relocation",),
+        max_rows_per_operator=1,
+        always_include_benchmarks=("ibm02",),
+    )["hard_relocation"]
+
+    assert [row["benchmark"] for row in rows] == ["ibm01", "ibm02", "ibm02"]
 
 
 def test_ranking_metrics_reports_recall_and_regret():

@@ -330,7 +330,8 @@ per-operator XGBoost rankers (hard relocation, soft relocation, hard 2-opt)
 that pick which
 candidates to exact-score, with the existing accept-on-true-proxy gate kept as
 the final arbiter (so the search stays strictly non-regressing). Full design +
-validation plan: `docs/ISSUES.md` S10.
+validation plan: `docs/ISSUES.md` S10; conceptual notes (why it can improve, what
+it selects): `docs/ml_notes/`.
 
 How the data is produced:
 
