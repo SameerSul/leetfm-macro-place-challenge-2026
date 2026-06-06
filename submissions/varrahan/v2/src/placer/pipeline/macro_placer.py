@@ -1059,6 +1059,24 @@ class MacroPlacer:
                     f"  ignoring invalid ML_HARD_RELOCATION_N_TARGETS="
                     f"{_ml_hard_reloc_targets!r}"
                 )
+        R2_RELOC_PROPOSE_ALL = os.environ.get("V2_RELOC_PROPOSE_ALL", "").strip() in {
+            "1", "true", "TRUE", "yes", "YES", "on", "ON"
+        }
+        R2_RELOC_PROPOSE_TOP_M = None
+        _reloc_propose_top_m = os.environ.get("V2_RELOC_PROPOSE_TOP_M")
+        if _reloc_propose_top_m:
+            try:
+                R2_RELOC_PROPOSE_TOP_M = max(1, int(_reloc_propose_top_m))
+            except ValueError:
+                _log(
+                    f"  ignoring invalid V2_RELOC_PROPOSE_TOP_M="
+                    f"{_reloc_propose_top_m!r}"
+                )
+        if R2_RELOC_PROPOSE_ALL:
+            _log(
+                "  R2 hard relocation propose-all enabled "
+                f"(top_m={R2_RELOC_PROPOSE_TOP_M or 'all'})"
+            )
         R2_2OPT_SLICE = 8.0
         # Wider soft candidate set (softs number 900-2000, the dominant lever).
         R3_SOFT_HOT = 128
@@ -1194,6 +1212,8 @@ class MacroPlacer:
                     benchmark, rel_scorer, base_rel,
                     deadline=t_rel + min(rem_r2 - t_one_score, 15.0),
                     top_hot=R2_HOT, n_targets=R2_TGT,
+                    propose_all=R2_RELOC_PROPOSE_ALL,
+                    propose_top_m=R2_RELOC_PROPOSE_TOP_M,
                 )
                 if rel_acc > 0:
                     cand = best_pl.clone()
@@ -1227,6 +1247,8 @@ class MacroPlacer:
                         deadline=t_rel_d + min(rem_r2 - t_one_score, 15.0),
                         top_hot=R2_HOT, n_targets=R2_TGT,
                         use_density=True,
+                        propose_all=R2_RELOC_PROPOSE_ALL,
+                        propose_top_m=R2_RELOC_PROPOSE_TOP_M,
                     )
                     if rel_acc_d == 0:
                         _empty_streak["reloc_density"] += 1
@@ -1264,6 +1286,8 @@ class MacroPlacer:
                         deadline=t_rel_c + min(rem_r2 - t_one_score, 4.0),
                         top_hot=R2_HOT, n_targets=R2_TGT,
                         use_combined=True,
+                        propose_all=R2_RELOC_PROPOSE_ALL,
+                        propose_top_m=R2_RELOC_PROPOSE_TOP_M,
                     )
                     if rel_acc_c == 0:
                         _empty_streak["reloc_combined"] += 1
@@ -1556,7 +1580,7 @@ class MacroPlacer:
 
                 o_pos, o_acc, _o_fs, _o_sc = _two_opt_proxy_swap(
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n,
-                    score_fn=_r2_score, initial_score=base_2o, k_neighbors=20,
+                    score_fn=_r2_score, initial_score=base_2o, k_neighbors=16,
                     max_iters=6, deadline=t_2o + min(rem_r2 - t_one_score, R2_2OPT_SLICE),
                     incremental_scorer=o_scorer, macro_cong=_macro_cong_now(),
                 )
