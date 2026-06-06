@@ -1,5 +1,6 @@
 """Local search move operators."""
 
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -84,6 +85,12 @@ def _two_opt_soft_swap(
         cold_order = np.argsort(movable_local_field)[:n_cold_teleports]
         cold_tele = movable_idx[cold_order]
 
+    # Skip full scoring when the WL delta alone is too large to recover.
+    # 3e-4 calibrated on ibm13 (_calibrate_wl_prefilter.py): rejects ~23% of
+    # score_swap_soft calls, drops only ~0.2% of improving swaps. Tunable via env.
+    _env_wl = os.environ.get("SOFT_2OPT_WL_PREFILTER")
+    WL_PREFILTER = float(_env_wl) if _env_wl not in (None, "") else 3e-4
+
     best_score = initial_score
     accepts = 0
     swapped = np.zeros(num_soft, dtype=bool)
@@ -118,8 +125,6 @@ def _two_opt_soft_swap(
         rejected_already_swapped = 0
         rejected_wl_prefilter = 0
         scored = 0
-        # Skip full scoring when the WL delta alone is too large to recover.
-        WL_PREFILTER = 0.01
         for candidate_rank, k2 in enumerate(nbrs):
             k2 = int(k2)
             if swapped[k2]:

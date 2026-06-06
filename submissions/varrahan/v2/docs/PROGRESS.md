@@ -3,6 +3,25 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-06 — 2-opt scoring-cost cuts, ISSUES.md S11):**
+> **Avg 1.1496 — all 17 VALID / 0 overlaps.** Two accept-gate-safe cuts to the
+> 2-opt operators (only change which candidates get exact-scored): soft_2opt
+> WL-delta prefilter 0.01 → **3e-4** (rejects ~23% of `score_swap_soft`, drops
+> ~0.2% of improving swaps; calibrated on ibm13), and **R2-cleanup hard_2opt
+> k_neighbors 20 → 16** (frees scoring time for the productive soft passes; the
+> multi-seed 2-opt-on-winner stays k=20). Motivated by per-operator profiling:
+> hard_2opt was ~48% of scoring time for the smallest per-move gains. Spot-checks:
+> ibm13 −0.008 (1.0341 → 1.0259) and faster; ibm15 within ±0.008 noise; solo ibm01
+> 0.9070 @137s. Headline 1.1496 ≈ prior 1.1500 (−0.0004, within `--all` noise → no
+> regression; likely small gains on the deadline-bound large benchmarks). A
+> WL-prefilter for hard_2opt was built but shipped OFF (WL doesn't separate hard
+> spatial-kNN swaps — calibrated). NOTE: the `--all` run's ibm01 wall-clock
+> (29,795s) was a system-suspend artifact (machine slept mid-run; `monotonic()`
+> counted sleep) — solo re-run confirms ibm01 is ~137s; the AVG/validity are
+> unaffected. New env knobs: `SOFT_2OPT_WL_PREFILTER` / `HARD_2OPT_K` /
+> `HARD_2OPT_WL_PREFILTER`. Tests: `_verify_wl_delta_swap.py`,
+> `_calibrate_wl_prefilter.py`.
+
 > **Status (2026-06-04 — readability refactor, no algorithm change):**
 > **Avg 1.1500 — all 17 VALID / 0 overlaps, 3300.10s.** Pure code-simplification
 > pass, validated non-degrading via `--all`. No move-generation, scoring, or RNG

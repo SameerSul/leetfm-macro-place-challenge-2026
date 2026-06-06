@@ -1,5 +1,6 @@
 """Local search move operators."""
 
+import os
 import time
 
 import numpy as np
@@ -28,6 +29,7 @@ def _two_opt_proxy_swap(
     macro_cong: "np.ndarray | None" = None,
     cong_hot_k: int = 20,
     cong_cold_k: int = 8,
+    wl_prefilter: float = 0.0,
 ) -> "tuple[np.ndarray, int, float, int]":
     """Proxy-driven 2-opt swap pass.
 
@@ -42,6 +44,20 @@ def _two_opt_proxy_swap(
     """
     sep_x_mat, sep_y_mat = separation_matrices(sizes)
     EPS = 0.05
+
+    # Tuning/calibration override for the WL-delta prefilter threshold. Set to a
+    # large value (e.g. 1e9) to disable the prefilter for a calibration sweep.
+    # (Calibration showed WL doesn't separate hard swaps — default off; the knob
+    # stays for experiments.)
+    _env_wl = os.environ.get("HARD_2OPT_WL_PREFILTER")
+    if _env_wl not in (None, ""):
+        wl_prefilter = float(_env_wl)
+    # Tuning override for the spatial-kNN candidate budget (hard_2opt is the
+    # dominant scoring cost; fewer neighbours frees time for the productive soft
+    # passes on budget-bound benchmarks).
+    _env_k = os.environ.get("HARD_2OPT_K")
+    if _env_k not in (None, ""):
+        k_neighbors = int(_env_k)
 
     pos = legal_pos.copy()
     trace = get_candidate_trace()
@@ -133,6 +149,7 @@ def _two_opt_proxy_swap(
             group_id = trace.next_group_id("hard_2opt") if trace is not None else None
             rejected_bounds = 0
             rejected_overlap = 0
+            rejected_wl_prefilter = 0
             scored = 0
             spatial_set = set(int(x) for x in neighbors[i])
             for candidate_rank, j in enumerate(cand_js):
@@ -180,6 +197,20 @@ def _two_opt_proxy_swap(
                         abs(new_iy - new_jy) < sep_y_mat[i, j] + EPS):
                     rejected_overlap += 1
                     continue
+
+                # WL-delta prefilter: skip the costly score_swap when the cheap
+                # WL delta alone is too large for cong/density to recover. Mirrors
+                # soft_2opt's prefilter; the accept gate still validates every
+                # swap that IS scored, so this only risks under-improvement.
+                # wl_d is also recorded as a trace feature (computed once here).
+                wl_d = 0.0
+                if incremental_scorer is not None and (wl_prefilter > 0.0 or trace is not None):
+                    wl_d = incremental_scorer.wl_delta_swap(
+                        i, (new_ix, new_iy), j, (new_jx, new_jy)
+                    )
+                    if wl_prefilter > 0.0 and wl_d > wl_prefilter:
+                        rejected_wl_prefilter += 1
+                        continue
 
                 # Apply swap tentatively, score, decide
                 old_ix, old_iy = pos[i, 0], pos[i, 1]
@@ -252,6 +283,7 @@ def _two_opt_proxy_swap(
                             "source_hot_rank_norm": float(
                                 np.where(outer_order == i)[0][0] / max(len(outer_order) - 1, 1)
                             ),
+                            "wl_delta": float(wl_d),
                         },
                     )
                 if trial_score < best_score:
@@ -277,6 +309,7 @@ def _two_opt_proxy_swap(
                     scored=scored,
                     rejected_bounds=rejected_bounds,
                     rejected_overlap=rejected_overlap,
+                    rejected_wl_prefilter=rejected_wl_prefilter,
                     stopped_after_accept=bool(improved_any),
                 )
 

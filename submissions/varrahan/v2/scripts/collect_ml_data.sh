@@ -2,18 +2,7 @@
 #
 # Collect candidate-ranking training data for the per-operator XGBoost rankers.
 #
-# Runs the placer with ML_TRACE_PATH set so every local-search candidate trial is
-# written to JSONL (features + score_gain/improves labels + group_id). Schema:
-# src/placer/ml/data_collection.py; loaders: src/placer/ml/dataset.py.
-#
-# Diversity comes from a seed sweep (V2_SEED): each seed is a different trajectory.
-# NG45 traces get an "ng45_" filename prefix so the trainer can include or hold
-# them out by name; run both sets for cross-design variety.
-#
-# IMPORTANT: tracing changes timing, which changes scores. Use these runs for
-# DATA ONLY -- never read a placement score off a traced run.
-#
-# Usage (from the repo root):
+# Usage from the repo root:
 #   collect_ml_data.sh 42 43 44          # IBM (default)
 #   collect_ml_data.sh --ng45 42 43 44   # NG45 (Tier 2)
 #
@@ -30,7 +19,7 @@ OUT_DIR="submissions/varrahan/v2/ml_data/traces"
 LOG_DIR="submissions/varrahan/v2/ml_data/logs"
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
-# Optional leading mode flag selects the benchmark set; default is IBM (--all).
+# Optional leading mode flag selects the benchmark set.
 MODE="--all"
 case "${1:-}" in
   --all|--ng45) MODE="$1"; shift ;;

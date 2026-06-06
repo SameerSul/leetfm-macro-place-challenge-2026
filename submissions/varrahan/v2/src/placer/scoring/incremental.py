@@ -424,6 +424,31 @@ class IncrementalScorer:
         self.plc.FLAG_UPDATE_DENSITY = True
         self.plc.FLAG_UPDATE_CONGESTION = True
 
+    def wl_delta_swap(self, i_hard: int, new_i_xy, j_hard: int, new_j_xy) -> float:
+        """Cheap WL-only delta for a hypothetical (i_hard, j_hard) hard swap.
+
+        A prefilter before the costlier `score_swap`: per-net HPWL change for the
+        touched nets only, with no routing/density/smoothing work. Bypasses
+        `_apply_pos` (which dirties plc flags) by transiently overwriting the i/j
+        pos_cache rows. Returns the NORMALIZED WL delta (proxy's WL scale). Hard
+        analogue of `wl_delta_swap_soft`.
+        """
+        i_module = self.hard_indices[i_hard]
+        j_module = self.hard_indices[j_hard]
+        touched = self._touched_nets(i_module, j_module)
+        if len(touched) == 0:
+            return 0.0
+        pos_cache = _ensure_pos_cache(self.plc)
+        ix = float(pos_cache[i_module, 0]); iy = float(pos_cache[i_module, 1])
+        jx = float(pos_cache[j_module, 0]); jy = float(pos_cache[j_module, 1])
+        pos_cache[i_module, 0] = float(new_i_xy[0]); pos_cache[i_module, 1] = float(new_i_xy[1])
+        pos_cache[j_module, 0] = float(new_j_xy[0]); pos_cache[j_module, 1] = float(new_j_xy[1])
+        new_per_net = self._compute_per_net_hpwl_subset(touched)
+        delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+        pos_cache[i_module, 0] = ix; pos_cache[i_module, 1] = iy
+        pos_cache[j_module, 0] = jx; pos_cache[j_module, 1] = jy
+        return delta / self.wl_normalizer
+
     def score_swap(self, i_hard: int, new_i_xy, j_hard: int, new_j_xy) -> float:
         """Trial: compute proxy as if (i_hard, j_hard) were swapped, then revert.
 

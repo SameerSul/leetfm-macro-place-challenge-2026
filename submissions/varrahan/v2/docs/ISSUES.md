@@ -460,7 +460,41 @@ k_neighbors 10 → 15 → 20 in the multi-seed 2-opt-on-winner.
 Wall-clock ~826s. k=25+ not pursued: the deadline-bound regime is
 expanding, so further widening likely hurts large benchmarks more than it
 helps small ones. An adaptive-k (wider on fast benchmarks) is the next
-lever if this is revisited.
+lever if this is revisited. (Update: see S11 — the *R2-cleanup* 2-opt k was
+later cut 20→16 to free scoring time; this 2-opt-on-winner pass stays k=20.)
+
+### S11. 2-opt scoring-cost reduction — soft WL-prefilter + R2-cleanup k (SHIPPED 2026-06-06)
+
+Per-operator profiling on ibm13 showed **hard_2opt eats ~48% of scoring time for
+the smallest per-move gains** (median 2.8e-6, ~20–50× below the soft operators);
+soft_relocation is the score MVP. Two cheap, accept-gate-safe cuts (only change
+which candidates get exact-scored — every accept still validated):
+
+1. **soft_2opt WL-delta prefilter 0.01 → 3e-4.** The 0.01 default rejected
+   *nothing* on ibm13 (no soft swap's wl_delta exceeds it). Calibrated via
+   `test/diagnostic/_calibrate_wl_prefilter.py`: 3e-4 skips ~23% of
+   `score_swap_soft` calls, drops only ~0.2% of improving swaps. Env override
+   `SOFT_2OPT_WL_PREFILTER`.
+2. **R2-cleanup hard_2opt k_neighbors 20 → 16** (the per-round 2-opt pass). Fewer
+   spatial-kNN candidates → less scoring → freed time for the productive soft
+   passes (the reallocation thesis; helps the budget-bound large benchmarks where
+   S2 noted wider-k hurts by fitting fewer passes). The multi-seed
+   *2-opt-on-winner* stays k=20 (S2). Env override `HARD_2OPT_K`.
+
+A WL-delta prefilter was also added for hard_2opt (`wl_delta_swap`, bit-exact —
+`test/verification/_verify_wl_delta_swap.py`, Δ≤1e-18, zero side-effects) but
+**shipped OFF**: calibration showed hard spatial-kNN swaps have tiny WL deltas
+(improving max 1.5e-4), so any safe threshold rejects <0.5% while adding wl_delta
+cost to all candidates — net-negative. The method + `HARD_2OPT_WL_PREFILTER` knob
++ a `wl_delta` trace feature remain for experiments.
+
+**Validation (spot-check, no env):** ibm13 −0.008 (1.0341 → 1.0259) and faster
+(227 vs 240 s); ibm15 within its noise band (~1.224 ship vs ~1.220 baseline;
+ibm15 single-run noise ±0.008). hardk12 was rejected (clear ibm15 regression
++0.03 → **k=16 is the safe value**). Full `--all`: **1.1496, all 17 VALID, 0
+overlaps** — ≈ prior 1.1500 (−0.0004, within `--all` noise → no regression). (The
+`--all` ibm01 wall-clock of 29,795 s was a machine-suspend artifact — `monotonic()`
+counted sleep; solo ibm01 re-runs at ~137 s.)
 
 ### S3. Phase 8 with extended TOP-K set ({3, 5, 7, 10, 15, 20, 30, 50})
 
@@ -557,7 +591,77 @@ search → regressed), S9 keeps the full pass and only changes candidate choice
 
 ---
 
-### S10. ML candidate ranker — per-operator XGBoost (DATA COLLECTED 2026-06-04, ranker not yet wired)
+### S10. ML candidate ranker — per-operator XGBoost (COMPARED 2026-06-05: filter comparable-or-better at equal budget; not yet shipped as default)
+
+**Equal-budget head-to-head (2026-06-05).** Compared the wired `hard_relocation`
+filter against the production interleave at *equal scoring budget*: config A =
+production narrow-16 (no ML); config B = filter (`ML_HARD_RELOCATION_N_TARGETS=32`
+generates a wide-32 pool, `ML_FILTER_TOP_K=16` exact-scores the model's best 16).
+Both score ~16 candidates/group, so this isolates "model's 16-of-32 vs heuristic's
+nearest-16." Model used: `ml_data/models/clean-wide32-holdout-ibm13-001`
+(hard_relocation only). Fresh single-benchmark runs, interleaved A/B to control
+machine drift. Raw logs in `ml_data/compare/`.
+
+10-benchmark Δ (filter − interleave; negative = filter better): ibm01 +0.0010,
+ibm09 +0.0029, ibm10 **−0.0221**, ibm11 **−0.0092**, ibm12 +0.0052, ibm13
+**−0.0048**, ibm14 −0.0008, ibm15 +0.0197, ibm17 −0.0015, ibm18 +0.0072. Net
+**−0.0024 / 10**.
+
+**Variance correction.** ibm10 and ibm15 (the two big movers) were re-run 2×
+each. ibm10 is a **robust win** (Δ −0.0221/−0.0084/−0.0216, filter wins every
+rep). ibm15's +0.0197 was **mostly timing noise** (re-runs −0.0013 / +0.0085;
+interleave swings 1.2175–1.2317, filter stable ~1.2304) — true gap ≈ +0.009, one
+rep flipped to a filter win. Corrected net ≈ **−0.008 / 10**.
+
+**Conclusion.** At equal budget the filter is **comparable-or-better** than the
+exhaustive interleave. Robust wins (ibm10/ibm11/ibm13) concentrate on the
+budget-bound benchmarks, exactly as the design predicted; everything else sits
+within the ±0.005–0.01 run-to-run timing noise floor, and **no benchmark robustly
+regresses** (the worst-looking, ibm15, collapsed under repetition). This did NOT
+require retraining: **`best_recall@16` ≈ 1.0 on every benchmark** (ibm11 0.9987,
+ibm12 1.0, ibm13 0.9984 — see `test/diagnostic/_filter_recall_by_benchmark.py`),
+so the model almost never drops the true-best move; the per-benchmark swings are a
+budget/diversity *trajectory* effect, not a ranking-quality one. The remaining
+upside lever is **budget-aware pruning** (prune only under time pressure, score
+the full wide-32 pool when the search is converging early with budget to spare) —
+NOT a better ranker. The earlier "filter regresses ibm11" reading was a baseline
+artifact: it had compared the filter against `wide32_nofilter`, which scores all
+32 (more budget than the filter's 16), not against the equal-budget interleave.
+
+**Status:** filter is opt-in (`ML_FILTER_OPERATORS=hard_relocation`); production
+default unchanged. Shipping it as default would need a multi-seed `--all` to
+confirm the net win clears the noise floor across all 17 + NG45.
+
+**Recall-vs-width study (2026-06-05) — GNN routing-fill prefilter feasibility.**
+Tested whether a cheap surrogate can triage *wide* candidate pools (the premise of
+a GNN that evaluates 1000+ and verifies only the top-K). Data:
+`ml_data/recall_study/{ibm10,ibm13}_w{64,128,256}.jsonl.gz` (filter off, all
+candidates exact-labelled); analyzer `test/diagnostic/_recall_at_width.py`. Two
+decisive findings: (1) the *legal* pool saturates at median **94 / max 168** even
+at `N_TARGETS=256`, so 1000-wide is only reachable **cross-macro** (the
+evaluate-all-then-commit restructuring). (2) `improving_recall@5` collapses with
+width (0.78→0.67→0.36 at pool 18/45/94 on held-out ibm13) and a **fresh wide-pool
+-trained** surrogate does **not** recover it (0.36 vs 0.33) — the collapse is
+fundamental, not OOD. BUT gains are near-tied so the right metric, gain-regret, is
+benign: **top-10 captures ~95 % of achievable gain at width-94** (regret@10 5.3 %).
+Verdict: a cheap XGBoost already triages wide pools well enough; ranking quality is
+not the bottleneck, so the GNN is **not justified** for IBM/hard-relocation — the
+73 % strip-gen cost is better attacked by vectorizing the *exact* kernel
+cross-macro. Full roadmap + gates: [`ml_notes/04-gnn-routing-fill-surrogate.md`](ml_notes/04-gnn-routing-fill-surrogate.md).
+
+**NG45 re-check (2026-06-05).** Re-ran on the 4 NG45 designs (`ml_data/recall_study_ng45/`):
+the verdict holds, for stronger reasons. (1) NG45 **converges with ~40 % budget to
+spare** (150 s budget, 90–97 s elapsed) — not deadline-bound, so the filter's
+"free budget → more rounds" premise is void (the downside-only regime of
+`ml_notes/02`). (2) hard-relocation is **near-idle** on NG45 (1.9–3.0 % improving
+groups vs 20–25 % on IBM); the productive operators are **soft_2opt (34 %)** and
+soft_relocation (13 %). Caveat: this tier is coarse-grid (504–1404 cells), *not* the
+large-grid/deadline-bound industrial regime where a learned routing-fill surrogate
+would pay off — neither contest tier reaches that scale.
+
+---
+
+### S10-orig. ML candidate ranker design notes — per-operator XGBoost (DATA COLLECTED 2026-06-04)
 
 A learned filter to make the R2 local search spend its scoring budget on
 candidates likely to improve, while keeping the exact accept-on-true-proxy gate
