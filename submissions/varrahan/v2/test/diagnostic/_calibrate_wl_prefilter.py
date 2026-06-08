@@ -21,7 +21,7 @@ import sys
 from collections import defaultdict
 
 THRESHOLDS = (1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2)
-OPERATORS = ("hard_2opt", "soft_2opt")
+OPERATORS = ("hard_2opt", "soft_2opt", "soft_relocation")
 
 
 def _iter(path):

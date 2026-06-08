@@ -575,6 +575,81 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
     return smoothed.ravel()
 
 
+if HAS_NUMBA:
+    @_numba_njit(cache=True, fastmath=False)
+    def _apply_macro_routing_scatter_jit(
+        V_macro_flat, H_macro_flat,
+        bl_row, bl_col, ur_row, ur_col,
+        x_min, x_max, y_min, y_max,
+        grid_w, grid_h, grid_col, valloc, halloc,
+    ):
+        """JIT explicit-loop replacement for the per-cell scatter in
+        _apply_macro_routing (np.add.at / np.subtract.at). Same macro-major,
+        row-major accumulation order as the numpy path → bit-identical, well
+        within the move-verifier tolerance. Replaces ~half the numpy `tottime`."""
+        n = bl_row.shape[0]
+        tol = 1e-5
+        # Pass 1: main contributions (V += x_dist*valloc, H += y_dist*halloc).
+        for m in range(n):
+            r0 = bl_row[m]; r1 = ur_row[m]
+            c0 = bl_col[m]; c1 = ur_col[m]
+            xmn = x_min[m]; xmx = x_max[m]
+            ymn = y_min[m]; ymx = y_max[m]
+            for rr in range(r0, r1 + 1):
+                cy0 = grid_h * rr
+                cy1 = grid_h * (rr + 1)
+                yd = min(cy1, ymx) - max(cy0, ymn)
+                if yd < 0.0:
+                    yd = 0.0
+                base = rr * grid_col
+                for cc in range(c0, c1 + 1):
+                    cx0 = grid_w * cc
+                    cx1 = grid_w * (cc + 1)
+                    xd = min(cx1, xmx) - max(cx0, xmn)
+                    if xd < 0.0:
+                        xd = 0.0
+                    idx = base + cc
+                    V_macro_flat[idx] += xd * valloc
+                    H_macro_flat[idx] += yd * halloc
+        # Pass 2: PARTIAL_OVERLAP V correction (ur_row, per column).
+        for m in range(n):
+            r0 = bl_row[m]; r1 = ur_row[m]
+            if r1 == r0:
+                continue
+            ymn = y_min[m]; ymx = y_max[m]
+            if not (abs((grid_h * (r0 + 1) - ymn) - grid_h) > tol
+                    or abs((ymx - grid_h * r1) - grid_h) > tol):
+                continue
+            c0 = bl_col[m]; c1 = ur_col[m]
+            xmn = x_min[m]; xmx = x_max[m]
+            base = r1 * grid_col
+            for cc in range(c0, c1 + 1):
+                cx0 = grid_w * cc
+                cx1 = grid_w * (cc + 1)
+                xd = min(cx1, xmx) - max(cx0, xmn)
+                if xd < 0.0:
+                    xd = 0.0
+                V_macro_flat[base + cc] -= xd * valloc
+        # Pass 3: PARTIAL_OVERLAP H correction (ur_col, per row).
+        for m in range(n):
+            c0 = bl_col[m]; c1 = ur_col[m]
+            if c1 == c0:
+                continue
+            xmn = x_min[m]; xmx = x_max[m]
+            if not (abs((grid_w * (c0 + 1) - xmn) - grid_w) > tol
+                    or abs((xmx - grid_w * c1) - grid_w) > tol):
+                continue
+            r0 = bl_row[m]; r1 = ur_row[m]
+            ymn = y_min[m]; ymx = y_max[m]
+            for rr in range(r0, r1 + 1):
+                cy0 = grid_h * rr
+                cy1 = grid_h * (rr + 1)
+                yd = min(cy1, ymx) - max(cy0, ymn)
+                if yd < 0.0:
+                    yd = 0.0
+                H_macro_flat[rr * grid_col + c1] -= yd * halloc
+
+
 def _apply_macro_routing(V_macro_flat: np.ndarray, H_macro_flat: np.ndarray,
                           hard_x: np.ndarray, hard_y: np.ndarray,
                           half_w: np.ndarray, half_h: np.ndarray,
@@ -620,6 +695,18 @@ def _apply_macro_routing(V_macro_flat: np.ndarray, H_macro_flat: np.ndarray,
     x_max_s = x_max[sel]
     y_min_s = y_min[sel]
     y_max_s = y_max[sel]
+
+    if HAS_NUMBA:
+        _apply_macro_routing_scatter_jit(
+            V_macro_flat, H_macro_flat,
+            np.ascontiguousarray(bl_row_s), np.ascontiguousarray(bl_col_s),
+            np.ascontiguousarray(ur_row_s), np.ascontiguousarray(ur_col_s),
+            np.ascontiguousarray(x_min_s), np.ascontiguousarray(x_max_s),
+            np.ascontiguousarray(y_min_s), np.ascontiguousarray(y_max_s),
+            float(grid_w), float(grid_h), int(grid_col),
+            float(vrouting_alloc), float(hrouting_alloc),
+        )
+        return
 
     n_rows_per = (ur_row_s - bl_row_s + 1).astype(np.int64)
     n_cols_per = (ur_col_s - bl_col_s + 1).astype(np.int64)
