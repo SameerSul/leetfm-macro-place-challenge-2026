@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from placer.config import _GPU_DEVICE
+from placer.config import _CUDA_DEVICE_REQUESTED, _GPU_BACKEND, _GPU_DEVICE, _GPU_DEVICE_NAME
 from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
 from placer.ml.data_collection import TraceFields, get_candidate_trace, net_degree_features
@@ -53,7 +53,7 @@ def _score_relocation_proposals_tensor(
     nx = np.asarray([p["xy"][0] for p in proposals], dtype=np.float32)
     ny = np.asarray([p["xy"][1] for p in proposals], dtype=np.float32)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         i_t = torch.as_tensor(idx, device=dev, dtype=torch.long)
         t_t = torch.as_tensor(target_idx, device=dev, dtype=torch.long)
         nx_t = torch.as_tensor(nx, device=dev)
@@ -687,7 +687,382 @@ def _smooth_routing_batch_torch(
     return smoothed.reshape(grid_flat.shape[0], grid_row * grid_col)
 
 
-def _score_relocation_proposals_cuda_delta(
+def _is_torch_oom(exc: BaseException) -> bool:
+    if isinstance(exc, getattr(torch.cuda, "OutOfMemoryError", ())):
+        return True
+    msg = str(exc).lower()
+    return "out of memory" in msg or "cuda oom" in msg
+
+
+def _cuda_memory_stats() -> dict:
+    if _GPU_DEVICE.type != "cuda":
+        return {}
+    try:
+        dev = _GPU_DEVICE
+        return {
+            "memory_allocated": int(torch.cuda.memory_allocated(dev)),
+            "memory_reserved": int(torch.cuda.memory_reserved(dev)),
+            "max_memory_allocated": int(torch.cuda.max_memory_allocated(dev)),
+            "max_memory_reserved": int(torch.cuda.max_memory_reserved(dev)),
+        }
+    except Exception:
+        return {}
+
+
+def _cuda_runtime_status() -> dict:
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+    except Exception:
+        cuda_available = False
+    device_count = 0
+    if cuda_available:
+        try:
+            device_count = int(torch.cuda.device_count())
+        except Exception:
+            device_count = 0
+    return {
+        "configured_backend": _GPU_BACKEND,
+        "requested_device": _CUDA_DEVICE_REQUESTED,
+        "configured_device_name": _GPU_DEVICE_NAME,
+        "torch_cuda_available": cuda_available,
+        "torch_cuda_device_count": device_count,
+        "torch_cuda_version": torch.version.cuda,
+    }
+
+
+def _cuda_synchronize_if_needed() -> None:
+    if _GPU_DEVICE.type != "cuda":
+        return
+    try:
+        torch.cuda.synchronize(_GPU_DEVICE)
+    except Exception:
+        pass
+
+
+def _relocation_dynamic_bytes_per_proposal(incremental_scorer) -> int:
+    if incremental_scorer is None:
+        return 0
+    n_cells = int(incremental_scorer.grid_row) * int(incremental_scorer.grid_col)
+    # occ, v/h macro, v/h raw, v/h smoothed, v/h congestion/routing scratch.
+    raw_bytes = max(1, n_cells) * 10 * np.dtype(np.float32).itemsize
+    return int(np.ceil(raw_bytes * _relocation_memory_safety_factor()))
+
+
+def _relocation_memory_safety_factor() -> float:
+    try:
+        factor = float(os.environ.get("V2_RELOC_PROPOSE_MEM_SAFETY", "1.0"))
+    except ValueError:
+        return 1.0
+    return max(1.0, factor)
+
+
+def _relocation_static_tensor_bytes_estimate(incremental_scorer) -> int:
+    if incremental_scorer is None:
+        return 0
+    n_cells = int(incremental_scorer.grid_row) * int(incremental_scorer.grid_col)
+    total = max(1, n_cells) * 5 * np.dtype(np.float32).itemsize
+    for name, dtype in (
+        ("unique_ref", np.int64),
+        ("ref_inv", np.int64),
+        ("x_off", np.float32),
+        ("y_off", np.float32),
+        ("per_net_hpwl", np.float32),
+        ("net_weights", np.float32),
+    ):
+        arr = getattr(incremental_scorer, name, None)
+        if arr is not None:
+            total += int(np.asarray(arr).size) * np.dtype(dtype).itemsize
+    try:
+        pos_cache = _ensure_pos_cache(incremental_scorer.plc)
+    except Exception:
+        pos_cache = None
+    if pos_cache is not None:
+        total += int(np.asarray(pos_cache).size) * np.dtype(np.float32).itemsize
+    return int(total)
+
+
+def _tensor_tree_bytes(value) -> int:
+    if isinstance(value, torch.Tensor):
+        return int(value.numel() * value.element_size())
+    if isinstance(value, dict):
+        return sum(_tensor_tree_bytes(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_tensor_tree_bytes(v) for v in value)
+    return 0
+
+
+def _chunk_size_from_memory_budget(
+    proposals: list[dict],
+    incremental_scorer,
+    max_mb_raw: str,
+) -> "tuple[int | None, float | None, int]":
+    try:
+        max_mb = float(max_mb_raw)
+    except (TypeError, ValueError):
+        return None, None, _relocation_dynamic_bytes_per_proposal(incremental_scorer)
+    bytes_per = _relocation_dynamic_bytes_per_proposal(incremental_scorer)
+    if bytes_per <= 0:
+        return None, max_mb, bytes_per
+    budget = int(max_mb * 1024.0 * 1024.0)
+    if budget <= 0:
+        return None, max_mb, bytes_per
+    chunk = max(1, min(len(proposals), budget // bytes_per))
+    return int(chunk), max_mb, bytes_per
+
+
+def _cuda_auto_memory_budget_mb(frac_raw: str) -> "tuple[float, float, int, int] | None":
+    if _GPU_DEVICE.type != "cuda":
+        return None
+    try:
+        frac = float(frac_raw)
+    except (TypeError, ValueError):
+        return None
+    if frac <= 0.0:
+        return None
+    frac = min(frac, 1.0)
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info(_GPU_DEVICE)
+    except Exception:
+        return None
+    budget = float(free_bytes) * frac / (1024.0 * 1024.0)
+    return (budget, frac, int(free_bytes), int(total_bytes)) if budget > 0.0 else None
+
+
+def _build_hpwl_topology_cache(incremental_scorer) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, int]]:
+    cache: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, int]] = {}
+    for module_idx, nets in incremental_scorer.macro_to_nets.items():
+        if nets is None or len(nets) == 0:
+            continue
+        starts_np = incremental_scorer.net_starts[nets]
+        lengths_np = incremental_scorer.net_lengths[nets]
+        total = int(lengths_np.sum())
+        if total == 0:
+            continue
+        local_starts_np = np.concatenate([[0], np.cumsum(lengths_np)[:-1]])
+        pin_indices_np = np.repeat(starts_np, lengths_np) + (
+            np.arange(total) - np.repeat(local_starts_np, lengths_np)
+        )
+        cache[int(module_idx)] = (
+            nets.astype(np.int64, copy=False),
+            lengths_np.astype(np.int64, copy=False),
+            pin_indices_np.astype(np.int64, copy=False),
+            total,
+        )
+    return cache
+
+
+def _net_routing_all_contrib(
+    incremental_scorer,
+    module_idx: int,
+    cx: float,
+    cy: float,
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
+    parts = []
+    for helper in (
+        _net_routing_2pin_contrib,
+        _net_routing_3pin_contrib,
+        _net_routing_highfanout_contrib,
+    ):
+        parts.append(helper(incremental_scorer, module_idx, cx, cy))
+    idx_parts = [part[0] for part in parts if part[0].size]
+    v_parts = [part[1] for part in parts if part[0].size]
+    h_parts = [part[2] for part in parts if part[0].size]
+    if idx_parts:
+        return (
+            np.concatenate(idx_parts),
+            np.concatenate(v_parts),
+            np.concatenate(h_parts),
+        )
+    empty_i = np.empty(0, dtype=np.int64)
+    empty_v = np.empty(0, dtype=np.float32)
+    return empty_i, empty_v, empty_v
+
+
+def _build_relocation_cuda_static_tensors(
+    proposals: list[dict],
+    *,
+    pos: np.ndarray,
+    incremental_scorer,
+    dev: torch.device,
+) -> dict:
+    """Build tensors and frozen-base metadata reused by every proposal chunk."""
+    pos_cache_np = _ensure_pos_cache(incremental_scorer.plc)
+    old_density: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    old_macro_route: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    old_net_route: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    for i in sorted({int(p["i"]) for p in proposals}):
+        module_idx = int(incremental_scorer.hard_indices[i])
+        old_x = float(pos[i, 0])
+        old_y = float(pos[i, 1])
+        old_density[i] = incremental_scorer._macro_occ(module_idx, old_x, old_y)
+        old_macro_route[i] = _macro_routing_contrib(
+            incremental_scorer,
+            module_idx,
+            old_x,
+            old_y,
+        )
+        old_net_route[i] = _net_routing_all_contrib(
+            incremental_scorer,
+            module_idx,
+            old_x,
+            old_y,
+        )
+    return {
+        "hpwl_topology": _build_hpwl_topology_cache(incremental_scorer),
+        "old_density": old_density,
+        "old_macro_route": old_macro_route,
+        "old_net_route": old_net_route,
+        "base_occ": torch.as_tensor(
+            incremental_scorer.grid_occupied,
+            device=dev,
+            dtype=torch.float32,
+        ),
+        "v_macro_base": torch.as_tensor(
+            incremental_scorer.V_macro_flat,
+            device=dev,
+            dtype=torch.float32,
+        ),
+        "h_macro_base": torch.as_tensor(
+            incremental_scorer.H_macro_flat,
+            device=dev,
+            dtype=torch.float32,
+        ),
+        "v_raw_base": torch.as_tensor(
+            incremental_scorer.V_flat,
+            device=dev,
+            dtype=torch.float32,
+        ),
+        "h_raw_base": torch.as_tensor(
+            incremental_scorer.H_flat,
+            device=dev,
+            dtype=torch.float32,
+        ),
+        "pos_cache": (
+            torch.as_tensor(pos_cache_np, device=dev, dtype=torch.float32)
+            if pos_cache_np is not None
+            else None
+        ),
+        "unique_ref": torch.as_tensor(
+            incremental_scorer.unique_ref,
+            device=dev,
+            dtype=torch.long,
+        ),
+        "ref_inv": torch.as_tensor(
+            incremental_scorer.ref_inv,
+            device=dev,
+            dtype=torch.long,
+        ),
+        "x_off": torch.as_tensor(
+            incremental_scorer.x_off,
+            device=dev,
+            dtype=torch.float32,
+        ),
+        "y_off": torch.as_tensor(
+            incremental_scorer.y_off,
+            device=dev,
+            dtype=torch.float32,
+        ),
+        "per_net_hpwl": torch.as_tensor(
+            incremental_scorer.per_net_hpwl,
+            device=dev,
+            dtype=torch.float32,
+        ),
+        "net_weights": torch.as_tensor(
+            incremental_scorer.net_weights,
+            device=dev,
+            dtype=torch.float32,
+        ),
+    }
+
+
+def _batched_hpwl_delta_torch(
+    proposals: list[dict],
+    *,
+    module_idx_np: np.ndarray,
+    nx_t: torch.Tensor,
+    ny_t: torch.Tensor,
+    incremental_scorer,
+    dev: torch.device,
+    static_tensors: dict,
+) -> torch.Tensor:
+    """Return per-proposal HPWL delta via one segmented Torch reduction."""
+    n_prop = len(proposals)
+    wl_delta = torch.zeros(n_prop, device=dev, dtype=torch.float32)
+    pos_cache_t = static_tensors.get("pos_cache")
+    if pos_cache_t is None or incremental_scorer.n_nets <= 0:
+        return wl_delta
+
+    pin_parts = []
+    seg_parts = []
+    row_pin_parts = []
+    moved_module_parts = []
+    nets_parts = []
+    row_seg_parts = []
+    seg_offset = 0
+    for row, module_idx_raw in enumerate(module_idx_np):
+        module_idx = int(module_idx_raw)
+        topo = static_tensors["hpwl_topology"].get(module_idx)
+        if topo is None:
+            continue
+        nets, lengths_np, pin_indices_np, total = topo
+        n_seg = len(nets)
+        pin_parts.append(pin_indices_np.astype(np.int64, copy=False))
+        seg_parts.append(
+            np.repeat(
+                np.arange(seg_offset, seg_offset + n_seg, dtype=np.int64),
+                lengths_np,
+            )
+        )
+        row_pin_parts.append(np.full(total, row, dtype=np.int64))
+        moved_module_parts.append(np.full(total, module_idx, dtype=np.int64))
+        nets_parts.append(nets.astype(np.int64, copy=False))
+        row_seg_parts.append(np.full(n_seg, row, dtype=np.int64))
+        seg_offset += n_seg
+
+    if not pin_parts:
+        return wl_delta
+
+    pin_indices_t = torch.as_tensor(np.concatenate(pin_parts), device=dev, dtype=torch.long)
+    seg_ids_t = torch.as_tensor(np.concatenate(seg_parts), device=dev, dtype=torch.long)
+    row_pin_t = torch.as_tensor(np.concatenate(row_pin_parts), device=dev, dtype=torch.long)
+    moved_module_t = torch.as_tensor(np.concatenate(moved_module_parts), device=dev, dtype=torch.long)
+    nets_t = torch.as_tensor(np.concatenate(nets_parts), device=dev, dtype=torch.long)
+    row_seg_t = torch.as_tensor(np.concatenate(row_seg_parts), device=dev, dtype=torch.long)
+
+    unique_ref_t = static_tensors["unique_ref"]
+    node_pos_t = pos_cache_t[unique_ref_t]
+    ref_inv_t = static_tensors["ref_inv"]
+    x_off_t = static_tensors["x_off"]
+    y_off_t = static_tensors["y_off"]
+    ref_local = ref_inv_t[pin_indices_t]
+    refs = unique_ref_t[ref_local]
+
+    pin_x = node_pos_t[ref_local, 0] + x_off_t[pin_indices_t]
+    pin_y = node_pos_t[ref_local, 1] + y_off_t[pin_indices_t]
+    moved_mask = refs == moved_module_t
+    if torch.any(moved_mask):
+        pin_x = torch.where(moved_mask, nx_t[row_pin_t] + x_off_t[pin_indices_t], pin_x)
+        pin_y = torch.where(moved_mask, ny_t[row_pin_t] + y_off_t[pin_indices_t], pin_y)
+
+    n_seg = int(nets_t.numel())
+    min_x = torch.full((n_seg,), float("inf"), device=dev, dtype=torch.float32)
+    max_x = torch.full((n_seg,), float("-inf"), device=dev, dtype=torch.float32)
+    min_y = torch.full((n_seg,), float("inf"), device=dev, dtype=torch.float32)
+    max_y = torch.full((n_seg,), float("-inf"), device=dev, dtype=torch.float32)
+    min_x.scatter_reduce_(0, seg_ids_t, pin_x, reduce="amin", include_self=True)
+    max_x.scatter_reduce_(0, seg_ids_t, pin_x, reduce="amax", include_self=True)
+    min_y.scatter_reduce_(0, seg_ids_t, pin_y, reduce="amin", include_self=True)
+    max_y.scatter_reduce_(0, seg_ids_t, pin_y, reduce="amax", include_self=True)
+
+    per_net_hpwl_t = static_tensors["per_net_hpwl"]
+    net_weights_t = static_tensors["net_weights"]
+    new_hpwl = (max_x - min_x) + (max_y - min_y)
+    contrib = (new_hpwl - per_net_hpwl_t[nets_t]) * net_weights_t[nets_t]
+    wl_delta.index_add_(0, row_seg_t, contrib)
+    return wl_delta / float(incremental_scorer.wl_normalizer)
+
+
+def _score_relocation_proposals_cuda_delta_batch(
     proposals: list[dict],
     *,
     pos: np.ndarray,
@@ -696,23 +1071,22 @@ def _score_relocation_proposals_cuda_delta(
     local_cong: np.ndarray,
     tgt_cong: np.ndarray,
     incremental_scorer,
+    static_tensors: dict,
 ) -> None:
     """Assign CUDA-capable batched delta scores to frozen-base proposals.
 
-    This evaluates proposal density, HPWL delta, and hard-macro blockage
-    congestion through Torch batches on `_GPU_DEVICE`. Net routing deltas are
-    still represented by a field-relief proxy; the serial exact verify stage
-    remains the correctness gate.
+    This evaluates proposal density, HPWL delta, hard-macro blockage, and
+    touched-net routing through Torch batches on `_GPU_DEVICE`. The serial exact
+    verify stage remains the correctness gate.
     """
     if not proposals:
-        return
+        return {}
+    t0_prep = time.monotonic()
     dev = _GPU_DEVICE
     n_prop = len(proposals)
-    idx = np.asarray([p["i"] for p in proposals], dtype=np.int64)
-    target_idx = np.asarray([p["target_index"] for p in proposals], dtype=np.int64)
-    candidate_rank = np.asarray([p["candidate_rank"] for p in proposals], dtype=np.float32)
-    nx = np.asarray([p["xy"][0] for p in proposals], dtype=np.float32)
-    ny = np.asarray([p["xy"][1] for p in proposals], dtype=np.float32)
+    xy_np = np.asarray([p["xy"] for p in proposals], dtype=np.float32)
+    hard_i_np = np.asarray([p["i"] for p in proposals], dtype=np.int64)
+    module_idx_np = np.asarray([incremental_scorer.hard_indices[int(i)] for i in hard_i_np], dtype=np.int64)
 
     row_parts = []
     col_parts = []
@@ -725,18 +1099,16 @@ def _score_relocation_proposals_cuda_delta(
     net_route_col_parts = []
     net_route_v_parts = []
     net_route_h_parts = []
-    for row, proposal in enumerate(proposals):
-        i = int(proposal["i"])
-        module_idx = int(incremental_scorer.hard_indices[i])
-        old_idx, old_area = incremental_scorer._macro_occ(
-            module_idx,
-            float(pos[i, 0]),
-            float(pos[i, 1]),
-        )
+    for row, (i_raw, module_idx_raw) in enumerate(zip(hard_i_np, module_idx_np)):
+        i = int(i_raw)
+        module_idx = int(module_idx_raw)
+        nx = float(xy_np[row, 0])
+        ny = float(xy_np[row, 1])
+        old_idx, old_area = static_tensors["old_density"][i]
         new_idx, new_area = incremental_scorer._macro_occ(
             module_idx,
-            float(proposal["xy"][0]),
-            float(proposal["xy"][1]),
+            nx,
+            ny,
         )
         if old_idx.size:
             row_parts.append(np.full(old_idx.size, row, dtype=np.int64))
@@ -747,17 +1119,12 @@ def _score_relocation_proposals_cuda_delta(
             col_parts.append(new_idx.astype(np.int64, copy=False))
             val_parts.append(new_area.astype(np.float32, copy=False))
 
-        old_route_idx, old_v, old_h = _macro_routing_contrib(
-            incremental_scorer,
-            module_idx,
-            float(pos[i, 0]),
-            float(pos[i, 1]),
-        )
+        old_route_idx, old_v, old_h = static_tensors["old_macro_route"][i]
         new_route_idx, new_v, new_h = _macro_routing_contrib(
             incremental_scorer,
             module_idx,
-            float(proposal["xy"][0]),
-            float(proposal["xy"][1]),
+            nx,
+            ny,
         )
         if old_route_idx.size:
             macro_route_row_parts.append(np.full(old_route_idx.size, row, dtype=np.int64))
@@ -770,41 +1137,12 @@ def _score_relocation_proposals_cuda_delta(
             macro_route_v_parts.append(new_v)
             macro_route_h_parts.append(new_h)
 
-        old_net_idx, old_net_v, old_net_h = _net_routing_2pin_contrib(
+        old_net_idx, old_net_v, old_net_h = static_tensors["old_net_route"][i]
+        new_net_idx, new_net_v, new_net_h = _net_routing_all_contrib(
             incremental_scorer,
             module_idx,
-            float(pos[i, 0]),
-            float(pos[i, 1]),
-        )
-        new_net_idx, new_net_v, new_net_h = _net_routing_2pin_contrib(
-            incremental_scorer,
-            module_idx,
-            float(proposal["xy"][0]),
-            float(proposal["xy"][1]),
-        )
-        old_net3_idx, old_net3_v, old_net3_h = _net_routing_3pin_contrib(
-            incremental_scorer,
-            module_idx,
-            float(pos[i, 0]),
-            float(pos[i, 1]),
-        )
-        new_net3_idx, new_net3_v, new_net3_h = _net_routing_3pin_contrib(
-            incremental_scorer,
-            module_idx,
-            float(proposal["xy"][0]),
-            float(proposal["xy"][1]),
-        )
-        old_netx_idx, old_netx_v, old_netx_h = _net_routing_highfanout_contrib(
-            incremental_scorer,
-            module_idx,
-            float(pos[i, 0]),
-            float(pos[i, 1]),
-        )
-        new_netx_idx, new_netx_v, new_netx_h = _net_routing_highfanout_contrib(
-            incremental_scorer,
-            module_idx,
-            float(proposal["xy"][0]),
-            float(proposal["xy"][1]),
+            nx,
+            ny,
         )
         if old_net_idx.size:
             net_route_row_parts.append(np.full(old_net_idx.size, row, dtype=np.int64))
@@ -816,34 +1154,10 @@ def _score_relocation_proposals_cuda_delta(
             net_route_col_parts.append(new_net_idx)
             net_route_v_parts.append(new_net_v)
             net_route_h_parts.append(new_net_h)
-        if old_net3_idx.size:
-            net_route_row_parts.append(np.full(old_net3_idx.size, row, dtype=np.int64))
-            net_route_col_parts.append(old_net3_idx)
-            net_route_v_parts.append(-old_net3_v)
-            net_route_h_parts.append(-old_net3_h)
-        if new_net3_idx.size:
-            net_route_row_parts.append(np.full(new_net3_idx.size, row, dtype=np.int64))
-            net_route_col_parts.append(new_net3_idx)
-            net_route_v_parts.append(new_net3_v)
-            net_route_h_parts.append(new_net3_h)
-        if old_netx_idx.size:
-            net_route_row_parts.append(np.full(old_netx_idx.size, row, dtype=np.int64))
-            net_route_col_parts.append(old_netx_idx)
-            net_route_v_parts.append(-old_netx_v)
-            net_route_h_parts.append(-old_netx_h)
-        if new_netx_idx.size:
-            net_route_row_parts.append(np.full(new_netx_idx.size, row, dtype=np.int64))
-            net_route_col_parts.append(new_netx_idx)
-            net_route_v_parts.append(new_netx_v)
-            net_route_h_parts.append(new_netx_h)
 
-    with torch.no_grad():
-        base = torch.as_tensor(
-            incremental_scorer.grid_occupied,
-            device=dev,
-            dtype=torch.float32,
-        )
-        occ = base.unsqueeze(0).repeat(n_prop, 1)
+    prep_elapsed = time.monotonic() - t0_prep
+    with torch.inference_mode():
+        occ = static_tensors["base_occ"].unsqueeze(0).repeat(n_prop, 1)
         if row_parts:
             rows = torch.as_tensor(np.concatenate(row_parts), device=dev, dtype=torch.long)
             cols = torch.as_tensor(np.concatenate(col_parts), device=dev, dtype=torch.long)
@@ -860,16 +1174,8 @@ def _score_relocation_proposals_cuda_delta(
             top = torch.topk(nz, k=k, dim=1).values
             density = 0.5 * top.sum(dim=1) / float(incremental_scorer.dens_grid_area) / float(cnt)
 
-        v_macro = torch.as_tensor(
-            incremental_scorer.V_macro_flat,
-            device=dev,
-            dtype=torch.float32,
-        ).unsqueeze(0).repeat(n_prop, 1)
-        h_macro = torch.as_tensor(
-            incremental_scorer.H_macro_flat,
-            device=dev,
-            dtype=torch.float32,
-        ).unsqueeze(0).repeat(n_prop, 1)
+        v_macro = static_tensors["v_macro_base"].unsqueeze(0).repeat(n_prop, 1)
+        h_macro = static_tensors["h_macro_base"].unsqueeze(0).repeat(n_prop, 1)
         if macro_route_row_parts:
             route_rows = torch.as_tensor(
                 np.concatenate(macro_route_row_parts),
@@ -894,16 +1200,8 @@ def _score_relocation_proposals_cuda_delta(
             v_macro.index_put_((route_rows, route_cols), route_v, accumulate=True)
             h_macro.index_put_((route_rows, route_cols), route_h, accumulate=True)
 
-        v_raw = torch.as_tensor(
-            incremental_scorer.V_flat,
-            device=dev,
-            dtype=torch.float32,
-        ).unsqueeze(0).repeat(n_prop, 1)
-        h_raw = torch.as_tensor(
-            incremental_scorer.H_flat,
-            device=dev,
-            dtype=torch.float32,
-        ).unsqueeze(0).repeat(n_prop, 1)
+        v_raw = static_tensors["v_raw_base"].unsqueeze(0).repeat(n_prop, 1)
+        h_raw = static_tensors["h_raw_base"].unsqueeze(0).repeat(n_prop, 1)
         if net_route_row_parts:
             net_rows = torch.as_tensor(
                 np.concatenate(net_route_row_parts),
@@ -951,89 +1249,222 @@ def _score_relocation_proposals_cuda_delta(
         else:
             congestion = torch.topk(routing_vals, k=route_cnt, dim=1).values.mean(dim=1)
 
-        i_t = torch.as_tensor(idx, device=dev, dtype=torch.long)
-        t_t = torch.as_tensor(target_idx, device=dev, dtype=torch.long)
-        nx_t = torch.as_tensor(nx, device=dev)
-        ny_t = torch.as_tensor(ny, device=dev)
-        rank_t = torch.as_tensor(candidate_rank, device=dev)
-        pos_t = torch.as_tensor(pos, device=dev, dtype=torch.float32)
-        local_t = torch.as_tensor(local_cong, device=dev, dtype=torch.float32)
-        tgt_t = torch.as_tensor(tgt_cong, device=dev, dtype=torch.float32)
+        xy_t = torch.as_tensor(xy_np, device=dev, dtype=torch.float32)
+        nx_t = xy_t[:, 0]
+        ny_t = xy_t[:, 1]
 
-        field_max = torch.clamp(torch.max(local_t), min=1e-12)
-        relief = torch.clamp((local_t[i_t] - tgt_t[t_t]) / field_max, min=0.0)
-        dx = (nx_t - pos_t[i_t, 0]) / max(float(cw), 1e-12)
-        dy = (ny_t - pos_t[i_t, 1]) / max(float(ch), 1e-12)
-        dist = torch.sqrt(dx * dx + dy * dy)
-        rank_norm = rank_t / torch.clamp(torch.max(rank_t), min=1.0)
+        wl_delta = _batched_hpwl_delta_torch(
+            proposals,
+            module_idx_np=module_idx_np,
+            nx_t=nx_t,
+            ny_t=ny_t,
+            incremental_scorer=incremental_scorer,
+            dev=dev,
+            static_tensors=static_tensors,
+        )
 
-        wl_delta = torch.zeros(n_prop, device=dev, dtype=torch.float32)
-        pos_cache_np = _ensure_pos_cache(incremental_scorer.plc)
-        if pos_cache_np is not None and incremental_scorer.n_nets > 0:
-            pos_cache_t = torch.as_tensor(pos_cache_np, device=dev, dtype=torch.float32)
-            unique_ref_t = torch.as_tensor(incremental_scorer.unique_ref, device=dev, dtype=torch.long)
-            node_pos_t = pos_cache_t[unique_ref_t]
-            ref_inv_t = torch.as_tensor(incremental_scorer.ref_inv, device=dev, dtype=torch.long)
-            x_off_t = torch.as_tensor(incremental_scorer.x_off, device=dev, dtype=torch.float32)
-            y_off_t = torch.as_tensor(incremental_scorer.y_off, device=dev, dtype=torch.float32)
-            per_net_hpwl_t = torch.as_tensor(
-                incremental_scorer.per_net_hpwl,
-                device=dev,
-                dtype=torch.float32,
-            )
-            net_weights_t = torch.as_tensor(
-                incremental_scorer.net_weights,
-                device=dev,
-                dtype=torch.float32,
-            )
-            for row, proposal in enumerate(proposals):
-                i = int(proposal["i"])
-                module_idx = int(incremental_scorer.hard_indices[i])
-                nets = incremental_scorer.macro_to_nets.get(module_idx)
-                if nets is None or len(nets) == 0:
-                    continue
-                starts_t = incremental_scorer.net_starts[nets]
-                lengths_t = incremental_scorer.net_lengths[nets]
-                total = int(lengths_t.sum())
-                if total == 0:
-                    continue
-                pin_indices_np = np.repeat(starts_t, lengths_t) + (
-                    np.arange(total) - np.repeat(
-                        np.concatenate([[0], np.cumsum(lengths_t)[:-1]]),
-                        lengths_t,
-                    )
-                )
-                pin_indices_t = torch.as_tensor(pin_indices_np, device=dev, dtype=torch.long)
-                ref_local = ref_inv_t[pin_indices_t]
-                pin_x = node_pos_t[ref_local, 0] + x_off_t[pin_indices_t]
-                pin_y = node_pos_t[ref_local, 1] + y_off_t[pin_indices_t]
-                moved_mask = unique_ref_t[ref_local] == int(module_idx)
-                if torch.any(moved_mask):
-                    pin_x = torch.where(moved_mask, nx_t[row] + x_off_t[pin_indices_t], pin_x)
-                    pin_y = torch.where(moved_mask, ny_t[row] + y_off_t[pin_indices_t], pin_y)
-                sub_starts = np.concatenate([[0], np.cumsum(lengths_t)[:-1]])
-                sub_starts_t = torch.as_tensor(sub_starts, device=dev, dtype=torch.long)
-                net_hpwl = []
-                for start, length in zip(sub_starts_t.tolist(), lengths_t.tolist()):
-                    end = int(start) + int(length)
-                    if end <= int(start):
-                        net_hpwl.append(torch.tensor(0.0, device=dev))
-                    else:
-                        px = pin_x[int(start):end]
-                        py = pin_y[int(start):end]
-                        net_hpwl.append((torch.max(px) - torch.min(px)) + (torch.max(py) - torch.min(py)))
-                new_hpwl = torch.stack(net_hpwl) if net_hpwl else torch.zeros(0, device=dev)
-                nets_t = torch.as_tensor(nets, device=dev, dtype=torch.long)
-                delta_raw = torch.sum((new_hpwl - per_net_hpwl_t[nets_t]) * net_weights_t[nets_t])
-                wl_delta[row] = delta_raw / float(incremental_scorer.wl_normalizer)
-
-        # Lower is better. WL is a delta (base constant omitted); density and
-        # congestion are full post-move costs. Net routing deltas are emitted
-        # with the same 2-pin/3-pin/high-fanout reduction as the exact scorer.
-        score = wl_delta + 0.5 * density + 0.5 * congestion - 0.12 * relief + 0.02 * dist + 0.005 * rank_norm
+        # Lower is better. This is the same proxy objective used by
+        # IncrementalScorer._trial_at, evaluated in a batched tensor path.
+        wl_base = float(incremental_scorer.total_wl_raw) / float(incremental_scorer.wl_normalizer)
+        score = wl_base + wl_delta + 0.5 * density + 0.5 * congestion
         scores = score.detach().cpu().numpy().astype(np.float64)
     for proposal, score_value in zip(proposals, scores):
         proposal["score"] = float(score_value)
+    return {
+        "prep_elapsed": prep_elapsed,
+        "density_updates": int(sum(part.size for part in row_parts)),
+        "macro_route_updates": int(sum(part.size for part in macro_route_row_parts)),
+        "net_route_updates": int(sum(part.size for part in net_route_row_parts)),
+    }
+
+
+def _score_relocation_proposals_cuda_delta(
+    proposals: list[dict],
+    *,
+    pos: np.ndarray,
+    cw: float,
+    ch: float,
+    local_cong: np.ndarray,
+    tgt_cong: np.ndarray,
+    incremental_scorer,
+) -> None:
+    """Assign CUDA-capable exact-proxy scores, chunked for GPU memory control."""
+    if not proposals:
+        return
+
+    chunk_raw = os.environ.get("V2_RELOC_PROPOSE_CHUNK_SIZE")
+    user_chunked = bool(chunk_raw)
+    chunk_source = "env" if chunk_raw else ("cuda_default" if _GPU_DEVICE.type == "cuda" else "cpu")
+    if chunk_raw:
+        try:
+            chunk_size = int(chunk_raw)
+        except ValueError:
+            chunk_size = len(proposals)
+    else:
+        chunk_size = 128 if _GPU_DEVICE.type == "cuda" else len(proposals)
+        default_chunk_size = chunk_size
+        budget_chunk = None
+        budget_mb = None
+        budget_source = None
+        auto_mem_frac = None
+        auto_free_bytes = None
+        auto_total_bytes = None
+        bytes_per_proposal = _relocation_dynamic_bytes_per_proposal(incremental_scorer)
+        if _GPU_DEVICE.type == "cuda":
+            max_mb_raw = os.environ.get("V2_RELOC_PROPOSE_MAX_MB", "")
+            budget_chunk, budget_mb, bytes_per_proposal = _chunk_size_from_memory_budget(
+                proposals,
+                incremental_scorer,
+                max_mb_raw,
+            )
+            if budget_chunk is not None:
+                budget_source = "max_mb"
+            elif not max_mb_raw.strip():
+                auto_budget = _cuda_auto_memory_budget_mb(
+                    os.environ.get("V2_RELOC_PROPOSE_AUTO_MEM_FRAC", "")
+                )
+                if auto_budget is not None:
+                    auto_budget_mb, auto_mem_frac, auto_free_bytes, auto_total_bytes = auto_budget
+                    budget_chunk, budget_mb, bytes_per_proposal = _chunk_size_from_memory_budget(
+                        proposals,
+                        incremental_scorer,
+                        str(auto_budget_mb),
+                    )
+                    if budget_chunk is not None:
+                        budget_source = "auto_mem_frac"
+            if budget_chunk is not None:
+                chunk_size = min(chunk_size, budget_chunk)
+                natural_chunk_size = min(default_chunk_size, len(proposals))
+                chunk_source = "memory_budget" if budget_chunk < natural_chunk_size else "cuda_default"
+    if chunk_raw:
+        budget_mb = None
+        budget_chunk = None
+        budget_source = None
+        auto_mem_frac = None
+        auto_free_bytes = None
+        auto_total_bytes = None
+        bytes_per_proposal = _relocation_dynamic_bytes_per_proposal(incremental_scorer)
+    chunk_size = len(proposals) if chunk_size <= 0 else min(chunk_size, len(proposals))
+    initial_chunk_size = chunk_size
+    static_bytes_estimate = _relocation_static_tensor_bytes_estimate(incremental_scorer)
+    retries = 0
+    if _GPU_DEVICE.type == "cuda":
+        try:
+            torch.cuda.reset_peak_memory_stats(_GPU_DEVICE)
+        except Exception:
+            pass
+
+    t0_score = time.monotonic()
+    try:
+        _cuda_synchronize_if_needed()
+        t0_static = time.monotonic()
+        static_tensors = _build_relocation_cuda_static_tensors(
+            proposals,
+            pos=pos,
+            incremental_scorer=incremental_scorer,
+            dev=_GPU_DEVICE,
+        )
+        _cuda_synchronize_if_needed()
+        static_elapsed = time.monotonic() - t0_static
+        static_tensor_bytes_actual = _tensor_tree_bytes(static_tensors)
+    except RuntimeError as exc:
+        if _GPU_DEVICE.type == "cuda" and _is_torch_oom(exc):
+            raise RuntimeError(
+                "CUDA OOM while building relocation static tensors; "
+                "reducing V2_RELOC_PROPOSE_CHUNK_SIZE will not reduce this allocation "
+                "(estimated_static_bytes=%d)."
+                % static_bytes_estimate
+            ) from exc
+        raise
+
+    while True:
+        try:
+            batches = 0
+            batch_elapsed = 0.0
+            prep_elapsed = 0.0
+            density_updates = 0
+            macro_route_updates = 0
+            net_route_updates = 0
+            for start in range(0, len(proposals), chunk_size):
+                batches += 1
+                _cuda_synchronize_if_needed()
+                t0_batch = time.monotonic()
+                batch_stats = _score_relocation_proposals_cuda_delta_batch(
+                    proposals[start:start + chunk_size],
+                    pos=pos,
+                    cw=cw,
+                    ch=ch,
+                    local_cong=local_cong,
+                    tgt_cong=tgt_cong,
+                    incremental_scorer=incremental_scorer,
+                    static_tensors=static_tensors,
+                )
+                _cuda_synchronize_if_needed()
+                batch_elapsed += time.monotonic() - t0_batch
+                if batch_stats:
+                    prep_elapsed += float(batch_stats.get("prep_elapsed", 0.0))
+                    density_updates += int(batch_stats.get("density_updates", 0))
+                    macro_route_updates += int(batch_stats.get("macro_route_updates", 0))
+                    net_route_updates += int(batch_stats.get("net_route_updates", 0))
+            _cuda_synchronize_if_needed()
+            elapsed = time.monotonic() - t0_score
+            _score_relocation_proposals_cuda_delta.last_stats = {
+                "device": str(_GPU_DEVICE),
+                "backend": _GPU_DEVICE.type,
+                "proposals": len(proposals),
+                "initial_chunk_size": initial_chunk_size,
+                "final_chunk_size": chunk_size,
+                "batches": batches,
+                "retries": retries,
+                "elapsed": elapsed,
+                "ms_per_proposal": 1000.0 * elapsed / max(len(proposals), 1),
+                "ms_per_batch": 1000.0 * elapsed / max(batches, 1),
+                "static_elapsed": static_elapsed,
+                "batch_elapsed": batch_elapsed,
+                "prep_elapsed": prep_elapsed,
+                "tensor_elapsed_estimate": max(0.0, batch_elapsed - prep_elapsed),
+                "static_ms": 1000.0 * static_elapsed,
+                "batch_ms": 1000.0 * batch_elapsed,
+                "prep_ms": 1000.0 * prep_elapsed,
+                "tensor_ms_estimate": 1000.0 * max(0.0, batch_elapsed - prep_elapsed),
+                "density_updates": density_updates,
+                "macro_route_updates": macro_route_updates,
+                "net_route_updates": net_route_updates,
+                "memory_budget_mb": budget_mb,
+                "memory_budget_chunk": budget_chunk,
+                "memory_budget_source": budget_source,
+                "auto_memory_frac": auto_mem_frac,
+                "auto_cuda_free_bytes": auto_free_bytes,
+                "auto_cuda_total_bytes": auto_total_bytes,
+                "dynamic_bytes_per_proposal": bytes_per_proposal,
+                "memory_safety_factor": _relocation_memory_safety_factor(),
+                "static_tensor_bytes_estimate": static_bytes_estimate,
+                "static_tensor_bytes_actual": static_tensor_bytes_actual,
+                "chunk_source": chunk_source,
+            }
+            _score_relocation_proposals_cuda_delta.last_stats.update(_cuda_runtime_status())
+            _score_relocation_proposals_cuda_delta.last_stats.update(_cuda_memory_stats())
+            return
+        except RuntimeError as exc:
+            if _GPU_DEVICE.type != "cuda" or not _is_torch_oom(exc) or chunk_size <= 1:
+                raise
+            retries += 1
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            next_chunk = max(1, chunk_size // 2)
+            if next_chunk == chunk_size:
+                raise
+            if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}:
+                source = "user" if user_chunked else "auto"
+                print(
+                    "  R2 propose-all[cuda_delta]: CUDA OOM at chunk_size=%d "
+                    "(%s); retrying chunk_size=%d"
+                    % (chunk_size, source, next_chunk),
+                    flush=True,
+                )
+            chunk_size = next_chunk
 
 
 def _relocation_moves_propose_all(
@@ -1218,9 +1649,70 @@ def _relocation_moves_propose_all(
             raise
 
     if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}:
+        scorer_extra = ""
+        if scorer_mode == "cuda_delta":
+            stats = getattr(_score_relocation_proposals_cuda_delta, "last_stats", None)
+            if stats:
+                scorer_extra = (
+                    " device=%s chunk=%d->%d source=%s batches=%d retries=%d "
+                    "score_ms=%.1f static_ms=%.1f batch_ms=%.1f prep_ms=%.1f "
+                    "tensor_ms=%.1f updates=%d/%d/%d ms_per_prop=%.3f "
+                    "requested=%s configured=%s torch_cuda=%s/%d"
+                    % (
+                        stats["device"],
+                        stats["initial_chunk_size"],
+                        stats["final_chunk_size"],
+                        stats.get("chunk_source", ""),
+                        stats["batches"],
+                        stats["retries"],
+                        1000.0 * stats.get("elapsed", 0.0),
+                        stats.get("static_ms", 0.0),
+                        stats.get("batch_ms", 0.0),
+                        stats.get("prep_ms", 0.0),
+                        stats.get("tensor_ms_estimate", 0.0),
+                        stats.get("density_updates", 0),
+                        stats.get("macro_route_updates", 0),
+                        stats.get("net_route_updates", 0),
+                        stats.get("ms_per_proposal", 0.0),
+                        stats.get("requested_device", ""),
+                        stats.get("configured_backend", ""),
+                        stats.get("torch_cuda_available", False),
+                        stats.get("torch_cuda_device_count", 0),
+                    )
+                )
+                if "max_memory_allocated" in stats:
+                    scorer_extra += (
+                        " max_alloc=%.1fMiB max_reserved=%.1fMiB"
+                        % (
+                            stats["max_memory_allocated"] / (1024.0 * 1024.0),
+                            stats.get("max_memory_reserved", 0) / (1024.0 * 1024.0),
+                        )
+                    )
+                if stats.get("memory_budget_mb") is not None:
+                    scorer_extra += (
+                        " budget_mb=%.1f budget_source=%s est_bytes_prop=%d safety=%.2f "
+                        "static_est=%.1fMiB static_actual=%.1fMiB"
+                        % (
+                            stats["memory_budget_mb"],
+                            stats.get("memory_budget_source", ""),
+                            stats.get("dynamic_bytes_per_proposal", 0),
+                            stats.get("memory_safety_factor", 1.0),
+                            stats.get("static_tensor_bytes_estimate", 0) / (1024.0 * 1024.0),
+                            stats.get("static_tensor_bytes_actual", 0) / (1024.0 * 1024.0),
+                        )
+                    )
+                    if stats.get("memory_budget_source") == "auto_mem_frac":
+                        scorer_extra += (
+                            " auto_frac=%.3f cuda_free=%.1fMiB cuda_total=%.1fMiB"
+                            % (
+                                stats.get("auto_memory_frac", 0.0),
+                                (stats.get("auto_cuda_free_bytes") or 0) / (1024.0 * 1024.0),
+                                (stats.get("auto_cuda_total_bytes") or 0) / (1024.0 * 1024.0),
+                            )
+                        )
         print(
             "  R2 propose-all[%s]: hot=%d legal=%d frozen_scores=%d "
-            "selected=%d verify_scores=%d accepts=%d scorer=%s elapsed=%.3fs"
+            "selected=%d verify_scores=%d accepts=%d scorer=%s%s elapsed=%.3fs"
             % (
                 field,
                 len(hot),
@@ -1230,6 +1722,7 @@ def _relocation_moves_propose_all(
                 verify_scores,
                 accepts,
                 scorer_mode,
+                scorer_extra,
                 time.monotonic() - t0,
             ),
             flush=True,
@@ -1553,6 +2046,7 @@ def _soft_relocation_moves(
     use_density: bool = False,
     net_centroid: "np.ndarray | None" = None,
     wl_blend: float = 0.0,
+    wl_prefilter: float = 1e-4,
 ) -> "tuple[np.ndarray, int, float]":
     """Congestion-directed SOFT-macro relocation.
 
@@ -1570,6 +2064,18 @@ def _soft_relocation_moves(
     num_soft = incremental_scorer.num_soft
     if num_soft == 0:
         return soft_pos, 0, initial_score
+    # WL-delta prefilter for soft relocation (skips the full _trial_at_soft when
+    # the cheap WL delta alone is too large for cong/density to recover). 1e-4
+    # validated on ibm13/ibm15: skips ~37% of trials, no regression (better+faster
+    # on ibm15) — soft relocation commits best-per-group, so skipping non-best
+    # improving candidates is free. Env override SOFT_RELOC_WL_PREFILTER.
+    # INVARIANT (S11): this sequential path is the validated default (--all 1.1423).
+    # A future propose-all / GPU-batch soft path must reproduce this prefilter's
+    # selection effect or re-validate the headline — do not silently bypass it.
+    # See ISSUES.md S11 + ml_notes/04 constraint 6.
+    _env_wl = os.environ.get("SOFT_RELOC_WL_PREFILTER")
+    if _env_wl not in (None, ""):
+        wl_prefilter = float(_env_wl)
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     trace = get_candidate_trace()
     trace_field = "density" if use_density else "congestion"
@@ -1633,6 +2139,13 @@ def _soft_relocation_moves(
             for candidate_rank, t in enumerate(cand):
                 nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
                 ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
+                # WL-delta prefilter: skip the full trial when WL alone rules it
+                # out. wl_d also recorded as a trace feature (computed once here).
+                wl_d = 0.0
+                if wl_prefilter > 0.0 or trace is not None:
+                    wl_d = incremental_scorer.wl_delta_move_soft(k, (nx, ny))
+                    if wl_prefilter > 0.0 and wl_d > wl_prefilter:
+                        continue
                 s = incremental_scorer._trial_at_soft(prep, (nx, ny))
                 if trace is not None:
                     target_flat = int(pool[t])
@@ -1659,6 +2172,7 @@ def _soft_relocation_moves(
                             np.where(hot == k)[0][0] / max(len(hot) - 1, 1)
                         ),
                         "target_cold_rank_norm": float(candidate_rank / max(len(cand) - 1, 1)),
+                        "wl_delta": float(wl_d),
                     }
                     trace.record(
                         operator="soft_relocation",

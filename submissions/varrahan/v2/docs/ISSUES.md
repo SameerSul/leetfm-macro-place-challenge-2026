@@ -13,8 +13,8 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.1963** (above + HS3 hard-soft 3-cycle + 3-pin routing dispatcher numba-JIT) |
-| Prior `--all` avg | 1.1993 (HXS + R6 + WL-prefilter + shared-scorer + numba strips) |
+| Best `--all` avg | **1.1379** (2026-06-07 — S14: + hand-JIT scoring hot paths; 17/17 VALID, 0 overlaps, **2117s ~35min**). S13 numba 2563s/1.1380; no-numba fallback 1.1403 @3486s. |
+| Prior `--all` avg | 1.1403 (S12 soft n_targets 32) → 1.1423 (S11 prefilters) → 1.1496 (2-opt cuts) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |
 | **Gap to RePlAce** | **−17.9% (beat by 0.262 — beats on every benchmark)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
@@ -463,12 +463,23 @@ helps small ones. An adaptive-k (wider on fast benchmarks) is the next
 lever if this is revisited. (Update: see S11 — the *R2-cleanup* 2-opt k was
 later cut 20→16 to free scoring time; this 2-opt-on-winner pass stays k=20.)
 
-### S11. 2-opt scoring-cost reduction — soft WL-prefilter + R2-cleanup k (SHIPPED 2026-06-06)
+### S11. Scoring-cost reduction — WL-delta prefilters + R2-cleanup k (SHIPPED 2026-06-06, avg 1.1423)
 
 Per-operator profiling on ibm13 showed **hard_2opt eats ~48% of scoring time for
 the smallest per-move gains** (median 2.8e-6, ~20–50× below the soft operators);
-soft_relocation is the score MVP. Two cheap, accept-gate-safe cuts (only change
-which candidates get exact-scored — every accept still validated):
+**soft_relocation (28%) is the score MVP**. Three cheap, accept-gate-safe cuts
+(only change which candidates get exact-scored — every accept still validated).
+Full `--all`: **1.1423, all 17 VALID, 0 overlaps, 3434s** — new best (prior 1.1500;
+1.1500 → 1.1496 2-opt-only → 1.1423 with soft-reloc). Freed budget converts to
+deeper refinement on the deadline-bound benchmarks.
+
+0. **soft_relocation WL-delta prefilter = 1e-4** (the biggest win) — skips ~37% of
+   `_trial_at_soft` calls (~10% of total scoring time). soft_relocation commits the
+   best candidate per group, so skipping non-best improving candidates is free —
+   the calibrated per-candidate "loss" (7.1% at 1e-4) massively over-counts. ibm15
+   replicates: **1.2136 vs 1.2219 off (−0.008, and faster)**; ibm13 no regression at
+   any threshold. New bit-exact `wl_delta_move_soft` (verified
+   `_verify_wl_delta_move_soft.py`). Env `SOFT_RELOC_WL_PREFILTER`.
 
 1. **soft_2opt WL-delta prefilter 0.01 → 3e-4.** The 0.01 default rejected
    *nothing* on ibm13 (no soft swap's wl_delta exceeds it). Calibrated via
@@ -491,10 +502,102 @@ cost to all candidates — net-negative. The method + `HARD_2OPT_WL_PREFILTER` k
 **Validation (spot-check, no env):** ibm13 −0.008 (1.0341 → 1.0259) and faster
 (227 vs 240 s); ibm15 within its noise band (~1.224 ship vs ~1.220 baseline;
 ibm15 single-run noise ±0.008). hardk12 was rejected (clear ibm15 regression
-+0.03 → **k=16 is the safe value**). Full `--all`: **1.1496, all 17 VALID, 0
-overlaps** — ≈ prior 1.1500 (−0.0004, within `--all` noise → no regression). (The
-`--all` ibm01 wall-clock of 29,795 s was a machine-suspend artifact — `monotonic()`
-counted sleep; solo ibm01 re-runs at ~137 s.)
++0.03 → **k=16 is the safe value**). The 2-opt-only `--all` was 1.1496; with the
+soft-relocation prefilter (item 0 above) the combined headline is **1.1423**.
+(A `--all` ibm01 wall-clock of 29,795 s seen during this work was a machine-suspend
+artifact — `monotonic()` counted sleep; solo ibm01 re-runs at ~137 s.)
+
+**Invariant (do not let the GNN/propose-all work overshadow this).** These cuts
+live in the *sequential* prep→trial path. The Phase-C propose-all / CUDA-batch
+relocation path (`V2_RELOC_PROPOSE_ALL`, currently hard-only + default off) replaces
+that loop and bypasses the prefilters, so it must stay opt-in until it beats the
+prefiltered CPU default (now 1.1403) on the deadline-bound IBM benchmarks — see
+constraint 6 in `ml_notes/04-gnn-routing-fill-surrogate.md`. `_soft_relocation_moves`
+has no propose-all branch today, so the soft prefilter (the biggest win) is always
+active on the default path; keep it so.
+
+### S15. Spending the numba-freed cap headroom — budget DEAD, width NEUTRAL (2026-06-07)
+
+The S13/S14 speedups cut `--all` to ~35 min (vs the 1 h cap), freeing ~1400 s of
+slack. Two attempts to convert it to score, both negative:
+- **Raise per-benchmark budget (`V2_TIME_BUDGET`): no effect.** The "budget-bound"
+  benchmarks actually **converge** ~200–235 s (the numba speedup already let them
+  reach convergence — that's what drove 1.1403→1.1379). ibm13 control is bit-identical
+  at budget 150 vs 350; runtimes don't scale with budget; proxy variation is
+  restart-RNG noise. *Time is no longer the constraint — the reachable move set is.*
+- **Wider exploration (`HARD_2OPT_K=20` + `V2_SOFT_TGT=40`): net wash.** Single-
+  benchmark sweeps looked promising (ibm12 tgt40 −0.022) but were RNG-noise: the full
+  `--all` is **1.1376 vs 1.1379** (−0.0003, slower), just shuffling per-benchmark
+  wins/losses (ibm13 −0.018 but ibm08 +0.016). A single global width can't win
+  everywhere (no per-benchmark branching). Not shipped; defaults stay tgt32/k16.
+
+**Conclusion: at the practical floor for this move set on IBM.** Budget and width
+are exhausted; further gains need basin diversity (more DREAMPlace seeds) or new
+move types — bigger bets with diminishing IBM return (we already beat the
+leaderboard 1.4076 by 19%). Env knobs `V2_TIME_BUDGET` / `V2_SOFT_TGT` / `HARD_2OPT_K`
+kept for future experiments.
+
+### S14. Hand-JIT the post-numba scoring hot paths (2026-06-07, --all 2563s→2117s)
+
+After S13 (numba on), cProfile on ibm13 showed three vectorized-numpy scoring
+functions with no JIT path dominating: `_apply_macro_routing` (22.8s tottime, the
+per-cell macro routing scatter), `_macro_occ` (14.4s, density footprint), and
+`_compute_per_net_hpwl_subset` (12.2s, per-net HPWL). Wrote explicit-loop numba
+versions of each (`_apply_macro_routing_scatter_jit`, `_macro_occ_jit`,
+`_hpwl_subset_jit`), matching numpy's accumulation order → **bit-exact** (stress
+verifier Hcong/Vcong ~1e-15, density Δ=0, swap Δ=0; score_move Δ≤1e-9).
+
+`--all` **2563s → 2117s (~17% faster; ~39% vs the no-numba 3486s), ~35 min** — a
+big cap-safety margin under the 1 h limit. Avg unchanged at **1.1379** (bit-exact,
+so pure speed). ibm13 trajectory: 200s (no-numba) → 162s (numba) → 130s (+macro
+routing JIT) → 119s (+all 3). Remaining profiled chunk: `_resmooth_h_cols/_v_rows`
+(~10s, cumsum-based — numba won't beat numpy's C cumsum, so deprioritized) and
+`get_ref_node_id` (TILOS plc_client, external/read-only).
+
+### S13. numba JIT was silently disabled — re-enabled (2026-06-07, avg 1.1380, ~26% faster)
+
+cProfile on ibm13 found the routing-apply (`_apply_net_routing_struct`, ~114 s
+cumtime — half the run) running the **numpy fallbacks** (`_apply_3pin_routing_vec_numpy`
+etc.), not the JIT paths. Root cause: **numba was not installed** (`HAS_NUMBA=False`).
+numba is declared in `v2/requirements.txt` (`numba>=0.59`) but **not** in
+`pyproject.toml`, so `uv sync` alone never installs it, and `config.py` falls back
+to numpy **silently**. So every measurement this session (incl. the 1.1403 headline)
+ran ~25 % slower than intended.
+
+Fix: install numba (0.65.1 resolves on py3.14). `--all` then drops **3486 s → 2563 s
+(~26 % faster)** and the avg improves **1.1403 → 1.1380** (the freed wall-clock budget
+converts to more rounds on the deadline-bound benchmarks). Per-move the routing-apply
+JIT is ~3–5× the numpy path (`ARCHITECTURE.md` §5.3).
+
+**Impact + risk.** Without numba the placer still runs (graceful fallback) but ~25 %
+slower → `--all` ~58 min, *near the 1 h cap*, and avg 1.1403. So numba is both a
+score lever (−0.0023) and a cap-safety margin. `config.py` now emits a warning when
+numba is missing. **The eval environment must install `v2/requirements.txt`** (or
+numba must reach the `uv sync` path) to realize 1.1380. Other post-JIT hot spots
+(cProfile): `np.unique`/`_unique1d` (~10 s, 1.5 M calls in the subset-cumsum
+strip-batch) and `get_ref_node_id` (TILOS plc_client, ~8 s) — next CPU candidates.
+
+### S12. Spend the S11 freed budget + adaptive budget control (2026-06-07, avg 1.1403)
+
+S11 freed ~15–20 % of scoring time. Two follow-ups to spend it well:
+
+**SHIPPED — soft_relocation `n_targets` 24 → 32.** Each soft-reloc group is ~37 %
+cheaper post-prefilter, so the freed budget buys more per-macro target depth on the
+score MVP. `--all` **1.1403** (17/17 VALID). Per-benchmark: ibm13 −0.012, ibm17
+−0.0054, ibm15 neutral. Widening `top_hot` too (128→192) **over-widens** — worse on
+ibm13 + ibm15 and finishes early (under-uses budget), so only `n_targets` moved.
+Env `V2_SOFT_TGT` / `V2_SOFT_HOT` / `V2_SOFT_HOT_BOOSTED`.
+
+**SHELVED (negative) — adaptive per-pass budget control.** Tracked each pass's
+cumulative yield (proxy gain / budget-second) and scaled its deadline cap by
+`clamp(yield/mean, lo, hi)`. Both full-adaptive (`[0.4, 2.5]`, boost+shrink) and
+boost-only (`[1.0, 2.5]`) were consistently **worse** on deadline-bound ibm13/15/17
+(+0.002 to +0.008): the shrink path makes `round_improved` flip false sooner →
+early termination → worse basin; the boost path saturates without using the extra
+time. The static caps + `skip-if-empty` are already a near-optimal allocation —
+**the budget allocation isn't the lever; the moves are.** Kept env-gated
+(`V2_ADAPTIVE_BUDGET` / `V2_ADAPTIVE_LO` / `V2_ADAPTIVE_HI`, default off, zero
+overhead when off — the timing/gain bookkeeping is guarded) for future iteration.
 
 ### S3. Phase 8 with extended TOP-K set ({3, 5, 7, 10, 15, 20, 30, 50})
 

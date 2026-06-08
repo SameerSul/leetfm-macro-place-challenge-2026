@@ -44,6 +44,23 @@ These are non-negotiable; any step that violates one is wrong.
    score identity.
 5. **Write scope:** everything lives under `submissions/varrahan/v2/**`
    (`src/placer/ml/`, `src/placer/local_search/`, `test/diagnostic/`, `ml_data/`).
+6. **Do not overshadow the shipped S11 scoring-cost cuts.** The validated default
+   (`--all` **1.1423**) is the *sequential* prep→trial path carrying the WL-delta
+   prefilters (`soft_relocation` 1e-4 via `wl_delta_move_soft`, `soft_2opt` 3e-4,
+   `hard_2opt` k=16). The Phase-C *propose-all* / CUDA-batch path replaces that loop
+   and so **bypasses these prefilters**. Therefore:
+   - The propose-all / GPU relocation path must stay **opt-in** (`V2_RELOC_PROPOSE_ALL`,
+     default off) until it is proven to **beat the prefiltered CPU default on the
+     deadline-bound IBM benchmarks** — multi-seed, per-benchmark non-regression vs
+     1.1423. "Faster in isolation" is not enough; S2 showed GPU batching *loses* on
+     the small IBM grids, so the CPU-prefiltered path is expected to remain default
+     for the IBM submission, with the GPU path winning only on NG45/large grids.
+   - When propose-all is generalized to **soft** relocation (the score MVP), the
+     batched path must reproduce the prefilter's *selection effect* or re-validate
+     the headline — do not let a batched soft path silently drop the soft prefilter.
+   - Currently safe: `_soft_relocation_moves` has **no** propose-all branch (the
+     CUDA work is hard-relocation only), so the soft prefilter is always active on
+     the default path. Keep it that way unless the above is satisfied.
 
 ## 3. Decision gates (stop here if a gate fails)
 

@@ -6,9 +6,8 @@ numba>=0.59
 
 # --- ML candidate-ranker training (src/placer/ml/, test/diagnostic/) ---
 # Offline-only: trains the per-operator XGBoost rankers from ml_data/ traces.
-# Not imported on the submission's inference path.
 xgboost>=3.2.0
 scikit-learn>=1.9.0
 
-# --- Tests (submissions/varrahan/v2/test/) ---
+# --- Tests ---
 pytest>=7.0.0

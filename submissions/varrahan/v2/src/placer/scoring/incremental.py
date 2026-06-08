@@ -3,6 +3,7 @@
 import numpy as np
 from macro_place.benchmark import Benchmark
 
+from placer.config import HAS_NUMBA, _numba_njit
 from placer.plc.placement import _ensure_pos_cache, _fast_set_placement
 from placer.routing.apply import (
     _apply_macro_routing_subset,
@@ -13,6 +14,66 @@ from placer.routing.apply import (
 )
 from placer.scoring.density import _build_density_cache, _vectorized_get_grid_cells_density
 from placer.scoring.wirelength import _build_wl_cache
+
+
+if HAS_NUMBA:
+    @_numba_njit(cache=True, fastmath=False)
+    def _hpwl_subset_jit(net_indices, net_starts, net_lengths, ref_inv, x_off, y_off,
+                         node_x, node_y):
+        """JIT per-net HPWL over a subset. min/max are order-independent, so this
+        is bit-identical to the numpy reduceat path. Replaces the np.repeat /
+        arange / cumsum / reduceat gather (12.2s tottime on ibm13)."""
+        n = net_indices.shape[0]
+        out = np.empty(n, dtype=np.float64)
+        for k in range(n):
+            net = net_indices[k]
+            s = net_starts[net]
+            L = net_lengths[net]
+            if L == 0:
+                out[k] = 0.0
+                continue
+            px = node_x[ref_inv[s]] + x_off[s]
+            py = node_y[ref_inv[s]] + y_off[s]
+            minx = px; maxx = px; miny = py; maxy = py
+            for j in range(1, L):
+                p = s + j
+                qx = node_x[ref_inv[p]] + x_off[p]
+                qy = node_y[ref_inv[p]] + y_off[p]
+                if qx < minx:
+                    minx = qx
+                if qx > maxx:
+                    maxx = qx
+                if qy < miny:
+                    miny = qy
+                if qy > maxy:
+                    maxy = qy
+            out[k] = (maxx - minx) + (maxy - miny)
+        return out
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _macro_occ_jit(bl_row, bl_col, ur_row, ur_col,
+                       x_min, x_max, y_min, y_max, gw, gh, gcol):
+        """JIT cell enumeration + overlap-area for one macro footprint. Row-major
+        order matches np.outer(oy, ox).ravel() → bit-identical. Returns (flat, area)."""
+        nr = ur_row - bl_row + 1
+        nc = ur_col - bl_col + 1
+        flat = np.empty(nr * nc, dtype=np.int64)
+        area = np.empty(nr * nc, dtype=np.float64)
+        i = 0
+        for r in range(bl_row, ur_row + 1):
+            oy = min(gh * (r + 1), y_max) - max(gh * r, y_min)
+            if oy < 0.0:
+                oy = 0.0
+            base = r * gcol
+            for c in range(bl_col, ur_col + 1):
+                ox = min(gw * (c + 1), x_max) - max(gw * c, x_min)
+                if ox < 0.0:
+                    ox = 0.0
+                flat[i] = base + c
+                area[i] = oy * ox
+                i += 1
+        return flat, area
+
 
 class IncrementalScorer:
     """Stateful incremental proxy scorer for local-search moves.
@@ -212,6 +273,9 @@ class IncrementalScorer:
         ur_col = min(max(ur_col, 0), gcol - 1)
         bl_row = min(max(bl_row, 0), grow - 1)
         ur_row = min(max(ur_row, 0), grow - 1)
+        if HAS_NUMBA:
+            return _macro_occ_jit(bl_row, bl_col, ur_row, ur_col,
+                                  x_min, x_max, y_min, y_max, gw, gh, gcol)
         cols = np.arange(bl_col, ur_col + 1)
         rows = np.arange(bl_row, ur_row + 1)
         ox = np.minimum(gw * (cols + 1), x_max) - np.maximum(gw * cols, x_min)
@@ -363,6 +427,16 @@ class IncrementalScorer:
         """
         if len(net_indices) == 0:
             return np.empty(0, dtype=np.float64)
+
+        if HAS_NUMBA:
+            pos_cache = _ensure_pos_cache(self.plc)
+            return _hpwl_subset_jit(
+                np.ascontiguousarray(net_indices),
+                self.net_starts, self.net_lengths, self.ref_inv,
+                self.x_off, self.y_off,
+                np.ascontiguousarray(pos_cache[self.unique_ref, 0]),
+                np.ascontiguousarray(pos_cache[self.unique_ref, 1]),
+            )
 
         starts_t = self.net_starts[net_indices]
         lengths_t = self.net_lengths[net_indices]
@@ -1177,6 +1251,28 @@ class IncrementalScorer:
             np.add.at(self.grid_occupied, o_idx, o_area)
         if bb_old is not None:
             self._resmooth_bbox(*bb_old)
+
+    def wl_delta_move_soft(self, soft_k: int, new_xy) -> float:
+        """Cheap WL-only delta for relocating SOFT macro k to new_xy.
+
+        A prefilter before the costlier `_trial_at_soft`: per-net HPWL change for
+        k's nets only, no routing/density/smoothing. Independent of prep state
+        (prep touches the routing flats, not pos_cache / per_net_hpwl), so it
+        matches `_trial_at_soft`'s WL delta. Bypasses `_apply_pos` by transiently
+        overwriting k's pos_cache row. Returns the NORMALIZED WL delta. Single-move
+        analogue of `wl_delta_swap_soft`.
+        """
+        s_module = self.soft_indices[soft_k]
+        touched = self._macro_nets(s_module)
+        if len(touched) == 0:
+            return 0.0
+        pos_cache = _ensure_pos_cache(self.plc)
+        sx = float(pos_cache[s_module, 0]); sy = float(pos_cache[s_module, 1])
+        pos_cache[s_module, 0] = float(new_xy[0]); pos_cache[s_module, 1] = float(new_xy[1])
+        new_per_net = self._compute_per_net_hpwl_subset(touched)
+        delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+        pos_cache[s_module, 0] = sx; pos_cache[s_module, 1] = sy
+        return delta / self.wl_normalizer
 
     # ------------------------------------------------------------------
     # Soft-soft 2-opt swap: exchange two softs' positions (single relocation can't
