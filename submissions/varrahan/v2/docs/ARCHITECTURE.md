@@ -84,6 +84,27 @@ Budget per benchmark in --all mode:
 
 ## Change History
 
+### eda_io plug-and-play layer (2026-06-09) -- no placer change
+
+New `src/eda_io/` package + `src/place_design.py` CLI make the placer usable in
+any physical-design flow. Inputs: LEF, DEF, structural Verilog, SDC, Liberty
+(mix freely; minimum = one geometry source + one instance source). Outputs:
+updated DEF (input DEF patched in place, byte-identical outside placement
+clauses), ICC2/Innovus Tcl, QoR `.rpt`, visualization PNG. Strategy: every
+input combo is merged into one neutral `Design` (`eda_io/design.py`) and
+converted to the ICCAD04 `netlist.pb.txt` + `initial.plc` pair (`eda_io/
+build.py`), then loaded through the standard `load_benchmark` with the plc
+attached via `benchmark._cached_plc` — so external designs get the exact TILOS
+scorer and identical placer behavior, and no second native format exists.
+Conversion semantics: LEF CLASS BLOCK → hard macro (fallback: >10× median
+area); std cells clustered ~50/cluster (by location if placed, else union-find
+connectivity) into square soft macros; DEF FIXED stays fixed; placement
+BLOCKAGES become fixed dummy macros; non-zero DEF origins shifted to a
+(0,0) canvas and shifted back on output; SDC → net weights (clock 0.0,
+critical 2.0, false path 0.25), Liberty scales by sink capacitance. 15 tests
+(`test/eda_io/`, incl. DEF round-trip + subprocess e2e) all pass; fixture
+chiptop run: proxy 0.8737 → 0.8177, VALID. Full docs: `src/eda_io/README.md`.
+
 ### Readability refactor (2026-06-04) -- no algorithm change, `--all` avg 1.1500
 
 Pure code-simplification pass; move generation, scoring, and RNG untouched, so the
