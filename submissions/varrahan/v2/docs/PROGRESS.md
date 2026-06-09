@@ -3,6 +3,28 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-09 — synthetic anti-overfitting suite + out-of-bounds fix):**
+> Built a 10-benchmark synthetic suite (`test/benchmarks/`, ICCAD04-format,
+> scored through the unmodified TILOS evaluator) probing axes the IBM suite
+> never varies: canvas aspect, fixed macros, SRAM-style designs, utilization
+> extremes, clustering, one-sided ports, inverted routing capacity, random
+> seeds, and 820-macro scale. First run: **9/10 INVALID** from 0.15–0.52um
+> out-of-bounds overhangs — all soft macros. Two bugs, same shape: the
+> soft-2opt swap (`soft_moves.py`) and the HXS/HS3 hard-soft exchanges
+> (`hard_soft.py`) moved softs into inherited slots with **no bounds check**,
+> so a larger soft inheriting a smaller macro's edge-flush slot overhung the
+> canvas. IBM never trips it (hand-tuned seeds keep softs off the edges).
+> Fix: clamp inherited slots per-macro half-size; also tightened the EPS=0.05
+> overhang allowance in all hard bounds checks (`two_opt.py`, `relocation.py`,
+> `legalize/swap.py`, `hard_soft.py`) to strict, since `validate_placement`
+> has zero tolerance. Confirmation run: **all 10 synthetics VALID / 0
+> overlaps**, proxies within noise or slightly better; **ibm01 = 0.9111 VALID
+> before and after** (no IBM regression; full `--all` not rerun). New open
+> issues from the suite (ISSUES.md G2/G3): per-benchmark budget not enforced
+> at scale (syn10_xl 153–504s and syn02 988s under load vs a 90s budget), and
+> heavy seed dependence (random seed → proxy 3.12 vs ~1.14 with a coherent
+> seed; overlaps recovered, global structure not).
+>
 > **Status (2026-06-04 — readability refactor, no algorithm change):**
 > **Avg 1.1500 — all 17 VALID / 0 overlaps, 3300.10s.** Pure code-simplification
 > pass, validated non-degrading via `--all`. No move-generation, scoring, or RNG

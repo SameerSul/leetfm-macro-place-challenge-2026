@@ -760,6 +760,47 @@ sometimes shows 36000+ seconds while actual elapsed is <600s. Caused
 by WSL2 wall-clock drift in the harness's own timing (which we don't
 control).
 
+### G1. Out-of-bounds soft swaps (RESOLVED 2026-06-09 — caught by the synthetic suite)
+
+First catch from the anti-overfitting suite
+(`test/benchmarks/`): 9/10 synthetic benchmarks came back INVALID with
+0.15–0.52um overhangs, all on SOFT macros. The soft-2opt swap
+(`soft_moves.py`) exchanged positions with **no bounds check**, so a
+larger soft macro inheriting a smaller one's edge-flush slot overhung
+the canvas. IBM never trips it because the hand-tuned `initial.plc`
+seeds keep softs off the canvas edge. Fix: clamp swap targets by each
+macro's own half-size (softs may overlap, so clamping stays legal),
+plus tighten the `EPS=0.05` overhang allowance in the hard bounds
+checks (`two_opt.py`, `relocation.py`, `legalize/swap.py`) to strict —
+`validate_placement` has zero tolerance, so those were latent INVALID
+sources too. The rerun then exposed a second leak with the same shape:
+`hard_soft.py` (HXS swap + HS3 3-cycle) bounds-checked only the HARD
+macro's destination, never the softs inheriting slots in the exchange
+(`syn07_ports` still INVALID, 0.253um). Same fix: clamp each soft's
+inherited slot by its own half-size, strict hard bounds. Verified:
+all 10 synthetics VALID, proxies within noise or slightly better
+(syn03 4.3063 vs 4.3113); ibm01 unaffected before and after
+(0.9111 VALID).
+
+### G2. Budget overrun at scale (OPEN — found by syn10_xl)
+
+`syn10_xl` (820 hard / 2000 soft / 50×50 grid) ran **504s against a
+90s budget**; `syn09_seedless` ran 173s. Something in the pipeline is
+not deadline-gated at this scale (IBM tops out at 786 hard macros and
+the floor-reservation allocator was tuned on IBM-sized cases). Worth
+profiling before any rule change adds bigger benchmarks — a 17-case
+run of syn10-sized designs would blow the 1-hour harness cap.
+
+### G3. Seed dependence (OPEN — quantified by syn09_seedless)
+
+With a scrambled seed (same netlist style as syn08), v2 lands at proxy
+3.27 vs ~1.14 with a coherent seed. Overlaps are recovered (240 → 0)
+but global structure is not rebuilt — consistent with the "initial.plc
+is already a good seed" note, and a real exposure on any future
+benchmark without a curated seed. A cheap global-restructure phase
+(e.g. cluster-aware seeding when the seed scores terribly) is the
+obvious lever.
+
 ---
 
 ## What's NOT in this list (resolved or rejected — see commits)
