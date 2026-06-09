@@ -3,6 +3,21 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-09 — eda_io plug-and-play EDA I/O layer, no placer change):**
+> The placer now runs in any physical-design flow via `src/eda_io/` +
+> `src/place_design.py`. Inputs: LEF / DEF / structural Verilog / SDC /
+> Liberty in any viable combination (minimum: one geometry source + one
+> instance source); outputs: updated DEF (input patched in place), ICC2 or
+> Innovus Tcl, QoR `.rpt`, visualization PNG. Every combo is merged into a
+> neutral `Design` and converted to ICCAD04 pb+plc, so the unchanged placer
+> and the exact TILOS scorer run on external designs exactly as on the
+> challenge benchmarks. SDC criticality becomes net weights (clock 0.0,
+> critical 2.0, false path 0.25); Liberty adds cap-based weighting + geometry
+> fallback; DEF FIXED components and blockages are honored. 15/15 tests pass
+> (`test/eda_io/`, incl. DEF patch round-trip + subprocess end-to-end);
+> fixture `chiptop` e2e: proxy 0.8737 → 0.8177, VALID, outputs verified.
+> Docs: `src/eda_io/README.md`. No change to the challenge path or scores.
+>
 > **Status (2026-06-09 — synthetic anti-overfitting suite + out-of-bounds fix):**
 > Built a 10-benchmark synthetic suite (`test/benchmarks/`, ICCAD04-format,
 > scored through the unmodified TILOS evaluator) probing axes the IBM suite
