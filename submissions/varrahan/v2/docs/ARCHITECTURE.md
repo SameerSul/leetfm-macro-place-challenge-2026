@@ -1,13 +1,26 @@
 # CongFlow v2 -- Architecture & Experiment Log
 
-> **Current best `--all`: 1.1379** (2026-06-07, all 17 VALID / 0 overlaps, **2117s
-> ~35min**) — S11 cuts + S12 (soft n_targets 24→32) + S13 (numba re-enabled — was
-> silently missing) + **S14 (hand-JIT the scoring hot paths: ~17% faster, bit-exact)**.
+> **Current best `--all`: 1.1272** (2026-06-10, all 17 VALID / 0 overlaps, **2645s
+> ~44min**) — **S16: fixed a silent DREAMPlace ABI break.** The bridge launched DP
+> with the repo `.venv` (upgraded to Python 3.14 for numba at S13), but DP's compiled
+> extensions are cpython-310, so `import place_io_cpp` died ~4s after launch and the
+> bridge masked it as a benign "not ready" → **DP produced ZERO seeds on every
+> benchmark since S13.** So the prior 1.1379 @2117s (S14) was a DP-OFF run. Pointing
+> `VENV_PYTHON` at the DP build env (`dpenv` 3.10) restored all 3 basins: `--all`
+> **1.1379 → 1.1272 (−0.0107)**, 51/51 DP launches ready / 0 failures, DP basins
+> contributing on all 17. (+528s is the DP candidate-scoring + DP-basin 2-opt work;
+> still well under the 3300s soft cap.) See `docs/ISSUES.md` S16.
 > Trajectory: 1.1782 → 1.1500 → 1.1423 (S11) → 1.1403 (S12) → 1.1380 (S13) →
-> **1.1379 @2117s** (S14). no-numba fallback: 1.1403 @3486s. The per-benchmark
-> decomposition table below is the
-> 2026-05-31 1.1782 snapshot (kept as the detailed breakdown); see `docs/ISSUES.md`
-> S11/S12/S13 and `docs/PROGRESS.md` for the current headline.
+> 1.1379 (S14, DP-off) → **1.1272 (S16, DP restored)**. The per-benchmark
+> decomposition table below is the 2026-05-31 1.1782 snapshot (kept as the detailed
+> breakdown); see `docs/ISSUES.md` and `docs/PROGRESS.md` for the current headline.
+>
+> **NB — LAHC disproven (2026-06-10).** Late-Acceptance Hill Climbing on the
+> 2-opt-on-winner was tested (env-gated) and **reverted**: strictly worse on
+> ibm12/17/18, tightening the history length only recovers greedy and never beats
+> it. The deadline-bound 2-opt converges fast to a strong basin minimum, so
+> non-monotonic acceptance just wastes budget wandering (consistent with the S1
+> basin-hopping disproof). The accept gate stays strict-improvement greedy.
 
 ## Current Best Result (L-change + M1, 2026-05-31)
 

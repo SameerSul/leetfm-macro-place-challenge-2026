@@ -13,12 +13,12 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.1379** (2026-06-07 — S14: + hand-JIT scoring hot paths; 17/17 VALID, 0 overlaps, **2117s ~35min**). S13 numba 2563s/1.1380; no-numba fallback 1.1403 @3486s. |
-| Prior `--all` avg | 1.1403 (S12 soft n_targets 32) → 1.1423 (S11 prefilters) → 1.1496 (2-opt cuts) → 1.1500 (refactor) |
+| Best `--all` avg | **1.1272** (2026-06-10 — S16: fixed silent DREAMPlace ABI break, DP basins restored; 17/17 VALID, 0 overlaps, **2645s ~44min**). |
+| Prior `--all` avg | 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−17.9% (beat by 0.262 — beats on every benchmark)** |
+| **Gap to RePlAce** | **−22.7% (beat by 0.331 — beats on every benchmark)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−15.0% (BEATS by 0.211)** |
+| **Gap to leaderboard** | **−19.9% (BEATS by 0.280)** |
 | NG45 (Tier 2) avg | 0.7830 |
 | `--all` wall-clock | 4429s wall (74 min, no host-suspend drift), harness monotonic well under the 3600s hard cap |
 
@@ -49,6 +49,44 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 ---
 
 ## Open issues
+
+### S16. Silent DREAMPlace ABI break — DP was dead since S13 (SHIPPED 2026-06-10 — 1.1379 → 1.1272)
+
+The DP bridge (`src/dreamplace_bridge/run_bridge.py`) launched DREAMPlace with
+`REPO_ROOT/.venv/bin/python`. The repo `.venv` was upgraded to **Python 3.14** for
+numba (S13), but every DP compiled extension under `dreamplace_build/install` is
+ABI-tagged **cpython-310** (built against `dreamplace_build/dpenv`, Python 3.10). So
+`import dreamplace.ops.place_io.place_io_cpp` died with `ModuleNotFoundError` ~4s
+after launch — and the harvest masked it as a benign **"not ready (elapsed=4.4s);
+killing subprocess"** (the result-wait can't tell "still computing" from "already
+exited non-zero"). Net: **DREAMPlace produced ZERO seed basins on every benchmark
+from S13 onward**; the multi-seed 2-opt ran single-basin, and **the 1.1379 @2117s
+(S14) headline was a DP-OFF run.**
+
+**Fix (one spot, graceful):** `VENV_PYTHON` now prefers the DP build env's
+interpreter (`dreamplace_build/dpenv/bin/python`, 3.10), falling back to `.venv`
+only when dpenv is absent (e.g. a machine where DP was built in-place). The DP
+subprocess already sets its own `PYTHONPATH`, so the parent stays on 3.14 and only
+the DP child uses 3.10 — the documented "isolated envs" design.
+
+**Result:** `--all` **1.1379 → 1.1272 (−0.0107)**, all 17 VALID / 0 overlaps,
+**51/51 DP launches ready / 0 failures**, DP basins used (not pruned) in the 2-opt
+on all 17. Runtime 2117 → 2645s (the +528s is DP candidate-scoring + DP-basin
+2-opt; well under the 3300s soft cap). Confirms basin diversity is a real lever in
+aggregate — but **only resolves above noise at the 17-benchmark average**: the
+single-benchmark spot-check (ibm12 −0.006, ibm17 +0.004, ibm18 −0.006) read as
+neutral/noise, one even regressing. **Follow-up:** DP basins are still mostly pruned
+or lose the 2-opt selection (DP's raw proxy is congestion-blind, 1.7–3.0 vs the
+cong-grad best ~1.65–1.79); the gain comes from the minority of benchmarks where
+DP's WL/density basin 2-opts below best. More/different DP configs (S15's basin-
+diversity idea) may still have headroom now that DP actually runs.
+
+**LAHC (disproven, reverted 2026-06-10).** Tested Late-Acceptance Hill Climbing on
+the 2-opt-on-winner to break the strict-greedy accept gate. Strictly worse on
+ibm12/17/18 (ibm17 2-opt 1.7299→1.7401 at L=1000, →1.7328 at L=50 — tighter history
+only recovers greedy, never beats it; ~85% accept rate = plateau random-walk). The
+deadline-bound 2-opt converges fast to a strong basin min, leaving no headroom for
+non-monotonic exploration (matches the S1 basin-hopping disproof). Reverted in full.
 
 ### R1. Congestion-directed relocation moves (SHIPPED 2026-05-27 — 1.4422 → 1.4326)
 
