@@ -45,6 +45,9 @@ def _two_opt_soft_swap(
     num_soft = incremental_scorer.num_soft
     if num_soft < 2:
         return soft_pos, 0, initial_score
+    nh = benchmark.num_hard_macros
+    soft_hw = benchmark.macro_sizes[nh:, 0].numpy().astype(np.float64) / 2
+    soft_hh = benchmark.macro_sizes[nh:, 1].numpy().astype(np.float64) / 2
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     trace = get_candidate_trace()
     trace_field = "density" if use_density else "congestion"
@@ -131,8 +134,17 @@ def _two_opt_soft_swap(
                 rejected_already_swapped += 1
                 continue
             # Swap: k1 takes k2's old position, k2 takes k1's old position.
-            new_xy1 = (float(soft_pos[k2, 0]), float(soft_pos[k2, 1]))
-            new_xy2 = (float(soft_pos[k1, 0]), float(soft_pos[k1, 1]))
+            # Clamp each to its own half-size so a larger macro inheriting an
+            # edge-flush slot can't overhang the canvas (softs may overlap, so
+            # the shifted position stays legal).
+            new_xy1 = (
+                float(np.clip(soft_pos[k2, 0], soft_hw[k1], cw - soft_hw[k1])),
+                float(np.clip(soft_pos[k2, 1], soft_hh[k1], ch - soft_hh[k1])),
+            )
+            new_xy2 = (
+                float(np.clip(soft_pos[k1, 0], soft_hw[k2], cw - soft_hw[k2])),
+                float(np.clip(soft_pos[k1, 1], soft_hh[k2], ch - soft_hh[k2])),
+            )
             wl_d = incremental_scorer.wl_delta_swap_soft(k1, new_xy1, k2, new_xy2)
             if wl_d > WL_PREFILTER:
                 rejected_wl_prefilter += 1

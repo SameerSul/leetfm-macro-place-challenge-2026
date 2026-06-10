@@ -235,6 +235,8 @@ submissions/varrahan/v2/
 ├── test/
 └── src/
     ├── main.py
+    ├── place_design.py      # eda_io CLI: standard EDA files in/out
+    ├── eda_io/              # LEF/DEF/Verilog/SDC/Liberty readers, DEF/Tcl/report writers
     ├── dreamplace_bridge/
     │   ├── bookshelf_to_pb.py
     │   ├── pb_to_bookshelf.py
@@ -292,6 +294,8 @@ submissions/varrahan/v2/
 | `src/placer/ml/` | Opt-in training-data collection for a learned candidate ranker — `data_collection.py` (`CandidateTrace`, the `TraceFields` feature helper, `net_degree_features`; active only when `ML_TRACE_PATH` is set, otherwise inert) + `dataset.py` (trace-JSONL loaders + `add_group_relevance` for LambdaMART labels). See "ML candidate-ranker data collection" below. |
 | `scripts/collect_ml_data.sh` | Runs the placer with `ML_TRACE_PATH` set across a seed sweep (`--all` or `--ng45`) to produce the training traces in `ml_data/`. |
 | `src/dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async DREAMPlace subprocess launcher. |
+| `src/eda_io/` | Plug-and-play EDA I/O layer: parses LEF/DEF/Verilog/SDC/Liberty into a neutral `Design`, converts to ICCAD04 pb+plc (placer + exact scorer unchanged), writes updated DEF / ICC2-Innovus Tcl / QoR reports. See `src/eda_io/README.md`. |
+| `src/place_design.py` | CLI for the eda_io layer — any input combo in, any output combo out. |
 | `docs/ARCHITECTURE.md` | Design overview + pipeline visualization + algorithm explanations. Start here for the "how it works" tour. |
 | `docs/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
 | `docs/ISSUES.md` | Open issues + closed dead-ends with evidence. |
@@ -364,6 +368,29 @@ submissions/varrahan/v2/scripts/collect_ml_data.sh --ng45 42 43 44   # NG45
 - Training deps (`xgboost`, `scikit-learn`) are in `requirements.txt`,
   offline-only — not imported on the submission's inference path. `ml_data/`
   is large and gitignore-worthy.
+
+## Using the placer outside the challenge (eda_io)
+
+The v2 placer is usable in any physical-design flow via `src/eda_io/` +
+`src/place_design.py`: it accepts standard EDA inputs (**LEF, DEF, structural
+Verilog, SDC, Liberty** — mix freely, minimum is one geometry source + one
+instance source) and emits standard outputs (**updated DEF** with exact
+locations/orientations/PLACED-FIXED flags, **Tcl** sourceable in ICC2 or
+Innovus, **QoR .rpt** with HPWL/legality/proxy breakdown, and the standard
+visualization PNG). Every input combo is merged into one neutral `Design`
+and converted to the ICCAD04 `netlist.pb.txt` + `initial.plc` pair, so the
+unchanged placer and the exact TILOS scorer run on external designs exactly
+as on the challenge benchmarks. SDC raises weights on timing-critical nets
+so critical macros are pulled together; fixed components and DEF blockages
+are honored. Full documentation: [`src/eda_io/README.md`](src/eda_io/README.md).
+
+```bash
+uv run python submissions/varrahan/v2/src/place_design.py \
+    --lef tech.lef --lef macros.lef --def floorplan.def --sdc top.sdc \
+    --out-def placed.def --out-tcl place.tcl --report qor.rpt
+```
+
+Tests: `uv run --with pytest python -m pytest submissions/varrahan/v2/test/eda_io/ -v`
 
 ## Reproducing the DREAMPlace build (`dreamplace_build/`, gitignored ~500MB)
 

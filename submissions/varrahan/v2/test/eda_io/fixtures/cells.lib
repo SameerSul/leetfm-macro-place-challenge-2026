@@ -1,0 +1,31 @@
+/* Minimal liberty file for the chiptop fixture */
+library (chiptop_cells) {
+  time_unit : "1ns" ;
+  capacitive_load_unit (1, pf) ;
+
+  cell (INVX1) {
+    area : 0.72 ;
+    pin (A) { direction : input ; capacitance : 0.002 ; }
+    pin (Y) { direction : output ; }
+  }
+
+  cell (NAND2) {
+    area : 0.96 ;
+    pin (A) { direction : input ; capacitance : 0.0025 ; }
+    pin (B) { direction : input ; capacitance : 0.0025 ; }
+    pin (Y) { direction : output ; }
+  }
+
+  cell (BUFX2) {
+    area : 1.92 ;
+    pin (A) { direction : input ; capacitance : 0.003 ; }
+    pin (Y) { direction : output ; }
+  }
+
+  cell (RAM16) {
+    area : 48.0 ;
+    pin (D)  { direction : input ; capacitance : 0.010 ; }
+    pin (CK) { direction : input ; capacitance : 0.005 ; }
+    pin (Q)  { direction : output ; }
+  }
+}
