@@ -5,10 +5,18 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-05-31 — full stack): avg `1.1782`** — beats the
-RePlAce target (`1.4578`) by **17.9%**, all 17 IBM benchmarks VALID / 0
-overlaps. **Beats the #1 leaderboard** (UT Austin DREAMPlace, `1.4076`) by
-**0.211 (−15.0%)**. We **beat RePlAce on every single benchmark**.
+**Headline (`--all`, 2026-06-07): avg `1.1379`** (17/17 VALID, 0 overlaps, **2117s
+~35min**) — beats the RePlAce target (`1.4578`) by **21.9%** and the #1 leaderboard
+(UT Austin DREAMPlace, `1.4076`) by **0.270 (−19.2%)**, on every single benchmark.
+Trajectory: 1.1782 → 1.1500 → 1.1423 (S11 prefilters) → 1.1403 (S12 wider soft
+pool) → 1.1380 (S13 numba re-enabled) → **1.1379 @2117s** (S14 hand-JIT scoring hot
+paths: ~39% faster than no-numba's 3486s, same score — pure speed).
+
+> ⚠ **Requires numba** for full speed — it JITs the routing-apply (~half the
+> runtime). numba is in `requirements.txt` but **not** `pyproject.toml`, so
+> `uv sync` alone won't install it; **install `requirements.txt`**. Without numba
+> the placer still runs (numpy fallback) but ~25% slower (~58min, near the 1h cap)
+> and scores 1.1403. See `docs/ISSUES.md` S13.
 Driven by a **family of dual-field soft + hard moves** (cong-field +
 density-field for every move type, plus HXS hard ⇄ soft cross-swaps), a
 bit-exact incremental scoring core, a parallelized pipeline, an **adaptive

@@ -3,43 +3,66 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-06-09 — eda_io plug-and-play EDA I/O layer, no placer change):**
-> The placer now runs in any physical-design flow via `src/eda_io/` +
-> `src/place_design.py`. Inputs: LEF / DEF / structural Verilog / SDC /
-> Liberty in any viable combination (minimum: one geometry source + one
-> instance source); outputs: updated DEF (input patched in place), ICC2 or
-> Innovus Tcl, QoR `.rpt`, visualization PNG. Every combo is merged into a
-> neutral `Design` and converted to ICCAD04 pb+plc, so the unchanged placer
-> and the exact TILOS scorer run on external designs exactly as on the
-> challenge benchmarks. SDC criticality becomes net weights (clock 0.0,
-> critical 2.0, false path 0.25); Liberty adds cap-based weighting + geometry
-> fallback; DEF FIXED components and blockages are honored. 15/15 tests pass
-> (`test/eda_io/`, incl. DEF patch round-trip + subprocess end-to-end);
-> fixture `chiptop` e2e: proxy 0.8737 → 0.8177, VALID, outputs verified.
-> Docs: `src/eda_io/README.md`. No change to the challenge path or scores.
+> **Status (2026-06-07 — hand-JIT the scoring hot paths, ISSUES.md S14):**
+> **Avg 1.1379 — all 17 VALID / 0 overlaps, 2117s (~35 min).** cProfile (post-numba)
+> found three vectorized-numpy scoring functions with no JIT path dominating:
+> `_apply_macro_routing` (per-cell macro-routing scatter), `_macro_occ` (density
+> footprint), `_compute_per_net_hpwl_subset` (per-net HPWL). Added explicit-loop
+> numba versions of each, **bit-exact** (stress Hcong/Vcong ~1e-15, density Δ=0,
+> swap Δ=0). `--all` **2563s → 2117s (~17% faster; ~39% vs no-numba 3486s)** — pure
+> speed (avg unchanged, JITs bit-exact), a big margin under the 1 h cap. ibm13:
+> 200s (no-numba) → 162s (numba) → 119s (+3 JITs). Remaining: `_resmooth_h/v`
+> (cumsum-based, deprioritized).
+
+> **Status (2026-06-07 — numba JIT was silently disabled; re-enabled, ISSUES.md S13):**
+> **Avg 1.1380 — all 17 VALID / 0 overlaps, 2563s (~43 min).** cProfile found the
+> routing-apply (half the runtime) running the slow **numpy fallbacks** because
+> **numba was not installed** (`HAS_NUMBA=False`): numba is in `v2/requirements.txt`
+> but NOT `pyproject.toml`, so `uv sync` alone never installed it — and the placer
+> falls back silently. **Every prior measurement this session ran in slow mode.**
+> Installing numba 0.65.1 (supports py3.14): `--all` **3486s→2563s (~26% faster)**
+> *and* **1.1403→1.1380** (freed speed → more refinement on the deadline-bound
+> benchmarks). Without numba the placer still runs but ~25% slower (~58 min, near
+> the 1 h cap) — a config.py warning now fires when numba is missing. **Action: the
+> eval env must install `v2/requirements.txt` (or numba must reach `pyproject`)** to
+> realize 1.1380; the graceful fallback is 1.1403. Both still beat RePlAce (1.4578)
+> and the leaderboard (1.4076) on every benchmark.
+
+> **Status (2026-06-07 — spend freed budget on soft_relocation, ISSUES.md S12):**
+> **Avg 1.1403 — all 17 VALID / 0 overlaps, 3486.53s (new best).** With each
+> soft-reloc group ~37% cheaper (S11 WL prefilter), the freed budget is spent on the
+> score MVP's per-macro depth: **soft_relocation n_targets 24 → 32**. Validated:
+> ibm13 −0.012, ibm17 −0.0054, ibm15 neutral; widening `top_hot` too over-widens
+> (rejected). Trajectory: 1.1500 → 1.1496 (2-opt cuts) → 1.1423 (soft-reloc
+> prefilter) → **1.1403**. Also tried (NEGATIVE, shelved env-gated off):
+> **adaptive per-pass budget control** — yield-weighted deadline caps were
+> consistently worse on deadline-bound benchmarks (shrink → early termination;
+> boost → saturates), so the static caps + skip-if-empty stay. Env knobs:
+> `V2_SOFT_TGT` / `V2_SOFT_HOT`, `V2_ADAPTIVE_BUDGET` (off).
+
+> **Status (2026-06-06 — scoring-cost reduction in 2-opt + soft-relocation, ISSUES.md S11):**
+> **Avg 1.1423 — all 17 VALID / 0 overlaps, 3433.76s (new best, beats prior 1.1500
+> by −0.0077).** Three accept-gate-safe WL-delta prefilter / budget cuts (only
+> change which candidates get exact-scored; every accept still validated):
+> 1. **soft_relocation WL-delta prefilter = 1e-4** — skips ~37% of `_trial_at_soft`
+>    (~10% of total scoring time). soft_relocation commits best-per-group, so
+>    skipping non-best improving candidates is free. ibm15 replicates: 1.2136 vs
+>    1.2219 off (−0.008, and faster); ibm13 no regression. The biggest single win.
+> 2. **soft_2opt WL-delta prefilter 0.01 → 3e-4** — rejects ~23% of
+>    `score_swap_soft`, drops ~0.2% of improving swaps (calibrated).
+> 3. **R2-cleanup hard_2opt k_neighbors 20 → 16** — frees time for the productive
+>    soft passes; multi-seed 2-opt-on-winner stays k=20 (S2).
 >
-> **Status (2026-06-09 — synthetic anti-overfitting suite + out-of-bounds fix):**
-> Built a 10-benchmark synthetic suite (`test/benchmarks/`, ICCAD04-format,
-> scored through the unmodified TILOS evaluator) probing axes the IBM suite
-> never varies: canvas aspect, fixed macros, SRAM-style designs, utilization
-> extremes, clustering, one-sided ports, inverted routing capacity, random
-> seeds, and 820-macro scale. First run: **9/10 INVALID** from 0.15–0.52um
-> out-of-bounds overhangs — all soft macros. Two bugs, same shape: the
-> soft-2opt swap (`soft_moves.py`) and the HXS/HS3 hard-soft exchanges
-> (`hard_soft.py`) moved softs into inherited slots with **no bounds check**,
-> so a larger soft inheriting a smaller macro's edge-flush slot overhung the
-> canvas. IBM never trips it (hand-tuned seeds keep softs off the edges).
-> Fix: clamp inherited slots per-macro half-size; also tightened the EPS=0.05
-> overhang allowance in all hard bounds checks (`two_opt.py`, `relocation.py`,
-> `legalize/swap.py`, `hard_soft.py`) to strict, since `validate_placement`
-> has zero tolerance. Confirmation run: **all 10 synthetics VALID / 0
-> overlaps**, proxies within noise or slightly better; **ibm01 = 0.9111 VALID
-> before and after** (no IBM regression; full `--all` not rerun). New open
-> issues from the suite (ISSUES.md G2/G3): per-benchmark budget not enforced
-> at scale (syn10_xl 153–504s and syn02 988s under load vs a 90s budget), and
-> heavy seed dependence (random seed → proxy 3.12 vs ~1.14 with a coherent
-> seed; overlaps recovered, global structure not).
->
+> Motivated by per-operator profiling: hard_2opt was ~48% of scoring time for the
+> smallest per-move gains; soft_relocation (28%) is the score MVP. The freed budget
+> converts to deeper refinement on the deadline-bound benchmarks (1.1500 → 1.1496
+> 2-opt-only → 1.1423 + soft-reloc). A hard_2opt WL prefilter was built but shipped
+> OFF (WL doesn't separate hard spatial-kNN swaps — calibrated). New bit-exact
+> scorer methods `wl_delta_swap` / `wl_delta_move_soft` (verified). Env knobs:
+> `SOFT_RELOC_WL_PREFILTER` / `SOFT_2OPT_WL_PREFILTER` / `HARD_2OPT_K` /
+> `HARD_2OPT_WL_PREFILTER`. Tests: `_verify_wl_delta_swap.py`,
+> `_verify_wl_delta_move_soft.py`, `_calibrate_wl_prefilter.py`.
+
 > **Status (2026-06-04 — readability refactor, no algorithm change):**
 > **Avg 1.1500 — all 17 VALID / 0 overlaps, 3300.10s.** Pure code-simplification
 > pass, validated non-degrading via `--all`. No move-generation, scoring, or RNG
