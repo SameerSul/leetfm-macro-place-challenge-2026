@@ -19,6 +19,7 @@ from placer.ml.modeling import ModelBank
 _BANK = None
 _BANK_INITIALIZED = False
 _BANK_ERROR = None
+_FILTER_CALIBRATION = {}
 
 
 def _parse_top_ks(value: str | None = None) -> tuple[int, ...]:
@@ -50,6 +51,35 @@ def _parse_int_env(name: str, default: int) -> int:
     if value is None or value == "":
         return default
     return int(value)
+
+
+def _parse_float_env(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return float(value)
+
+
+def _calibration_required_groups() -> int:
+    return max(0, _parse_int_env("ML_FILTER_CALIBRATION_GROUPS", 0))
+
+
+def is_filter_calibration_enabled(operator: str) -> bool:
+    return operator in _parse_filter_operators() and _calibration_required_groups() > 0
+
+
+def _calibration_state(operator: str) -> dict:
+    state = _FILTER_CALIBRATION.get(operator)
+    if state is None:
+        state = {
+            "groups": 0,
+            "misses": 0,
+            "improving_misses": 0,
+            "enabled": False,
+            "failed": False,
+        }
+        _FILTER_CALIBRATION[operator] = state
+    return state
 
 
 def get_shadow_model_bank():
@@ -129,7 +159,85 @@ def filter_candidate_indices(
             if keep_heuristic_first is None
             else int(keep_heuristic_first)
         )
+        calibration_groups = _calibration_required_groups()
+        if calibration_groups > 0:
+            state = _calibration_state(operator)
+            if state["failed"] or not state["enabled"]:
+                if trace is not None:
+                    trace.event(
+                        "ml_filter_group",
+                        operator=operator,
+                        field=field,
+                        group_id=group_id,
+                        enabled=True,
+                        applied=False,
+                        reason=(
+                            "calibration_failed"
+                            if state["failed"]
+                            else "calibrating"
+                        ),
+                        generated=len(candidates),
+                        selected=len(candidates),
+                        skipped=0,
+                        top_k=k,
+                        keep_heuristic_first=keep,
+                        calibration_groups=calibration_groups,
+                        calibration_seen=state["groups"],
+                        calibration_misses=state["misses"],
+                        calibration_improving_misses=state["improving_misses"],
+                        model_backend=ranker.spec.backend,
+                    )
+                return all_indices
+        min_generated = _parse_int_env("ML_FILTER_MIN_GENERATED", 0)
+        if min_generated > 0 and len(candidates) < min_generated:
+            if trace is not None:
+                trace.event(
+                    "ml_filter_group",
+                    operator=operator,
+                    field=field,
+                    group_id=group_id,
+                    enabled=True,
+                    applied=False,
+                    reason="below_min_generated",
+                    generated=len(candidates),
+                    selected=len(candidates),
+                    skipped=0,
+                    top_k=k,
+                    keep_heuristic_first=keep,
+                    min_generated=min_generated,
+                    model_backend=ranker.spec.backend,
+                )
+            return all_indices
         start_ns = time.perf_counter_ns()
+        min_score_gap = _parse_float_env("ML_FILTER_MIN_SCORE_GAP", 0.0)
+        score_gap = None
+        if min_score_gap > 0.0 and len(candidates) > k:
+            scores = ranker.scores(candidates)
+            pred_order = sorted(range(len(scores)), key=lambda idx: (-float(scores[idx]), idx))
+            score_gap = float(scores[pred_order[k - 1]]) - float(scores[pred_order[k]])
+            if score_gap < min_score_gap:
+                inference_ns = time.perf_counter_ns() - start_ns
+                if trace is not None:
+                    trace.event(
+                        "ml_filter_group",
+                        operator=operator,
+                        field=field,
+                        group_id=group_id,
+                        enabled=True,
+                        applied=False,
+                        reason="below_min_score_gap",
+                        generated=len(candidates),
+                        selected=len(candidates),
+                        skipped=0,
+                        top_k=k,
+                        keep_heuristic_first=keep,
+                        min_generated=min_generated,
+                        min_score_gap=min_score_gap,
+                        score_gap=score_gap,
+                        model_backend=ranker.spec.backend,
+                        model_inference_ns=int(inference_ns),
+                    )
+                return all_indices
         model_selected = ranker.select_top_k(
             candidates,
             top_k=k,
@@ -154,7 +262,13 @@ def filter_candidate_indices(
             )
         return all_indices
 
-    selected = sorted(set(int(idx) for idx in model_selected if 0 <= int(idx) < len(candidates)))
+    protect = _parse_int_env("ML_FILTER_PROTECT_HEURISTIC_FIRST", 0)
+    protect = max(0, min(int(protect), len(candidates)))
+    protected_indices = set(range(protect))
+    selected = sorted(
+        protected_indices
+        | {int(idx) for idx in model_selected if 0 <= int(idx) < len(candidates)}
+    )
     if not selected:
         selected = all_indices
         applied = False
@@ -177,11 +291,94 @@ def filter_candidate_indices(
             skipped=len(candidates) - len(selected),
             top_k=k,
             keep_heuristic_first=keep,
+            protect_heuristic_first=protect,
+            min_generated=min_generated,
+            min_score_gap=min_score_gap,
+            score_gap=score_gap,
             model_backend=ranker.spec.backend,
             model_inference_ns=int(inference_ns),
             selected_indices=selected[:32],
         )
     return selected
+
+
+def update_filter_calibration(
+    *,
+    operator: str,
+    candidates: Sequence[Mapping],
+    trace=None,
+    field: str | None = None,
+    group_id: str | None = None,
+    top_k: int | None = None,
+) -> dict | None:
+    """Update run-local filter calibration from a fully exact-scored group."""
+    required_groups = _calibration_required_groups()
+    if required_groups <= 0 or not candidates or operator not in _parse_filter_operators():
+        return None
+    state = _calibration_state(operator)
+    if state["enabled"] or state["failed"] or state["groups"] >= required_groups:
+        return state
+
+    bank = get_shadow_model_bank()
+    ranker = None if bank is None else bank.get(operator)
+    if ranker is None:
+        return state
+
+    k = _parse_int_env("ML_FILTER_TOP_K", 0) if top_k is None else int(top_k)
+    if k <= 0:
+        k = len(candidates)
+    k = max(1, min(k, len(candidates)))
+    max_misses = max(0, _parse_int_env("ML_FILTER_CALIBRATION_MAX_MISSES", 0))
+    count_only_improving = bool(
+        _parse_int_env("ML_FILTER_CALIBRATION_IMPROVING_ONLY", 1)
+    )
+
+    try:
+        scores = ranker.scores(candidates)
+    except Exception as exc:  # pragma: no cover - model errors must not affect placement
+        warnings.warn(f"ML filter calibration failed for {operator}: {exc}")
+        return state
+
+    gains = [float(candidate.get("score_gain", 0.0)) for candidate in candidates]
+    best_gain = max(gains)
+    improving = best_gain > 0.0
+    best_indices = {idx for idx, gain in enumerate(gains) if gain == best_gain}
+    pred_order = sorted(range(len(scores)), key=lambda idx: (-float(scores[idx]), idx))
+    hit = any(idx in best_indices for idx in pred_order[:k])
+    miss = not hit
+    improving_miss = miss and improving
+
+    state["groups"] += 1
+    state["misses"] += int(miss)
+    state["improving_misses"] += int(improving_miss)
+    counted_misses = (
+        state["improving_misses"] if count_only_improving else state["misses"]
+    )
+    if counted_misses > max_misses:
+        state["failed"] = True
+    elif state["groups"] >= required_groups:
+        state["enabled"] = True
+
+    if trace is not None:
+        trace.event(
+            "ml_filter_calibration",
+            operator=operator,
+            field=field,
+            group_id=group_id,
+            top_k=k,
+            groups=state["groups"],
+            required_groups=required_groups,
+            misses=state["misses"],
+            improving_misses=state["improving_misses"],
+            max_misses=max_misses,
+            improving_only=count_only_improving,
+            enabled=state["enabled"],
+            failed=state["failed"],
+            hit=hit,
+            improving=improving,
+            best_exact_gain=best_gain,
+        )
+    return state
 
 
 def shadow_rank_group(
@@ -252,7 +449,8 @@ def shadow_rank_group(
 
 
 def _reset_shadow_model_bank_for_tests() -> None:
-    global _BANK, _BANK_INITIALIZED, _BANK_ERROR
+    global _BANK, _BANK_INITIALIZED, _BANK_ERROR, _FILTER_CALIBRATION
     _BANK = None
     _BANK_INITIALIZED = False
     _BANK_ERROR = None
+    _FILTER_CALIBRATION = {}

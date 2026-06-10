@@ -16,6 +16,11 @@ For the full problem statement see [`README.md`](README.md). For the API contrac
 # Setup (run once - submodule is required, no-op evaluator otherwise)
 git submodule update --init external/MacroPlacement
 uv sync
+# REQUIRED for full speed: numba JITs the routing-apply (~half the runtime). It's
+# in v2/requirements.txt but NOT pyproject.toml, so `uv sync` alone does NOT install
+# it — the placer then silently falls back to numpy (~25% slower, --all ~58min near
+# the 1h cap, avg 1.1403 vs 1.1380 with JIT). See docs/ISSUES.md S13.
+uv pip install -r submissions/varrahan/v2/requirements.txt
 
 # Single benchmark - fastest feedback loop, use this while iterating
 uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01

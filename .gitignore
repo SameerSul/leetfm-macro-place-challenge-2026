@@ -88,11 +88,11 @@ scripts/run_rowpack_ibm.py
 scripts/visualize_*.py
 scripts/__pycache__/
 src/orfs_integration/
-docs/
 output/
 BENCHMARK_EVALUATION_RESULTS.md
 NETLIST_CLEANING_SUMMARY.md
 
 # Claude directory
-.claude*
-.claude/*
+.claude/
+.agents/
+.codex/

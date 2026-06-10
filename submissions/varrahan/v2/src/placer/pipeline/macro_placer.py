@@ -86,6 +86,16 @@ class MacroPlacer:
         ]
         self.seed = seed
         self.time_budget_s = time_budget_s
+        # The numba JIT speedups (S13/S14) cut --all to ~35min, freeing ~1400s of
+        # cap headroom. Raising the per-benchmark soft budget spends it on the
+        # budget-bound benchmarks (the cap-aware allocator still clamps the total).
+        # More accept-gated search can't regress. Tunable via V2_TIME_BUDGET.
+        _env_budget = os.environ.get("V2_TIME_BUDGET")
+        if _env_budget:
+            try:
+                self.time_budget_s = float(_env_budget)
+            except ValueError:
+                pass
 
         # --all budget guard: track cumulative place() time across benchmarks and
         # tighten later budgets as the cap nears. Single-benchmark dev runs leave
@@ -1059,13 +1069,43 @@ class MacroPlacer:
                     f"  ignoring invalid ML_HARD_RELOCATION_N_TARGETS="
                     f"{_ml_hard_reloc_targets!r}"
                 )
+        R2_RELOC_PROPOSE_ALL = os.environ.get("V2_RELOC_PROPOSE_ALL", "").strip() in {
+            "1", "true", "TRUE", "yes", "YES", "on", "ON"
+        }
+        R2_RELOC_PROPOSE_TOP_M = None
+        _reloc_propose_top_m = os.environ.get("V2_RELOC_PROPOSE_TOP_M")
+        if _reloc_propose_top_m:
+            try:
+                R2_RELOC_PROPOSE_TOP_M = max(1, int(_reloc_propose_top_m))
+            except ValueError:
+                _log(
+                    f"  ignoring invalid V2_RELOC_PROPOSE_TOP_M="
+                    f"{_reloc_propose_top_m!r}"
+                )
+        if R2_RELOC_PROPOSE_ALL:
+            _log(
+                "  R2 hard relocation propose-all enabled "
+                f"(top_m={R2_RELOC_PROPOSE_TOP_M or 'all'})"
+            )
         R2_2OPT_SLICE = 8.0
         # Wider soft candidate set (softs number 900-2000, the dominant lever).
-        R3_SOFT_HOT = 128
-        R3_SOFT_TGT = 24
+        # The S11 WL prefilter made each soft-reloc group ~37% cheaper, so the freed
+        # budget is spent on a wider pool here. Env-tunable for sweeps.
+        def _env_int(name, default):
+            v = os.environ.get(name)
+            try:
+                return max(1, int(v)) if v not in (None, "") else default
+            except ValueError:
+                _log(f"  ignoring invalid {name}={v!r}")
+                return default
+        R3_SOFT_HOT = _env_int("V2_SOFT_HOT", 128)
+        # S11+: n_targets 24 -> 32 spends the WL-prefilter's freed budget on the
+        # score MVP. Validated: ibm13 -0.012, ibm17 -0.0054, ibm15 neutral (no
+        # regression). Widening top_hot too over-widens (worse + finishes early).
+        R3_SOFT_TGT = _env_int("V2_SOFT_TGT", 32)
         # Once the cong soft-reloc pass saturates (density keeps finding moves),
         # boost the density pass's candidate set to spend the freed time.
-        R3_SOFT_HOT_BOOSTED = 192
+        R3_SOFT_HOT_BOOSTED = _env_int("V2_SOFT_HOT_BOOSTED", 192)
         # Bias soft-pass ordering toward each macro's net centroid so the
         # deadline-bound search tries WL-friendly candidates first (ordering only;
         # the proxy gate still validates; 0 = nearest-to-current).
@@ -1128,6 +1168,53 @@ class MacroPlacer:
         _round_scorer = [None]   # list-as-mutable-flag (closure-safe)
         _round_scorer_dirty = [False]
 
+        # Adaptive budget control (env-gated, default off). Tracks each pass's
+        # cumulative yield = proxy gain per budget-second, and scales that pass's
+        # deadline cap by its yield relative to the mean — so productive passes
+        # (soft_relocation is the MVP) earn more of the round budget and low-ROI
+        # passes (hard_2opt / HXS / HS3) earn less. Timing is hooked in
+        # _ml_r2_context (called at every pass start) and gain in
+        # _round_scorer_handoff; the exact gate still validates every move, so this
+        # only reallocates *time*, never accepts a worse placement.
+        _ADAPTIVE_BUDGET = os.environ.get("V2_ADAPTIVE_BUDGET", "").strip() in {
+            "1", "true", "TRUE", "yes", "YES", "on", "ON"
+        }
+        # Clamp bounds for the yield-scaling factor. Default [0.4, 2.5] (boost +
+        # shrink); set V2_ADAPTIVE_LO=1.0 for boost-only (never shrink a pass's
+        # cap below base — avoids the early-termination the shrink path caused).
+        def _env_float(name, default):
+            v = os.environ.get(name)
+            try:
+                return float(v) if v not in (None, "") else default
+            except ValueError:
+                return default
+        _ADAPTIVE_LO = _env_float("V2_ADAPTIVE_LO", 0.4)
+        _ADAPTIVE_HI = _env_float("V2_ADAPTIVE_HI", 2.5)
+        _pass_gain = {}        # operator name -> cumulative proxy gain
+        _pass_time = {}        # operator name -> cumulative wall-seconds
+        _cur_pass = [None]
+        _cur_pass_t0 = [0.0]
+
+        def _pass_close():
+            if _cur_pass[0] is not None:
+                _pass_time[_cur_pass[0]] = _pass_time.get(_cur_pass[0], 0.0) + (
+                    time.monotonic() - _cur_pass_t0[0]
+                )
+                _cur_pass[0] = None
+
+        def _pass_cap(name, base):
+            """Deadline cap for a pass: identity unless adaptive budget is on and
+            there is enough yield history; then base * clamp(yield/mean, 0.4, 2.5)."""
+            if not _ADAPTIVE_BUDGET:
+                return base
+            ys = {p: _pass_gain.get(p, 0.0) / t for p, t in _pass_time.items() if t > 1e-6}
+            if name not in ys or len(ys) < 2:
+                return base
+            mean_y = sum(ys.values()) / len(ys)
+            if mean_y <= 1e-12:
+                return base
+            return base * max(_ADAPTIVE_LO, min(_ADAPTIVE_HI, ys[name] / mean_y))
+
         def _round_scorer_get():
             """Return a scorer in sync with `best_pl`. Lazily builds on first
             call, rebuilds when the previous pass marked dirty."""
@@ -1144,6 +1231,11 @@ class MacroPlacer:
             best_pl (scorer stays in sync) or marks dirty (next pass rebuilds).
             Returns True iff the pass improved best_pl."""
             nonlocal best_score, best_pl, round_improved
+            # Attribute the proxy gain to the current pass (adaptive budget yield).
+            if _ADAPTIVE_BUDGET and _cur_pass[0] is not None and cand_true < best_score:
+                _pass_gain[_cur_pass[0]] = _pass_gain.get(_cur_pass[0], 0.0) + (
+                    best_score - cand_true
+                )
             if cand_true < best_score - 1e-6:
                 best_score, best_pl = cand_true, cand
                 round_improved = True
@@ -1155,6 +1247,12 @@ class MacroPlacer:
                 return False
 
         def _ml_r2_context(pass_name: str, field: str | None, remaining_s: float, **extra):
+            # Per-pass timing for adaptive budget (only when enabled — zero work on
+            # the default path): close the previous pass, open this one.
+            if _ADAPTIVE_BUDGET:
+                _pass_close()
+                _cur_pass[0] = pass_name
+                _cur_pass_t0[0] = time.monotonic()
             if _ml_trace is not None:
                 _ml_trace.set_context(
                     phase="r2",
@@ -1192,8 +1290,10 @@ class MacroPlacer:
                 rel_pos, rel_acc, _ = _relocation_moves(
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
                     benchmark, rel_scorer, base_rel,
-                    deadline=t_rel + min(rem_r2 - t_one_score, 15.0),
+                    deadline=t_rel + min(rem_r2 - t_one_score, _pass_cap("hard_relocation", 15.0)),
                     top_hot=R2_HOT, n_targets=R2_TGT,
+                    propose_all=R2_RELOC_PROPOSE_ALL,
+                    propose_top_m=R2_RELOC_PROPOSE_TOP_M,
                 )
                 if rel_acc > 0:
                     cand = best_pl.clone()
@@ -1224,9 +1324,11 @@ class MacroPlacer:
                     rel_pos_d, rel_acc_d, _ = _relocation_moves(
                         _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
                         benchmark, rel_scorer_d, base_rel_d,
-                        deadline=t_rel_d + min(rem_r2 - t_one_score, 15.0),
+                        deadline=t_rel_d + min(rem_r2 - t_one_score, _pass_cap("hard_relocation", 15.0)),
                         top_hot=R2_HOT, n_targets=R2_TGT,
                         use_density=True,
+                        propose_all=R2_RELOC_PROPOSE_ALL,
+                        propose_top_m=R2_RELOC_PROPOSE_TOP_M,
                     )
                     if rel_acc_d == 0:
                         _empty_streak["reloc_density"] += 1
@@ -1261,9 +1363,11 @@ class MacroPlacer:
                     rel_pos_c, rel_acc_c, _ = _relocation_moves(
                         _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
                         benchmark, rel_scorer_c, base_rel_c,
-                        deadline=t_rel_c + min(rem_r2 - t_one_score, 4.0),
+                        deadline=t_rel_c + min(rem_r2 - t_one_score, _pass_cap("hard_relocation", 4.0)),
                         top_hot=R2_HOT, n_targets=R2_TGT,
                         use_combined=True,
+                        propose_all=R2_RELOC_PROPOSE_ALL,
+                        propose_top_m=R2_RELOC_PROPOSE_TOP_M,
                     )
                     if rel_acc_c == 0:
                         _empty_streak["reloc_combined"] += 1
@@ -1333,7 +1437,7 @@ class MacroPlacer:
                     sr_pos, sr_acc, _ = _soft_relocation_moves(
                         sr_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark,
                         sr_scorer, base_sr,
-                        deadline=t_sr + min(rem_sr - t_one_score, 15.0),
+                        deadline=t_sr + min(rem_sr - t_one_score, _pass_cap("soft_relocation", 15.0)),
                         top_hot=_top_hot_this, n_targets=_n_tgt_this,
                         soft_movable=_soft_movable, use_density=_use_d,
                         net_centroid=_soft_centroids, wl_blend=A3_WL_BLEND,
@@ -1396,7 +1500,7 @@ class MacroPlacer:
                         _ss_centroids = ss_scorer.soft_net_centroids()
                         ss_pos, ss_acc, _ = _two_opt_soft_swap(
                             ss_pos, cw, ch, n, plc, benchmark, ss_scorer, base_ss,
-                            deadline=t_ss + min(rem_ss - t_one_score, 6.0),
+                            deadline=t_ss + min(rem_ss - t_one_score, _pass_cap("soft_2opt", 6.0)),
                             top_hot=64, k_neighbors=12,
                             soft_movable=_soft_movable,
                             use_density=_ssuse_d, n_cold_teleports=4,
@@ -1460,7 +1564,7 @@ class MacroPlacer:
                     x_hard_pos, x_soft_pos, x_acc, _ = _two_opt_hard_soft_swap(
                         x_hard_pos, x_soft_pos, sizes, hw, hh, cw, ch,
                         movable, n, plc, benchmark, x_scorer, base_x,
-                        deadline=t_x + min(rem_x - t_one_score, 2.5),
+                        deadline=t_x + min(rem_x - t_one_score, _pass_cap("hard_soft_swap", 2.5)),
                         top_hot=24, k_neighbors=12,
                         soft_movable=_soft_movable, use_density=_xuse_d,
                     )
@@ -1513,7 +1617,7 @@ class MacroPlacer:
                     h3_hard_pos, h3_soft_pos, h3_acc, _ = _three_opt_hard_soft_soft(
                         h3_hard_pos, h3_soft_pos, sizes, hw, hh, cw, ch,
                         movable, n, plc, benchmark, h3_scorer, base_h3,
-                        deadline=t_h3 + min(rem_h3 - t_one_score, 3.0),
+                        deadline=t_h3 + min(rem_h3 - t_one_score, _pass_cap("hard_soft_soft_cycle", 3.0)),
                         top_hot=15, k_inner=5,
                         soft_movable=_soft_movable, use_density=_h3use_d,
                     )
@@ -1556,8 +1660,8 @@ class MacroPlacer:
 
                 o_pos, o_acc, _o_fs, _o_sc = _two_opt_proxy_swap(
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n,
-                    score_fn=_r2_score, initial_score=base_2o, k_neighbors=20,
-                    max_iters=6, deadline=t_2o + min(rem_r2 - t_one_score, R2_2OPT_SLICE),
+                    score_fn=_r2_score, initial_score=base_2o, k_neighbors=16,
+                    max_iters=6, deadline=t_2o + min(rem_r2 - t_one_score, _pass_cap("hard_2opt", R2_2OPT_SLICE)),
                     incremental_scorer=o_scorer, macro_cong=_macro_cong_now(),
                 )
                 if o_acc > 0:

@@ -1,8 +1,18 @@
 # CongFlow v2 -- Architecture & Experiment Log
 
+> **Current best `--all`: 1.1379** (2026-06-07, all 17 VALID / 0 overlaps, **2117s
+> ~35min**) — S11 cuts + S12 (soft n_targets 24→32) + S13 (numba re-enabled — was
+> silently missing) + **S14 (hand-JIT the scoring hot paths: ~17% faster, bit-exact)**.
+> Trajectory: 1.1782 → 1.1500 → 1.1423 (S11) → 1.1403 (S12) → 1.1380 (S13) →
+> **1.1379 @2117s** (S14). no-numba fallback: 1.1403 @3486s. The per-benchmark
+> decomposition table below is the
+> 2026-05-31 1.1782 snapshot (kept as the detailed breakdown); see `docs/ISSUES.md`
+> S11/S12/S13 and `docs/PROGRESS.md` for the current headline.
+
 ## Current Best Result (L-change + M1, 2026-05-31)
 
-**Average proxy cost: 1.1782** across all 17 IBM ICCAD04 benchmarks.
+**Average proxy cost: 1.1782** across all 17 IBM ICCAD04 benchmarks (snapshot — see
+the note above for the current 1.1403 best).
 
 | Benchmark | Hard macros | v2 score | vs RePlAce (1.4578) |
 |-----------|-------------|----------|---------------------|
@@ -242,7 +252,7 @@ parallel track.
    ║  │                       ▼                                      │  ║
    ║  │  ┌─────────────────────────────────────────────────────┐     │  ║
    ║  │  │  2-opt cleanup (8s budget slice)                    │     │  ║
-   ║  │  │    k=20 spatial kNN + S9 cold-teleport              │     │  ║
+   ║  │  │    k=16 spatial kNN + S9 cold-teleport (S11)        │     │  ║
    ║  │  └─────────────────────────────────────────────────────┘     │  ║
    ║  │                       ▼                                      │  ║
    ║  │       round_improved? — yes → next round                     │  ║
@@ -400,6 +410,24 @@ dispatch + fill given a precomputed struct). The scorer caches the struct
 per module index; single-macro paths reuse it across every candidate target
 (within a relocation pass) and across the −1 / +1 within each move.
 
+**S14 explicit-loop JITs (2026-06-07).** numba JITs the per-net strip fill above
+(`_apply_h/v_strips_batch_jit`, `_apply_3pin_routing_vec_jit`), but once numba was
+installed (S13), cProfile found three more vectorized-numpy scoring functions with
+**no JIT path** dominating per-move cost. Each got an explicit-loop numba version
+that matches numpy's accumulation order (bit-exact), dispatched behind
+`if HAS_NUMBA:` with the numpy path retained as fallback:
+- `_apply_macro_routing` → `_apply_macro_routing_scatter_jit` — the per-cell
+  hard-macro routing scatter (was `np.add.at`/`subtract.at` over macro footprints,
+  the biggest tottime).
+- `_macro_occ` → `_macro_occ_jit` — the per-macro density footprint
+  (cell enumeration + overlap area).
+- `_compute_per_net_hpwl_subset` → `_hpwl_subset_jit` — per-net HPWL bounding box
+  (min/max are order-independent → bit-identical).
+
+Verified by the existing scorer verifiers run WITH numba (stress Hcong/Vcong ~1e-15,
+density Δ=0, swap Δ=0). `--all` 2563s → 2117s (~17 % faster; ~39 % vs the no-numba
+3486s), score unchanged (pure speed).
+
 ### 5.4 Bit-exact incremental congestion cost (`_compute_cong_cost`)
 
 Cost computation from the maintained H/V flats:
@@ -467,6 +495,13 @@ true-proxy drop.
 The proxy gate validates every swap, so candidate selection only changes
 *which* swaps are tried, never *accepts* a worse placement.
 
+**S11 note.** The *R2-cleanup* invocation of this function uses `k=16` (down from
+20) to free scoring time for the productive soft passes; the multi-seed
+2-opt-on-winner described here stays `k=20`. A WL-delta prefilter (`wl_delta_swap`)
+exists but is **off** for hard 2-opt — calibration showed hard spatial-kNN swaps
+have near-zero WL spread, so it can't discriminate (it would only add cost). So
+hard 2-opt still scores every kNN candidate.
+
 **Multi-seed selection.** The final 2-opt runs from `best_pl` *plus each DP
 candidate basin*, with true-proxy selection across seeds. A DP seed's basin
 can yield a deeper 2-opt result even when its standalone score lost the
@@ -501,6 +536,15 @@ For each of the hottest movable macros:
 5. Track the best target that strictly lowers the true incremental proxy.
    If found, `commit_move(i, best)` persists the move and `best_score`
    ratchets down.
+
+**S11 WL-delta prefilter (soft relocation).** Step 4 for soft relocation first
+computes a cheap WL-only delta (`wl_delta_move_soft`, bit-exact, no routing/density
+work) and **skips the full `_trial_at_soft`** when the WL increase alone exceeds
+`1e-4` (the routing-apply is ~73% of a trial's cost). Soft relocation commits only
+the best target per macro, so skipping non-best candidates is free; this drops ~37%
+of soft-relocation trials (~10% of total scoring time) with no quality loss. The
+exact gate still validates every survivor. Tunable via `SOFT_RELOC_WL_PREFILTER`;
+the soft-soft 2-opt pass has the analogous prefilter at `3e-4`.
 
 **The hot/cold fields:**
 
@@ -654,12 +698,19 @@ overhead; IBM is simply too small. The implementation + verifiers were deleted
 - DREAMPlace is now built and functional (GPU/CUDA build — see DREAMPLACE_FIXES.md
   and the gpu-dreamplace-build notes; the earlier "broken VENV_PYTHON symlink in
   WSL" status is resolved). It contributes seed basins to the multi-seed 2-opt.
-- **numba** must be installed for full speed (~2× per move; soft import with a
-  numpy fallback — see requirements.txt). Published scores assume it active.
+- **numba** must be installed for full speed (JITs the routing-apply, ~half the
+  runtime; soft import with a numpy fallback). **CRITICAL (S13):** numba is in
+  `v2/requirements.txt` but NOT `pyproject.toml`, so `uv sync` alone does **not**
+  install it and the placer falls back to numpy **silently** (~25 % slower, `--all`
+  ~58 min near the 1 h cap, avg 1.1403 vs 1.1379 with JIT). `config.py` now warns
+  when it's missing; **the eval env must install requirements.txt**. See ISSUES S13.
 - **S1 / S2 speedups — see §6.** S1 multi-core fork-after-CUDA fix is done
   (env-gated). S2 GPU candidate batching was implemented, verified bit-exact, and
   measured a net loss on IBM grids; the code + verifiers were removed (the §6.2
   finding is kept so it isn't re-run).
-- ibm17 (1.4519) and ibm18 (1.4615) still above 1.4 -- main remaining targets.
+- **At the IBM floor for this move set (S15):** budget is dead (benchmarks
+  converge) and width tuning is noise-level. ibm12 (1.31), ibm17 (1.36), ibm18
+  (1.39) are the remaining highest-proxy benchmarks; further gains need basin
+  diversity (more DREAMPlace seeds) or new move types.
 - WireMask-BBO greedy evaluator: highest-leverage non-GPU idea not yet implemented.
 - Timing tight at 61 min. Reducing BUDGET_OVERRUN_S 83->65 is the safe fix.

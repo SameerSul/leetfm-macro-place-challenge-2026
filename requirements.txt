@@ -11,6 +11,9 @@ pytest-cov>=4.0.0
 black>=23.0.0
 flake8>=6.0.0; python_version >= "3.8.1"
 
+# For running v2
+-r submissions/varrahan/v2/requirements.txt
+
 # Optional baselines (mirror pyproject.toml `[project.optional-dependencies].baselines`)
 # Uncomment if running torch-geometric-based reference placers.
 # torch-geometric>=2.3.0
