@@ -155,3 +155,18 @@ updates them only when its exact proxy score is lower.
   initialized, then verify accepted pass results with `_exact_proxy`.
 - The optional `V2_MULTISEED_MP` path parallelizes DP-seed 2-opt after the inline
   best-seed 2-opt. With the env var unset, seeds run sequentially in-process.
+
+## Entry points
+
+The flow above starts from a `Benchmark`. There are two ways to produce one:
+
+- **Challenge path** — the harness calls `load_benchmark` on an ICCAD04
+  `netlist.pb.txt` + `initial.plc` pair (the 17 IBM benchmarks, NG45, and the
+  synthetic suite under `test/benchmarks/`).
+- **eda_io path** — `src/place_design.py` accepts standard EDA inputs
+  (LEF / DEF / structural Verilog / SDC / Liberty), merges them into a neutral
+  `Design`, converts to the same ICCAD04 pair, and loads it through the same
+  `load_benchmark`. The flow in this document then runs completely unchanged,
+  including exact PLC proxy scoring. Results are written back out as an
+  updated DEF, ICC2/Innovus Tcl, and/or a QoR report. See
+  `src/eda_io/README.md`.
