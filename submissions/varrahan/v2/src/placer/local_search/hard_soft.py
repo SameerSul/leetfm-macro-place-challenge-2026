@@ -44,6 +44,9 @@ def _two_opt_hard_soft_swap(
     num_soft = incremental_scorer.num_soft
     if num_soft < 1:
         return hard_pos, soft_pos, 0, initial_score
+    nh = benchmark.num_hard_macros
+    soft_hw = benchmark.macro_sizes[nh:, 0].numpy().astype(np.float64) / 2
+    soft_hh = benchmark.macro_sizes[nh:, 1].numpy().astype(np.float64) / 2
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     trace = get_candidate_trace()
     trace_field = "density" if use_density else "congestion"
@@ -122,12 +125,15 @@ def _two_opt_hard_soft_swap(
             if swapped_soft[k_soft]:
                 rejected_already_swapped += 1
                 continue
-            # Hard takes the soft's position; soft takes the hard's position.
+            # Hard takes the soft's position; soft takes the hard's position,
+            # clamped to its own half-size so it can't overhang the canvas.
             hx, hy = float(soft_pos[k_soft, 0]), float(soft_pos[k_soft, 1])
-            sx, sy = float(hard_pos[i, 0]), float(hard_pos[i, 1])
-            # In-bounds for the hard at its new position.
-            if (hx - hw[i] < -EPS or hx + hw[i] > cw + EPS or
-                    hy - hh[i] < -EPS or hy + hh[i] > ch + EPS):
+            sx = float(np.clip(hard_pos[i, 0], soft_hw[k_soft], cw - soft_hw[k_soft]))
+            sy = float(np.clip(hard_pos[i, 1], soft_hh[k_soft], ch - soft_hh[k_soft]))
+            # In-bounds for the hard at its new position (strict: the evaluator
+            # has zero overhang tolerance).
+            if (hx - hw[i] < 0 or hx + hw[i] > cw or
+                    hy - hh[i] < 0 or hy + hh[i] > ch):
                 rejected_bounds += 1
                 continue
             # No overlap with other hard macros at (hx, hy).
@@ -229,6 +235,9 @@ def _three_opt_hard_soft_soft(
     num_soft = incremental_scorer.num_soft
     if num_soft < 2:
         return hard_pos, soft_pos, 0, initial_score
+    nh = benchmark.num_hard_macros
+    soft_hw = benchmark.macro_sizes[nh:, 0].numpy().astype(np.float64) / 2
+    soft_hh = benchmark.macro_sizes[nh:, 1].numpy().astype(np.float64) / 2
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     trace = get_candidate_trace()
     trace_field = "density" if use_density else "congestion"
@@ -308,10 +317,11 @@ def _three_opt_hard_soft_soft(
             if swapped_soft[k1]:
                 rejected_already_swapped += 1
                 continue
-            # Hard's new position = S1's old position. Check legality.
+            # Hard's new position = S1's old position. Check legality (strict:
+            # the evaluator has zero overhang tolerance).
             hx, hy = float(soft_pos[k1, 0]), float(soft_pos[k1, 1])
-            if (hx - hw[i] < -EPS or hx + hw[i] > cw + EPS or
-                    hy - hh[i] < -EPS or hy + hh[i] > ch + EPS):
+            if (hx - hw[i] < 0 or hx + hw[i] > cw or
+                    hy - hh[i] < 0 or hy + hh[i] > ch):
                 rejected_bounds += 1
                 continue
             if ((np.abs(hx - ox) < sxi + EPS) & (np.abs(hy - oy) < syi + EPS)).any():
@@ -331,9 +341,17 @@ def _three_opt_hard_soft_soft(
                     rejected_already_swapped += 1
                     continue
                 generated += 1
-                # Cycle: H → S1's old, S1 → S2's old, S2 → H's old.
-                s1_new_xy = (float(soft_pos[k2, 0]), float(soft_pos[k2, 1]))
-                s2_new_xy = (float(hard_pos[i, 0]), float(hard_pos[i, 1]))
+                # Cycle: H → S1's old, S1 → S2's old, S2 → H's old. Each soft
+                # is clamped to its own half-size so inheriting a slot from a
+                # smaller macro can't push it over the canvas edge.
+                s1_new_xy = (
+                    float(np.clip(soft_pos[k2, 0], soft_hw[k1], cw - soft_hw[k1])),
+                    float(np.clip(soft_pos[k2, 1], soft_hh[k1], ch - soft_hh[k1])),
+                )
+                s2_new_xy = (
+                    float(np.clip(hard_pos[i, 0], soft_hw[k2], cw - soft_hw[k2])),
+                    float(np.clip(hard_pos[i, 1], soft_hh[k2], ch - soft_hh[k2])),
+                )
                 s = incremental_scorer.score_cycle_hard_soft_soft(
                     i, (hx, hy), k1, s1_new_xy, k2, s2_new_xy
                 )

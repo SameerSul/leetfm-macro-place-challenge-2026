@@ -1894,8 +1894,9 @@ def _relocation_moves(
         try:
             for candidate_rank, t in enumerate(cand):
                 nx, ny = float(tgt_x[t]), float(tgt_y[t])
-                if (nx - hw[i] < -EPS or nx + hw[i] > cw + EPS or
-                        ny - hh[i] < -EPS or ny + hh[i] > ch + EPS):
+                # Strict bounds: the evaluator has zero overhang tolerance.
+                if (nx - hw[i] < 0 or nx + hw[i] > cw or
+                        ny - hh[i] < 0 or ny + hh[i] > ch):
                     rejected_bounds += 1
                     continue
                 # Overlap vs other HARD macros (vectorized).

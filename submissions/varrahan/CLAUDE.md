@@ -47,6 +47,19 @@ uv run pytest test/
 # not the repo-root test/ path)
 uv run python submissions/varrahan/v2/test/diagnostic/_profile_score.py
 uv run python submissions/varrahan/v2/test/verification/_stress_verify.py
+
+# Synthetic anti-overfitting suite (generate once, then run / analyze)
+uv run python submissions/varrahan/v2/test/benchmarks/generate_benchmarks.py
+uv run python submissions/varrahan/v2/test/benchmarks/run_synthetic.py          # synthetic designs
+uv run python submissions/varrahan/v2/test/benchmarks/run_synthetic.py --ibm    # IBM cross-check
+uv run python submissions/varrahan/v2/test/benchmarks/analyze_impact.py         # cost-term breakdown
+
+# eda_io: run the v2 placer on standard EDA inputs (LEF/DEF/Verilog/SDC/Liberty)
+uv run python submissions/varrahan/v2/src/place_design.py \
+    --lef tech.lef --def floorplan.def --out-def placed.def --out-tcl place.tcl --report qor.rpt
+
+# eda_io tests (pytest is not in the project venv - use --with)
+uv run --with pytest python -m pytest submissions/varrahan/v2/test/eda_io/ -v
 ```
 
 If `uv` is not on PATH, fall back to `pip install -e .` and replace `uv run` with `python -m`.
@@ -107,10 +120,15 @@ submissions/        One folder per submission. New work goes in submissions/varr
     src/main.py         Evaluator-facing entrypoint - exposes MacroPlacer (imports from src/placer/).
     src/placer/           The placer package: pipeline/, scoring/, routing/, plc/, legalize/, local_search/, perturb/.
     src/dreamplace_bridge/  pb.txt ↔ Bookshelf converters + async launcher.
+    src/eda_io/           Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR-report out
+                          (converts to ICCAD04 pb+plc, so the placer + exact scorer run unchanged).
+    src/place_design.py   CLI tying eda_io together - see src/eda_io/README.md.
     docs/                 ARCHITECTURE.md / ISSUES.md / PROGRESS.md / DREAMPLACE_FIXES.md.
     test/                 v2-specific tests / diagnostics / probes - put ALL new v2 test files here.
+      benchmarks/         Synthetic anti-overfitting suite: generator, runner, impact analyzer.
       diagnostic/         Profiling, timing, scoring breakdown scripts.
       dreamplace/         DREAMPlace bridge tests + diagnostics.
+      eda_io/             eda_io pytest suite + LEF/DEF/Verilog/SDC/Liberty fixture design.
       verification/       Correctness checks vs scalar references.
   _test_legonly.py  Shortcut harness importing _will_legalize from sameer_v1.
 external/MacroPlacement/  TILOS submodule - evaluator + ICCAD04 testcases. Read-only.

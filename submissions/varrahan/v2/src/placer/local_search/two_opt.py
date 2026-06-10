@@ -162,13 +162,13 @@ def _two_opt_proxy_swap(
                 new_ix, new_iy = pos[j, 0], pos[j, 1]
                 new_jx, new_jy = pos[i, 0], pos[i, 1]
 
-                # Bounds check
-                if (new_ix - hw[i] < -EPS or new_ix + hw[i] > cw + EPS or
-                        new_iy - hh[i] < -EPS or new_iy + hh[i] > ch + EPS):
+                # Bounds check (strict: the evaluator has zero overhang tolerance)
+                if (new_ix - hw[i] < 0 or new_ix + hw[i] > cw or
+                        new_iy - hh[i] < 0 or new_iy + hh[i] > ch):
                     rejected_bounds += 1
                     continue
-                if (new_jx - hw[j] < -EPS or new_jx + hw[j] > cw + EPS or
-                        new_jy - hh[j] < -EPS or new_jy + hh[j] > ch + EPS):
+                if (new_jx - hw[j] < 0 or new_jx + hw[j] > cw or
+                        new_jy - hh[j] < 0 or new_jy + hh[j] > ch):
                     rejected_bounds += 1
                     continue
 
