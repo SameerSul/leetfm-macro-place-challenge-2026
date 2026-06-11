@@ -306,6 +306,16 @@ submissions/varrahan/v2/
 
 ### Recent system changes
 
+- **ML hard-relocation filter connected as default (2026-06-11).**
+  `src/main.py` now enables the validated S10 config B (wide-32 pool, ranker
+  keeps 16) whenever no `ML_*` env var is set and the shipped model +
+  `xgboost` are available. The pipeline logs
+  `R2 hard relocation ML filter on (pool=32, top_k=16)` when active.
+  Verified: `test/verification/_verify_ml_filter_wiring.py` + ibm01
+  end-to-end (proxy 0.9146, VALID, 71s, filter line present) + same-day
+  `--all` re-baseline: **avg 1.1252, 17/17 VALID, 0 overlaps, 2337s** (new
+  best; was 1.1272). Multi-seed repeat still wanted before crediting the
+  −0.0020 as more than single-rep variance.
 - **ML candidate-ranker data collection (2026-06-04).** Added
   `scripts/collect_ml_data.sh` + a default-preserving `V2_SEED` knob in
   `src/main.py` to capture the training traces (see the section below). No
@@ -336,14 +346,18 @@ submissions/varrahan/v2/
 
 ## ML candidate-ranker data collection
 
-Status: **data collected; the ranker is not yet wired into the placer.** The R2
-local search still scores every candidate with the exact gate. The plan is
-per-operator XGBoost rankers (hard relocation, soft relocation, hard 2-opt)
-that pick which
-candidates to exact-score, with the existing accept-on-true-proxy gate kept as
-the final arbiter (so the search stays strictly non-regressing). Full design +
-validation plan: `docs/ISSUES.md` S10; conceptual notes (why it can improve, what
-it selects): `docs/ml_notes/`.
+Status: **the hard-relocation ranker is wired into the placer by default
+(2026-06-11).** `src/main.py` enables the S10 equal-budget config B when no
+`ML_*` env var is set: the R2 hard-relocation pool widens to 32 candidates and
+the shipped XGBoost ranker (`ml_data/models/clean-wide32-holdout-ibm13-001`)
+picks the 16 to exact-score. The accept-on-true-proxy gate is unchanged, so the
+search stays strictly non-regressing. Setting any `ML_*` env var (e.g.
+`ML_FILTER_OPERATORS=""`) skips the defaults entirely, keeping trace
+collection, shadow diagnostics, and sweeps at their exact prior semantics; a
+missing model file or missing `xgboost` also falls back to the pure-heuristic
+narrow-16 path. Wiring check:
+`test/verification/_verify_ml_filter_wiring.py`. Full design + validation:
+`docs/ISSUES.md` S10; conceptual notes: `docs/ml_notes/`.
 
 How the data is produced:
 

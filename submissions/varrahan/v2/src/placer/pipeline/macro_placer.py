@@ -34,10 +34,31 @@ from placer.local_search.soft_moves import _two_opt_soft_swap
 from placer.local_search.two_opt import _two_opt_proxy_swap
 from placer.local_search.workers import _multiseed_2opt_worker
 from placer.ml.data_collection import get_candidate_trace
+from placer.ml.shadow import is_filter_enabled
 from placer.perturb.congestion_gradient import _routing_congestion_perturb
 from placer.plc.loader import _load_plc
 from placer.scoring.exact import _exact_proxy
 from placer.scoring.incremental import IncrementalScorer
+
+_TRUE_ENV = {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+_FALSE_ENV = {"", "0", "false", "FALSE", "no", "NO", "off", "OFF"}
+
+
+def _reloc_propose_all_enabled(raw: str | None, gpu_backend: str) -> bool:
+    """Parse the hard-relocation propose-all switch.
+
+    `auto` keeps the restructuring opt-in but lets GPU-capable runs select the
+    cross-macro CUDA scorer without changing CPU/default behavior.
+    """
+    value = (raw or "").strip()
+    if value in _TRUE_ENV:
+        return True
+    if value in _FALSE_ENV:
+        return False
+    if value.lower() in {"auto", "cuda", "gpu"}:
+        return gpu_backend == "cuda"
+    return False
+
 
 class MacroPlacer:
     """Budgeted multi-seed placer with congestion-directed local search.
@@ -1099,9 +1120,24 @@ class MacroPlacer:
                     f"  ignoring invalid ML_HARD_RELOCATION_N_TARGETS="
                     f"{_ml_hard_reloc_targets!r}"
                 )
-        R2_RELOC_PROPOSE_ALL = os.environ.get("V2_RELOC_PROPOSE_ALL", "").strip() in {
-            "1", "true", "TRUE", "yes", "YES", "on", "ON"
-        }
+        if is_filter_enabled("hard_relocation"):
+            _log(
+                f"  R2 hard relocation ML filter on (pool={R2_TGT}, "
+                f"top_k={os.environ.get('ML_FILTER_TOP_K') or 'all'})"
+            )
+        _reloc_propose_all_raw = os.environ.get("V2_RELOC_PROPOSE_ALL", "")
+        R2_RELOC_PROPOSE_ALL = _reloc_propose_all_enabled(
+            _reloc_propose_all_raw,
+            _GPU_BACKEND,
+        )
+        if (
+            _reloc_propose_all_raw.strip().lower() in {"auto", "cuda", "gpu"}
+            and not R2_RELOC_PROPOSE_ALL
+        ):
+            _log(
+                "  R2 hard relocation propose-all auto disabled "
+                f"(backend={_GPU_BACKEND})"
+            )
         R2_RELOC_PROPOSE_TOP_M = None
         _reloc_propose_top_m = os.environ.get("V2_RELOC_PROPOSE_TOP_M")
         if _reloc_propose_top_m:
