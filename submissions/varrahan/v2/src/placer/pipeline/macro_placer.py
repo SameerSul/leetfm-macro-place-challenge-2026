@@ -202,7 +202,37 @@ class MacroPlacer:
             dp_handles = []
         return dp_handles
 
+    @staticmethod
+    def _clamp_in_bounds(pl: torch.Tensor, benchmark: Benchmark) -> torch.Tensor:
+        """Final safety net: clamp every MOVABLE macro center inside the canvas so
+        the output always satisfies the evaluator's zero-tolerance bounds check.
+
+        Hard movable macros are already in-bounds (legalizer + strict move-path
+        bounds), so this only moves stray SOFT macros — which may overlap, so
+        clamping is always legal. It catches the residual OOB sources: soft macros
+        left at OOB initial.plc positions (softs never pass through _will_legalize)
+        and unclipped DREAMPlace soft outputs. Fixed macros are left untouched
+        (the contract requires they stay put).
+        """
+        sizes = benchmark.macro_sizes
+        cw = float(benchmark.canvas_width)
+        ch = float(benchmark.canvas_height)
+        hw = sizes[:, 0] / 2.0
+        hh = sizes[:, 1] / 2.0
+        mov = benchmark.get_movable_mask().to(torch.bool)
+        out = pl.clone()
+        cx = torch.minimum(torch.maximum(out[:, 0], hw), cw - hw)
+        cy = torch.minimum(torch.maximum(out[:, 1], hh), ch - hh)
+        out[:, 0] = torch.where(mov, cx, out[:, 0])
+        out[:, 1] = torch.where(mov, cy, out[:, 1])
+        return out
+
     def place(self, benchmark: Benchmark) -> torch.Tensor:
+        # Every return path of the core pipeline runs through the final in-bounds
+        # clamp so no code path can emit an out-of-bounds placement.
+        return self._clamp_in_bounds(self._place_impl(benchmark), benchmark)
+
+    def _place_impl(self, benchmark: Benchmark) -> torch.Tensor:
         np.random.seed(self.seed)
         random.seed(self.seed)
 
