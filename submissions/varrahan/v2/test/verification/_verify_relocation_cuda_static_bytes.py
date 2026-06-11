@@ -63,7 +63,7 @@ def _check(name: str) -> None:
         incremental_scorer=scorer,
         dev=_GPU_DEVICE,
     )
-    estimated = _relocation_static_tensor_bytes_estimate(scorer)
+    estimated = _relocation_static_tensor_bytes_estimate(scorer, proposals)
     actual = _tensor_tree_bytes(static_tensors)
     print(f"{name}: estimated={estimated} actual={actual}")
     if estimated != actual:

@@ -64,11 +64,19 @@ def main() -> int:
             raise AssertionError(f"unexpected budget chunk calls: {calls}")
         stats = getattr(relocation._score_relocation_proposals_cuda_delta, "last_stats", {})
         if (
-            stats.get("initial_chunk_size") != 2
+            stats.get("initial_chunk_size") != 1
+            or stats.get("final_chunk_size") != 2
             or stats.get("memory_budget_chunk") != 2
             or stats.get("chunk_source") != "memory_budget"
-            or stats.get("static_tensor_bytes_estimate") != 20
+            or stats.get("memory_budget_total_bytes") != 83
+            or stats.get("memory_budget_dynamic_bytes") != 83
+            or stats.get("memory_budget_static_exceeds") is not False
+            or stats.get("memory_budget_adjusted_after_static") is not True
+            or stats.get("memory_budget_adjustment") != "grow"
+            or stats.get("static_tensor_bytes_estimate") != 76
             or stats.get("static_tensor_bytes_actual") != 0
+            or stats.get("grid_dynamic_bytes_per_proposal") != 40
+            or stats.get("hpwl_dynamic_bytes_per_proposal") != 0
             or stats.get("memory_safety_factor") != 1.0
         ):
             raise AssertionError(f"unexpected budget stats: {stats}")
@@ -92,6 +100,13 @@ def main() -> int:
         if (
             stats.get("memory_budget_chunk") != 1
             or stats.get("dynamic_bytes_per_proposal") != 80
+            or stats.get("grid_dynamic_bytes_per_proposal") != 80
+            or stats.get("hpwl_dynamic_bytes_per_proposal") != 0
+            or stats.get("memory_budget_total_bytes") != 83
+            or stats.get("memory_budget_dynamic_bytes") != 83
+            or stats.get("memory_budget_static_exceeds") is not False
+            or stats.get("memory_budget_adjusted_after_static") is not False
+            or stats.get("memory_budget_adjustment") != "none"
             or stats.get("memory_safety_factor") != 2.0
         ):
             raise AssertionError(f"unexpected safety-budget stats: {stats}")
@@ -158,11 +173,77 @@ def main() -> int:
             stats.get("memory_budget_chunk") != 3
             or stats.get("memory_budget_source") != "auto_mem_frac"
             or stats.get("chunk_source") != "memory_budget"
+            or stats.get("memory_budget_total_bytes") != 120
+            or stats.get("memory_budget_dynamic_bytes") != 120
+            or stats.get("memory_budget_static_exceeds") is not False
+            or stats.get("memory_budget_adjusted_after_static") is not True
+            or stats.get("memory_budget_adjustment") != "grow"
             or stats.get("auto_memory_frac") != 0.3
             or stats.get("auto_cuda_free_bytes") != 400
             or stats.get("auto_cuda_total_bytes") != 1000
         ):
             raise AssertionError(f"unexpected auto-budget stats: {stats}")
+
+        calls.clear()
+        os.environ.pop("V2_RELOC_PROPOSE_CHUNK_SIZE", None)
+        os.environ.pop("V2_RELOC_PROPOSE_AUTO_MEM_FRAC", None)
+        os.environ["V2_RELOC_PROPOSE_MAX_MB"] = "0.00004"
+        relocation._build_relocation_cuda_static_tensors = lambda *_args, **_kwargs: {
+            "oversized_static": torch.empty(100, dtype=torch.uint8)
+        }
+        relocation._score_relocation_proposals_cuda_delta(
+            proposals,
+            pos=None,
+            cw=0.0,
+            ch=0.0,
+            local_cong=None,
+            tgt_cong=None,
+            incremental_scorer=_Scorer(),
+        )
+        if calls != [1, 1, 1, 1, 1, 1, 1]:
+            raise AssertionError(f"unexpected static-exceeds calls: {calls}")
+        stats = getattr(relocation._score_relocation_proposals_cuda_delta, "last_stats", {})
+        if (
+            stats.get("memory_budget_total_bytes") != 41
+            or stats.get("memory_budget_dynamic_bytes") != 0
+            or stats.get("memory_budget_static_exceeds") is not True
+            or stats.get("memory_budget_adjusted_after_static") is not False
+            or stats.get("memory_budget_adjustment") != "none"
+            or stats.get("static_tensor_bytes_actual") != 100
+            or stats.get("memory_budget_chunk") != 1
+        ):
+            raise AssertionError(f"unexpected static-exceeds stats: {stats}")
+
+        calls.clear()
+        os.environ["V2_RELOC_PROPOSE_MAX_MB"] = "0.00018"
+        relocation._build_relocation_cuda_static_tensors = lambda *_args, **_kwargs: {
+            "larger_static": torch.empty(120, dtype=torch.uint8)
+        }
+        relocation._score_relocation_proposals_cuda_delta(
+            proposals,
+            pos=None,
+            cw=0.0,
+            ch=0.0,
+            local_cong=None,
+            tgt_cong=None,
+            incremental_scorer=_Scorer(),
+        )
+        if calls != [1, 1, 1, 1, 1, 1, 1]:
+            raise AssertionError(f"unexpected actual-static-shrink calls: {calls}")
+        stats = getattr(relocation._score_relocation_proposals_cuda_delta, "last_stats", {})
+        if (
+            stats.get("initial_chunk_size") != 2
+            or stats.get("final_chunk_size") != 1
+            or stats.get("memory_budget_chunk") != 1
+            or stats.get("memory_budget_total_bytes") != 188
+            or stats.get("memory_budget_dynamic_bytes") != 68
+            or stats.get("memory_budget_adjusted_after_static") is not True
+            or stats.get("memory_budget_adjustment") != "shrink"
+            or stats.get("static_tensor_bytes_estimate") != 76
+            or stats.get("static_tensor_bytes_actual") != 120
+            or stats.get("memory_budget_static_exceeds") is not False
+        ):
+            raise AssertionError(f"unexpected actual-static-shrink stats: {stats}")
     finally:
         relocation._GPU_DEVICE = original_device
         relocation._build_relocation_cuda_static_tensors = original_static
