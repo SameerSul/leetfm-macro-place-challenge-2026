@@ -7,6 +7,10 @@ small exact-score parity check for the `cuda_delta` proposal scorer.
 Usage:
   PYTHONPATH=submissions/varrahan/v2/src \
   uv run python submissions/varrahan/v2/test/diagnostic/_cuda_relocation_status.py --benchmark ibm01
+
+  # Fail unless the runtime and scorer actually use CUDA:
+  PYTHONPATH=submissions/varrahan/v2/src \
+  uv run python submissions/varrahan/v2/test/diagnostic/_cuda_relocation_status.py --require-cuda
 """
 
 from __future__ import annotations
@@ -66,6 +70,17 @@ def _nvidia_smi_status() -> dict[str, str | int]:
     return {"status": status, "returncode": int(result.returncode), "output": output[:500]}
 
 
+def _cuda_allocation_status() -> dict[str, str]:
+    if not torch.cuda.is_available() or _GPU_DEVICE.type != "cuda":
+        return {"status": "skipped", "output": "cuda runtime or configured device unavailable"}
+    try:
+        _ = torch.empty((1,), device=_GPU_DEVICE)
+        torch.cuda.synchronize(_GPU_DEVICE)
+    except Exception as exc:
+        return {"status": "error", "output": str(exc)[:500]}
+    return {"status": "ok", "output": ""}
+
+
 def _score_exact_subset(scorer: IncrementalScorer, proposals: list[dict], limit: int) -> float:
     max_delta = 0.0
     for proposal in proposals[:limit]:
@@ -84,6 +99,11 @@ def main() -> int:
     parser.add_argument("--top-hot", type=int, default=5)
     parser.add_argument("--n-targets", type=int, default=5)
     parser.add_argument("--exact-limit", type=int, default=16)
+    parser.add_argument(
+        "--require-cuda",
+        action="store_true",
+        help="exit nonzero unless PyTorch and the relocation scorer are using CUDA",
+    )
     args = parser.parse_args()
 
     print(f"torch={torch.__version__}")
@@ -94,6 +114,9 @@ def main() -> int:
     print(f"nvidia_smi_status={smi['status']}")
     print(f"nvidia_smi_returncode={smi['returncode']}")
     print(f"nvidia_smi_output={smi['output']}")
+    alloc = _cuda_allocation_status()
+    print(f"cuda_allocation_status={alloc['status']}")
+    print(f"cuda_allocation_output={alloc['output']}")
     print(f"requested_device={_CUDA_DEVICE_REQUESTED}")
     print(f"placer_backend={_GPU_BACKEND}")
     print(f"placer_device={_GPU_DEVICE}")
@@ -144,6 +167,23 @@ def main() -> int:
     print(f"benchmark={args.benchmark}")
     print(f"proposals={len(proposals)}")
     print(f"scorer_stats={stats}")
+    if args.require_cuda:
+        cuda_ok = (
+            torch.cuda.is_available()
+            and _GPU_DEVICE.type == "cuda"
+            and alloc["status"] == "ok"
+            and stats.get("backend") == "cuda"
+            and str(stats.get("device", "")).startswith("cuda")
+        )
+        if not cuda_ok:
+            raise SystemExit(
+                "require-cuda failed: "
+                f"torch_cuda_available={torch.cuda.is_available()} "
+                f"torch_device_count={_torch_cuda_device_count()} "
+                f"placer_device={_GPU_DEVICE} scorer_device={stats.get('device')} "
+                f"cuda_allocation_status={alloc['status']} cuda_allocation_output={alloc['output']} "
+                f"nvidia_smi_status={smi['status']} nvidia_smi_output={smi['output']}"
+            )
     exact_limit = max(0, min(args.exact_limit, len(proposals)))
     if exact_limit:
         print(f"exact_checked={exact_limit}")

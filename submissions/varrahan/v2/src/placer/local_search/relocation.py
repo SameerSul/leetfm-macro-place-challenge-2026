@@ -739,13 +739,69 @@ def _cuda_synchronize_if_needed() -> None:
         pass
 
 
-def _relocation_dynamic_bytes_per_proposal(incremental_scorer) -> int:
+def _relocation_hpwl_dynamic_bytes_per_proposal(
+    incremental_scorer,
+    proposals: "list[dict] | None",
+) -> int:
+    if not proposals or incremental_scorer is None or not hasattr(incremental_scorer, "hard_indices"):
+        return 0
+    int64_bytes = np.dtype(np.int64).itemsize
+    float32_bytes = np.dtype(np.float32).itemsize
+    bool_bytes = np.dtype(np.bool_).itemsize
+    total = 0
+    hpwl_topology = _build_hpwl_topology_cache(
+        incremental_scorer,
+        module_indices={
+            int(incremental_scorer.hard_indices[int(p["i"])])
+            for p in proposals
+        },
+    )
+    for proposal in proposals:
+        module_idx = int(incremental_scorer.hard_indices[int(proposal["i"])])
+        topo = hpwl_topology.get(module_idx)
+        if topo is None:
+            continue
+        nets, _lengths, pin_indices, _total = topo
+        n_pins = int(pin_indices.size)
+        n_segments = int(nets.size)
+        # Chunk-local HPWL scoring builds row/segment maps plus gathered pin
+        # coordinates and segment reductions. Static topology tensors are
+        # counted separately in _relocation_static_tensor_bytes_estimate.
+        total += n_pins * (5 * int64_bytes + 2 * float32_bytes + bool_bytes)
+        total += n_segments * (2 * int64_bytes + 6 * float32_bytes)
+    return int(np.ceil(total / max(len(proposals), 1)))
+
+
+def _relocation_grid_dynamic_bytes_per_proposal(incremental_scorer) -> int:
     if incremental_scorer is None:
         return 0
     n_cells = int(incremental_scorer.grid_row) * int(incremental_scorer.grid_col)
     # occ, v/h macro, v/h raw, v/h smoothed, v/h congestion/routing scratch.
-    raw_bytes = max(1, n_cells) * 10 * np.dtype(np.float32).itemsize
+    return max(1, n_cells) * 10 * np.dtype(np.float32).itemsize
+
+
+def _relocation_dynamic_bytes_per_proposal(
+    incremental_scorer,
+    proposals: "list[dict] | None" = None,
+) -> int:
+    if incremental_scorer is None:
+        return 0
+    raw_bytes = _relocation_grid_dynamic_bytes_per_proposal(incremental_scorer)
+    raw_bytes += _relocation_hpwl_dynamic_bytes_per_proposal(incremental_scorer, proposals)
     return int(np.ceil(raw_bytes * _relocation_memory_safety_factor()))
+
+
+def _relocation_dynamic_byte_components(
+    incremental_scorer,
+    proposals: "list[dict] | None" = None,
+) -> dict:
+    factor = _relocation_memory_safety_factor()
+    grid_raw = _relocation_grid_dynamic_bytes_per_proposal(incremental_scorer)
+    hpwl_raw = _relocation_hpwl_dynamic_bytes_per_proposal(incremental_scorer, proposals)
+    return {
+        "grid_dynamic_bytes_per_proposal": int(np.ceil(grid_raw * factor)),
+        "hpwl_dynamic_bytes_per_proposal": int(np.ceil(hpwl_raw * factor)),
+    }
 
 
 def _relocation_memory_safety_factor() -> float:
@@ -756,7 +812,10 @@ def _relocation_memory_safety_factor() -> float:
     return max(1.0, factor)
 
 
-def _relocation_static_tensor_bytes_estimate(incremental_scorer) -> int:
+def _relocation_static_tensor_bytes_estimate(
+    incremental_scorer,
+    proposals: "list[dict] | None" = None,
+) -> int:
     if incremental_scorer is None:
         return 0
     n_cells = int(incremental_scorer.grid_row) * int(incremental_scorer.grid_col)
@@ -778,6 +837,22 @@ def _relocation_static_tensor_bytes_estimate(incremental_scorer) -> int:
         pos_cache = None
     if pos_cache is not None:
         total += int(np.asarray(pos_cache).size) * np.dtype(np.float32).itemsize
+    if proposals is not None:
+        total += len(proposals) * 2 * np.dtype(np.float32).itemsize
+    module_indices = None
+    if proposals is not None and hasattr(incremental_scorer, "hard_indices"):
+        module_indices = {
+            int(incremental_scorer.hard_indices[int(p["i"])])
+            for p in proposals
+        }
+    hpwl_topology = _build_hpwl_topology_cache(
+        incremental_scorer,
+        module_indices=module_indices,
+    )
+    for nets, lengths, pin_indices, _total in hpwl_topology.values():
+        total += int(nets.size) * np.dtype(np.int64).itemsize
+        total += int(lengths.size) * np.dtype(np.int64).itemsize
+        total += int(pin_indices.size) * np.dtype(np.int64).itemsize
     return int(total)
 
 
@@ -795,19 +870,21 @@ def _chunk_size_from_memory_budget(
     proposals: list[dict],
     incremental_scorer,
     max_mb_raw: str,
-) -> "tuple[int | None, float | None, int]":
+    static_bytes_estimate: int = 0,
+) -> "tuple[int | None, float | None, int, int | None, int | None]":
     try:
         max_mb = float(max_mb_raw)
     except (TypeError, ValueError):
-        return None, None, _relocation_dynamic_bytes_per_proposal(incremental_scorer)
-    bytes_per = _relocation_dynamic_bytes_per_proposal(incremental_scorer)
+        return None, None, _relocation_dynamic_bytes_per_proposal(incremental_scorer, proposals), None, None
+    bytes_per = _relocation_dynamic_bytes_per_proposal(incremental_scorer, proposals)
     if bytes_per <= 0:
-        return None, max_mb, bytes_per
+        return None, max_mb, bytes_per, None, None
     budget = int(max_mb * 1024.0 * 1024.0)
     if budget <= 0:
-        return None, max_mb, bytes_per
-    chunk = max(1, min(len(proposals), budget // bytes_per))
-    return int(chunk), max_mb, bytes_per
+        return None, max_mb, bytes_per, None, None
+    dynamic_budget = max(0, budget - max(0, int(static_bytes_estimate)))
+    chunk = max(1, min(len(proposals), dynamic_budget // bytes_per))
+    return int(chunk), max_mb, bytes_per, int(dynamic_budget), int(budget)
 
 
 def _cuda_auto_memory_budget_mb(frac_raw: str) -> "tuple[float, float, int, int] | None":
@@ -828,9 +905,18 @@ def _cuda_auto_memory_budget_mb(frac_raw: str) -> "tuple[float, float, int, int]
     return (budget, frac, int(free_bytes), int(total_bytes)) if budget > 0.0 else None
 
 
-def _build_hpwl_topology_cache(incremental_scorer) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, int]]:
+def _build_hpwl_topology_cache(
+    incremental_scorer,
+    module_indices: "set[int] | None" = None,
+) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, int]]:
     cache: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, int]] = {}
-    for module_idx, nets in incremental_scorer.macro_to_nets.items():
+    macro_to_nets = getattr(incremental_scorer, "macro_to_nets", None)
+    if not macro_to_nets:
+        return cache
+    for module_idx, nets in macro_to_nets.items():
+        module_idx = int(module_idx)
+        if module_indices is not None and module_idx not in module_indices:
+            continue
         if nets is None or len(nets) == 0:
             continue
         starts_np = incremental_scorer.net_starts[nets]
@@ -842,11 +928,27 @@ def _build_hpwl_topology_cache(incremental_scorer) -> dict[int, tuple[np.ndarray
         pin_indices_np = np.repeat(starts_np, lengths_np) + (
             np.arange(total) - np.repeat(local_starts_np, lengths_np)
         )
-        cache[int(module_idx)] = (
+        cache[module_idx] = (
             nets.astype(np.int64, copy=False),
             lengths_np.astype(np.int64, copy=False),
             pin_indices_np.astype(np.int64, copy=False),
             total,
+        )
+    return cache
+
+
+def _build_hpwl_topology_tensor_cache(
+    hpwl_topology: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, int]],
+    *,
+    dev: torch.device,
+) -> dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]]:
+    cache: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]] = {}
+    for module_idx, (nets, lengths, pin_indices, total) in hpwl_topology.items():
+        cache[module_idx] = (
+            torch.as_tensor(nets, device=dev, dtype=torch.long),
+            torch.as_tensor(lengths, device=dev, dtype=torch.long),
+            torch.as_tensor(pin_indices, device=dev, dtype=torch.long),
+            int(total),
         )
     return cache
 
@@ -887,11 +989,19 @@ def _build_relocation_cuda_static_tensors(
 ) -> dict:
     """Build tensors and frozen-base metadata reused by every proposal chunk."""
     pos_cache_np = _ensure_pos_cache(incremental_scorer.plc)
+    proposal_xy_np = np.asarray([p["xy"] for p in proposals], dtype=np.float32)
+    proposal_i_np = np.asarray([p["i"] for p in proposals], dtype=np.int64)
+    proposal_module_idx_np = np.asarray(
+        [incremental_scorer.hard_indices[int(i)] for i in proposal_i_np],
+        dtype=np.int64,
+    )
     old_density: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     old_macro_route: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     old_net_route: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    for i in sorted({int(p["i"]) for p in proposals}):
+    module_indices: set[int] = set()
+    for i in sorted({int(i) for i in proposal_i_np}):
         module_idx = int(incremental_scorer.hard_indices[i])
+        module_indices.add(module_idx)
         old_x = float(pos[i, 0])
         old_y = float(pos[i, 1])
         old_density[i] = incremental_scorer._macro_occ(module_idx, old_x, old_y)
@@ -907,8 +1017,20 @@ def _build_relocation_cuda_static_tensors(
             old_x,
             old_y,
         )
+    hpwl_topology = _build_hpwl_topology_cache(
+        incremental_scorer,
+        module_indices=module_indices,
+    )
     return {
-        "hpwl_topology": _build_hpwl_topology_cache(incremental_scorer),
+        "hpwl_topology": hpwl_topology,
+        "hpwl_topology_tensors": _build_hpwl_topology_tensor_cache(
+            hpwl_topology,
+            dev=dev,
+        ),
+        "proposal_xy_np": proposal_xy_np,
+        "proposal_i_np": proposal_i_np,
+        "proposal_module_idx_np": proposal_module_idx_np,
+        "proposal_xy": torch.as_tensor(proposal_xy_np, device=dev, dtype=torch.float32),
         "old_density": old_density,
         "old_macro_route": old_macro_route,
         "old_net_route": old_net_route,
@@ -984,50 +1106,51 @@ def _batched_hpwl_delta_torch(
     incremental_scorer,
     dev: torch.device,
     static_tensors: dict,
-) -> torch.Tensor:
+) -> "tuple[torch.Tensor, dict]":
     """Return per-proposal HPWL delta via one segmented Torch reduction."""
     n_prop = len(proposals)
     wl_delta = torch.zeros(n_prop, device=dev, dtype=torch.float32)
     pos_cache_t = static_tensors.get("pos_cache")
     if pos_cache_t is None or incremental_scorer.n_nets <= 0:
-        return wl_delta
+        return wl_delta, {"hpwl_segments": 0, "hpwl_pins": 0, "hpwl_rows": 0}
 
-    pin_parts = []
-    seg_parts = []
-    row_pin_parts = []
-    moved_module_parts = []
-    nets_parts = []
-    row_seg_parts = []
+    pin_parts: list[torch.Tensor] = []
+    seg_parts: list[torch.Tensor] = []
+    row_pin_parts: list[torch.Tensor] = []
+    moved_module_parts: list[torch.Tensor] = []
+    nets_parts: list[torch.Tensor] = []
+    row_seg_parts: list[torch.Tensor] = []
     seg_offset = 0
     for row, module_idx_raw in enumerate(module_idx_np):
         module_idx = int(module_idx_raw)
-        topo = static_tensors["hpwl_topology"].get(module_idx)
+        topo = static_tensors["hpwl_topology_tensors"].get(module_idx)
         if topo is None:
             continue
-        nets, lengths_np, pin_indices_np, total = topo
-        n_seg = len(nets)
-        pin_parts.append(pin_indices_np.astype(np.int64, copy=False))
-        seg_parts.append(
-            np.repeat(
-                np.arange(seg_offset, seg_offset + n_seg, dtype=np.int64),
-                lengths_np,
-            )
+        nets_t_part, lengths_t, pin_indices_t_part, total = topo
+        n_seg = int(nets_t_part.numel())
+        seg_template = torch.arange(
+            seg_offset,
+            seg_offset + n_seg,
+            device=dev,
+            dtype=torch.long,
         )
-        row_pin_parts.append(np.full(total, row, dtype=np.int64))
-        moved_module_parts.append(np.full(total, module_idx, dtype=np.int64))
-        nets_parts.append(nets.astype(np.int64, copy=False))
-        row_seg_parts.append(np.full(n_seg, row, dtype=np.int64))
+        pin_parts.append(pin_indices_t_part)
+        seg_parts.append(torch.repeat_interleave(seg_template, lengths_t))
+        row_pin_parts.append(torch.full((total,), row, device=dev, dtype=torch.long))
+        moved_module_parts.append(torch.full((total,), module_idx, device=dev, dtype=torch.long))
+        nets_parts.append(nets_t_part)
+        row_seg_parts.append(torch.full((n_seg,), row, device=dev, dtype=torch.long))
         seg_offset += n_seg
 
     if not pin_parts:
-        return wl_delta
+        return wl_delta, {"hpwl_segments": 0, "hpwl_pins": 0, "hpwl_rows": 0}
 
-    pin_indices_t = torch.as_tensor(np.concatenate(pin_parts), device=dev, dtype=torch.long)
-    seg_ids_t = torch.as_tensor(np.concatenate(seg_parts), device=dev, dtype=torch.long)
-    row_pin_t = torch.as_tensor(np.concatenate(row_pin_parts), device=dev, dtype=torch.long)
-    moved_module_t = torch.as_tensor(np.concatenate(moved_module_parts), device=dev, dtype=torch.long)
-    nets_t = torch.as_tensor(np.concatenate(nets_parts), device=dev, dtype=torch.long)
-    row_seg_t = torch.as_tensor(np.concatenate(row_seg_parts), device=dev, dtype=torch.long)
+    pin_indices_t = torch.cat(pin_parts)
+    seg_ids_t = torch.cat(seg_parts)
+    row_pin_t = torch.cat(row_pin_parts)
+    moved_module_t = torch.cat(moved_module_parts)
+    nets_t = torch.cat(nets_parts)
+    row_seg_t = torch.cat(row_seg_parts)
 
     unique_ref_t = static_tensors["unique_ref"]
     node_pos_t = pos_cache_t[unique_ref_t]
@@ -1059,20 +1182,20 @@ def _batched_hpwl_delta_torch(
     new_hpwl = (max_x - min_x) + (max_y - min_y)
     contrib = (new_hpwl - per_net_hpwl_t[nets_t]) * net_weights_t[nets_t]
     wl_delta.index_add_(0, row_seg_t, contrib)
-    return wl_delta / float(incremental_scorer.wl_normalizer)
+    return wl_delta / float(incremental_scorer.wl_normalizer), {
+        "hpwl_segments": int(nets_t.numel()),
+        "hpwl_pins": int(pin_indices_t.numel()),
+        "hpwl_rows": len(pin_parts),
+    }
 
 
 def _score_relocation_proposals_cuda_delta_batch(
     proposals: list[dict],
     *,
-    pos: np.ndarray,
-    cw: float,
-    ch: float,
-    local_cong: np.ndarray,
-    tgt_cong: np.ndarray,
+    proposal_start: int,
     incremental_scorer,
     static_tensors: dict,
-) -> None:
+) -> dict:
     """Assign CUDA-capable batched delta scores to frozen-base proposals.
 
     This evaluates proposal density, HPWL delta, hard-macro blockage, and
@@ -1084,9 +1207,10 @@ def _score_relocation_proposals_cuda_delta_batch(
     t0_prep = time.monotonic()
     dev = _GPU_DEVICE
     n_prop = len(proposals)
-    xy_np = np.asarray([p["xy"] for p in proposals], dtype=np.float32)
-    hard_i_np = np.asarray([p["i"] for p in proposals], dtype=np.int64)
-    module_idx_np = np.asarray([incremental_scorer.hard_indices[int(i)] for i in hard_i_np], dtype=np.int64)
+    proposal_end = proposal_start + n_prop
+    xy_np = static_tensors["proposal_xy_np"][proposal_start:proposal_end]
+    hard_i_np = static_tensors["proposal_i_np"][proposal_start:proposal_end]
+    module_idx_np = static_tensors["proposal_module_idx_np"][proposal_start:proposal_end]
 
     row_parts = []
     col_parts = []
@@ -1249,11 +1373,11 @@ def _score_relocation_proposals_cuda_delta_batch(
         else:
             congestion = torch.topk(routing_vals, k=route_cnt, dim=1).values.mean(dim=1)
 
-        xy_t = torch.as_tensor(xy_np, device=dev, dtype=torch.float32)
+        xy_t = static_tensors["proposal_xy"][proposal_start:proposal_end]
         nx_t = xy_t[:, 0]
         ny_t = xy_t[:, 1]
 
-        wl_delta = _batched_hpwl_delta_torch(
+        wl_delta, hpwl_stats = _batched_hpwl_delta_torch(
             proposals,
             module_idx_np=module_idx_np,
             nx_t=nx_t,
@@ -1275,6 +1399,9 @@ def _score_relocation_proposals_cuda_delta_batch(
         "density_updates": int(sum(part.size for part in row_parts)),
         "macro_route_updates": int(sum(part.size for part in macro_route_row_parts)),
         "net_route_updates": int(sum(part.size for part in net_route_row_parts)),
+        "hpwl_segments": int(hpwl_stats.get("hpwl_segments", 0)),
+        "hpwl_pins": int(hpwl_stats.get("hpwl_pins", 0)),
+        "hpwl_rows": int(hpwl_stats.get("hpwl_rows", 0)),
     }
 
 
@@ -1292,6 +1419,10 @@ def _score_relocation_proposals_cuda_delta(
     if not proposals:
         return
 
+    static_bytes_estimate = _relocation_static_tensor_bytes_estimate(
+        incremental_scorer,
+        proposals,
+    )
     chunk_raw = os.environ.get("V2_RELOC_PROPOSE_CHUNK_SIZE")
     user_chunked = bool(chunk_raw)
     chunk_source = "env" if chunk_raw else ("cuda_default" if _GPU_DEVICE.type == "cuda" else "cpu")
@@ -1306,16 +1437,30 @@ def _score_relocation_proposals_cuda_delta(
         budget_chunk = None
         budget_mb = None
         budget_source = None
+        budget_dynamic_bytes = None
+        budget_total_bytes = None
         auto_mem_frac = None
         auto_free_bytes = None
         auto_total_bytes = None
-        bytes_per_proposal = _relocation_dynamic_bytes_per_proposal(incremental_scorer)
+        bytes_per_proposal = _relocation_dynamic_bytes_per_proposal(
+            incremental_scorer,
+            proposals,
+        )
+        budget_adjusted_after_static = False
+        budget_adjustment = "none"
         if _GPU_DEVICE.type == "cuda":
             max_mb_raw = os.environ.get("V2_RELOC_PROPOSE_MAX_MB", "")
-            budget_chunk, budget_mb, bytes_per_proposal = _chunk_size_from_memory_budget(
+            (
+                budget_chunk,
+                budget_mb,
+                bytes_per_proposal,
+                budget_dynamic_bytes,
+                budget_total_bytes,
+            ) = _chunk_size_from_memory_budget(
                 proposals,
                 incremental_scorer,
                 max_mb_raw,
+                static_bytes_estimate,
             )
             if budget_chunk is not None:
                 budget_source = "max_mb"
@@ -1325,10 +1470,17 @@ def _score_relocation_proposals_cuda_delta(
                 )
                 if auto_budget is not None:
                     auto_budget_mb, auto_mem_frac, auto_free_bytes, auto_total_bytes = auto_budget
-                    budget_chunk, budget_mb, bytes_per_proposal = _chunk_size_from_memory_budget(
+                    (
+                        budget_chunk,
+                        budget_mb,
+                        bytes_per_proposal,
+                        budget_dynamic_bytes,
+                        budget_total_bytes,
+                    ) = _chunk_size_from_memory_budget(
                         proposals,
                         incremental_scorer,
                         str(auto_budget_mb),
+                        static_bytes_estimate,
                     )
                     if budget_chunk is not None:
                         budget_source = "auto_mem_frac"
@@ -1340,13 +1492,19 @@ def _score_relocation_proposals_cuda_delta(
         budget_mb = None
         budget_chunk = None
         budget_source = None
+        budget_dynamic_bytes = None
+        budget_total_bytes = None
         auto_mem_frac = None
         auto_free_bytes = None
         auto_total_bytes = None
-        bytes_per_proposal = _relocation_dynamic_bytes_per_proposal(incremental_scorer)
+        bytes_per_proposal = _relocation_dynamic_bytes_per_proposal(
+            incremental_scorer,
+            proposals,
+        )
+        budget_adjusted_after_static = False
+        budget_adjustment = "none"
     chunk_size = len(proposals) if chunk_size <= 0 else min(chunk_size, len(proposals))
     initial_chunk_size = chunk_size
-    static_bytes_estimate = _relocation_static_tensor_bytes_estimate(incremental_scorer)
     retries = 0
     if _GPU_DEVICE.type == "cuda":
         try:
@@ -1367,6 +1525,34 @@ def _score_relocation_proposals_cuda_delta(
         _cuda_synchronize_if_needed()
         static_elapsed = time.monotonic() - t0_static
         static_tensor_bytes_actual = _tensor_tree_bytes(static_tensors)
+        if budget_total_bytes is not None and not user_chunked:
+            actual_dynamic_budget = max(0, int(budget_total_bytes) - static_tensor_bytes_actual)
+            budget_dynamic_bytes = actual_dynamic_budget
+            budget_static_exceeds = static_tensor_bytes_actual > int(budget_total_bytes)
+            if bytes_per_proposal > 0:
+                actual_budget_chunk = max(
+                    1,
+                    min(len(proposals), actual_dynamic_budget // bytes_per_proposal),
+                )
+                natural_chunk_size = min(default_chunk_size, len(proposals))
+                adjusted_chunk = min(int(actual_budget_chunk), natural_chunk_size)
+                if adjusted_chunk != chunk_size:
+                    previous_chunk_size = chunk_size
+                    chunk_size = adjusted_chunk
+                    budget_chunk = adjusted_chunk
+                    budget_adjusted_after_static = True
+                    budget_adjustment = "grow" if adjusted_chunk > previous_chunk_size else "shrink"
+                    chunk_source = (
+                        "memory_budget"
+                        if adjusted_chunk < natural_chunk_size
+                        else "cuda_default"
+                    )
+        else:
+            budget_static_exceeds = (
+                None
+                if budget_total_bytes is None
+                else static_tensor_bytes_actual > int(budget_total_bytes)
+            )
     except RuntimeError as exc:
         if _GPU_DEVICE.type == "cuda" and _is_torch_oom(exc):
             raise RuntimeError(
@@ -1385,17 +1571,16 @@ def _score_relocation_proposals_cuda_delta(
             density_updates = 0
             macro_route_updates = 0
             net_route_updates = 0
+            hpwl_segments = 0
+            hpwl_pins = 0
+            hpwl_rows = 0
             for start in range(0, len(proposals), chunk_size):
                 batches += 1
                 _cuda_synchronize_if_needed()
                 t0_batch = time.monotonic()
                 batch_stats = _score_relocation_proposals_cuda_delta_batch(
                     proposals[start:start + chunk_size],
-                    pos=pos,
-                    cw=cw,
-                    ch=ch,
-                    local_cong=local_cong,
-                    tgt_cong=tgt_cong,
+                    proposal_start=start,
                     incremental_scorer=incremental_scorer,
                     static_tensors=static_tensors,
                 )
@@ -1406,8 +1591,15 @@ def _score_relocation_proposals_cuda_delta(
                     density_updates += int(batch_stats.get("density_updates", 0))
                     macro_route_updates += int(batch_stats.get("macro_route_updates", 0))
                     net_route_updates += int(batch_stats.get("net_route_updates", 0))
+                    hpwl_segments += int(batch_stats.get("hpwl_segments", 0))
+                    hpwl_pins += int(batch_stats.get("hpwl_pins", 0))
+                    hpwl_rows += int(batch_stats.get("hpwl_rows", 0))
             _cuda_synchronize_if_needed()
             elapsed = time.monotonic() - t0_score
+            dynamic_components = _relocation_dynamic_byte_components(
+                incremental_scorer,
+                proposals,
+            )
             _score_relocation_proposals_cuda_delta.last_stats = {
                 "device": str(_GPU_DEVICE),
                 "backend": _GPU_DEVICE.type,
@@ -1430,13 +1622,27 @@ def _score_relocation_proposals_cuda_delta(
                 "density_updates": density_updates,
                 "macro_route_updates": macro_route_updates,
                 "net_route_updates": net_route_updates,
+                "hpwl_segments": hpwl_segments,
+                "hpwl_pins": hpwl_pins,
+                "hpwl_rows": hpwl_rows,
                 "memory_budget_mb": budget_mb,
                 "memory_budget_chunk": budget_chunk,
                 "memory_budget_source": budget_source,
+                "memory_budget_total_bytes": budget_total_bytes,
+                "memory_budget_dynamic_bytes": budget_dynamic_bytes,
+                "memory_budget_static_exceeds": budget_static_exceeds,
+                "memory_budget_adjusted_after_static": budget_adjusted_after_static,
+                "memory_budget_adjustment": budget_adjustment,
                 "auto_memory_frac": auto_mem_frac,
                 "auto_cuda_free_bytes": auto_free_bytes,
                 "auto_cuda_total_bytes": auto_total_bytes,
                 "dynamic_bytes_per_proposal": bytes_per_proposal,
+                "grid_dynamic_bytes_per_proposal": dynamic_components[
+                    "grid_dynamic_bytes_per_proposal"
+                ],
+                "hpwl_dynamic_bytes_per_proposal": dynamic_components[
+                    "hpwl_dynamic_bytes_per_proposal"
+                ],
                 "memory_safety_factor": _relocation_memory_safety_factor(),
                 "static_tensor_bytes_estimate": static_bytes_estimate,
                 "static_tensor_bytes_actual": static_tensor_bytes_actual,
@@ -1536,8 +1742,10 @@ def _relocation_moves_propose_all(
         legal = []
         for candidate_rank, t in enumerate(cand):
             nx, ny = float(tgt_x[t]), float(tgt_y[t])
-            if (nx - hw[i] < -eps or nx + hw[i] > cw + eps or
-                    ny - hh[i] < -eps or ny + hh[i] > ch + eps):
+            # Strict bounds: the evaluator has zero overhang tolerance (matches the
+            # production _relocation_moves path; targets are raw, unclipped cell centers).
+            if (nx - hw[i] < 0 or nx + hw[i] > cw or
+                    ny - hh[i] < 0 or ny + hh[i] > ch):
                 continue
             if ((np.abs(nx - ox) < sxi + eps) & (np.abs(ny - oy) < syi + eps)).any():
                 continue
@@ -1624,8 +1832,10 @@ def _relocation_moves_propose_all(
         if i in moved or not movable[i]:
             continue
         nx, ny = p["xy"]
-        if (nx - hw[i] < -eps or nx + hw[i] > cw + eps or
-                ny - hh[i] < -eps or ny + hh[i] > ch + eps):
+        # Strict bounds: the evaluator has zero overhang tolerance (matches the
+        # production _relocation_moves path; targets are raw, unclipped cell centers).
+        if (nx - hw[i] < 0 or nx + hw[i] > cw or
+                ny - hh[i] < 0 or ny + hh[i] > ch):
             continue
         mask = all_idx != i
         if ((np.abs(nx - pos[mask, 0]) < sep_x_mat[i, mask] + eps) &
@@ -1656,7 +1866,7 @@ def _relocation_moves_propose_all(
                 scorer_extra = (
                     " device=%s chunk=%d->%d source=%s batches=%d retries=%d "
                     "score_ms=%.1f static_ms=%.1f batch_ms=%.1f prep_ms=%.1f "
-                    "tensor_ms=%.1f updates=%d/%d/%d ms_per_prop=%.3f "
+                    "tensor_ms=%.1f updates=%d/%d/%d hpwl=%d/%d/%d ms_per_prop=%.3f "
                     "requested=%s configured=%s torch_cuda=%s/%d"
                     % (
                         stats["device"],
@@ -1673,6 +1883,9 @@ def _relocation_moves_propose_all(
                         stats.get("density_updates", 0),
                         stats.get("macro_route_updates", 0),
                         stats.get("net_route_updates", 0),
+                        stats.get("hpwl_segments", 0),
+                        stats.get("hpwl_pins", 0),
+                        stats.get("hpwl_rows", 0),
                         stats.get("ms_per_proposal", 0.0),
                         stats.get("requested_device", ""),
                         stats.get("configured_backend", ""),
@@ -1690,12 +1903,20 @@ def _relocation_moves_propose_all(
                     )
                 if stats.get("memory_budget_mb") is not None:
                     scorer_extra += (
-                        " budget_mb=%.1f budget_source=%s est_bytes_prop=%d safety=%.2f "
+                        " budget_mb=%.1f budget_source=%s budget_static_exceeds=%s "
+                        "budget_adjusted_after_static=%s budget_adjustment=%s dyn_budget=%.1fMiB "
+                        "est_bytes_prop=%d grid_bytes=%d hpwl_bytes=%d safety=%.2f "
                         "static_est=%.1fMiB static_actual=%.1fMiB"
                         % (
                             stats["memory_budget_mb"],
                             stats.get("memory_budget_source", ""),
+                            stats.get("memory_budget_static_exceeds", False),
+                            stats.get("memory_budget_adjusted_after_static", False),
+                            stats.get("memory_budget_adjustment", "none"),
+                            (stats.get("memory_budget_dynamic_bytes") or 0) / (1024.0 * 1024.0),
                             stats.get("dynamic_bytes_per_proposal", 0),
+                            stats.get("grid_dynamic_bytes_per_proposal", 0),
+                            stats.get("hpwl_dynamic_bytes_per_proposal", 0),
                             stats.get("memory_safety_factor", 1.0),
                             stats.get("static_tensor_bytes_estimate", 0) / (1024.0 * 1024.0),
                             stats.get("static_tensor_bytes_actual", 0) / (1024.0 * 1024.0),
