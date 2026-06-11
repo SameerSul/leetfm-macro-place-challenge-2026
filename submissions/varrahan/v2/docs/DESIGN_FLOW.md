@@ -92,7 +92,9 @@ flowchart TD
     BEST --> R2[R2 refinement loop, up to 20 budget-gated rounds]
     R2 --> R2S[Build or reuse round IncrementalScorer]
     R2S --> HR1[Hard relocation by congestion field]
-    HR1 --> HR2[Hard relocation by density field if not skipped]
+    HR1 --> HML[Optional ML filter: wide-32 hard-relocation pool, rank top 16]
+    HML --> HCUDA[Optional CUDA propose-all ranking when V2_RELOC_PROPOSE_ALL enables it]
+    HCUDA --> HR2[Hard relocation by density field if not skipped]
     HR2 --> HR3[Hard relocation by combined cong-density field if not skipped]
     HR3 --> SR1[Soft relocation by congestion field, WL-prefiltered, if not skipped]
     SR1 --> SR2[Soft relocation by density field, WL-prefiltered]
@@ -110,7 +112,8 @@ flowchart TD
 
     POST --> POST1[Soft relocation by congestion then density, top_hot 1024, n_targets 4]
     POST1 --> POST2[Exact proxy verify]
-    POST2 --> RET[Return best_pl]
+    POST2 --> CLAMP[Final movable-macro in-bounds clamp]
+    CLAMP --> RET[Return best_pl]
 
     C --> SCORE[Exact proxy formula]
     SCORE --> EQ[proxy = wirelength + 0.5 density + 0.5 congestion]
@@ -151,10 +154,21 @@ updates them only when its exact proxy score is lower.
 - R2 is richer than "relocation plus 2-opt": each round can run hard relocation,
   soft relocation, soft-soft swaps, hard-soft swaps, hard-soft-soft 3-cycles, and
   hard 2-opt cleanup.
+- By default, `src/main.py` enables the shipped hard-relocation ML filter when no
+  `ML_*` env var is preset and the model artifact plus `xgboost` are available.
+  It widens the hard-relocation pool to 32 and exact-scores the ranked top 16;
+  any preset `ML_*` var, missing model, or missing `xgboost` falls back to the
+  pure-heuristic path.
+- `V2_RELOC_PROPOSE_ALL=auto` can enable the CUDA propose-all hard-relocation
+  ranking path only when the runtime backend is CUDA. It is an opt-in search
+  variant; exact incremental scoring still gates every committed move.
 - R2 local passes use `IncrementalScorer` for candidate scoring when it can be
   initialized, then verify accepted pass results with `_exact_proxy`.
 - The optional `V2_MULTISEED_MP` path parallelizes DP-seed 2-opt after the inline
   best-seed 2-opt. With the env var unset, seeds run sequentially in-process.
+- Every return path passes through a final in-bounds clamp for movable macros.
+  Hard macros are already legalized by the normal path; the clamp mainly protects
+  against soft macro coordinates inherited from input data or DREAMPlace output.
 
 ## Entry points
 
