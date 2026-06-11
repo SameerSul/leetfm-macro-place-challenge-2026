@@ -1,4 +1,4 @@
-# Open issues — v2 placer (last revised 2026-05-25)
+# Open issues — v2 placer (last revised 2026-06-11)
 
 This is a **clean rewrite**. All issues that have been resolved or
 rejected have been removed; their findings are captured in commit
@@ -13,14 +13,14 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.1272** (2026-06-10 — S16: fixed silent DREAMPlace ABI break, DP basins restored; 17/17 VALID, 0 overlaps, **2645s ~44min**). |
-| Prior `--all` avg | 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
+| Best `--all` avg | **1.1252** (2026-06-11 — S10 ML hard-relocation ranker connected as production default; 17/17 VALID, 0 overlaps, **2337s ~39min**). |
+| Prior `--all` avg | 1.1272 (S16, DP basins restored) → 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−22.7% (beat by 0.331 — beats on every benchmark)** |
+| **Gap to RePlAce** | **−22.8% (beat by 0.333 — beats on every benchmark)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−19.9% (BEATS by 0.280)** |
+| **Gap to leaderboard** | **−20.1% (BEATS by 0.282)** |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | 4429s wall (74 min, no host-suspend drift), harness monotonic well under the 3600s hard cap |
+| `--all` wall-clock | 2337s (~39 min) in the 2026-06-11 re-baseline |
 
 All 17 IBM benchmarks improved vs v12 baseline. The **relocation family** is the
 dominant lever (R1 −0.0096, R2 −0.0083, R2b −0.0027, R3 −0.0452, **R5 −0.0965**

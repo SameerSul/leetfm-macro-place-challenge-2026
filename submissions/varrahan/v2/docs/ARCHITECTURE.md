@@ -1,7 +1,14 @@
 # CongFlow v2 -- Architecture & Experiment Log
 
-> **Current best `--all`: 1.1272** (2026-06-10, all 17 VALID / 0 overlaps, **2645s
-> ~44min**) — **S16: fixed a silent DREAMPlace ABI break.** The bridge launched DP
+> **Current best `--all`: 1.1252** (2026-06-11, all 17 VALID / 0 overlaps,
+> **2337s ~39min**) — **S10 ML hard-relocation ranker enabled as the production
+> default.** `src/main.py` now enables the shipped XGBoost ranker when no `ML_*`
+> env var is preset and the model artifact + `xgboost` are available, widening
+> hard relocation to a 32-candidate pool and exact-scoring the ranked top 16.
+> The strict true-proxy accept gate is unchanged; missing deps or any preset
+> `ML_*` var falls back to the prior pure-heuristic path. The prior reference was
+> **1.1272** (2026-06-10, **2645s ~44min**) from **S16: fixed a silent DREAMPlace
+> ABI break.** The bridge launched DP
 > with the repo `.venv` (upgraded to Python 3.14 for numba at S13), but DP's compiled
 > extensions are cpython-310, so `import place_io_cpp` died ~4s after launch and the
 > bridge masked it as a benign "not ready" → **DP produced ZERO seeds on every
@@ -11,7 +18,8 @@
 > contributing on all 17. (+528s is the DP candidate-scoring + DP-basin 2-opt work;
 > still well under the 3300s soft cap.) See `docs/ISSUES.md` S16.
 > Trajectory: 1.1782 → 1.1500 → 1.1423 (S11) → 1.1403 (S12) → 1.1380 (S13) →
-> 1.1379 (S14, DP-off) → **1.1272 (S16, DP restored)**. The per-benchmark
+> 1.1379 (S14, DP-off) → 1.1272 (S16, DP restored) → **1.1252 (ML filter default)**.
+> The per-benchmark
 > decomposition table below is the 2026-05-31 1.1782 snapshot (kept as the detailed
 > breakdown); see `docs/ISSUES.md` and `docs/PROGRESS.md` for the current headline.
 >
@@ -22,38 +30,41 @@
 > non-monotonic acceptance just wastes budget wandering (consistent with the S1
 > basin-hopping disproof). The accept gate stays strict-improvement greedy.
 
-## Current Best Result (L-change + M1, 2026-05-31)
+## Current Best Result (2026-06-11)
 
-**Average proxy cost: 1.1782** across all 17 IBM ICCAD04 benchmarks (snapshot — see
-the note above for the current 1.1403 best).
+**Average proxy cost: 1.1252** across all 17 IBM ICCAD04 benchmarks. This is the
+first `--all` re-baseline with the ML hard-relocation filter enabled by default;
+it clears the no-regression bar, but a multi-seed repeat is still wanted before
+crediting the full −0.0020 over the S16 DP-restored reference as signal rather
+than single-rep timing variance.
 
 | Benchmark | Hard macros | v2 score | vs RePlAce (1.4578) |
 |-----------|-------------|----------|---------------------|
-| ibm01 | 246 | **0.9402** | -35.5% |
-| ibm02 | 271 | **1.1971** | -17.9% |
-| ibm03 | 290 | **1.0406** | -28.6% |
-| ibm04 | 295 | **1.0445** | -28.3% |
-| ibm06 | 178 | **1.3052** | -10.5% |
-| ibm07 | 291 | **1.2100** | -17.0% |
-| ibm08 | 301 | **1.1712** | -19.7% |
-| ibm09 | 253 | **0.8916** | -38.8% |
-| ibm10 | 786 | **1.1457** | -21.4% |
-| ibm11 | 373 | **0.9735** | -33.2% |
-| ibm12 | 651 | **1.3641** | -6.4% |
-| ibm13 | 424 | **1.0637** | -27.0% |
-| ibm14 | 614 | **1.2940** | -11.2% |
-| ibm15 | 393 | **1.2613** | -13.5% |
-| ibm16 | 458 | **1.2126** | -16.8% |
-| ibm17 | 760 | **1.4519** | -0.4% |
-| ibm18 | 285 | **1.4615** | +0.3% |
-| **AVG** | | **1.1782** | **-19.2%** |
+| ibm01 | 246 | **0.9146** | -37.3% |
+| ibm02 | 271 | **1.1621** | -20.3% |
+| ibm03 | 290 | **0.9896** | -32.1% |
+| ibm04 | 295 | **1.0137** | -30.5% |
+| ibm06 | 178 | **1.2059** | -17.3% |
+| ibm07 | 291 | **1.1819** | -18.9% |
+| ibm08 | 301 | **1.1543** | -20.8% |
+| ibm09 | 253 | **0.8409** | -42.3% |
+| ibm10 | 786 | **1.0945** | -24.9% |
+| ibm11 | 373 | **0.9354** | -35.8% |
+| ibm12 | 651 | **1.3100** | -10.1% |
+| ibm13 | 424 | **0.9988** | -31.5% |
+| ibm14 | 614 | **1.2133** | -16.8% |
+| ibm15 | 393 | **1.2130** | -16.8% |
+| ibm16 | 458 | **1.1608** | -20.4% |
+| ibm17 | 760 | **1.3502** | -7.4% |
+| ibm18 | 285 | **1.3885** | -4.8% |
+| **AVG** | | **1.1252** | **-22.8%** |
 
 Comparisons:
-- vs RePlAce (1.4578): **-19.2%** (-0.2796 points)
-- vs UT Austin GPU/DREAMPlace leader (1.4076): **-16.3%** (-0.2294 points)
-- vs sameer_v1 baseline (1.4860): **-20.7%**
+- vs RePlAce (1.4578): **-22.8%** (-0.3326 points)
+- vs UT Austin GPU/DREAMPlace leader (1.4076): **-20.1%** (-0.2824 points)
+- vs sameer_v1 baseline (1.4860): **-24.3%**
 
-Total wall-clock (WSL): 3662.42s = 61.0 min (see timing notes below)
+Total `--all` time: 2337s (~39 min).
 
 ---
 
@@ -69,16 +80,17 @@ Congestion dominates by ~30x. Optimizing WL alone reliably increases proxy cost.
 ### Phase pipeline (per benchmark call)
 
 1. Load seed -- read initial.plc, legalize overlaps
-2. DP variants -- dual-density DP (target 0.85 and 0.65), async if ibm10+
-3. Phase 1/2/3 -- iterative cong-grad chain from each DP seed (Phase 7 multi-iter)
-4. Phase 5b/5c -- score DP placements, merge winners back
-5. Phase 8 -- 40 noise restarts + 12 cong-grad refinement restarts (TOP-5/10/20)
+2. DP variants -- dual-density DP (target 0.85 and 0.65), async when the bridge is available
+3. Phase 1/2/3 -- iterative cong-grad chain from the baseline
+4. Phase 5 -- score DP placements, merge winners, retain DP basins
+5. Phase 5b/5c + Phase 8 -- cong-grad from best and TOP-K hot-macro refinement
 6. Phase 9 -- 3 random-order legalization trials
 7. 2-opt -- pairwise macro swap from top seeds, 15s budget
 8. R2 -- multi-round local refinement:
-   - reloc: single-macro repositioning to reduce cong/density
+   - reloc: single-macro repositioning to reduce cong/density/combined fields
    - soft-reloc[cong]: gradient-driven cong reduction
    - soft-reloc[density]: gradient-driven density spreading
+   - soft-soft, hard-soft, and hard-soft-soft swaps/cycles
    - 2-opt: pairwise swap accepting proxy improvements
 
 ### Budget allocation (L-change + M1, 2026-05-31)
@@ -96,12 +108,13 @@ time) instead of wall-clock monotonic. This eliminates ~821s of harness overhead
 M1 change: ibm01 hardcoded budget reduced 200s to 150s. Saves 50s place time with
 negligible quality impact (0.0002 proxy difference on ibm01).
 
-Budget per benchmark in --all mode:
-- ibm01: 150+83 = 233s place time (hardcoded, first benchmark)
-- ibm02 to ibm18: all hit the 110s floor -> 193s each (110+83s overrun)
-- Total place time: 233 + 16x193 = 3321s
-- Wall-clock overhead (startup, scoring): ~341s
-- Total wall-clock: ~3662s = 61.0 min
+Worst-case reserved place time in `--all` mode:
+- ibm01: 150+83 = 233s place time (first benchmark soft budget + overrun)
+- ibm02 to ibm18: floor-bound at 110+83 = 193s each
+- Reserved place time: 233 + 16x193 = 3321s
+
+Actual runs can finish earlier when later phases converge or skip. The 2026-06-11
+headline run finished in 2337s (~39 min).
 
 ---
 
@@ -242,7 +255,7 @@ parallel track.
             │
             ▼
    ╔════════════════════════════════════════════════════════════════════╗
-   ║  R2 interleave loop (≤6 rounds, accept-on-true-proxy)              ║
+   ║  R2 interleave loop (≤20 budget-gated rounds, accept-on-true-proxy)║
    ║  ┌──────────────────────────────────────────────────────────────┐  ║
    ║  │  Round r:                                                    │  ║
    ║  │  ┌─────────────────────────────────────────────────────┐     │  ║
@@ -296,7 +309,7 @@ Everything above runs inside a single per-benchmark budget
 | **8 TOP-K cong-grad** | Restrict perturbation to the K hottest macros only (K ∈ {5, 10, 20}, 3-iter chains) | Focus motion on routing peaks instead of spreading across all congested cells |
 | **9 random-order legalize** | N=3 trials with randomized secondary-sort key in `_will_legalize` | Different legalization arrangements from the same starting positions |
 | **Multi-seed 2-opt** | Proxy-driven 2-opt (k=20) from `best_pl` + each DP basin; true-proxy selection | A DP seed's basin can 2-opt to a deeper minimum than `best_pl`'s; pruning at `+0.02` skips unreachable seeds |
-| **R2 interleave (≤6 rounds)** | Hard reloc ⇄ soft-cong reloc ⇄ soft-density reloc ⇄ 2-opt cleanup | The dominant lever — see § 2.3 |
+| **R2 interleave (≤20 budget-gated rounds)** | Hard reloc ⇄ soft-cong reloc ⇄ soft-density reloc ⇄ 2-opt cleanup plus soft/hard-soft swaps and cycles | The dominant lever — see § 2.3 |
 
 > **Why the numbering skips 4 and 6.** The phase numbers are historical labels, not a contiguous sequence. **Phase 4** (cong-grad from a noise-perturbed / multi-start seed) was tested 2026-05-09 and reverted — strictly worse on every benchmark. **Phase 6** (additive cong-grad from the DP placement) was tested 2026-05-21 and rejected (+0.017 on ibm08 from budget displacement). Both numbers were retired rather than reused. Unrelated: the `B3 phase 4` tags in `placer.py` are a *separate* scheme — the `IncrementalScorer` build stages (B3p2 = incremental WL, B3p4 = incremental routing), not pipeline phases.
 
@@ -639,8 +652,14 @@ speedups without ever introducing a regression.
 
 ## Timing Notes
 
-Total wall-clock was 3662s (61.0 min) in WSL, marginally over the 60-min harness
-limit. All 17 benchmarks completed VALID. The overage breakdown:
+The current 2026-06-11 `--all` re-baseline completed in **2337s (~39 min)**,
+all 17 VALID / 0 overlaps. The floor-reservation allocator still reserves a
+worst-case 3321s of place time, but the present move set often converges or
+skips saturated passes before consuming that reserve.
+
+Historical note: the L-change + M1 snapshot was 3662s (61.0 min) in WSL and
+marginally over the 60-minute harness limit because it consumed the full
+floor-reserved budget plus host overhead. The overage breakdown was:
 - ibm01: 304.7s wall (233s place + 71.7s cold Python startup + scoring)
 - ibm02-18: ~210.8s each (193s place + ~17.8s warm scoring)
 
@@ -722,8 +741,8 @@ overhead; IBM is simply too small. The implementation + verifiers were deleted
 - **numba** must be installed for full speed (JITs the routing-apply, ~half the
   runtime; soft import with a numpy fallback). **CRITICAL (S13):** numba is in
   `v2/requirements.txt` but NOT `pyproject.toml`, so `uv sync` alone does **not**
-  install it and the placer falls back to numpy **silently** (~25 % slower, `--all`
-  ~58 min near the 1 h cap, avg 1.1403 vs 1.1379 with JIT). `config.py` now warns
+  install it and the placer falls back to numpy **silently** (~25 % slower in the
+  S13 measurements, enough to lose deadline-bound refinement). `config.py` now warns
   when it's missing; **the eval env must install requirements.txt**. See ISSUES S13.
 - **S1 / S2 speedups — see §6.** S1 multi-core fork-after-CUDA fix is done
   (env-gated). S2 GPU candidate batching was implemented, verified bit-exact, and
@@ -734,4 +753,6 @@ overhead; IBM is simply too small. The implementation + verifiers were deleted
   (1.39) are the remaining highest-proxy benchmarks; further gains need basin
   diversity (more DREAMPlace seeds) or new move types.
 - WireMask-BBO greedy evaluator: highest-leverage non-GPU idea not yet implemented.
-- Timing tight at 61 min. Reducing BUDGET_OVERRUN_S 83->65 is the safe fix.
+- Current `--all` timing has comfortable headroom (~39 min in the 2026-06-11
+  run). Reducing `BUDGET_OVERRUN_S` remains the safe knob if a slower machine or
+  fallback dependency set pushes runtime toward the 1h limit.
