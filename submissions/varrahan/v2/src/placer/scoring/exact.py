@@ -24,14 +24,7 @@ if _PROFILE_EXACT:
     )
 
 def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
-    """Fast proxy cost: skips overlap metrics, skips unchanged macro updates,
-    and uses the vectorized wirelength patch installed on plc.
-
-    Bypasses macro_place.objective.compute_proxy_cost entirely. We never
-    consume overlap metrics here; the placer only reads proxy_cost. Saves
-    O(n_hard²) pure-Python pair iterations per scoring call (e.g. ~289k on
-    ibm17) plus the redundant per-pin set_pos overhead on unchanged macros.
-    """
+    """Score placement with the fast wirelength, density, and congestion paths."""
     _t0 = time.perf_counter() if _PROFILE_EXACT else 0.0
     _patch_plc_wirelength(plc)
     _patch_plc_congestion(plc, benchmark)

@@ -32,15 +32,7 @@ def _two_opt_hard_soft_swap(
     soft_movable: "np.ndarray | None" = None,
     use_density: bool = False,
 ) -> "tuple[np.ndarray, np.ndarray, int, float]":
-    """Hard-soft cross-swap: exchange a hard macro's position with a soft's -
-    pairs neither hard-2opt nor soft-2opt can find (each swaps within its kind).
-
-    Hot list = top_hot hottest hards by the chosen field (max(H,V) congestion, or
-    occupancy when use_density=True); partners = each one's k_neighbors nearest
-    movable softs. Legality: the hard's new slot must be in-bounds with no overlap
-    vs OTHER hards (softs may overlap, no check). Accept-on-true-proxy.
-    Returns (hard_pos, soft_pos, accepts, best_score).
-    """
+    """Swap hard and soft macro positions when the proxy improves."""
     num_soft = incremental_scorer.num_soft
     if num_soft < 1:
         return hard_pos, soft_pos, 0, initial_score
@@ -224,14 +216,7 @@ def _three_opt_hard_soft_soft(
     soft_movable: "np.ndarray | None" = None,
     use_density: bool = False,
 ) -> "tuple[np.ndarray, np.ndarray, int, float]":
-    """Hard-soft-soft 3-cycle: H takes S1's slot, S1 takes S2's, S2 takes H's.
-
-    For each hot hard H, S1 ranges over H's k_inner nearest movable softs and S2
-    over S1's. Reaches what 2-opt can't: when H wants S1's slot but H<->S1 alone
-    hurts (S1 must move too), the combined cycle accepts. Legality: H's new slot
-    in-bounds with no overlap vs OTHER hards (softs may overlap). Cost is
-    O(top_hot * k_inner^2), deadline-gated.
-    """
+    """Cycle one hard macro and two soft macros when the proxy improves."""
     num_soft = incremental_scorer.num_soft
     if num_soft < 2:
         return hard_pos, soft_pos, 0, initial_score
@@ -290,7 +275,7 @@ def _three_opt_hard_soft_soft(
         if deadline is not None and time.monotonic() > deadline:
             break
 
-        # kNN softs around hard i - candidates for S1.
+        # Nearest soft candidates for S1.
         d2_h = ((movable_soft_pos[:, 0] - hard_pos[i, 0]) ** 2 +
                 (movable_soft_pos[:, 1] - hard_pos[i, 1]) ** 2)
         s1_order = np.argsort(d2_h)[:k_inner]
@@ -317,8 +302,7 @@ def _three_opt_hard_soft_soft(
             if swapped_soft[k1]:
                 rejected_already_swapped += 1
                 continue
-            # Hard's new position = S1's old position. Check legality (strict:
-            # the evaluator has zero overhang tolerance).
+            # Hard takes S1's old position.
             hx, hy = float(soft_pos[k1, 0]), float(soft_pos[k1, 1])
             if (hx - hw[i] < 0 or hx + hw[i] > cw or
                     hy - hh[i] < 0 or hy + hh[i] > ch):
@@ -341,9 +325,7 @@ def _three_opt_hard_soft_soft(
                     rejected_already_swapped += 1
                     continue
                 generated += 1
-                # Cycle: H → S1's old, S1 → S2's old, S2 → H's old. Each soft
-                # is clamped to its own half-size so inheriting a slot from a
-                # smaller macro can't push it over the canvas edge.
+                # Clamp softs so inherited slots stay inside the canvas.
                 s1_new_xy = (
                     float(np.clip(soft_pos[k2, 0], soft_hw[k1], cw - soft_hw[k1])),
                     float(np.clip(soft_pos[k2, 1], soft_hh[k1], ch - soft_hh[k1])),

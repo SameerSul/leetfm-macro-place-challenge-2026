@@ -311,7 +311,7 @@ Everything above runs inside a single per-benchmark budget
 | **Multi-seed 2-opt** | Proxy-driven 2-opt (k=20) from `best_pl` + each DP basin; true-proxy selection | A DP seed's basin can 2-opt to a deeper minimum than `best_pl`'s; pruning at `+0.02` skips unreachable seeds |
 | **R2 interleave (≤20 budget-gated rounds)** | Hard reloc ⇄ soft-cong reloc ⇄ soft-density reloc ⇄ 2-opt cleanup plus soft/hard-soft swaps and cycles | The dominant lever — see § 2.3 |
 
-> **Why the numbering skips 4 and 6.** The phase numbers are historical labels, not a contiguous sequence. **Phase 4** (cong-grad from a noise-perturbed / multi-start seed) was tested 2026-05-09 and reverted — strictly worse on every benchmark. **Phase 6** (additive cong-grad from the DP placement) was tested 2026-05-21 and rejected (+0.017 on ibm08 from budget displacement). Both numbers were retired rather than reused. Unrelated: the `B3 phase 4` tags in `placer.py` are a *separate* scheme — the `IncrementalScorer` build stages (B3p2 = incremental WL, B3p4 = incremental routing), not pipeline phases.
+> **Why the numbering skips 4 and 6.** The phase numbers are historical labels, not a contiguous sequence. **Phase 4** (cong-grad from a noise-perturbed / multi-start seed) was tested 2026-05-09 and reverted — strictly worse on every benchmark. **Phase 6** (additive cong-grad from the DP placement) was tested 2026-05-21 and rejected (+0.017 on ibm08 from budget displacement). Both numbers were retired rather than reused. Unrelated: the `B3 phase 4` tags are a *separate* scheme — the `IncrementalScorer` build stages (B3p2 = incremental WL, B3p4 = incremental routing), not pipeline phases.
 
 ### 4.2 Budget allocation (floor-reservation)
 
@@ -735,9 +735,9 @@ overhead; IBM is simply too small. The implementation + verifiers were deleted
 
 ## Known Issues / Next Ideas
 
-- DREAMPlace is now built and functional (GPU/CUDA build — see DREAMPLACE_FIXES.md
-  and the gpu-dreamplace-build notes; the earlier "broken VENV_PYTHON symlink in
-  WSL" status is resolved). It contributes seed basins to the multi-seed 2-opt.
+- DREAMPlace is now built and functional. The earlier Python/ABI break is
+  resolved by launching the subprocess with the DREAMPlace build env; it
+  contributes seed basins to the multi-seed 2-opt.
 - **numba** must be installed for full speed (JITs the routing-apply, ~half the
   runtime; soft import with a numpy fallback). **CRITICAL (S13):** numba is in
   `v2/requirements.txt` but NOT `pyproject.toml`, so `uv sync` alone does **not**

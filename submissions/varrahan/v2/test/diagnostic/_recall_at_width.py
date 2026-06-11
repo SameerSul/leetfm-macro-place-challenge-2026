@@ -132,7 +132,7 @@ def main(argv) -> int:
     if ranker is None:
         raise SystemExit(f"no {OPERATOR} model in {manifest}")
     print(f"surrogate = {manifest.parent.name}")
-    print(f"ibm13 = honest holdout; other benchmarks may be in train (optimistic)\n")
+    print("ibm13 = honest holdout; other benchmarks may be in train (optimistic)\n")
     for path in sorted(paths):
         analyze_file(path, ranker)
     return 0

@@ -27,8 +27,6 @@ from placer import (  # noqa: E402
     _patch_plc_congestion,
     _patch_plc_density,
     _fast_set_placement,
-    _build_wl_cache,
-    _build_cong_cache,
     _ensure_pos_cache,
     _apply_2pin_routing,
     _apply_3pin_routing_vec,

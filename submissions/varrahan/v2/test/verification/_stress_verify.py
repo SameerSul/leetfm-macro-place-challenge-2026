@@ -28,11 +28,6 @@ def _load(name):
 def perturb_movable_positions(plc, rng, scale_frac=0.05):
     """Move movable hard macros by random offsets up to scale_frac × canvas."""
     cw, ch = plc.get_canvas_width_height()
-    fixed_indices = set()
-    for i in plc.hard_macro_indices:
-        m = plc.modules_w_pins[i]
-        # Heuristic: ports & macros marked placed=False or absent - treat all hard macros as movable here
-        pass
     for i in plc.hard_macro_indices + plc.soft_macro_indices:
         m = plc.modules_w_pins[i]
         x, y = m.get_pos()
@@ -47,7 +42,6 @@ def perturb_movable_positions(plc, rng, scale_frac=0.05):
 def run(name, n_trials=5, seed=0):
     print(f"=== {name} (n_trials={n_trials}) ===")
     benchmark, _ = _load(name)
-    rng = np.random.RandomState(seed)
     max_h = 0.0
     max_v = 0.0
     max_dens_cell = 0.0

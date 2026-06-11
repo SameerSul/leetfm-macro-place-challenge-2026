@@ -1,6 +1,5 @@
 """Smoke tests to verify the competition infrastructure works end-to-end."""
 
-import torch
 import pytest
 from pathlib import Path
 

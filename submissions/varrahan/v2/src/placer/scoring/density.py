@@ -148,9 +148,7 @@ def _vectorized_get_grid_cells_density(plc) -> "list[float]":
     np.maximum(oy, 0.0, out=oy)
     ov = ox * oy
 
-    # np.bincount (not GPU scatter): DirectML's scatter_add_ has a last-write-wins
-    # bug on duplicate indices. bincount accumulates correctly and is <1ms even on
-    # ibm18 (~4K entries).
+    # Use bincount so duplicate cell indices accumulate correctly.
     grid_occupied = np.bincount(flat_idx_cells, weights=ov, minlength=n_cells)
     grid_area = grid_w * grid_h
     grid_cells = grid_occupied / grid_area

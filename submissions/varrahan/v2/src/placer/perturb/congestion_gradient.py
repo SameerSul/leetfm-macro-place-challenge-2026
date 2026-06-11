@@ -71,8 +71,7 @@ def _routing_congestion_perturb(
     if not mask.any():
         return perturbed
 
-    # Optional TOP-K filter: keep only the K qualifying macros with the highest
-    # local congestion (used by Phase 8; top_k=None keeps every qualifying macro).
+    # Optional filter: keep only the K most congested qualifying macros.
     if top_k is not None and int(mask.sum()) > top_k:
         qual_indices = np.where(mask)[0]
         qual_cong = local_cong_all[qual_indices]
@@ -107,5 +106,4 @@ def _routing_congestion_perturb(
     perturbed[mask, 1] = np.clip(pos[mask, 1] + dy, hh[mask], ch - hh[mask])
 
     return perturbed
-
 

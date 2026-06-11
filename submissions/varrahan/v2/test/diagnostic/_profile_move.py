@@ -64,7 +64,6 @@ def run(name, n_moves=300):
     # full soft score_move (end to end)
     ns = bm.num_soft_macros
     rng = np.random.RandomState(0)
-    soft_k = rng.randint(0, ns)
     t0 = time.perf_counter()
     for _ in range(n_moves):
         k = int(rng.randint(0, ns))

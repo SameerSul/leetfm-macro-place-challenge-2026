@@ -13,11 +13,7 @@ from placer.scoring.incremental import IncrementalScorer
 
 
 def _force_worker_cpu() -> None:
-    """Disable every GPU-gated path in this (forked) process.
-
-    Each module reads `_USE_GPU` as its own module global, so flipping config
-    alone wouldn't help — patch each holder. Idempotent.
-    """
+    """Disable GPU paths in this forked process."""
     import placer.config as _cfg
     import placer.routing.apply as _apply
     import placer.local_search.two_opt as _two_opt
@@ -44,20 +40,10 @@ def _multiseed_2opt_worker(
     k_neighbors: int = 20,
     max_iters: int = 6,
 ) -> dict:
-    """Run one seed of multi-seed 2-opt in an independent subprocess.
-
-    Each subprocess loads its own benchmark + plc (the C++ object isn't
-    picklable, so it can't be shared) and runs the full 2-opt path. Returns a
-    picklable result dict. Running the DP seeds in parallel with the main-thread
-    "best" seed turns ~60s of sequential 2-opt into ~18s.
-
-    The pool is forked and CUDA contexts don't survive fork, so the worker forces
-    itself CPU-only (`_force_worker_cpu`) — else it crashes when the 2-opt kNN or
-    routing smoothing touches the GPU. The GPU was only doing the kNN anyway.
-    """
+    """Run one multi-seed 2-opt job in a subprocess."""
     _force_worker_cpu()
 
-    # Lazy import inside the worker (avoid top-level circulars on parallel boot).
+    # Import inside the worker to avoid boot-time cycles.
     from macro_place.loader import load_benchmark_from_dir
 
     bm, _ = load_benchmark_from_dir(iccad_path)
@@ -81,12 +67,12 @@ def _multiseed_2opt_worker(
             current_best_score=seed_score,
         )
 
-    # Reconstruct seed placement as a torch tensor matching bm.macro_positions.
+    # Rebuild the seed placement tensor.
     pl_full = bm.macro_positions.clone()
     pl_full[:, 0] = torch.tensor(seed_pl_full_np[:, 0], dtype=torch.float32)
     pl_full[:, 1] = torch.tensor(seed_pl_full_np[:, 1], dtype=torch.float32)
 
-    # Establish plc state at the seed placement (also caches routing map).
+    # Establish plc state at the seed placement.
     _ = _exact_proxy(pl_full, bm, plc)
 
     # Build the incremental scorer from the seed.

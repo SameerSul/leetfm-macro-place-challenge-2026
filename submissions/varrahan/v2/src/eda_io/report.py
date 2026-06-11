@@ -57,7 +57,7 @@ def write_report(
         " Macro placement QoR report",
         f" design   : {result.design.name}",
         f" date     : {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f" placer   : varrahan v2 (eda_io flow)",
+        " placer   : varrahan v2 (eda_io flow)",
         "=" * 64,
         "",
         "[design]",

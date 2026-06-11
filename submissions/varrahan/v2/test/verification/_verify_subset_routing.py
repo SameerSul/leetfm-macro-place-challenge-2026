@@ -29,7 +29,6 @@ from placer import (  # noqa: E402
     _fast_set_placement,
     _apply_net_routing_subset,
     _apply_macro_routing_subset,
-    _apply_macro_routing,
     _ensure_pos_cache,
 )
 from macro_place.loader import load_benchmark_from_dir  # noqa: E402
@@ -41,7 +40,6 @@ def _build_full_routing(plc):
     Returns (H_flat, V_flat, H_macro_flat, V_macro_flat) pre-smooth, pre-
     normalization. Used as the reference oracle for subset verification.
     """
-    from placer import _vectorized_get_routing
     # Trigger a fresh compute, then capture the per-call internal state.
     # The function sets plc.V_routing_cong etc. AFTER smoothing+normalization,
     # so we re-run the routing math here without those final transforms.
@@ -50,9 +48,6 @@ def _build_full_routing(plc):
 
     grid_col = int(plc.grid_col)
     grid_row = int(plc.grid_row)
-    grid_w = float(plc.width / grid_col)
-    grid_h = float(plc.height / grid_row)
-
     n_cells = grid_row * grid_col
     H_flat = np.zeros(n_cells, dtype=np.float64)
     V_flat = np.zeros(n_cells, dtype=np.float64)
@@ -105,8 +100,6 @@ def _build_full_routing_reference(plc):
         pin_row = np.clip((pin_y / grid_h).astype(np.int64), 0, grid_row - 1)
         pin_gcell = pin_row * grid_col + pin_col
 
-        starts = cache["starts"]
-        lengths = cache["lengths"]
         net_weights = wl["net_weights"]
 
         bucket_2_src = []

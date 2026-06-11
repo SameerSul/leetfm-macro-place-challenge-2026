@@ -1,19 +1,4 @@
-"""End-to-end DREAMPlace bridge: TILOS pb.txt → Bookshelf → DREAMPlace global → back.
-
-Wraps the three steps so the placer can call a single function to obtain
-DREAMPlace's analytic placement of the hard macros.
-
-Subprocess strategy: DREAMPlace is launched as a separate Python process
-because (a) its `import Params` style pollutes our `sys.modules`, (b) its
-torch usage can fight with ours over global state, and (c) subprocesses
-take a hard timeout cleanly. Cost: ~5-10s of Python startup per call.
-
-For each benchmark we materialise a scratch dir under `/tmp/dreamplace_v1/`
-holding the 5 Bookshelf files + JSON config + DREAMPlace's results dir.
-The dir is reused across calls (positions are deterministic given a fixed
-random_seed), so a second call is fast - actually no, we still re-run
-DREAMPlace every call. Caching to a `.npy` would be a future optimization.
-"""
+"""Run DREAMPlace through a TILOS-to-Bookshelf bridge."""
 
 from __future__ import annotations
 
@@ -39,13 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 from macro_place._plc import PlacementCost  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Disk cache - DREAMPlace output is deterministic given fingerprint inputs.
-# ---------------------------------------------------------------------------
-# The (hard_pos, soft_pos) result depends only on the input netlist + initial
-# placement + config (and thread count, via deterministic_flag=1 + fixed seed).
-# Input files are fingerprinted by (size, mtime_ns) so edits invalidate the
-# cache, and the config is baked into the key.
+# Disk cache keyed by input files and DREAMPlace settings.
 CACHE_VERSION = "v1"
 
 
@@ -59,8 +38,7 @@ def _file_fingerprint(p: Path) -> str:
 
 def _cache_key(benchmark_dir: Path, iterations: int, random_seed: int,
                num_threads: int, soft_macros_movable: bool,
-               random_center_init: bool, routability_opt: bool = False,
-               routopt_sig: str = "") -> str:
+               random_center_init: bool) -> str:
     netlist_fp = _file_fingerprint(benchmark_dir / "netlist.pb.txt")
     init_fp = _file_fingerprint(benchmark_dir / "initial.plc")
     raw = (
@@ -69,10 +47,6 @@ def _cache_key(benchmark_dir: Path, iterations: int, random_seed: int,
         f"threads={num_threads}|soft={int(soft_macros_movable)}|"
         f"rci={int(random_center_init)}"
     )
-    # Append only when set, so existing (non-routopt) cache keys are unchanged.
-    # routopt_sig encodes the calibration knobs so swept configs don't collide.
-    if routability_opt:
-        raw += f"|ro=1|{routopt_sig}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -103,9 +77,7 @@ def _write_cache(work_dir: Path, key: str, hard: np.ndarray, soft: np.ndarray) -
         # Cache write is best-effort; never fail the placer because of it.
         pass
 
-# Sibling-module imports - work whether this package is loaded as
-# `dreamplace_bridge.run_bridge` (placer-side, after sys.path injection)
-# or as `submissions.varrahan.v1.dreamplace_bridge.run_bridge` (CLI from repo root).
+# Support package and script-style imports.
 try:
     from .pb_to_bookshelf import convert
     from .bookshelf_to_pb import read_dreamplace_positions, read_dreamplace_positions_full
@@ -114,19 +86,13 @@ except ImportError:
     from bookshelf_to_pb import read_dreamplace_positions, read_dreamplace_positions_full  # type: ignore
 
 
-# Where DREAMPlace lives (set up by Phase 1 build).
+# Where DREAMPlace is installed.
 DREAMPLACE_INSTALL = (
     REPO_ROOT / "submissions" / "varrahan" / "dreamplace_build" / "install"
 )
 DREAMPLACE_PLACER = DREAMPLACE_INSTALL / "dreamplace" / "Placer.py"
 
-# Interpreter that launches the DREAMPlace subprocess. Its compiled C++/CUDA
-# extensions are ABI-tagged for the Python they were built against (the build
-# env `dpenv`, currently 3.10). The repo's own uv-managed .venv may be a DIFFERENT
-# Python (3.14 for numba) whose ABI can't load the 3.10 .so files — importing
-# place_io_cpp then fails with ModuleNotFoundError and DREAMPlace produces zero
-# seeds silently. So prefer the build env's interpreter; fall back to the repo
-# .venv only if dpenv is absent (e.g. a machine where DP was built in-place).
+# DREAMPlace extensions must run with the Python used to build them.
 _DP_BUILD_PYTHON = (
     REPO_ROOT / "submissions" / "varrahan" / "dreamplace_build" / "dpenv" / "bin" / "python"
 )
@@ -139,26 +105,8 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
                                 iterations: int = 200,
                                 num_threads: int = 4,
                                 random_center_init: bool = False,
-                                target_density: float = 0.75,
-                                routability_opt: bool = False,
-                                route_num_bins: int = 64,
-                                route_num_bins_x: "int | None" = None,
-                                route_num_bins_y: "int | None" = None,
-                                unit_h_cap: "float | None" = None,
-                                unit_v_cap: "float | None" = None,
-                                max_route_opt_adjust_rate: float = 2.0,
-                                max_num_area_adjust: int = 3) -> dict:
-    """Single CPU-only global-placement stage. Tuned to be fast: 200 iters,
-    64x64 density bins. No legalization or detailed placement (we do those
-    in our own pipeline).
-
-    random_center_init=False (default): warm-start from TILOS initial.plc
-    positions (passed in via the .pl file). Hard macros only move incrementally,
-    keeping soft-macro neighborhoods intact for the proxy evaluator.
-
-    random_center_init=True: cold-start from canvas center; produces a
-    fundamentally different placement. Useful for exploring entirely new
-    basins, but soft macros end up mismatched (high congestion penalty)."""
+                                target_density: float = 0.75) -> dict:
+    """Build the DREAMPlace config used for fast global placement."""
     cfg = {
         "aux_input": aux_input,
         "gpu": 0,
@@ -195,32 +143,6 @@ def _default_dreamplace_config(aux_input: str, result_dir: str,
         "use_bb": 1,
         "result_dir": result_dir,
     }
-    if routability_opt:
-        # Congestion-aware global placement: DREAMPlace builds a RUDY/RISA
-        # routing-congestion map mid-placement and inflates node areas in
-        # congested regions, baking congestion into the global objective.
-        # route_num_bins is coarser than the 512 default to roughly match the
-        # ICCAD04 grids (~35-55 cols); unit capacities stay at DREAMPlace
-        # defaults (calibrate vs ICCAD04 routes-per-micron if the signal is weak).
-        cfg.update({
-            "routability_opt_flag": 1,
-            "route_num_bins_x": route_num_bins_x or route_num_bins,
-            "route_num_bins_y": route_num_bins_y or route_num_bins,
-            "adjust_rudy_area_flag": 1,
-            "adjust_pin_area_flag": 1,
-            "adjust_nctugr_area_flag": 0,
-            "node_area_adjust_overflow": 0.15,
-            "max_num_area_adjust": max_num_area_adjust,
-            "max_route_opt_adjust_rate": max_route_opt_adjust_rate,
-            "route_opt_adjust_exponent": 2.0,
-        })
-        # Per-tech routing capacity (tracks per unit distance, DREAMPlace coords).
-        # RUDY utilization = demand / (bin_area * unit_capacity); a larger
-        # capacity lowers perceived congestion → gentler area inflation.
-        if unit_h_cap is not None:
-            cfg["unit_horizontal_capacity"] = unit_h_cap
-        if unit_v_cap is not None:
-            cfg["unit_vertical_capacity"] = unit_v_cap
     return cfg
 
 
@@ -241,44 +163,12 @@ def run_dreamplace(
     random_center_init: bool = False,
     keep_log: bool = False,
     target_density: float = 0.75,
-    routability_opt: bool = False,
-    route_num_bins: int = 64,
 ) -> np.ndarray:
-    """Run the full DREAMPlace pipeline on a benchmark.
-
-    Returns hard-macro positions [num_hard_macros, 2] in TILOS microns,
-    indexed identically to `plc.hard_macro_indices`.
-
-    Parameters
-    ----------
-    benchmark_dir : str
-        Path to TILOS benchmark dir (containing netlist.pb.txt).
-    plc : PlacementCost, optional
-        If provided, used for the back-conversion. If None, a fresh one is
-        loaded from the benchmark dir.
-    scratch_root : str
-        Parent dir for per-benchmark scratch space.
-    timeout_s : float
-        Hard timeout for the DREAMPlace subprocess. If exceeded, a
-        TimeoutExpired exception propagates.
-    iterations : int
-        Global-placement iteration count (DREAMPlace stops earlier if
-        overflow drops below stop_overflow=0.10).
-    random_seed : int
-        DREAMPlace's RNG seed. Same seed → deterministic output.
-    num_threads : int
-        CPU thread count for DREAMPlace.
-    soft_macros_movable : bool
-        Forward-conversion option. False → soft macros are terminals (stay
-        at initial positions). True → DREAMPlace re-places them too.
-    keep_log : bool
-        If True, the DREAMPlace stdout/stderr log is kept at
-        {scratch_root}/{design}/dreamplace.log; otherwise discarded.
-    """
+    """Run DREAMPlace and return hard-macro center positions."""
     if not is_available():
         raise RuntimeError(
             f"DREAMPlace not installed at {DREAMPLACE_INSTALL}. "
-            f"See v1/dreamplace_bridge/ docs to rebuild."
+            f"See submissions/varrahan/v2/README.md to rebuild."
         )
 
     benchmark_dir = Path(benchmark_dir).resolve()
@@ -286,10 +176,10 @@ def run_dreamplace(
     work_dir = Path(scratch_root).resolve() / design
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Disk-cache fast path (same fingerprint scheme as the async launcher).
+    # Disk-cache fast path.
     cache_key = _cache_key(
         benchmark_dir, iterations, random_seed, num_threads,
-        soft_macros_movable, random_center_init, routability_opt,
+        soft_macros_movable, random_center_init,
     )
     cached = _try_load_cache(work_dir, cache_key)
     if cached is not None:
@@ -298,11 +188,11 @@ def run_dreamplace(
               f"(cache hit, skipped subprocess)")
         return hard_pos
 
-    # Phase 2: forward convert (re-use caller's plc when available)
+    # Convert to Bookshelf.
     convert(str(benchmark_dir), str(work_dir), design=design,
             soft_macros_movable=soft_macros_movable, plc=plc)
 
-    # Write JSON config
+    # Write DREAMPlace config.
     result_dir = work_dir / "results"
     result_dir.mkdir(parents=True, exist_ok=True)
     cfg = _default_dreamplace_config(
@@ -313,20 +203,17 @@ def run_dreamplace(
         num_threads=num_threads,
         random_center_init=random_center_init,
         target_density=target_density,
-        routability_opt=routability_opt,
-        route_num_bins=route_num_bins,
     )
     cfg_path = work_dir / f"{design}.json"
     cfg_path.write_text(json.dumps(cfg, indent=2))
 
-    # Run DREAMPlace
+    # Run DREAMPlace.
     env = os.environ.copy()
     pythonpath = f"{DREAMPLACE_INSTALL}:{DREAMPLACE_INSTALL / 'dreamplace'}"
     if env.get("PYTHONPATH"):
         pythonpath = pythonpath + ":" + env["PYTHONPATH"]
     env["PYTHONPATH"] = pythonpath
-    # Cap CPU footprint to match num_threads (see launch_dreamplace_async for
-    # rationale).
+    # Cap DREAMPlace CPU pools to the requested thread count.
     nt = str(max(1, int(num_threads)))
     env["OMP_NUM_THREADS"] = nt
     env["MKL_NUM_THREADS"] = nt
@@ -350,15 +237,14 @@ def run_dreamplace(
             log_target.close()
     dp_time = time.time() - t0
 
-    # Phase 3a: back-convert
+    # Convert results back to TILOS coordinates.
     if plc is None:
         plc = PlacementCost(str(benchmark_dir / "netlist.pb.txt"))
         init_plc = benchmark_dir / "initial.plc"
         if init_plc.exists():
             plc.restore_placement(str(init_plc), ifInital=True, ifReadComment=True)
 
-    # Use the full reader so we can persist both hard + soft to cache. The
-    # callers expect ONLY hard back, so we return that and stash soft on disk.
+    # Cache hard and soft positions; return only hard positions.
     try:
         hard_pos, soft_pos = read_dreamplace_positions_full(plc, str(work_dir), design)
         _write_cache(work_dir, cache_key, hard_pos, soft_pos)
@@ -370,14 +256,8 @@ def run_dreamplace(
     return pos
 
 
-# ---------------------------------------------------------------------------
-# Async launch: fire DREAMPlace as non-blocking subprocess
-# ---------------------------------------------------------------------------
-
 class _CachedDreamplaceHandle:
-    """Drop-in stand-in for AsyncDreamplaceHandle when a disk-cache hit
-    means the subprocess never has to run. Implements the same surface the
-    placer uses: poll/is_done/time_elapsed/wait_for_result*/kill."""
+    """Async-style handle for a cached DREAMPlace result."""
 
     def __init__(self, result: "tuple[np.ndarray, np.ndarray]", start_time: float):
         self._result = result
@@ -419,7 +299,7 @@ class AsyncDreamplaceHandle:
         self.timeout_s = timeout_s
         self._log_handle = log_handle
         self._cache_key = cache_key
-        # wait_for_result extracts the hard component for compatibility.
+        # wait_for_result returns only hard positions for compatibility.
         self._result: "Optional[tuple[np.ndarray, np.ndarray]]" = None
         self._failed = False
         self._kill_called = False
@@ -467,30 +347,14 @@ class AsyncDreamplaceHandle:
         return time.time() - self.start_time
 
     def wait_for_result(self, max_wait_s: float = 0.0) -> Optional[np.ndarray]:
-        """Wait up to max_wait_s seconds for completion. Returns hard-macro
-        positions [num_hard_macros, 2] on success, None on timeout/failure.
-
-        max_wait_s=0 means non-blocking check (returns None if not yet done).
-
-        Note: returns ONLY hard positions for compatibility. Use
-        `wait_for_result_full()` if you also need soft positions (which
-        requires the bridge to have been launched with
-        `soft_macros_movable=True` for the soft positions to be meaningful).
-        """
+        """Return hard positions, or None if the process is not ready."""
         full = self.wait_for_result_full(max_wait_s=max_wait_s)
         return None if full is None else full[0]
 
     def wait_for_result_full(
         self, max_wait_s: float = 0.0
     ) -> "Optional[tuple[np.ndarray, np.ndarray]]":
-        """Like `wait_for_result` but returns BOTH hard and soft positions.
-
-        Returns (hard_pos [num_hard, 2], soft_pos [num_soft, 2]) on success,
-        None on timeout/failure. The soft positions are meaningful only if
-        the bridge was launched with `soft_macros_movable=True` - otherwise
-        DREAMPlace treated softs as fixed and the back-converter falls back
-        to `node.get_pos()` which equals their initial.plc positions.
-        """
+        """Return hard and soft positions, or None if unavailable."""
         if self._result is not None:
             return self._result
         if self._failed:
@@ -523,9 +387,7 @@ class AsyncDreamplaceHandle:
             return None
 
     def kill(self) -> None:
-        """Abort the subprocess if still running. Safe to call multiple times.
-        Sends SIGKILL to the entire process group (matched by start_new_session
-        at launch) so any child threads / processes DP spawned also die."""
+        """Abort the subprocess if still running."""
         if self._kill_called:
             return
         self._kill_called = True
@@ -560,34 +422,12 @@ def launch_dreamplace_async(
     soft_macros_movable: bool = False,
     random_center_init: bool = False,
     target_density: float = 0.75,
-    routability_opt: bool = False,
-    route_num_bins: int = 64,
-    route_num_bins_x: "int | None" = None,
-    route_num_bins_y: "int | None" = None,
-    unit_h_cap: "float | None" = None,
-    unit_v_cap: "float | None" = None,
-    max_route_opt_adjust_rate: float = 2.0,
-    max_num_area_adjust: int = 3,
 ) -> AsyncDreamplaceHandle:
-    """Launch DREAMPlace as a non-blocking subprocess. Returns immediately
-    with a handle for polling.
-
-    Setup steps (forward conversion, JSON config) run synchronously here
-    (~1s total). The DREAMPlace subprocess itself runs asynchronously.
-
-    Use the returned handle:
-        h = launch_dreamplace_async(benchmark_dir, plc=plc)
-        # ... do other work ...
-        pos = h.wait_for_result(max_wait_s=5.0)
-        if pos is None:
-            h.kill()  # didn't finish in time
-        else:
-            # use pos
-    """
+    """Launch DREAMPlace in the background and return a polling handle."""
     if not is_available():
         raise RuntimeError(
             f"DREAMPlace not installed at {DREAMPLACE_INSTALL}. "
-            f"See v1/dreamplace_bridge/ docs to rebuild."
+            f"See submissions/varrahan/v2/README.md to rebuild."
         )
 
     benchmark_dir_p = Path(benchmark_dir).resolve()
@@ -595,23 +435,16 @@ def launch_dreamplace_async(
     work_dir = Path(scratch_root).resolve() / design
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Disk-cache check: on a matching .npz (same fingerprint) skip the whole
-    # subprocess and return a stub handle with the cached arrays.
-    routopt_sig = (
-        f"rb={route_num_bins_x or route_num_bins}x{route_num_bins_y or route_num_bins}"
-        f"|uh={unit_h_cap}|uv={unit_v_cap}|rate={max_route_opt_adjust_rate}"
-        f"|adj={max_num_area_adjust}|td={target_density:.3f}"
-    ) if routability_opt else ""
+    # Return a cached handle when the inputs match.
     cache_key = _cache_key(
         benchmark_dir_p, iterations, random_seed, num_threads,
-        soft_macros_movable, random_center_init, routability_opt, routopt_sig,
+        soft_macros_movable, random_center_init,
     )
     cached = _try_load_cache(work_dir, cache_key)
     if cached is not None:
         return _CachedDreamplaceHandle(cached, start_time=time.time())
 
-    # Forward convert (~1s). Pass the caller's plc through if provided so the
-    # converter doesn't re-parse netlist.pb.txt (saves ~0.5-2s).
+    # Convert to Bookshelf; reuse the caller's plc when available.
     convert(str(benchmark_dir_p), str(work_dir), design=design,
             soft_macros_movable=soft_macros_movable, plc=plc)
 
@@ -625,14 +458,6 @@ def launch_dreamplace_async(
         num_threads=num_threads,
         random_center_init=random_center_init,
         target_density=target_density,
-        routability_opt=routability_opt,
-        route_num_bins=route_num_bins,
-        route_num_bins_x=route_num_bins_x,
-        route_num_bins_y=route_num_bins_y,
-        unit_h_cap=unit_h_cap,
-        unit_v_cap=unit_v_cap,
-        max_route_opt_adjust_rate=max_route_opt_adjust_rate,
-        max_num_area_adjust=max_num_area_adjust,
     )
     cfg_path = work_dir / f"{design}.json"
     cfg_path.write_text(json.dumps(cfg, indent=2))
@@ -642,10 +467,7 @@ def launch_dreamplace_async(
     if env.get("PYTHONPATH"):
         pythonpath = pythonpath + ":" + env["PYTHONPATH"]
     env["PYTHONPATH"] = pythonpath
-    # Cap DP's CPU footprint to num_threads. Otherwise its OMP/MKL pools grab all
-    # cores and oversubscribe against the parent's scoring (torch + PlacementCost),
-    # causing ~100x scoring slowdowns under contention (ibm06 once hit 1599s vs
-    # ~14s, tripping the SLOW_SCORE_THRESHOLD bail and regressing -0.051).
+    # Keep DREAMPlace from oversubscribing CPU pools.
     nt = str(max(1, int(num_threads)))
     env["OMP_NUM_THREADS"] = nt
     env["MKL_NUM_THREADS"] = nt

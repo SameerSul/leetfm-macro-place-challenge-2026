@@ -22,12 +22,10 @@ for p in (str(ROOT), str(SRC)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-import eda_io  # noqa: E402
 from eda_io import (  # noqa: E402
-    build_benchmark, parse_def, parse_lef, parse_liberty, parse_sdc,
+    build_benchmark, parse_def, parse_lef, parse_liberty,
     parse_verilog, read_design, write_def, write_tcl,
 )
-from eda_io.design import Design  # noqa: E402
 
 FIX = HERE / "fixtures"
 LEF = FIX / "cells.lef"

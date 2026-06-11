@@ -6,7 +6,6 @@ ROOT = Path(__file__).resolve().parents[5]
 sys.path.insert(0, str(ROOT))
 
 import numpy as np
-from macro_place.benchmark import Benchmark
 from macro_place.loader import load_benchmark_from_dir
 
 import importlib.util

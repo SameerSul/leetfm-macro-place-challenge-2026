@@ -135,10 +135,7 @@ def _will_legalize(
                 valid = np.ones(len(cand_x), dtype=bool)
             if not valid.any():
                 continue
-            # argmin first-occurrence → "first improvement wins". CRITICAL:
-            # compute d² in pos.dtype, not float64 - on float32 pos the lower
-            # precision breaks ties between symmetric candidates differently, and
-            # matching it is required for bit-equivalence with sameer_v1.
+            # Keep tie behavior stable by scoring in the input dtype.
             diff_x = cand_x.astype(pos.dtype, copy=False) - pos[idx, 0]
             diff_y = cand_y.astype(pos.dtype, copy=False) - pos[idx, 1]
             d2 = diff_x * diff_x + diff_y * diff_y
@@ -149,5 +146,4 @@ def _will_legalize(
         legal[idx] = best
         placed[idx] = True
     return legal
-
 
