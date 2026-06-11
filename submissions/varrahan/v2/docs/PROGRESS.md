@@ -3,6 +3,34 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-11 — ML hard-relocation ranker connected as production
+> default, ISSUES.md S10):** The trained XGBoost filter was validated 2026-06-05
+> (equal-budget net ≈ −0.008/10, no robust regressions) but had been left
+> opt-in — no env var was ever set in the run path, so every evaluate run since
+> was pure-heuristic and the ranker never loaded. `src/main.py` now enables
+> config B by default (wide-32 hard-relocation pool, ranker exact-scores 16,
+> model `clean-wide32-holdout-ibm13-001`) when no `ML_*` env var is set; any
+> preset `ML_*` var, a missing model file, or missing `xgboost` falls back to
+> the prior pure-heuristic path. The pipeline logs
+> `R2 hard relocation ML filter on (pool=32, top_k=16)` when active. Verified:
+> `test/verification/_verify_ml_filter_wiring.py` (defaults set, bank loads,
+> 32→16 filtering, opt-out respected) + ibm01 end-to-end ×2 (proxy **0.9146**
+> VALID, 71s; DP-fixed --all reference was 0.9215).
+>
+> **`--all` re-baseline (same day): avg 1.1252 — all 17 VALID / 0 overlaps,
+> 2337s — NEW BEST** (vs 1.1272 DP-fixed reference, Δ −0.0020/17 cumulative
+> −0.0345). Per-benchmark: ibm01 0.9146, ibm02 1.1621, ibm03 0.9896, ibm04
+> 1.0137, ibm06 1.2059, ibm07 1.1819, ibm08 1.1543, ibm09 0.8409, ibm10 1.0945,
+> ibm11 0.9354, ibm12 1.3100, ibm13 0.9988, ibm14 1.2133, ibm15 1.2130, ibm16
+> 1.1608, ibm17 1.3502, ibm18 1.3885. 13 of 17 improved; movers beyond the
+> ±0.005–0.01 single-run noise: ibm11 −0.0094, ibm13 −0.0083 (the model's
+> held-out benchmark), ibm16 −0.0088, ibm17 −0.0078 vs ibm06 +0.0166, ibm10
+> +0.0133, ibm18 +0.0085. NB ibm10 regressing here despite being the robust S10
+> compare win underlines that this is ONE rep — the −0.0020 aggregate confirms
+> "no regression, default holds" but a multi-seed repeat is still wanted before
+> claiming the improvement itself. Next lever unchanged: budget-aware pruning
+> (`ML_FILTER_TOP_K` sweep under time pressure only).
+
 > **Status (2026-06-10 — fixed a silent DREAMPlace ABI break, ISSUES.md S16):**
 > **Avg 1.1272 — all 17 VALID / 0 overlaps, 2645s (~44 min) — NEW BEST.** Root
 > cause: the DP bridge launched DREAMPlace with the repo `.venv`, which was upgraded

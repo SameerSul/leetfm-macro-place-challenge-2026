@@ -732,7 +732,7 @@ search → regressed), S9 keeps the full pass and only changes candidate choice
 
 ---
 
-### S10. ML candidate ranker — per-operator XGBoost (COMPARED 2026-06-05: filter comparable-or-better at equal budget; not yet shipped as default)
+### S10. ML candidate ranker — per-operator XGBoost (SHIPPED AS DEFAULT 2026-06-11; equal-budget compare 2026-06-05 was comparable-or-better)
 
 **Equal-budget head-to-head (2026-06-05).** Compared the wired `hard_relocation`
 filter against the production interleave at *equal scoring budget*: config A =
@@ -769,9 +769,22 @@ NOT a better ranker. The earlier "filter regresses ibm11" reading was a baseline
 artifact: it had compared the filter against `wide32_nofilter`, which scores all
 32 (more budget than the filter's 16), not against the equal-budget interleave.
 
-**Status:** filter is opt-in (`ML_FILTER_OPERATORS=hard_relocation`); production
-default unchanged. Shipping it as default would need a multi-seed `--all` to
-confirm the net win clears the noise floor across all 17 + NG45.
+**Status (2026-06-11): shipped as production default.** `src/main.py` enables
+config B (`ML_HARD_RELOCATION_N_TARGETS=32`, `ML_FILTER_TOP_K=16`, model
+`clean-wide32-holdout-ibm13-001`) whenever no `ML_*` env var is set and the
+model artifact + `xgboost` are present; otherwise the pure-heuristic narrow-16
+path runs unchanged. Any preset `ML_*` var (including `ML_FILTER_OPERATORS=""`
+as an explicit opt-out) skips the defaults so trace/shadow/sweep workflows keep
+their exact semantics. Wiring verified by
+`test/verification/_verify_ml_filter_wiring.py` and an ibm01 end-to-end run
+(`R2 hard relocation ML filter on (pool=32, top_k=16)` in the log; proxy
+0.9146, VALID, 71s, reproduced twice). First `--all` rep with the default on:
+**avg 1.1252, 17/17 VALID, 0 overlaps, 2337s** — −0.0020 vs the 1.1272
+reference, new best (per-benchmark table in PROGRESS.md 2026-06-11). That
+clears the "no regression" bar for keeping the default; a multi-seed repeat
+(+ NG45) is still wanted before crediting the −0.0020 as real improvement
+rather than single-rep variance (note ibm10 regressed +0.0133 in this rep
+despite being the robust win in the equal-budget compare).
 
 **Recall-vs-width study (2026-06-05) — GNN routing-fill prefilter feasibility.**
 Tested whether a cheap surrogate can triage *wide* candidate pools (the premise of

@@ -570,7 +570,15 @@ the soft-soft 2-opt pass has the analogous prefilter at `3e-4`.
 The soft passes use `top_hot=128` and `n_targets=24` (top ~6–14% of softs
 per round on IBM). R5 boosts to `top_hot=192` on rounds 4–6 (where cong is
 skipped by the A+C optimization) to spend the freed budget on more density
-attempts. Hard relocation uses `top_hot=R2_HOT=48`, `n_targets=R2_TGT=16`.
+attempts. Hard relocation uses `top_hot=R2_HOT=48` with, by default since
+2026-06-11, the S10 ML filter: the candidate pool widens to `n_targets=32`
+and the shipped XGBoost ranker
+(`ml_data/models/clean-wide32-holdout-ibm13-001`) picks the 16 candidates to
+exact-score — same scoring budget as the old heuristic `n_targets=16` path.
+`src/main.py` sets these defaults only when no `ML_*` env var is present;
+otherwise (or if the model / `xgboost` is missing) hard relocation falls back
+to the pure-heuristic `n_targets=R2_TGT=16`. The exact accept gate is
+unchanged either way. See ISSUES.md S10.
 
 **Mean-field coupling.** Softs don't relocate "against each other" pairwise
 or "against hard macros" specifically. The fields are *aggregates* of all
