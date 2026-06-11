@@ -80,7 +80,7 @@ def _run(name, n_trials=10):
               f"ref={ref:.6f} Δ={d:.2e} {status}")
 
     # Test 2: sequential commits leave the scorer's state consistent.
-    print(f"  Test 2: 3 sequential hard-soft commits")
+    print("  Test 2: 3 sequential hard-soft commits")
     sc = IncrementalScorer(plc, bm, pl_np)
     pl_running = pl_np.copy()
     for ic in range(3):

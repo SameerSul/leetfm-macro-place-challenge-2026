@@ -1,31 +1,4 @@
-"""TILOS pb.txt → Bookshelf converter for DREAMPlace.
-
-Reads a TILOS-format benchmark via PlacementCost (the existing parser),
-extracts nodes / nets / pin offsets / canvas, and writes the 5-file
-Bookshelf format that DREAMPlace's place_io op consumes:
-
-    <design>.aux    -- index file
-    <design>.nodes  -- list of cells/macros with sizes; "terminal" for fixed
-    <design>.nets   -- net list with pin offsets
-    <design>.pl     -- initial placement (LL corner coords) and /Fixed flag
-    <design>.scl    -- site/row spec (we use a single row covering the canvas)
-
-Conventions:
-- TILOS positions are macro CENTER coordinates; Bookshelf .pl uses LL corner.
-  We convert center → LL on write.
-- TILOS pin x_offset/y_offset are relative to macro center; Bookshelf is the same.
-  Direct passthrough.
-- Hard macros are movable unless their TILOS fix_flag is set.
-- Soft macros are marked terminal+/Fixed (stand-ins for stdcell clusters that
-  the existing pipeline doesn't move). Can be flipped to movable later.
-- I/O ports become tiny (1×1 micron) terminal nodes at their fixed positions.
-- Net direction: TILOS driver pin → Bookshelf 'O', TILOS sink pins → 'I'.
-
-Run as a script:
-    uv run python submissions/varrahan/v1/dreamplace_bridge/pb_to_bookshelf.py \
-        --benchmark external/MacroPlacement/Testcases/ICCAD04/ibm04 \
-        --output /tmp/ibm04_bookshelf
-"""
+"""Convert a TILOS benchmark to Bookshelf files for DREAMPlace."""
 
 from __future__ import annotations
 
@@ -93,8 +66,7 @@ def _safe_fixed(node) -> bool:
 
 
 def _sanitize(name: str) -> str:
-    """Bookshelf token characters: letters, digits, underscore, slash, hyphen, dot.
-    Replace anything else with underscore."""
+    """Replace characters Bookshelf cannot use in names."""
     out = []
     for ch in name:
         if ch.isalnum() or ch in "_/-.":
@@ -110,16 +82,7 @@ def extract_bookshelf_data(
     port_size: float = 1.0,
     scale: int = 1000,
 ) -> Tuple[List[BookshelfNode], List[BookshelfNet], float, float, int]:
-    """Extract Bookshelf-shaped data from a parsed TILOS PlacementCost.
-
-    Bookshelf .nodes/.pl/.scl require INTEGER coordinates. TILOS data uses
-    sub-micron decimals (e.g. macro 0.96x0.8). We multiply all positions/sizes
-    by `scale` (default 1000) and round to integer. Pin offsets in .nets
-    accept floats and are also scaled. The caller divides results by `scale`
-    to get back to TILOS micron coordinates.
-
-    Returns (nodes, nets, canvas_width_scaled, canvas_height_scaled, scale).
-    """
+    """Extract scaled Bookshelf data from a parsed TILOS placement."""
     canvas_w, canvas_h = plc.get_canvas_width_height()
 
     nodes: List[BookshelfNode] = []
@@ -135,8 +98,7 @@ def extract_bookshelf_data(
                 i += 1
             name = f"{name}_{i}"
         name_seen[name] = name
-        # Scale + round to int. Use max(1, ...) on size so no degenerate 0x0
-        # nodes (DREAMPlace asserts on zero-size terminals).
+        # Use integer units and avoid zero-size nodes.
         sw = max(1, round(float(w) * scale))
         sh = max(1, round(float(h) * scale))
         sx_ll = round((float(x_center) - float(w) / 2.0) * scale)
@@ -152,7 +114,7 @@ def extract_bookshelf_data(
         ))
         return name
 
-    # Map TILOS macro name -> Bookshelf sanitized name (for net pin lookup later)
+    # Map TILOS names to Bookshelf names for pin lookup.
     tilos_to_bookshelf: dict = {}
 
     # Hard macros
@@ -176,7 +138,7 @@ def extract_bookshelf_data(
         bs_name = add_node(raw, w, h, x, y, terminal=is_terminal, fixed=is_fixed)
         tilos_to_bookshelf[raw] = bs_name
 
-    # I/O ports - tiny terminal nodes
+    # I/O ports become tiny fixed nodes.
     for idx in plc.port_indices:
         p = plc.modules_w_pins[idx]
         raw = p.get_name()
@@ -276,25 +238,10 @@ def _write_pl(out_dir: Path, design: str, nodes: List[BookshelfNode]) -> None:
 
 def _write_scl(out_dir: Path, design: str, canvas_w: float, canvas_h: float,
                num_rows_target: int = 8) -> None:
-    """Multi-row .scl spec. DREAMPlace's global-placement NLP needs stdcell-
-    row-height rows to build density bins correctly. A single canvas-height
-    row makes the optimizer plateau immediately (iter times collapse to 0.3ms,
-    wHPWL frozen; verified 2026-05-20).
-
-    DREAMPlace reference benchmark `simple` uses 8 rows of height 12 over a
-    96-tall canvas (12.5% per row, macros 3-4 rows tall). We mirror that ratio
-    by computing row_height = canvas_h / num_rows_target, so ~8 rows regardless
-    of canvas size. For ibm04's 34081-tall canvas this gives row_height ~4260
-    (~4.3 micron unscaled), comparable to typical Bookshelf macro-placement
-    inputs. Previously used row_height=200 (~170 rows of 0.2 micron each),
-    which was 20-50x too fine and made the NLP plateau at iter 1.
-
-    The .scl parser requires INTEGER values for Height/Coordinate/SubrowOrigin/
-    NumSites - even though .pl/.nodes accept floats. Site grid is 1x1 unit."""
+    """Write a simple multi-row site grid for DREAMPlace."""
     canvas_w_i = max(1, int(canvas_w) + 1)
     canvas_h_i = max(1, int(canvas_h) + 1)
-    # row_height = ceil(canvas_h / num_rows_target) so num_rows * row_height covers
-    # canvas_h (floor would need an extra row that overshoots the canvas).
+    # Use ceil so the rows cover the canvas.
     row_height = max(1, (canvas_h_i + num_rows_target - 1) // num_rows_target)
     num_rows = num_rows_target
     sites = canvas_w_i
@@ -320,13 +267,7 @@ def _write_scl(out_dir: Path, design: str, canvas_w: float, canvas_h: float,
 def convert(benchmark_dir: str, output_dir: str, design: Optional[str] = None,
             soft_macros_movable: bool = False,
             plc: Optional[PlacementCost] = None) -> Path:
-    """Convert a TILOS benchmark dir to Bookshelf. Returns the .aux path.
-
-    If `plc` is provided, it is reused instead of re-parsing netlist.pb.txt
-    (saves ~0.5-2s per benchmark). Caller is responsible for ensuring the
-    passed plc was loaded from the same benchmark_dir with initial.plc
-    restored.
-    """
+    """Convert a TILOS benchmark dir to Bookshelf and return the .aux path."""
     benchmark_dir = Path(benchmark_dir).resolve()
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

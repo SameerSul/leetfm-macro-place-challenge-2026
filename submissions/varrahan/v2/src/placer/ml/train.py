@@ -22,7 +22,6 @@ from placer.ml.modeling import (
     OPERATORS,
     ModelSpec,
     build_training_matrix,
-    feature_names_for,
 )
 
 

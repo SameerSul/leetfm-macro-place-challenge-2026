@@ -240,17 +240,16 @@ has `routability_opt_flag` + `adjust_rudy_area_flag` (params.json) — it comput
 a RUDY/RISA routing-congestion map mid-placement and inflates node areas in
 congested regions (≤`max_num_area_adjust`=3 times), so the density penalty
 spreads cells out of routing hotspots. This is congestion *in the global
-objective*. Our bridge currently leaves it OFF (`_default_dreamplace_config`
-defaults `routability_opt_flag=0`).
+objective*. The current bridge no longer exposes this retired mode.
 
 **Result: routopt CANNOT move the TILOS proxy congestion — CLOSED.** Enabling
-DREAMPlace's `routability_opt_flag` required two fixes first: a dead-code bug in
-`_default_dreamplace_config` (the routability keys were appended after `return`),
-and a crash in `PlaceObj.build_nctugr_congestion_map` (it needs per-layer
+DREAMPlace's `routability_opt_flag` required two fixes first: a config bug where
+the routability keys were not applied, and a crash in
+`PlaceObj.build_nctugr_congestion_map` (it needs per-layer
 `unit_horizontal_capacities`, which are None for Bookshelf inputs — patched both
 `dreamplace_src` and `dreamplace_build/install` to build the NCTUgr map only when
 `adjust_nctugr_area_flag` is set; RUDY is used otherwise, so safe). With routopt
-genuinely firing, on ibm10 (`_routopt_poc.py`, `_routopt_calib.py`):
+genuinely firing, on ibm10:
 
 | config | proxy | cong |
 |---|---|---|
@@ -267,10 +266,9 @@ engage (bins=64) RUDY relieves cells that aren't the TILOS proxy's hotspots
 (RUDY ≠ TILOS congestion), with a density headwind. The 0.064 congestion gap to
 best is **not closable** via the built-in routability opt.
 
-**Kept (gated off, no pipeline change):** the bridge `routability_opt` knob +
-calibration params (default off), the NCTUgr-guard source patch (genuine bug
-fix), and the diagnostics (`_routopt_poc`, `_routopt_calib`).
-v2 stays at **1.4422**.
+**Removed as stale:** the bridge `routability_opt` knob, its calibration
+parameters, and the one-off diagnostics. The negative result remains here so the
+experiment is not repeated. v2 stayed at **1.4422**.
 
 **Not pursued (low EV / big build):** `soft_macros_movable=True` + routopt (the
 `hi-mov` base is already 1.92, far above best); a custom congestion penalty map

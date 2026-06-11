@@ -1,16 +1,4 @@
-"""Competitive Macro Placer -- Partcl/HRT Challenge 2026.
-
-Varrahan Uthayan, Sameer Suleman
-
-Multi-restart legalization with routing-congestion-gradient perturbations and
-move-based local search (2-opt swaps + congestion/density-directed relocation),
-scored against the exact PlacementCost proxy. Congestion dominates the proxy
-(proxy = 1*WL + 0.5*density + 0.5*congestion, with congestion ~30x WL), so
-directed moves target congestion, not wirelength; restarts explore legalization
-variants without destroying initial.plc's hand-tuned spread.
-
-See docs/ARCHITECTURE.md for the full pipeline and docs/PROGRESS.md for scores.
-"""
+"""Main macro-placement pipeline."""
 
 import concurrent.futures
 import multiprocessing as mp
@@ -45,11 +33,7 @@ _FALSE_ENV = {"", "0", "false", "FALSE", "no", "NO", "off", "OFF"}
 
 
 def _reloc_propose_all_enabled(raw: str | None, gpu_backend: str) -> bool:
-    """Parse the hard-relocation propose-all switch.
-
-    `auto` keeps the restructuring opt-in but lets GPU-capable runs select the
-    cross-macro CUDA scorer without changing CPU/default behavior.
-    """
+    """Return whether hard relocation should use the propose-all path."""
     value = (raw or "").strip()
     if value in _TRUE_ENV:
         return True
@@ -61,19 +45,7 @@ def _reloc_propose_all_enabled(raw: str | None, gpu_backend: str) -> bool:
 
 
 class MacroPlacer:
-    """Budgeted multi-seed placer with congestion-directed local search.
-
-    Parameters
-    ----------
-    n_restarts : int
-        Upper cap on total candidates (budget check is the real limit).
-    noise_fracs : list[float]
-        Magnitudes for random restarts (fraction of min canvas dimension).
-    seed : int
-        Random seed for reproducibility.
-    time_budget_s : float
-        Per-benchmark wall-clock soft budget.
-    """
+    """Budgeted placer with restarts, DREAMPlace seeds, and local search."""
 
     def __init__(
         self,
@@ -83,34 +55,20 @@ class MacroPlacer:
         time_budget_s: float = 150.0,
     ):
         self.n_restarts = n_restarts
-        # Noise restart fracs. _try_restart's budget check ends the loop early, so
-        # n_restarts is an upper cap and slow benchmarks only reach the first few.
-        # Ordering matters: the first 4 "core" fracs hold their np.random draw
-        # positions, so the ibm01/03/08 winning restarts stay reproducible.
+        # Noise sizes for restart placements. Order affects seeded randomness.
         self.noise_fracs = noise_fracs or [
-            # Core (preserves ibm01 6%-win and ibm03 2%-win)
             0.02, 0.04, 0.06, 0.08,
-            # Fine grid fill: gaps between core points
             0.01, 0.03, 0.05, 0.07, 0.09,
-            # Fresh draws at winning scale with advanced random state
             0.06, 0.06, 0.04,
-            # Medium exploration
             0.10, 0.12, 0.08,
-            # Very fine grid
             0.025, 0.035, 0.045, 0.055, 0.065, 0.075,
-            # Larger displacements
             0.15, 0.20, 0.10,
-            # Revisit good range with new draws
             0.05, 0.06, 0.07, 0.03, 0.04, 0.02,
-            # Even finer
             0.005, 0.010, 0.015, 0.030, 0.050,
         ]
         self.seed = seed
         self.time_budget_s = time_budget_s
-        # The numba JIT speedups (S13/S14) cut --all to ~35min, freeing ~1400s of
-        # cap headroom. Raising the per-benchmark soft budget spends it on the
-        # budget-bound benchmarks (the cap-aware allocator still clamps the total).
-        # More accept-gated search can't regress. Tunable via V2_TIME_BUDGET.
+        # Optional override for experiments and slower/faster machines.
         _env_budget = os.environ.get("V2_TIME_BUDGET")
         if _env_budget:
             try:
@@ -118,38 +76,21 @@ class MacroPlacer:
             except ValueError:
                 pass
 
-        # --all budget guard: track cumulative place() time across benchmarks and
-        # tighten later budgets as the cap nears. Single-benchmark dev runs leave
-        # _benchmarks_done at 0 and pay nothing (adaptive branch gated on >= 1).
+        # Track budget across an evaluate --all run.
         self._first_place_call_time: Optional[float] = None
         self._benchmarks_done: int = 0
-        # Cumulative place()-time, not wall-clock: the harness caps 3600s on the
-        # sum-of-place() times. Large-grid harness overhead (100-170s outside
-        # place()) would otherwise inflate the cumulative and starve tail benches.
+        # Count only time spent inside place().
         self._total_place_time_s: float = 0.0
-        # 3300s internal cap leaves 300s headroom under the 3600s harness cap.
         self.HARNESS_TOTAL_BUDGET_S: float = 3300.0
         self.HARNESS_TOTAL_BENCHMARKS: int = 17
-        # Max directed-phase overrun of the soft budget; reserved by the allocator.
-        # 17*(110+83)=3281 < 3300s --all-safe.
+        # Directed phases may overrun the soft budget by this much.
         self.BUDGET_OVERRUN_S: float = 83.0
-        # Floor-reservation: every benchmark in an --all run is guaranteed at
-        # least this budget. The allocator reserves (floor + overrun) for each
-        # remaining benchmark so an early/large one can't starve the tail.
+        # Reserve enough time so late benchmarks are not starved.
         self.PER_BENCH_FLOOR_S: float = 110.0
-        # Leave headroom under the 3600s hard harness cap for setup/teardown.
         self.HARD_CAP_SAFE_S: float = 3540.0
 
     def _effective_budget(self, t0: float) -> "tuple[float, float]":
-        """Per-benchmark wall budget. The first call uses the full time_budget_s;
-        in --all mode (_benchmarks_done >= 1) the cap shrinks as the cumulative
-        place() time approaches HARNESS_TOTAL_BUDGET_S, reserving (floor + overrun)
-        for every other remaining benchmark plus overrun for this one so an
-        early/large benchmark can't eat the tail's budget. The hard-cap clamp keeps
-        this benchmark's worst case under HARD_CAP_SAFE_S.
-
-        Returns (effective_budget_s, cumulative_elapsed).
-        """
+        """Return this benchmark's soft budget and total used time."""
         if self._first_place_call_time is None:
             self._first_place_call_time = t0
         cumulative_elapsed = self._total_place_time_s
@@ -175,11 +116,7 @@ class MacroPlacer:
         return effective_budget_s, cumulative_elapsed
 
     def _launch_dreamplace_seeds(self, benchmark: Benchmark, plc) -> list:
-        """Launch async DREAMPlace global-placement seeds (varying target density
-        and soft-macro mobility to produce distinct candidates) alongside the main
-        pipeline. Returns a list of (tag, target_density, handle); empty if the
-        bridge is unavailable or launch fails.
-        """
+        """Start DREAMPlace seed runs in the background when available."""
         dp_handles = []
         try:
             import sys as _sys
@@ -193,7 +130,7 @@ class MacroPlacer:
                 iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
                              / benchmark.name)
                 if iccad_dir.exists():
-                    # Vary density and soft-macro mobility to produce distinct seeds.
+                    # Try a few settings to get different starting layouts.
                     for tag, td, root, soft_mv in (
                         ("lo-fix",  0.65, "/tmp/dreamplace_v1_lofix",   False),
                         ("hi-mov",  0.85, "/tmp/dreamplace_v1_himov",   True),
@@ -225,16 +162,7 @@ class MacroPlacer:
 
     @staticmethod
     def _clamp_in_bounds(pl: torch.Tensor, benchmark: Benchmark) -> torch.Tensor:
-        """Final safety net: clamp every MOVABLE macro center inside the canvas so
-        the output always satisfies the evaluator's zero-tolerance bounds check.
-
-        Hard movable macros are already in-bounds (legalizer + strict move-path
-        bounds), so this only moves stray SOFT macros — which may overlap, so
-        clamping is always legal. It catches the residual OOB sources: soft macros
-        left at OOB initial.plc positions (softs never pass through _will_legalize)
-        and unclipped DREAMPlace soft outputs. Fixed macros are left untouched
-        (the contract requires they stay put).
-        """
+        """Keep movable macro centers inside the canvas."""
         sizes = benchmark.macro_sizes
         cw = float(benchmark.canvas_width)
         ch = float(benchmark.canvas_height)
@@ -249,8 +177,7 @@ class MacroPlacer:
         return out
 
     def place(self, benchmark: Benchmark) -> torch.Tensor:
-        # Every return path of the core pipeline runs through the final in-bounds
-        # clamp so no code path can emit an out-of-bounds placement.
+        # Final guard for any soft macro positions copied from input or DP.
         return self._clamp_in_bounds(self._place_impl(benchmark), benchmark)
 
     def _place_impl(self, benchmark: Benchmark) -> torch.Tensor:
@@ -302,11 +229,9 @@ class MacroPlacer:
                 _ml_trace.event("benchmark_end", reason=reason, final_score=final_score)
                 _ml_trace.flush()
 
-        # Exact-scoring cutoffs. Post congestion-vectorization all 17 IBM
-        # benchmarks score fast enough, so these admit everything; the
-        # SLOW_SCORE_THRESHOLD_S guard still bails to baseline under load.
-        EXACT_MACRO_THRESHOLD = 10000  # admit all IBM benchmarks (ibm17 n=760 max)
-        EXACT_GRID_CELL_LIMIT = 10000  # admit all IBM benchmarks (ibm17 grid=2244 max)
+        # Exact-scoring cutoffs; the slow-score guard still handles bad load.
+        EXACT_MACRO_THRESHOLD = 10000
+        EXACT_GRID_CELL_LIMIT = 10000
         grid_cells = benchmark.grid_rows * benchmark.grid_cols
         plc = _load_plc(benchmark.name, benchmark)
         use_exact = (
@@ -323,9 +248,7 @@ class MacroPlacer:
             _log(f"  Large grid ({benchmark.grid_rows}x{benchmark.grid_cols}={grid_cells} > "
                  f"{EXACT_GRID_CELL_LIMIT}); restarts unrankable - returning baseline")
 
-        # Shared scratch buffer, filled in-place per candidate and only cloned
-        # when a candidate becomes the new best_pl (saves a clone per losing
-        # restart, and most restarts lose).
+        # Shared buffer reused for candidate scores.
         pl_scratch = benchmark.macro_positions.clone()
 
         def _score(pos: np.ndarray) -> float:
@@ -348,12 +271,7 @@ class MacroPlacer:
         baseline_pos = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
         _log(f"    Legalized in {time.monotonic()-t1:.1f}s")
 
-        # 2-opt on the baseline shifts the Phase 1 trajectory and can break wins
-        # (a better iter-1 stops the cong-grad chain early), so it's applied only
-        # on the baseline-only branch below where there's no chain to disrupt.
-
-        # Fill scratch with baseline positions; reused as either the baseline-only
-        # return tensor or the input to the first score.
+        # Fill scratch with baseline positions.
         pl_scratch[:n, 0] = torch.tensor(baseline_pos[:, 0], dtype=torch.float32)
         pl_scratch[:n, 1] = torch.tensor(baseline_pos[:, 1], dtype=torch.float32)
 
@@ -370,10 +288,7 @@ class MacroPlacer:
                 pl_scratch[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
                 pl_scratch[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
 
-            # DP-vs-baseline on large benchmarks: score BASELINE first (~30-90s),
-            # then DP only if budget remains (DP loses to baseline on some large
-            # benchmarks, e.g. ibm16). Only the first DP handle is scored - a
-            # second full score rarely fits - so kill the rest.
+            # On large cases, compare only the first DREAMPlace seed if time remains.
             dp_handle = dp_handles[0][2] if dp_handles else None
             for _tag, _td, _h in dp_handles[1:]:
                 try:
@@ -459,9 +374,7 @@ class MacroPlacer:
             self._benchmarks_done += 1
             return pl_scratch  # safe: no more in-place writes will happen
 
-        # Last-resort guard: eff < 45s only happens when even the floor was
-        # clipped by the hard cap (cumulative genuinely near 3540s), so bail to
-        # baseline rather than start a restart that can't finish.
+        # Last-resort guard: do not start a restart that cannot finish.
         cumulative_now = self._total_place_time_s
         if effective_budget_s < 45.0:
             _log(f"  [--all guard] tight budget "
@@ -500,9 +413,7 @@ class MacroPlacer:
             self._benchmarks_done += 1
             return best_pl
 
-        # Directed (cong-grad) restarts may overrun time_budget_s by
-        # BUDGET_OVERRUN_S so a transient scoring spike can't kill the productive
-        # late phases. Noise restarts stay strict (allow_overrun=False).
+        # Directed restarts get a small overrun allowance; noise restarts do not.
         BUDGET_OVERRUN_S = self.BUDGET_OVERRUN_S
 
         def _try_restart(label: str, perturbed_init: np.ndarray, k: int,
@@ -560,23 +471,16 @@ class MacroPlacer:
 
         directed_ran = 0
 
-        # -- Routing-congestion-gradient descent (iterative + wide) --------
-        # Phase 1: iterative gradient descent at frac=0.04 - after each improving
-        #   step, restart from best_pl's new position with plc's updated cong map.
-        # Phase 2: wide step at frac=0.08 from baseline, only if Phase 1 improved.
-        # Uses rng_cong (seed+1) so the main random state - and the downstream
-        # noise draws - are unaffected by cong-grad participation.
+        # Routing-congestion restarts use their own RNG so noise draws stay stable.
         rng_cong = np.random.RandomState(self.seed + 1)
         cong_pos = baseline_pos
         cong_improved = False
         cong_frac = 0.04
-        for cong_iter in range(12):  # I-change revert: was 15; extra iters shifted ibm01's 2-opt into worse basin
+        for cong_iter in range(12):
             if cong_iter > 0:
-                # Relaxed cap (matches allow_overrun=True) so an iter-0 spike
-                # doesn't block the loop.
+                # Match the relaxed cap used by directed restarts.
                 remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                # Full-frac iters reserve for Phase 2 + noise (3.0); halved-frac
-                # retries need only 1 eval (1.5).
+                # Smaller retry steps need less reserve.
                 budget_factor = 3.0 if cong_frac >= 0.04 else 1.5
                 if remaining < budget_factor * t_one_score * 1.3:
                     break
@@ -588,7 +492,7 @@ class MacroPlacer:
             if not _try_restart(f"cong-grad iter={cong_iter + 1} f={cong_frac:.2f}",
                                  cong_perturbed, k=1 + directed_ran,
                                  allow_overrun=True):
-                break  # don't kill Phase 2/3 - they have their own budget checks
+                break
             directed_ran += 1
             if best_score < score_before:
                 cong_pos = np.stack(
@@ -597,20 +501,14 @@ class MacroPlacer:
                 cong_improved = True
                 cong_frac = 0.04  # reset frac on success
             elif cong_improved and cong_frac > 0.01 and cong_iter >= 2:
-                # Try a gentler step before giving up. The cong_iter>=2 guard
-                # avoids firing after a single success: ibm02 fails at iter=1 and
-                # needs the stale plc for Phase 2 wide=8%; ibm03/ibm06 fail at
-                # iter=2+ where the stale plc matters less and adaptive helps.
+                # Try a gentler step before giving up.
                 cong_frac *= 0.5
             else:
                 break  # plc's map is stale, stop iterating
 
-        # Phase 2: wide steps [0.08, 0.12] from baseline using the evolved plc
-        # cong map (encodes where prior iters struggled). Stop on no-improvement
-        # or budget.
+        # Wide steps from baseline after an improving congestion pass.
         if cong_improved:
             for wide_frac in [0.08, 0.12]:
-                # Use relaxed cap so Phase 2 still fires after a Phase 1 spike.
                 remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
                 if remaining < t_one_score * 1.3:
                     break
@@ -621,17 +519,13 @@ class MacroPlacer:
                 score_before = best_score
                 if not _try_restart(f"cong-grad wide={wide_frac:.0%}", cong_wide,
                                      k=1 + directed_ran, allow_overrun=True):
-                    break  # don't kill Phase 3 - it has its own check
+                    break
                 directed_ran += 1
                 if best_score >= score_before:
                     break  # stop wide steps if this one didn't improve
 
-        # Phase 3: cong-grad from the best position using the stale plc map (it
-        # reflects a worse Phase 2 placement, so steering best away from its hot
-        # regions can reach a different minimum). Gated on a prior cong-grad win.
+        # Congestion step from the current best placement.
         if cong_improved:
-            # Relaxed cap so Phase 3 fires after a Phase 1 spike - ibm04's 1.3316
-            # win lives here.
             remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if remaining >= t_one_score * 1.3:
                 best_pos_now = np.stack(
@@ -644,16 +538,12 @@ class MacroPlacer:
                 if _try_restart("cong-grad phase3", phase3_perturbed,
                                  k=1 + directed_ran, allow_overrun=True):
                     directed_ran += 1
-                # On Phase 3 failure, fall through to noise loop (which will
-                # likely also skip on its own strict pre-check)
 
-        # -- Async DREAMPlace check (Phase 5: additive candidates) ------------
-        # Each completed DP handle becomes a candidate; the best feeds Phase 5b/5c
-        # and is retained in `dp_placements` for Phase 7 (DP-rescue cong-grad tail).
+        # Score any DREAMPlace seeds that finished in time.
         dp_placements: list[tuple[str, float, torch.Tensor]] = []
         for tag, td, h in dp_handles:
             remaining_dp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            # 3*t_one_score reserve covers Phase 5b + at least one noise score.
+            # Keep enough reserve for follow-up search.
             max_wait = max(0.0, min(remaining_dp - 3.0 * t_one_score, 30.0))
             dp_full = h.wait_for_result_full(max_wait_s=max_wait)
             if dp_full is None:
@@ -700,8 +590,7 @@ class MacroPlacer:
                 best_pl = dp_pl.clone()
             dp_placements.append((tag, dp_score, dp_pl))
 
-        # Phase 5b: cong-grad from best_pl using the current plc map (last DP
-        # scored, else baseline), reaching basins the baseline map alone can't.
+        # Congestion step after DREAMPlace candidates.
         if dp_placements:
             remaining_5b = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if remaining_5b >= t_one_score * 1.3:
@@ -717,9 +606,7 @@ class MacroPlacer:
                                  k=1 + directed_ran, allow_overrun=True):
                     directed_ran += 1
 
-        # Phase 5c: wide-from-best (frac=0.08) on the latest plc map - fills the
-        # gap between Phase 2 (wide from baseline) and Phase 3/5b (0.04 from best).
-        # Gated on a cong-grad win; rng_cong draw doesn't perturb the noise loop.
+        # Wide step from current best.
         if cong_improved:
             remaining_5c = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if remaining_5c >= t_one_score * 1.3:
@@ -735,7 +622,7 @@ class MacroPlacer:
                                  k=1 + directed_ran, allow_overrun=True):
                     directed_ran += 1
 
-        # -- Restarts 1+: Random Gaussian -------------------------------------
+        # Random Gaussian restarts.
         noise_scale_base = min(cw, ch)
         for k, frac in enumerate(
             self.noise_fracs[: self.n_restarts - 1 - directed_ran], start=1 + directed_ran
@@ -749,13 +636,7 @@ class MacroPlacer:
             if not _try_restart(f"random noise={frac:.0%}", perturbed, k=k):
                 break
 
-        # -- Phase 7: DP-rescue cong-grad chain (additive, after noise) -------
-        # DP loses on congestion, and one gradient step can't close gaps that big
-        # (legalization resets it). Chain up to MAX_P7_ITERS cong-grad iters per DP
-        # placement, each from the prior iter's legalized output, breaking on
-        # no-improvement. The iter-1-margin gate drops chains starting far above
-        # the pre-P7 best. Snapshot/restore rng_cong around the loop so its
-        # variable length doesn't drift the downstream Phase 8/9 perturbations.
+        # Try short congestion chains from DREAMPlace placements.
         rng_cong_pre_p7 = rng_cong.get_state()
         P7_ITER1_MARGIN_GATE = 0.06
         MAX_P7_ITERS = 3
@@ -793,8 +674,7 @@ class MacroPlacer:
                 if score < best_score:
                     best_score = score
                     best_pl = pl_scratch.clone()
-                # Iter-1 margin gate: abandon a chain whose first iter is far above
-                # the pre-chain best - those don't recover.
+                # Drop chains that start too far behind the current best.
                 if it == 1 and (score - pre_chain_best) > P7_ITER1_MARGIN_GATE:
                     break
                 # Greedy descent: stop if this iter didn't improve over the last.
@@ -802,18 +682,14 @@ class MacroPlacer:
                     break
                 prev_iter_score = score
                 current_pos = leg
-                # Hard cap: don't exceed cap after this iter's scoring.
+                # Hard cap after scoring.
                 if time.monotonic() - t0 > effective_budget_s + BUDGET_OVERRUN_S:
                     break
 
-        # Restore rng_cong so Phase 8/9 are deterministic regardless of how many
-        # Phase 7 iters fired.
+        # Restore RNG so later steps do not depend on DP-chain length.
         rng_cong.set_state(rng_cong_pre_p7)
 
-        # -- Phase 8: TOP-K cong-grad from best_pl -
-        # Earlier phases perturb every macro in a hot cell, blunting the gradient
-        # on dense benchmarks. Phase 8 moves only the K hottest macros (over a few
-        # K), in greedy multi-iter chains, on leftover budget.
+        # Move only the hottest macros in short greedy chains.
         MAX_P8_ITERS = 3
         if cong_improved:
             for top_k_val in (5, 10, 20):
@@ -842,18 +718,13 @@ class MacroPlacer:
                         break
                     prev_chain_score = best_score
 
-        # -- Phase 9: random-tiebreak legalize order -
-        # Keep largest-area-first ordering but randomize ties.
+        # Retry legalization with random tie-breaks.
         N_ORDER_TRIALS = 3
         area = sizes[:n, 0] * sizes[:n, 1]
-        # The trials are independent legalize-then-score chains. _will_legalize is
-        # pure numpy (releases the GIL), so the legalize calls run in a thread
-        # pool; the score step mutates shared plc/pl_scratch and stays sequential.
+        # Legalize trials can run in parallel; scoring remains sequential.
         p9_orders: list = []
         for _ in range(N_ORDER_TRIALS):
-            # np.lexsort: last key is primary. With (random_key, -area) the
-            # primary sort is by -area (largest first), tied entries broken by
-            # the uniform random key - different per trial.
+            # Largest first, random order within equal-area groups.
             random_key = rng_cong.random(n)
             p9_orders.append(np.lexsort((random_key, -area)).tolist())
 
@@ -1101,14 +972,8 @@ class MacroPlacer:
                 best_score = twoopt_best_score
                 best_pl = twoopt_best_pl
 
-        # -- Interleaved relocation <-> 2-opt (R2) ------------------
-        # Relocation moves hot macros into empty gaps (which swap-only 2-opt
-        # can't); R2 alternates the two until neither improves, each opening
-        # opportunities for the other. Both reuse the incremental scorer and
-        # accept only on a strict true-proxy drop (non-regressing). Relocation
-        # runs first each round (best_pl is already 2-opt-converged). Budget-gated.
-        R2_MAX_ROUNDS = 20  # budget-guarded; converges + breaks on no-improvement.
-        # Hard relocation candidate limits per round.
+        # R2: keep trying local moves while they still improve the score.
+        R2_MAX_ROUNDS = 20
         R2_HOT = 48
         R2_TGT = 16
         _ml_hard_reloc_targets = os.environ.get("ML_HARD_RELOCATION_N_TARGETS")
@@ -1154,9 +1019,7 @@ class MacroPlacer:
                 f"(top_m={R2_RELOC_PROPOSE_TOP_M or 'all'})"
             )
         R2_2OPT_SLICE = 8.0
-        # Wider soft candidate set (softs number 900-2000, the dominant lever).
-        # The S11 WL prefilter made each soft-reloc group ~37% cheaper, so the freed
-        # budget is spent on a wider pool here. Env-tunable for sweeps.
+
         def _env_int(name, default):
             v = os.environ.get(name)
             try:
@@ -1165,18 +1028,11 @@ class MacroPlacer:
                 _log(f"  ignoring invalid {name}={v!r}")
                 return default
         R3_SOFT_HOT = _env_int("V2_SOFT_HOT", 128)
-        # S11+: n_targets 24 -> 32 spends the WL-prefilter's freed budget on the
-        # score MVP. Validated: ibm13 -0.012, ibm17 -0.0054, ibm15 neutral (no
-        # regression). Widening top_hot too over-widens (worse + finishes early).
         R3_SOFT_TGT = _env_int("V2_SOFT_TGT", 32)
-        # Once the cong soft-reloc pass saturates (density keeps finding moves),
-        # boost the density pass's candidate set to spend the freed time.
+        # Density keeps helping after congestion moves dry up.
         R3_SOFT_HOT_BOOSTED = _env_int("V2_SOFT_HOT_BOOSTED", 192)
-        # Bias soft-pass ordering toward each macro's net centroid so the
-        # deadline-bound search tries WL-friendly candidates first (ordering only;
-        # the proxy gate still validates; 0 = nearest-to-current).
+        # Soft move ordering blends distance-to-current and distance-to-net-center.
         A3_WL_BLEND = 0.3
-        # Soft-macro half-sizes (for the soft relocation pass).
         _n_soft = benchmark.num_soft_macros
         _soft_sizes = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
         soft_hw = _soft_sizes[:, 0] / 2
@@ -1187,8 +1043,7 @@ class MacroPlacer:
             return np.stack([_pl[:n, 0].numpy(), _pl[:n, 1].numpy()], axis=1).astype(np.float64)
 
         def _macro_cong_now():
-            # Per-macro local max(H,V) from plc's current routing map (set by the
-            # IncrementalScorer init / last _exact_proxy on best_pl).
+            # Read each hard macro's current congestion cell.
             try:
                 nr_g, nc_g = benchmark.grid_rows, benchmark.grid_cols
                 cc = _congestion_field(plc, nr_g, nc_g)
@@ -1201,7 +1056,7 @@ class MacroPlacer:
             except Exception:
                 return None
 
-        # Stop running a pass after consecutive zero-accept rounds.
+        # Stop a pass after repeated rounds with no accepted moves.
         SKIP_EMPTY_AFTER = 1
         _empty_streak = {
             "reloc_density": 0,
@@ -1215,39 +1070,21 @@ class MacroPlacer:
             "hs3_density": 0,
         }
 
-        # Adaptive R2 termination, two tiers for the diminishing-returns tail:
-        #   - HARD_STOP: a round gaining <= R2_DELTA_HARD_STOP stops immediately.
-        #   - TINY: a round in the (HARD_STOP, THRESHOLD) band needs
-        #     TINY_R2_ROUNDS_TO_STOP in a row to stop (a small round is sometimes
-        #     followed by a productive one).
-        # The `if not round_improved` break still handles zero gain.
+        # Stop when rounds are no longer making useful progress.
         R2_DELTA_THRESHOLD = 1e-3
         R2_DELTA_HARD_STOP = 3e-4
         TINY_R2_ROUNDS_TO_STOP = 2
         _r2_tiny_streak = 0
 
-        # One scorer shared across the ~10 passes of a round, not rebuilt per pass
-        # (~0.1-0.3s each = 10-20s/bench). Moves commit via the scorer and each
-        # pass validates with _exact_proxy, keeping it in sync with best_pl; a
-        # pass that accepted moves but didn't net-improve sets the dirty flag so
-        # the next pass rebuilds. Bit-exact with the per-pass rebuild path.
+        # Share one scorer across a round and rebuild only if it falls out of sync.
         _round_scorer = [None]   # list-as-mutable-flag (closure-safe)
         _round_scorer_dirty = [False]
 
-        # Adaptive budget control (env-gated, default off). Tracks each pass's
-        # cumulative yield = proxy gain per budget-second, and scales that pass's
-        # deadline cap by its yield relative to the mean — so productive passes
-        # (soft_relocation is the MVP) earn more of the round budget and low-ROI
-        # passes (hard_2opt / HXS / HS3) earn less. Timing is hooked in
-        # _ml_r2_context (called at every pass start) and gain in
-        # _round_scorer_handoff; the exact gate still validates every move, so this
-        # only reallocates *time*, never accepts a worse placement.
+        # Optional: give more time to passes that have been paying off.
         _ADAPTIVE_BUDGET = os.environ.get("V2_ADAPTIVE_BUDGET", "").strip() in {
             "1", "true", "TRUE", "yes", "YES", "on", "ON"
         }
-        # Clamp bounds for the yield-scaling factor. Default [0.4, 2.5] (boost +
-        # shrink); set V2_ADAPTIVE_LO=1.0 for boost-only (never shrink a pass's
-        # cap below base — avoids the early-termination the shrink path caused).
+
         def _env_float(name, default):
             v = os.environ.get(name)
             try:
@@ -1256,8 +1093,8 @@ class MacroPlacer:
                 return default
         _ADAPTIVE_LO = _env_float("V2_ADAPTIVE_LO", 0.4)
         _ADAPTIVE_HI = _env_float("V2_ADAPTIVE_HI", 2.5)
-        _pass_gain = {}        # operator name -> cumulative proxy gain
-        _pass_time = {}        # operator name -> cumulative wall-seconds
+        _pass_gain = {}
+        _pass_time = {}
         _cur_pass = [None]
         _cur_pass_t0 = [0.0]
 
@@ -1269,8 +1106,7 @@ class MacroPlacer:
                 _cur_pass[0] = None
 
         def _pass_cap(name, base):
-            """Deadline cap for a pass: identity unless adaptive budget is on and
-            there is enough yield history; then base * clamp(yield/mean, 0.4, 2.5)."""
+            """Return this pass's time cap."""
             if not _ADAPTIVE_BUDGET:
                 return base
             ys = {p: _pass_gain.get(p, 0.0) / t for p, t in _pass_time.items() if t > 1e-6}
@@ -1282,8 +1118,7 @@ class MacroPlacer:
             return base * max(_ADAPTIVE_LO, min(_ADAPTIVE_HI, ys[name] / mean_y))
 
         def _round_scorer_get():
-            """Return a scorer in sync with `best_pl`. Lazily builds on first
-            call, rebuilds when the previous pass marked dirty."""
+            """Return a scorer that matches `best_pl`."""
             if _round_scorer[0] is None or _round_scorer_dirty[0]:
                 _exact_proxy(best_pl, benchmark, plc)
                 _round_scorer[0] = IncrementalScorer(
@@ -1293,11 +1128,8 @@ class MacroPlacer:
             return _round_scorer[0]
 
         def _round_scorer_handoff(cand_true, cand):
-            """Call from each pass after computing cand_true. Either updates
-            best_pl (scorer stays in sync) or marks dirty (next pass rebuilds).
-            Returns True iff the pass improved best_pl."""
+            """Accept a pass result or mark the scorer for rebuild."""
             nonlocal best_score, best_pl, round_improved
-            # Attribute the proxy gain to the current pass (adaptive budget yield).
             if _ADAPTIVE_BUDGET and _cur_pass[0] is not None and cand_true < best_score:
                 _pass_gain[_cur_pass[0]] = _pass_gain.get(_cur_pass[0], 0.0) + (
                     best_score - cand_true
@@ -1307,14 +1139,11 @@ class MacroPlacer:
                 round_improved = True
                 return True
             else:
-                # Pass had accepts that committed to the scorer but didn't pass
-                # the cumulative gate. Scorer state ≠ best_pl now; force rebuild.
+                # The pass changed the scorer but not the incumbent placement.
                 _round_scorer_dirty[0] = True
                 return False
 
         def _ml_r2_context(pass_name: str, field: str | None, remaining_s: float, **extra):
-            # Per-pass timing for adaptive budget (only when enabled — zero work on
-            # the default path): close the previous pass, open this one.
             if _ADAPTIVE_BUDGET:
                 _pass_close()
                 _cur_pass[0] = pass_name
@@ -1340,19 +1169,14 @@ class MacroPlacer:
             _t_round_start = time.monotonic()
             _r2_prev_best = best_score
             round_improved = False
-            # Force a fresh scorer at round-start (best_pl may have changed
-            # between rounds via cleanup-2-opt commits / accept handling).
+            # best_pl may have changed in the previous round.
             _round_scorer_dirty[0] = True
 
-            # Rounds 1+ skip the round-start _exact_proxy(best_pl): plc is left
-            # synced to best_pl at every round boundary. Round 0 re-scores (the
-            # outer 2-opt leaves plc at its last kick). Saves (rounds-1) x score.
             try:
                 _ml_r2_context("hard_relocation", "congestion", rem_r2)
                 t_rel = time.monotonic()
                 base_rel = float(_exact_proxy(best_pl, benchmark, plc))
                 rel_scorer = _round_scorer_get()
-                # Hard relocation orders targets nearest-first.
                 rel_pos, rel_acc, _ = _relocation_moves(
                     _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
                     benchmark, rel_scorer, base_rel,
@@ -1378,9 +1202,7 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # Hard DENSITY relocation: hot hards in densest cells -> lowest-density
-            # cells (same _relocation_moves with use_density=True). Skip-if-empty
-            # drops it after a zero-accept streak (it usually finds 0-3 moves).
+            # Move hard macros out of dense cells.
             if _empty_streak["reloc_density"] < SKIP_EMPTY_AFTER:
                 try:
                     _ml_r2_context("hard_relocation", "density", rem_r2)
@@ -1417,9 +1239,7 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # Hard combined relocation: hotness = geometric mean of normalized
-            # cong & density, catching macros moderately hot on both that neither
-            # pure pass prioritized. Same proxy gate; skip-if-empty.
+            # Move hard macros that are moderately bad on both fields.
             if _empty_streak["reloc_combined"] < SKIP_EMPTY_AFTER:
                 try:
                     _ml_r2_context("hard_relocation", "combined", rem_r2)
@@ -1470,8 +1290,7 @@ class MacroPlacer:
                 rem_sr = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
                 if rem_sr < 2.0 * t_one_score + 2.0:
                     break
-                # Once the cong pass saturates, widen the density pass's set
-                # (top_hot 128 → 192). Adaptive on the cong-pass empty streak.
+                # After congestion stalls, let density try a wider set.
                 _cong_saturated = _empty_streak["soft_reloc_cong"] >= SKIP_EMPTY_AFTER
                 _top_hot_this = (
                     R3_SOFT_HOT_BOOSTED
@@ -1497,8 +1316,7 @@ class MacroPlacer:
                         [best_pl[n:n + _n_soft, 0].numpy(),
                          best_pl[n:n + _n_soft, 1].numpy()], axis=1
                     ).astype(np.float64)
-                    # A3: soft net centroids for WL-aware target ordering (~ms for
-                    # ~2000 softs); recomputed per pass - cache if it profiles hot.
+                    # Net centroids guide target ordering.
                     _soft_centroids = sr_scorer.soft_net_centroids()
                     sr_pos, sr_acc, _ = _soft_relocation_moves(
                         sr_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark,
@@ -1508,7 +1326,7 @@ class MacroPlacer:
                         soft_movable=_soft_movable, use_density=_use_d,
                         net_centroid=_soft_centroids, wl_blend=A3_WL_BLEND,
                     )
-                    # Track per-field empty streak for the adaptive cong cap.
+                    # Track empty congestion passes.
                     if _sfield == "cong":
                         if sr_acc == 0:
                             _empty_streak["soft_reloc_cong"] += 1
@@ -1531,11 +1349,7 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # --- Soft-soft 2-opt swap: the exchange single-soft relocation can't
-            # make. Run per field (cong then density - different hot softs), each
-            # adding n_cold_teleports cold softs to the kNN set for long-range
-            # swaps, and each up to A5_NUM_PASSES inner passes (a later pass can
-            # find chains the first missed). Skip-if-empty gates it.
+            # Soft-soft swaps catch exchanges relocation misses.
             A5_NUM_PASSES = 2
             for _ssfield, _ssuse_d in (("cong", False), ("density", True)):
                 if _n_soft < 2:
@@ -1561,8 +1375,7 @@ class MacroPlacer:
                             [best_pl[n:n + _n_soft, 0].numpy(),
                              best_pl[n:n + _n_soft, 1].numpy()], axis=1
                         ).astype(np.float64)
-                        # A4: pass net centroids + wl_blend for WL-aware kNN
-                        # ordering (analog of A3 for the swap).
+                        # Net centroids guide swap ordering.
                         _ss_centroids = ss_scorer.soft_net_centroids()
                         ss_pos, ss_acc, _ = _two_opt_soft_swap(
                             ss_pos, cw, ch, n, plc, benchmark, ss_scorer, base_ss,
@@ -1572,8 +1385,7 @@ class MacroPlacer:
                             use_density=_ssuse_d, n_cold_teleports=4,
                             net_centroid=_ss_centroids, wl_blend=A3_WL_BLEND,
                         )
-                        # Track empty streak only on the FIRST pass of the round
-                        # (subsequent passes are bonus search).
+                        # Count only the first pass for skip gating.
                         if _a5_pass == 0:
                             if ss_acc == 0:
                                 _empty_streak[_streak_key] += 1
@@ -1591,8 +1403,7 @@ class MacroPlacer:
                                      f"{ss_acc} swaps, {best_score:.4f} → {ss_true:.4f}")
                                 _improved_this_pass = True
                             _round_scorer_handoff(ss_true, cand)
-                        # A5 early-stop: if this pass found no improving moves,
-                        # don't bother with another pass on the same field.
+                        # Stop this field when another pass does not help.
                         if not _improved_this_pass:
                             break
                     except Exception as exc:
@@ -1604,10 +1415,7 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # Hard-soft cross-swap: exchange a hard and a soft macro's positions -
-            # pairs neither the hard-2opt nor soft-2opt can find (each swaps within
-            # its own kind). Same accept-on-true-proxy path (score_swap_hard_soft /
-            # commit_swap_hard_soft, bit-exact). Dual-field, skip-if-empty.
+            # Swap hard and soft macros when same-type swaps miss the pair.
             for _xfield, _xuse_d in (("cong", False), ("density", True)):
                 if _n_soft < 1:
                     break
@@ -1657,10 +1465,7 @@ class MacroPlacer:
             if rem_r2 < 2.0 * t_one_score + 2.0:
                 break
 
-            # --- Hard-soft-soft 3-cycle rotation (H -> S1 -> S2 -> H): for cases
-            # where a hard wants S1's slot but H<->S1 alone hurts (S1 must move
-            # too) - a chain 2-opt can't accept it, the combined cycle can. Same
-            # dual-field + skip-if-empty; cubic cost, so a tight 3s deadline.
+            # Rotate one hard and two soft macros as one move.
             for _h3field, _h3use_d in (("cong", False), ("density", True)):
                 if _n_soft < 2:
                     break
@@ -1745,7 +1550,7 @@ class MacroPlacer:
 
             if not round_improved:
                 break
-            # Adaptive R2 round termination (two-tier; see constants above).
+            # Stop when a round's gain is too small.
             _r2_delta = _r2_prev_best - best_score
             _r2_round_time = time.monotonic() - _t_round_start
             if _r2_delta < R2_DELTA_HARD_STOP:
@@ -1763,15 +1568,11 @@ class MacroPlacer:
             else:
                 _r2_tiny_streak = 0
 
-        # -- Post-R2 soft-reloc using leftover budget ---------
-        # R2's round-break guard exits mid-round leaving ~2-3 x t_one_score; a
-        # soft-reloc[cong]+[density] pass continues from there with no new
-        # legalize. plc is synced to best_pl at every R2 exit, so no resync.
+        # Spend leftover time on one last soft relocation pass.
         if _n_soft > 0:
             for _post_field, _post_ud in (("cong", False), ("density", True)):
                 rem_post = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                # Need ≥ 1.5 × t_one_score: ~1 × t_one_score for the verify call
-                # after soft-reloc + 0.5 × margin for scorer init and the pass itself.
+                # Keep enough time to verify the result.
                 if rem_post < t_one_score * 1.5:
                     break
                 try:
@@ -1816,7 +1617,7 @@ class MacroPlacer:
                             best_score = _post_true
                             best_pl = _post_cand
                         else:
-                            # Verify failed: restore plc to best_pl.
+                            # Restore plc to the incumbent placement.
                             float(_exact_proxy(best_pl, benchmark, plc))
                 except Exception as _post_exc:
                     _log(f"  Post-R2 soft-reloc[{_post_field}] failed: {_post_exc}")

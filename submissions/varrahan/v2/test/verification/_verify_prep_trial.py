@@ -83,7 +83,7 @@ def _run(name, n_trials=10):
               f"ref={ref:.6f} got={got:.6f} Δ={d:.2e} {status}")
 
     # T3: prep + commit_after_prep == commit_move
-    print(f"  Hard T3: prep+commit == commit_move (final-state check, ×3)")
+    print("  Hard T3: prep+commit == commit_move (final-state check, ×3)")
     for _ in range(3):
         sc1 = IncrementalScorer(plc, bm, pl_np)
         sc2 = IncrementalScorer(plc, bm, pl_np)
@@ -126,7 +126,7 @@ def _run(name, n_trials=10):
 
     # T2 (soft): post-revert, score_move_soft on a DIFFERENT target should match
     # what you'd get if no prep had ever happened.
-    print(f"  Soft T2: post-revert state restoration (×3)")
+    print("  Soft T2: post-revert state restoration (×3)")
     for _ in range(3):
         k = int(rng.randint(0, ns))
         t_a = (float(rng.uniform(0, cw)), float(rng.uniform(0, ch)))

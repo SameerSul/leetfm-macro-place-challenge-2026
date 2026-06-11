@@ -1,4 +1,4 @@
-"""Local search move operators."""
+"""Relocation moves for local search."""
 
 import os
 import time
@@ -38,12 +38,7 @@ def _score_relocation_proposals_tensor(
     local_cong: np.ndarray,
     tgt_cong: np.ndarray,
 ) -> None:
-    """Assign batched tensor heuristic scores to frozen-base proposals.
-
-    This is a ranking scorer, not the accept gate. Lower score is better to
-    match exact proxy sorting. It deliberately uses cheap pre-score quantities:
-    source/target field relief, normalized displacement, and candidate rank.
-    """
+    """Give each proposal a cheap ranking score."""
     if not proposals:
         return
     dev = _GPU_DEVICE
@@ -71,8 +66,7 @@ def _score_relocation_proposals_tensor(
         dist = torch.sqrt(dx * dx + dy * dy)
         rank_norm = rank_t / torch.clamp(torch.max(rank_t), min=1.0)
 
-        # Synthetic score: prefer high relief, then shorter moves and earlier
-        # heuristic-ranked targets. Serial exact verification still decides.
+        # Prefer more relief, shorter moves, and earlier heuristic picks.
         score = -(1.0 * relief - 0.08 * dist - 0.02 * rank_norm)
         scores = score.detach().cpu().numpy().astype(np.float64)
     for proposal, score_value in zip(proposals, scores):
@@ -85,12 +79,7 @@ def _macro_routing_contrib(
     cx: float,
     cy: float,
 ) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
-    """Return exact per-cell hard-macro routing blockage contribution.
-
-    Mirrors `routing.apply._apply_macro_routing` for one macro, but returns
-    sparse flat indices plus V/H additive values so proposal batches can scatter
-    old/new blockage deltas into Torch tensors.
-    """
+    """Return one hard macro's routing blockage as sparse arrays."""
     half = incremental_scorer._dens_half.get(int(module_idx))
     if half is None:
         empty_i = np.empty(0, dtype=np.int64)
@@ -166,13 +155,7 @@ def _net_routing_2pin_contrib(
     cx: float,
     cy: float,
 ) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
-    """Return exact 2-pin net-routing contribution for nets touching a module.
-
-    This is an incremental CUDA-scorer slice, not the full net-routing port.
-    It mirrors `_apply_2pin_routing` for length-2 touched nets so proposal
-    ranking can account for a common exact net-routing delta before the serial
-    exact accept gate runs.
-    """
+    """Return 2-pin routing for nets touching one module."""
     empty_i = np.empty(0, dtype=np.int64)
     empty_v = np.empty(0, dtype=np.float32)
     nets = incremental_scorer.macro_to_nets.get(int(module_idx))
@@ -320,7 +303,7 @@ def _net_routing_3pin_contrib(
     cx: float,
     cy: float,
 ) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
-    """Return exact 3-pin net-routing contribution for nets touching a module."""
+    """Return 3-pin routing for nets touching one module."""
     empty_i = np.empty(0, dtype=np.int64)
     empty_v = np.empty(0, dtype=np.float32)
     nets = incremental_scorer.macro_to_nets.get(int(module_idx))
@@ -496,13 +479,7 @@ def _net_routing_highfanout_contrib(
     cx: float,
     cy: float,
 ) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
-    """Return exact >=4-pin net-routing contribution for touched nets.
-
-    Mirrors the high-fanout section of `_apply_net_routing_struct`: sinks equal
-    to the source gcell are ignored, remaining sinks are deduped per net, two
-    unique sinks route as an effective 3-pin net, otherwise source-to-sink
-    starlike 2-pin routes are emitted.
-    """
+    """Return high-fanout routing for nets touching one module."""
     empty_i = np.empty(0, dtype=np.int64)
     empty_v = np.empty(0, dtype=np.float32)
     nets = incremental_scorer.macro_to_nets.get(int(module_idx))
@@ -764,9 +741,7 @@ def _relocation_hpwl_dynamic_bytes_per_proposal(
         nets, _lengths, pin_indices, _total = topo
         n_pins = int(pin_indices.size)
         n_segments = int(nets.size)
-        # Chunk-local HPWL scoring builds row/segment maps plus gathered pin
-        # coordinates and segment reductions. Static topology tensors are
-        # counted separately in _relocation_static_tensor_bytes_estimate.
+        # Static topology tensors are counted elsewhere.
         total += n_pins * (5 * int64_bytes + 2 * float32_bytes + bool_bytes)
         total += n_segments * (2 * int64_bytes + 6 * float32_bytes)
     return int(np.ceil(total / max(len(proposals), 1)))
@@ -776,7 +751,7 @@ def _relocation_grid_dynamic_bytes_per_proposal(incremental_scorer) -> int:
     if incremental_scorer is None:
         return 0
     n_cells = int(incremental_scorer.grid_row) * int(incremental_scorer.grid_col)
-    # occ, v/h macro, v/h raw, v/h smoothed, v/h congestion/routing scratch.
+    # Scratch grids used while scoring one proposal.
     return max(1, n_cells) * 10 * np.dtype(np.float32).itemsize
 
 
@@ -987,7 +962,7 @@ def _build_relocation_cuda_static_tensors(
     incremental_scorer,
     dev: torch.device,
 ) -> dict:
-    """Build tensors and frozen-base metadata reused by every proposal chunk."""
+    """Build GPU tensors reused by every proposal chunk."""
     pos_cache_np = _ensure_pos_cache(incremental_scorer.plc)
     proposal_xy_np = np.asarray([p["xy"] for p in proposals], dtype=np.float32)
     proposal_i_np = np.asarray([p["i"] for p in proposals], dtype=np.int64)
@@ -1196,12 +1171,7 @@ def _score_relocation_proposals_cuda_delta_batch(
     incremental_scorer,
     static_tensors: dict,
 ) -> dict:
-    """Assign CUDA-capable batched delta scores to frozen-base proposals.
-
-    This evaluates proposal density, HPWL delta, hard-macro blockage, and
-    touched-net routing through Torch batches on `_GPU_DEVICE`. The serial exact
-    verify stage remains the correctness gate.
-    """
+    """Score frozen proposals in one tensor batch."""
     if not proposals:
         return {}
     t0_prep = time.monotonic()
@@ -1701,14 +1671,7 @@ def _relocation_moves_propose_all(
     eps: float,
     field: str,
 ) -> "tuple[np.ndarray, int, float]":
-    """Experimental hard-relocation propose-all path.
-
-    Phase 1 freezes the current state, exact-scores every legal proposal for all
-    hot macros, and globally ranks those proposals. Phase 2 walks that ranked
-    list, re-checks legality against the current post-commit state, exact-scores
-    again, and commits only strict improvements. The exact scorer remains the
-    arbiter; this only changes the proposal/ordering policy.
-    """
+    """Rank all hard-relocation proposals, then exact-check the best ones."""
     best_score = initial_score
     accepts = 0
     all_idx = np.arange(n)
@@ -1742,8 +1705,7 @@ def _relocation_moves_propose_all(
         legal = []
         for candidate_rank, t in enumerate(cand):
             nx, ny = float(tgt_x[t]), float(tgt_y[t])
-            # Strict bounds: the evaluator has zero overhang tolerance (matches the
-            # production _relocation_moves path; targets are raw, unclipped cell centers).
+            # Keep the whole macro inside the canvas.
             if (nx - hw[i] < 0 or nx + hw[i] > cw or
                     ny - hh[i] < 0 or ny + hh[i] > ch):
                 continue
@@ -1832,8 +1794,7 @@ def _relocation_moves_propose_all(
         if i in moved or not movable[i]:
             continue
         nx, ny = p["xy"]
-        # Strict bounds: the evaluator has zero overhang tolerance (matches the
-        # production _relocation_moves path; targets are raw, unclipped cell centers).
+        # Keep the whole macro inside the canvas.
         if (nx - hw[i] < 0 or nx + hw[i] > cw or
                 ny - hh[i] < 0 or ny + hh[i] > ch):
             continue
@@ -1974,29 +1935,14 @@ def _relocation_moves(
     propose_all: bool = False,
     propose_top_m: "int | None" = None,
 ) -> "tuple[np.ndarray, int, float]":
-    """Congestion-directed single-macro RELOCATION of hard macros.
-
-    The move 2-opt can't make: it only swaps two macros, never moving a
-    routing-heavy macro into an empty gap. For the hottest macros (by the chosen
-    field) this trials each into a few of the lowest-field legal cell centers and
-    accepts iff the true incremental proxy strictly drops. Legal = in-bounds + no
-    overlap with other HARD macros (softs may overlap, ignored).
-
-    use_density: field is grid occupancy (True) vs max(H,V) routing congestion
-        (False). use_combined: geometric mean of both (normalized), favouring
-        macros moderately hot on both.
-    net_centroid / wl_blend: blend distance-to-current with distance-to-WL-anchor
-        in target ordering (0 = nearest-to-current).
-    Returns (pos, accepts, best_score).
-    """
+    """Move hot hard macros to colder legal spots."""
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     trace = get_candidate_trace()
     filter_hard_relocation = is_filter_enabled("hard_relocation")
     calibrate_hard_relocation = is_filter_calibration_enabled("hard_relocation")
     trace_field = "combined" if use_combined else ("density" if use_density else "congestion")
     if use_combined:
-        # cong and density each normalized to [0,1], geometric-meaned: a cell
-        # ranks hot only if both terms are high.
+        # A cell is hot only when both fields are high.
         cong_field = _congestion_field(plc, nr, nc)
         dens_field = _density_field(incremental_scorer, nr, nc)
         if cong_field is None or dens_field is None:
@@ -2018,7 +1964,7 @@ def _relocation_moves(
     cell_w, cell_h = cw / nc, ch / nr
     field_max = max(float(cell_cong.max()), 1e-12)
 
-    # Per-macro local congestion → pick the hottest movable macros to relocate.
+    # Pick the hottest movable macros.
     ci_all = np.clip((pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri_all = np.clip((pos[:n, 1] / cell_h).astype(np.int64), 0, nr - 1)
     local_cong = cell_cong[ri_all, ci_all]
@@ -2027,8 +1973,7 @@ def _relocation_moves(
         return pos, 0, initial_score
     hot = mov_idx[np.argsort(-local_cong[mov_idx])][:top_hot]
 
-    # Target pool = low-field cell centers. A percentile threshold (not the
-    # globally-coldest N) keeps medium-cold cells near each hot macro in play.
+    # Use low-field cells as possible targets.
     flat = cell_cong.ravel()
     _thr = np.percentile(flat, 55)
     pool = np.where(flat < _thr)[0]
@@ -2043,10 +1988,7 @@ def _relocation_moves(
     sep_x_mat, sep_y_mat = separation_matrices(sizes)
     EPS = 0.05
 
-    # Experimental cross-macro path: score the whole frozen-base proposal pool,
-    # then serially re-verify/commit the best proposals against current state.
-    # Keep tracing/ML-filter runs on the legacy path for now so diagnostics keep
-    # their existing per-group semantics.
+    # Optional path ranks all proposals before exact checking.
     if propose_all and trace is None and not filter_hard_relocation and not calibrate_hard_relocation:
         return _relocation_moves_propose_all(
             pos=pos,
@@ -2085,8 +2027,7 @@ def _relocation_moves(
             break
         if not movable[i]:
             continue
-        # Only consider targets at lower congestion than the macro's current cell
-        # (relief), nearest-first among those, capped at n_targets.
+        # Try colder targets first, capped per macro.
         cand = np.where(tgt_cong < local_cong[i] - 1e-9)[0]
         if cand.size == 0:
             continue
@@ -2101,8 +2042,7 @@ def _relocation_moves(
         syi = sep_y_mat[i, mask]
         ox = pos[mask, 0]
         oy = pos[mask, 1]
-        # Prep i once (subtract its routing+density), trial each candidate, then
-        # commit the winner or revert. Saves a routing-apply per trial (~30%/move).
+        # Remove the macro once, then try several target cells.
         prep = incremental_scorer._prepare_move(i)
         best_i_xy = None
         state_score = best_score
@@ -2115,12 +2055,12 @@ def _relocation_moves(
         try:
             for candidate_rank, t in enumerate(cand):
                 nx, ny = float(tgt_x[t]), float(tgt_y[t])
-                # Strict bounds: the evaluator has zero overhang tolerance.
+                # Keep the whole macro inside the canvas.
                 if (nx - hw[i] < 0 or nx + hw[i] > cw or
                         ny - hh[i] < 0 or ny + hh[i] > ch):
                     rejected_bounds += 1
                     continue
-                # Overlap vs other HARD macros (vectorized).
+                # Hard macros cannot overlap.
                 if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
                     rejected_overlap += 1
                     continue
@@ -2244,7 +2184,7 @@ def _relocation_moves(
                     skipped_by_ml=max(0, len(legal_candidates) - scored),
                 )
         except Exception:
-            # Defensive: restore committed state if anything blew up mid-trial.
+            # Restore committed state if a trial failed.
             incremental_scorer._revert_prep(prep)
             raise
     return pos, accepts, best_score
@@ -2270,31 +2210,11 @@ def _soft_relocation_moves(
     wl_blend: float = 0.0,
     wl_prefilter: float = 1e-4,
 ) -> "tuple[np.ndarray, int, float]":
-    """Congestion-directed SOFT-macro relocation.
-
-    Relocates the hottest movable soft clusters into low-field cells, accept-on-
-    true-proxy via the soft prep/trial path. Softs may overlap, so no conflict
-    check - just a half-size clip to keep them in bounds.
-
-    use_density: occupancy field (True) vs max(H,V) congestion (False). Softs are
-        the bulk of density and may overlap, so a density pass finds moves the
-        cong pass can't.
-    net_centroid / wl_blend: blend toward the WL anchor in target ordering
-        (0 = nearest-to-current).
-    `soft_pos` is [num_soft, 2] canvas coords. Returns (soft_pos, accepts, best_score).
-    """
+    """Move hot soft macros to colder cells."""
     num_soft = incremental_scorer.num_soft
     if num_soft == 0:
         return soft_pos, 0, initial_score
-    # WL-delta prefilter for soft relocation (skips the full _trial_at_soft when
-    # the cheap WL delta alone is too large for cong/density to recover). 1e-4
-    # validated on ibm13/ibm15: skips ~37% of trials, no regression (better+faster
-    # on ibm15) — soft relocation commits best-per-group, so skipping non-best
-    # improving candidates is free. Env override SOFT_RELOC_WL_PREFILTER.
-    # INVARIANT (S11): this sequential path is the validated default (--all 1.1423).
-    # A future propose-all / GPU-batch soft path must reproduce this prefilter's
-    # selection effect or re-validate the headline — do not silently bypass it.
-    # See ISSUES.md S11 + ml_notes/04 constraint 6.
+    # Skip full scoring when wirelength alone is already too costly.
     _env_wl = os.environ.get("SOFT_RELOC_WL_PREFILTER")
     if _env_wl not in (None, ""):
         wl_prefilter = float(_env_wl)
@@ -2317,8 +2237,7 @@ def _soft_relocation_moves(
     ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
     local_cong = cell_field[ri, ci]
-    # Only relocate MOVABLE softs - fixed macros must stay put (contract). The
-    # IBM benchmarks have 0 fixed softs (no-op here), but NG45/other inputs may.
+    # Fixed soft macros must stay put.
     order = np.argsort(-local_cong)
     if soft_movable is not None:
         sm = np.asarray(soft_movable, dtype=bool)
@@ -2326,8 +2245,7 @@ def _soft_relocation_moves(
     hot = order[:top_hot]
 
     flat = cell_field.ravel()
-    # Target pool = low-field cell centers (percentile threshold, not globally-
-    # coldest N, so medium-cold cells near each hot soft stay in play).
+    # Use low-field cells as possible targets.
     _thr = np.percentile(flat, 55)
     pool = np.where(flat < _thr)[0]
     if pool.size < max(n_targets, 64):
@@ -2345,13 +2263,13 @@ def _soft_relocation_moves(
         cand = np.where(tgt_cong < local_cong[k] - 1e-9)[0]
         if cand.size == 0:
             continue
-        # Order targets by distance, optionally blended toward the WL anchor.
+        # Order targets by distance and optional wirelength anchor.
         d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[k, 0]) ** 2 + (tgt_y[cand] - net_centroid[k, 1]) ** 2
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
         cand = cand[np.argsort(d2)][:n_targets]
-        # Prep k once, trial each candidate, commit-or-revert (see _relocation_moves).
+        # Remove the soft macro once, then try several targets.
         prep = incremental_scorer._prepare_move_soft(k)
         best_k_xy = None
         state_score = best_score
@@ -2361,8 +2279,7 @@ def _soft_relocation_moves(
             for candidate_rank, t in enumerate(cand):
                 nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
                 ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
-                # WL-delta prefilter: skip the full trial when WL alone rules it
-                # out. wl_d also recorded as a trace feature (computed once here).
+                # Cheaply skip targets with too much wirelength damage.
                 wl_d = 0.0
                 if wl_prefilter > 0.0 or trace is not None:
                     wl_d = incremental_scorer.wl_delta_move_soft(k, (nx, ny))

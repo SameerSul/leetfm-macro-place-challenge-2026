@@ -42,12 +42,7 @@ else:
     _GPU_BACKEND = "cpu"
     _GPU_DEVICE_NAME = "CPU"
 
-# Use numba for routing hot loops when available; otherwise use numpy fallbacks.
-# numba is REQUIRED for full speed — it JITs the routing-apply (~half the runtime).
-# Without it the placer still runs (numpy fallbacks) but ~25% slower: --all goes
-# from ~43 min to ~58 min (near the 1 h cap) and the deadline-bound benchmarks
-# lose rounds (avg 1.1380 -> 1.1403). numba is in v2/requirements.txt but NOT
-# pyproject.toml, so `uv sync` alone does not install it — install requirements.txt.
+# Use numba for routing hot loops when available; numpy fallbacks still work.
 try:
     from numba import njit as _numba_njit
     HAS_NUMBA = True
@@ -55,7 +50,7 @@ except ImportError:
     import warnings as _warnings
     _warnings.warn(
         "numba not installed — routing-apply runs the slow numpy fallback "
-        "(~25% slower, --all ~58min near the 1h cap). Install "
+        "and may miss deadline-bound search rounds. Install "
         "submissions/varrahan/v2/requirements.txt for the JIT path.",
         stacklevel=2,
     )

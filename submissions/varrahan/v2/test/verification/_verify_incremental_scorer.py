@@ -64,7 +64,7 @@ def run_one(bench_name: str, n_trials: int = 12, n_commits: int = 4) -> bool:
     wl_delta = abs(scorer_wl_normalized - plc_wl)
     print(f"  scorer wl (normalized): {scorer_wl_normalized:.6f}  vs plc.get_cost(): {plc_wl:.6f}  Δ={wl_delta:.2e}")
     if wl_delta > 1e-6:
-        print(f"  FAIL: total_wl mismatch")
+        print("  FAIL: total_wl mismatch")
         return False
 
     rng = np.random.RandomState(7)

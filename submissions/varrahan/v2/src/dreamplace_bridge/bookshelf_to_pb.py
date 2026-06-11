@@ -1,24 +1,4 @@
-"""Bookshelf → TILOS positions back-converter.
-
-Reads DREAMPlace's output `.gp.pl` (the global-placement result) plus the
-`.nodes` and `.scale` files we generated alongside the input, and returns a
-[num_hard_macros, 2] numpy array of CENTER coordinates in TILOS microns,
-indexed identically to `plc.hard_macro_indices`.
-
-The forward converter (`pb_to_bookshelf.py`) sanitizes TILOS macro names
-into Bookshelf-legal tokens and writes a 5-file Bookshelf bundle with all
-positions and sizes scaled up by an integer factor (default 1000) so they
-fit Bookshelf's integer-only `.nodes`/`.pl`/`.scl` requirement. This module
-inverts both transforms:
-
-    bookshelf_x_ll * (size / 2) → micron x_center
-    micron_x = bookshelf_x_center / scale
-
-Soft macros and ports are NOT returned - they're either fixed in the
-forward conversion (default) or out of scope for the active placer's
-hard-macro-only restart slot. The caller can layer soft macros from
-`benchmark.macro_positions[n:]` if it wants a complete `[num_macros, 2]`.
-"""
+"""Read DREAMPlace Bookshelf output back into TILOS coordinates."""
 
 from __future__ import annotations
 
@@ -50,7 +30,7 @@ class _NodeSize:
 
 
 def _read_node_sizes(nodes_file: Path) -> Dict[str, _NodeSize]:
-    """Parse our generated .nodes file: lines look like '\\tname\\tWIDTH\\tHEIGHT[\\tterminal]'."""
+    """Parse node sizes from our generated .nodes file."""
     sizes: Dict[str, _NodeSize] = {}
     with nodes_file.open() as f:
         for raw in f:
@@ -102,32 +82,7 @@ def read_dreamplace_positions(
     design: str,
     output_pl: Optional[str] = None,
 ) -> np.ndarray:
-    """Read DREAMPlace's output .gp.pl and return TILOS hard macro positions.
-
-    Parameters
-    ----------
-    plc : PlacementCost
-        The TILOS-parsed benchmark. Used to map names back to indices.
-    bookshelf_dir : str
-        Directory that holds the .nodes/.scale files (the FORWARD conversion
-        output dir we created earlier).
-    design : str
-        Design name prefix (e.g. "ibm04"). Files looked up:
-          {bookshelf_dir}/{design}.nodes
-          {bookshelf_dir}/{design}.scale
-    output_pl : Optional[str]
-        Path to DREAMPlace's output .gp.pl. If None, defaults to
-        {bookshelf_dir}/results/{design}/{design}.gp.pl (DREAMPlace's standard
-        output location given result_dir={bookshelf_dir}/results).
-
-    Returns
-    -------
-    pos : np.ndarray, shape [num_hard_macros, 2], dtype float64
-        Center coordinates in TILOS microns, indexed identically to
-        `plc.hard_macro_indices`. Macros not found in the .gp.pl file
-        (shouldn't happen if the forward conversion was clean) keep their
-        current `plc.get_node_location()` value.
-    """
+    """Read DREAMPlace .gp.pl and return hard-macro center positions."""
     bookshelf_dir = Path(bookshelf_dir).resolve()
     if output_pl is None:
         output_pl = bookshelf_dir / "results" / design / f"{design}.gp.pl"
@@ -146,10 +101,7 @@ def read_dreamplace_positions(
     sizes = _read_node_sizes(nodes_file)
     pl = _read_pl(output_pl)
 
-    # Build sanitized-name → TILOS hard macro idx map.
-    # Forward converter dedupes on collision with `_1`, `_2` suffixes; if any
-    # of our hard macro names collide we'd see those, but in practice IBM
-    # benchmark names are already Bookshelf-legal and unique.
+    # Build sanitized-name to TILOS hard-macro index map.
     name_to_hard_idx: Dict[str, int] = {}
     for tilos_idx in plc.hard_macro_indices:
         node = plc.modules_w_pins[tilos_idx]
@@ -159,8 +111,7 @@ def read_dreamplace_positions(
     n_hard = len(plc.hard_macro_indices)
     out = np.zeros((n_hard, 2), dtype=np.float64)
 
-    # Order outputs to match `plc.hard_macro_indices` order (the convention
-    # the rest of the placer uses).
+    # Keep the same order as `plc.hard_macro_indices`.
     for out_idx, tilos_idx in enumerate(plc.hard_macro_indices):
         node = plc.modules_w_pins[tilos_idx]
         sanitized = _sanitize(node.get_name())

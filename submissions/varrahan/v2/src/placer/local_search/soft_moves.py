@@ -30,18 +30,7 @@ def _two_opt_soft_swap(
     net_centroid: "np.ndarray | None" = None,
     wl_blend: float = 0.0,
 ) -> "tuple[np.ndarray, int, float]":
-    """Pair-swap two SOFT macros' positions, accept-on-true-proxy.
-
-    The exchange single-soft relocation can't make. Softs may overlap (no legality
-    check; the proxy gate selects). Picks `top_hot` softs by the hotness field and
-    for each tries its `k_neighbors` nearest movable softs plus `n_cold_teleports`
-    coldest (long-range exchanges kNN can't reach). A macro is skipped once swapped.
-
-    use_density: hotness field, occupancy (True) vs max(H,V) congestion (False);
-        running both per round finds moves the other can't.
-    net_centroid / wl_blend: blend toward the WL anchor in the kNN sort (ordering
-        only).
-    """
+    """Swap two soft macros when the proxy improves."""
     num_soft = incremental_scorer.num_soft
     if num_soft < 2:
         return soft_pos, 0, initial_score
@@ -88,9 +77,7 @@ def _two_opt_soft_swap(
         cold_order = np.argsort(movable_local_field)[:n_cold_teleports]
         cold_tele = movable_idx[cold_order]
 
-    # Skip full scoring when the WL delta alone is too large to recover.
-    # 3e-4 calibrated on ibm13 (_calibrate_wl_prefilter.py): rejects ~23% of
-    # score_swap_soft calls, drops only ~0.2% of improving swaps. Tunable via env.
+    # Skip full scoring when the wirelength penalty is already too large.
     _env_wl = os.environ.get("SOFT_2OPT_WL_PREFILTER")
     WL_PREFILTER = float(_env_wl) if _env_wl not in (None, "") else 3e-4
 
@@ -103,8 +90,7 @@ def _two_opt_soft_swap(
             continue
         if deadline is not None and time.monotonic() > deadline:
             break
-        # Spatial kNN: nearest k_neighbors movable softs (skipping k1 itself),
-        # optionally blended toward k1's WL anchor (net_centroid).
+        # Nearby movable softs, optionally biased toward the WL anchor.
         d2 = ((movable_pos[:, 0] - soft_pos[k1, 0]) ** 2 +
               (movable_pos[:, 1] - soft_pos[k1, 1]) ** 2)
         if wl_blend > 0.0 and net_centroid is not None:
@@ -114,7 +100,7 @@ def _two_opt_soft_swap(
         sorted_local = np.argsort(d2)
         nbrs = movable_idx[sorted_local]
         nbrs = nbrs[nbrs != k1][:k_neighbors]
-        # A1c: append the cold-teleport candidates (dedup vs nbrs and exclude k1).
+        # Add long-range cold candidates.
         if cold_tele is not None:
             extra = cold_tele[cold_tele != k1]
             extra = extra[~np.isin(extra, nbrs)]

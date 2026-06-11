@@ -68,8 +68,8 @@ R2/skip-empty) → 1.1993 (+ HXS+R6+WL-prefilter+shared-scorer+numba) →
 1.1272 (S16 DP restored) → **1.1252** (ML hard-relocation filter default).
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
-> open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches
-> are in [`docs/DREAMPLACE_FIXES.md`]. This README is the architectural overview.
+> open issues / closed dead-ends are in [`docs/ISSUES.md`]. This README is the
+> architectural overview.
 
 ## What's being optimized
 
@@ -226,7 +226,7 @@ the same-macro / nearby pattern vs the cache-defeating random-k pattern).
 
 | Direction | Outcome |
 |---|---|
-| **DP1** congestion-aware DREAMPlace (`routability_opt`) | CLOSED — DREAMPlace's RUDY congestion ≠ TILOS proxy; no-op or worse across a 64× capacity sweep. (Required a real bug-fix to even run: NCTUgr-map guard, see DREAMPLACE_FIXES.md.) |
+| **DP1** congestion-aware DREAMPlace (`routability_opt`) | CLOSED — DREAMPlace's RUDY congestion ≠ TILOS proxy; no-op or worse across a 64× capacity sweep. Details are in `docs/ISSUES.md` DP1. |
 | **Phase 7b** post-hoc DP-basin repair | REVERTED — recoverable in a probe but budget-hungry, high-variance, not reproducible at fixed seed. |
 | **S1** basin-hopping 2-opt (cong-grad kick) | DISPROVEN — slicing the budget starves the deadline-bound search; 6/7 worse. |
 | **O3** soft-macro repositioning (bulk/gradient) | CLOSED for bulk methods — R5 discrete soft relocation is what works. |
@@ -317,10 +317,8 @@ submissions/varrahan/v2/
 | `docs/ARCHITECTURE.md` | Design overview + pipeline visualization + algorithm explanations. Start here for the "how it works" tour. |
 | `docs/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
 | `docs/ISSUES.md` | Open issues + closed dead-ends with evidence. |
-| `docs/DREAMPLACE_FIXES.md` | DREAMPlace bridge/source patches for gitignored vendor trees. |
 | `test/verification/` | Bit-exactness checks vs the scalar reference. |
 | `test/diagnostic/` | Profiling + analysis. |
-| `test/dreamplace/` | DREAMPlace bridge tests + DP1 probes. |
 
 ### Recent system changes
 
@@ -433,8 +431,8 @@ cmake .. -DCMAKE_CXX_ABI=1 -DPython_EXECUTABLE=$(which python)
 make -j2 install      # NOT -j$(nproc) — OOM
 sed -i 's/np\.string_/np.bytes_/g' install/dreamplace/PlaceDB.py   # NumPy 2.0
 ```
-Plus the NCTUgr-map guard patch in `docs/DREAMPLACE_FIXES.md` if enabling
-`routability_opt` (otherwise it crashes on Bookshelf inputs).
+The retired routability experiment and vendor-patch notes are summarized in
+`docs/ISSUES.md` DP1; the production bridge keeps only the active seed flow.
 
 ## Commands
 
