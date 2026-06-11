@@ -120,8 +120,18 @@ DREAMPLACE_INSTALL = (
 )
 DREAMPLACE_PLACER = DREAMPLACE_INSTALL / "dreamplace" / "Placer.py"
 
-# Repo's project venv (uv-managed).
-VENV_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
+# Interpreter that launches the DREAMPlace subprocess. Its compiled C++/CUDA
+# extensions are ABI-tagged for the Python they were built against (the build
+# env `dpenv`, currently 3.10). The repo's own uv-managed .venv may be a DIFFERENT
+# Python (3.14 for numba) whose ABI can't load the 3.10 .so files — importing
+# place_io_cpp then fails with ModuleNotFoundError and DREAMPlace produces zero
+# seeds silently. So prefer the build env's interpreter; fall back to the repo
+# .venv only if dpenv is absent (e.g. a machine where DP was built in-place).
+_DP_BUILD_PYTHON = (
+    REPO_ROOT / "submissions" / "varrahan" / "dreamplace_build" / "dpenv" / "bin" / "python"
+)
+_REPO_VENV_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
+VENV_PYTHON = _DP_BUILD_PYTHON if _DP_BUILD_PYTHON.exists() else _REPO_VENV_PYTHON
 
 
 def _default_dreamplace_config(aux_input: str, result_dir: str,

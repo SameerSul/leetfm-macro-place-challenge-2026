@@ -5,18 +5,19 @@ legalization placer with **congestion-gradient global moves**, a **fully-
 incremental proxy scorer**, and **move-based local search** (2-opt swaps +
 congestion-directed relocation) on top.
 
-**Headline (`--all`, 2026-06-07): avg `1.1379`** (17/17 VALID, 0 overlaps, **2117s
-~35min**) — beats the RePlAce target (`1.4578`) by **21.9%** and the #1 leaderboard
-(UT Austin DREAMPlace, `1.4076`) by **0.270 (−19.2%)**, on every single benchmark.
-Trajectory: 1.1782 → 1.1500 → 1.1423 (S11 prefilters) → 1.1403 (S12 wider soft
-pool) → 1.1380 (S13 numba re-enabled) → **1.1379 @2117s** (S14 hand-JIT scoring hot
-paths: ~39% faster than no-numba's 3486s, same score — pure speed).
+**Headline (`--all`, 2026-06-11): avg `1.1252`** (17/17 VALID, 0 overlaps,
+**2337s ~39min**) — beats the RePlAce target (`1.4578`) by **22.8%** and the
+#1 leaderboard (UT Austin DREAMPlace, `1.4076`) by **0.282 (−20.1%)**, on every
+single benchmark. Trajectory: 1.1782 → 1.1500 → 1.1423 (S11 prefilters) →
+1.1403 (S12 wider soft pool) → 1.1380 (S13 numba re-enabled) → 1.1379 (S14
+hand-JIT scoring hot paths, DP-off) → 1.1272 (S16 DREAMPlace ABI fix, DP basins
+restored) → **1.1252** (S10 ML hard-relocation filter enabled by default).
 
 > ⚠ **Requires numba** for full speed — it JITs the routing-apply (~half the
 > runtime). numba is in `requirements.txt` but **not** `pyproject.toml`, so
 > `uv sync` alone won't install it; **install `requirements.txt`**. Without numba
-> the placer still runs (numpy fallback) but ~25% slower (~58min, near the 1h cap)
-> and scores 1.1403. See `docs/ISSUES.md` S13.
+> the placer still runs (numpy fallback) but materially slower and gives up
+> deadline-bound refinement. See `docs/ISSUES.md` S13.
 Driven by a **family of dual-field soft + hard moves** (cong-field +
 density-field for every move type, plus HXS hard ⇄ soft cross-swaps), a
 bit-exact incremental scoring core, a parallelized pipeline, an **adaptive
@@ -24,7 +25,11 @@ round/pass scheduler** that re-iterates whenever a pass keeps finding
 moves and bails when it saturates, plus a **persistent shared scorer +
 numba-JIT'd routing apply** that frees ~15-25s/benchmark of compute —
 which the R2 loop spends on additional productive rounds AND fixes the
-ibm18 starvation that previously cost +0.28 on that single benchmark.
+ibm18 starvation that previously cost +0.28 on that single benchmark. The current
+default also enables the shipped XGBoost hard-relocation ranker when the model
+artifact and `xgboost` are available and no `ML_*` env var is preset; it widens the
+hard-relocation pool to 32 and exact-scores the model's top 16, preserving the
+same strict true-proxy accept gate.
 The dominant algorithmic levers:
 (a) **single-soft relocation** R3 (cong) + R5 (density) — 1.4216 → 1.2799,
 (b) **A1 soft-soft 2-opt** + A1b cong-field + A1c cold-teleport — 1.2737
@@ -48,7 +53,10 @@ boost**, (vi) **S1 prep/trial/commit/revert + S3 bincount strip-batch**
 (vii) **A3 net-centroid candidate ordering** for soft passes,
 (viii) **H5 hard density relocation** (the R5-for-hards symmetry),
 (ix) **Phase 9 + DREAMPlace ×3 parallelization** plus drafted multi-seed
-2-opt subprocess parallelization (#3v2 env-gated). The entire chain is
+2-opt subprocess parallelization (#3v2 env-gated), (x) **DREAMPlace ABI fix**
+so the three DP basins actually run under the Python 3.10 DP build env, and
+(xi) **default ML hard-relocation filtering** for the wide-32 candidate pool.
+The entire chain is
 **bit-exact verified** (every scoring path — including the new HXS
 score_swap_hard_soft and the numba-JIT strip-batch — has its own
 verifier; Δ ≤ 4.4e-16).
@@ -56,7 +64,8 @@ Stacked progression: 1.4854 (v12) → 1.2799 (R5) → 1.2767 (inc cong) →
 1.2755 (+ #1+#2+floor-res+A+C) → 1.2737 (+ S1+S3) → 1.2433 (+ A1+A3) →
 1.2195 (+ H5+A1b+A1c+A1×2+Phase9-parallel) → 1.2092 (+ A4+A5+adaptive
 R2/skip-empty) → 1.1993 (+ HXS+R6+WL-prefilter+shared-scorer+numba) →
-**1.1782** (+ HS3+3pin-JIT, 11/17 wins).
+1.1782 (+ HS3+3pin-JIT, 11/17 wins) → 1.1379 (S14 hand-JIT, DP-off) →
+1.1272 (S16 DP restored) → **1.1252** (ML hard-relocation filter default).
 
 > Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
 > open issues / closed dead-ends are in [`docs/ISSUES.md`]; DREAMPlace patches
@@ -87,11 +96,16 @@ congestion optimization**, and WL-only optimization reliably makes proxy *worse*
 9    random-order        legalize with randomized tie-break order
 ─    multi-seed 2-opt    proxy-driven 2-opt (k=20) from best_pl + each DP basin,
                           select by true _exact_proxy (prune window 0.02)
-─    R2 interleave       alternate {relocation pass, 2-opt cleanup} until neither
-                          improves (≤6 rounds) — see "Relocation" below
+─    R2 interleave       alternate relocation/swap/cycle passes until neither
+                          improves (≤20 budget-gated rounds) — see "Relocation" below
 ```
 All candidates legalized then scored via exact `PlacementCost` proxy; lowest
-wins. Adaptive 200s + 60s-overrun per-benchmark budget; thresholds admit all 17.
+wins. The floor-reservation allocator uses a 150s first-benchmark soft budget,
+a 110s per-benchmark floor, and an 83s directed-phase overrun reserve under the
+3300s internal `--all` place-time cap; thresholds admit all 17.
+Every return path goes through a final movable-macro in-bounds clamp; hard macros
+are already legalized, so this safety net primarily catches stray soft macro
+coordinates from input or DREAMPlace output.
 
 ## The three things that make v2 ≫ v1 (1.4854 → 1.2755)
 
@@ -124,7 +138,8 @@ into the vacated hot spot). Relocation adds exactly that missing move:
   true-proxy. Legality = in-bounds + no overlap with other hard macros (softs may
   overlap). `--all 1.4422 → 1.4326`, all 17 improved.
 - **R2** — *interleave* relocation ⇄ 2-opt: each relocation opens new swaps and
-  vice versa, compounding over ≤6 rounds. `1.4326 → 1.4243`.
+  vice versa. The early implementation used ≤6 rounds (`1.4326 → 1.4243`);
+  the current loop is budget-gated up to 20 rounds and stops on saturation.
 - **R2b** — widen the per-round candidate set (`top_hot` 24→48, `n_targets`
   12→16) so large benchmarks relieve >3% of their hot macros/round.
   `1.4243 → 1.4216`, and faster.
@@ -271,7 +286,10 @@ submissions/varrahan/v2/
         │   └── congestion_gradient.py
         └── ml/
             ├── data_collection.py
-            └── dataset.py
+            ├── dataset.py
+            ├── modeling.py
+            ├── shadow.py
+            └── train.py
 ```
 
 ### Module responsibilities
@@ -291,7 +309,7 @@ submissions/varrahan/v2/
 | `src/placer/legalize/` | Minimum-displacement legalization and hard-macro swap legality helpers. |
 | `src/placer/local_search/` | 2-opt, relocation, soft moves, hard-soft moves, hot/cold cell fields (`fields.py`), and multiprocessing workers. |
 | `src/placer/perturb/congestion_gradient.py` | Congestion-gradient perturbation used by global move phases. |
-| `src/placer/ml/` | Opt-in training-data collection for a learned candidate ranker — `data_collection.py` (`CandidateTrace`, the `TraceFields` feature helper, `net_degree_features`; active only when `ML_TRACE_PATH` is set, otherwise inert) + `dataset.py` (trace-JSONL loaders + `add_group_relevance` for LambdaMART labels). See "ML candidate-ranker data collection" below. |
+| `src/placer/ml/` | Training-data collection and inference for the learned candidate ranker — `data_collection.py` (`CandidateTrace`, `TraceFields`, `net_degree_features`; active only when `ML_TRACE_PATH` is set), `dataset.py` (trace-JSONL loaders + `add_group_relevance`), `modeling.py` / `train.py` (offline model tooling), and `shadow.py` (shadow diagnostics + production filtering fallback guards). See "ML candidate-ranker data collection" below. |
 | `scripts/collect_ml_data.sh` | Runs the placer with `ML_TRACE_PATH` set across a seed sweep (`--all` or `--ng45`) to produce the training traces in `ml_data/`. |
 | `src/dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async DREAMPlace subprocess launcher. |
 | `src/eda_io/` | Plug-and-play EDA I/O layer: parses LEF/DEF/Verilog/SDC/Liberty into a neutral `Design`, converts to ICCAD04 pb+plc (placer + exact scorer unchanged), writes updated DEF / ICC2-Innovus Tcl / QoR reports. See `src/eda_io/README.md`. |
@@ -306,6 +324,16 @@ submissions/varrahan/v2/
 
 ### Recent system changes
 
+- **ML hard-relocation filter connected as default (2026-06-11).**
+  `src/main.py` now enables the validated S10 config B (wide-32 pool, ranker
+  keeps 16) whenever no `ML_*` env var is set and the shipped model +
+  `xgboost` are available. The pipeline logs
+  `R2 hard relocation ML filter on (pool=32, top_k=16)` when active.
+  Verified: `test/verification/_verify_ml_filter_wiring.py` + ibm01
+  end-to-end (proxy 0.9146, VALID, 71s, filter line present) + same-day
+  `--all` re-baseline: **avg 1.1252, 17/17 VALID, 0 overlaps, 2337s** (new
+  best; was 1.1272). Multi-seed repeat still wanted before crediting the
+  −0.0020 as more than single-rep variance.
 - **ML candidate-ranker data collection (2026-06-04).** Added
   `scripts/collect_ml_data.sh` + a default-preserving `V2_SEED` knob in
   `src/main.py` to capture the training traces (see the section below). No
@@ -336,14 +364,18 @@ submissions/varrahan/v2/
 
 ## ML candidate-ranker data collection
 
-Status: **data collected; the ranker is not yet wired into the placer.** The R2
-local search still scores every candidate with the exact gate. The plan is
-per-operator XGBoost rankers (hard relocation, soft relocation, hard 2-opt)
-that pick which
-candidates to exact-score, with the existing accept-on-true-proxy gate kept as
-the final arbiter (so the search stays strictly non-regressing). Full design +
-validation plan: `docs/ISSUES.md` S10; conceptual notes (why it can improve, what
-it selects): `docs/ml_notes/`.
+Status: **the hard-relocation ranker is wired into the placer by default
+(2026-06-11).** `src/main.py` enables the S10 equal-budget config B when no
+`ML_*` env var is set: the R2 hard-relocation pool widens to 32 candidates and
+the shipped XGBoost ranker (`ml_data/models/clean-wide32-holdout-ibm13-001`)
+picks the 16 to exact-score. The accept-on-true-proxy gate is unchanged, so the
+search stays strictly non-regressing. Setting any `ML_*` env var (e.g.
+`ML_FILTER_OPERATORS=""`) skips the defaults entirely, keeping trace
+collection, shadow diagnostics, and sweeps at their exact prior semantics; a
+missing model file or missing `xgboost` also falls back to the pure-heuristic
+narrow-16 path. Wiring check:
+`test/verification/_verify_ml_filter_wiring.py`. Full design + validation:
+`docs/ISSUES.md` S10; conceptual notes: `docs/ml_notes/`.
 
 How the data is produced:
 
@@ -408,7 +440,7 @@ Plus the NCTUgr-map guard patch in `docs/DREAMPLACE_FIXES.md` if enabling
 
 ```bash
 uv run evaluate submissions/varrahan/v2/src/main.py -b ibm04      # single benchmark
-uv run evaluate submissions/varrahan/v2/src/main.py --all         # headline (~25 min)
+uv run evaluate submissions/varrahan/v2/src/main.py --all         # headline (~39 min)
 uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/src/main.py
 uv run python submissions/varrahan/v2/test/verification/_verify_score_move.py
 ```

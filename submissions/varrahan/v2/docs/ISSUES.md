@@ -1,4 +1,4 @@
-# Open issues — v2 placer (last revised 2026-05-25)
+# Open issues — v2 placer (last revised 2026-06-11)
 
 This is a **clean rewrite**. All issues that have been resolved or
 rejected have been removed; their findings are captured in commit
@@ -13,14 +13,14 @@ started.
 
 | Metric | Value |
 |---|---|
-| Best `--all` avg | **1.1379** (2026-06-07 — S14: + hand-JIT scoring hot paths; 17/17 VALID, 0 overlaps, **2117s ~35min**). S13 numba 2563s/1.1380; no-numba fallback 1.1403 @3486s. |
-| Prior `--all` avg | 1.1403 (S12 soft n_targets 32) → 1.1423 (S11 prefilters) → 1.1496 (2-opt cuts) → 1.1500 (refactor) |
+| Best `--all` avg | **1.1252** (2026-06-11 — S10 ML hard-relocation ranker connected as production default; 17/17 VALID, 0 overlaps, **2337s ~39min**). |
+| Prior `--all` avg | 1.1272 (S16, DP basins restored) → 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−17.9% (beat by 0.262 — beats on every benchmark)** |
+| **Gap to RePlAce** | **−22.8% (beat by 0.333 — beats on every benchmark)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−15.0% (BEATS by 0.211)** |
+| **Gap to leaderboard** | **−20.1% (BEATS by 0.282)** |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | 4429s wall (74 min, no host-suspend drift), harness monotonic well under the 3600s hard cap |
+| `--all` wall-clock | 2337s (~39 min) in the 2026-06-11 re-baseline |
 
 All 17 IBM benchmarks improved vs v12 baseline. The **relocation family** is the
 dominant lever (R1 −0.0096, R2 −0.0083, R2b −0.0027, R3 −0.0452, **R5 −0.0965**
@@ -49,6 +49,44 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 ---
 
 ## Open issues
+
+### S16. Silent DREAMPlace ABI break — DP was dead since S13 (SHIPPED 2026-06-10 — 1.1379 → 1.1272)
+
+The DP bridge (`src/dreamplace_bridge/run_bridge.py`) launched DREAMPlace with
+`REPO_ROOT/.venv/bin/python`. The repo `.venv` was upgraded to **Python 3.14** for
+numba (S13), but every DP compiled extension under `dreamplace_build/install` is
+ABI-tagged **cpython-310** (built against `dreamplace_build/dpenv`, Python 3.10). So
+`import dreamplace.ops.place_io.place_io_cpp` died with `ModuleNotFoundError` ~4s
+after launch — and the harvest masked it as a benign **"not ready (elapsed=4.4s);
+killing subprocess"** (the result-wait can't tell "still computing" from "already
+exited non-zero"). Net: **DREAMPlace produced ZERO seed basins on every benchmark
+from S13 onward**; the multi-seed 2-opt ran single-basin, and **the 1.1379 @2117s
+(S14) headline was a DP-OFF run.**
+
+**Fix (one spot, graceful):** `VENV_PYTHON` now prefers the DP build env's
+interpreter (`dreamplace_build/dpenv/bin/python`, 3.10), falling back to `.venv`
+only when dpenv is absent (e.g. a machine where DP was built in-place). The DP
+subprocess already sets its own `PYTHONPATH`, so the parent stays on 3.14 and only
+the DP child uses 3.10 — the documented "isolated envs" design.
+
+**Result:** `--all` **1.1379 → 1.1272 (−0.0107)**, all 17 VALID / 0 overlaps,
+**51/51 DP launches ready / 0 failures**, DP basins used (not pruned) in the 2-opt
+on all 17. Runtime 2117 → 2645s (the +528s is DP candidate-scoring + DP-basin
+2-opt; well under the 3300s soft cap). Confirms basin diversity is a real lever in
+aggregate — but **only resolves above noise at the 17-benchmark average**: the
+single-benchmark spot-check (ibm12 −0.006, ibm17 +0.004, ibm18 −0.006) read as
+neutral/noise, one even regressing. **Follow-up:** DP basins are still mostly pruned
+or lose the 2-opt selection (DP's raw proxy is congestion-blind, 1.7–3.0 vs the
+cong-grad best ~1.65–1.79); the gain comes from the minority of benchmarks where
+DP's WL/density basin 2-opts below best. More/different DP configs (S15's basin-
+diversity idea) may still have headroom now that DP actually runs.
+
+**LAHC (disproven, reverted 2026-06-10).** Tested Late-Acceptance Hill Climbing on
+the 2-opt-on-winner to break the strict-greedy accept gate. Strictly worse on
+ibm12/17/18 (ibm17 2-opt 1.7299→1.7401 at L=1000, →1.7328 at L=50 — tighter history
+only recovers greedy, never beats it; ~85% accept rate = plateau random-walk). The
+deadline-bound 2-opt converges fast to a strong basin min, leaving no headroom for
+non-monotonic exploration (matches the S1 basin-hopping disproof). Reverted in full.
 
 ### R1. Congestion-directed relocation moves (SHIPPED 2026-05-27 — 1.4422 → 1.4326)
 
@@ -694,7 +732,7 @@ search → regressed), S9 keeps the full pass and only changes candidate choice
 
 ---
 
-### S10. ML candidate ranker — per-operator XGBoost (COMPARED 2026-06-05: filter comparable-or-better at equal budget; not yet shipped as default)
+### S10. ML candidate ranker — per-operator XGBoost (SHIPPED AS DEFAULT 2026-06-11; equal-budget compare 2026-06-05 was comparable-or-better)
 
 **Equal-budget head-to-head (2026-06-05).** Compared the wired `hard_relocation`
 filter against the production interleave at *equal scoring budget*: config A =
@@ -731,9 +769,22 @@ NOT a better ranker. The earlier "filter regresses ibm11" reading was a baseline
 artifact: it had compared the filter against `wide32_nofilter`, which scores all
 32 (more budget than the filter's 16), not against the equal-budget interleave.
 
-**Status:** filter is opt-in (`ML_FILTER_OPERATORS=hard_relocation`); production
-default unchanged. Shipping it as default would need a multi-seed `--all` to
-confirm the net win clears the noise floor across all 17 + NG45.
+**Status (2026-06-11): shipped as production default.** `src/main.py` enables
+config B (`ML_HARD_RELOCATION_N_TARGETS=32`, `ML_FILTER_TOP_K=16`, model
+`clean-wide32-holdout-ibm13-001`) whenever no `ML_*` env var is set and the
+model artifact + `xgboost` are present; otherwise the pure-heuristic narrow-16
+path runs unchanged. Any preset `ML_*` var (including `ML_FILTER_OPERATORS=""`
+as an explicit opt-out) skips the defaults so trace/shadow/sweep workflows keep
+their exact semantics. Wiring verified by
+`test/verification/_verify_ml_filter_wiring.py` and an ibm01 end-to-end run
+(`R2 hard relocation ML filter on (pool=32, top_k=16)` in the log; proxy
+0.9146, VALID, 71s, reproduced twice). First `--all` rep with the default on:
+**avg 1.1252, 17/17 VALID, 0 overlaps, 2337s** — −0.0020 vs the 1.1272
+reference, new best (per-benchmark table in PROGRESS.md 2026-06-11). That
+clears the "no regression" bar for keeping the default; a multi-seed repeat
+(+ NG45) is still wanted before crediting the −0.0020 as real improvement
+rather than single-rep variance (note ibm10 regressed +0.0133 in this rep
+despite being the robust win in the equal-budget compare).
 
 **Recall-vs-width study (2026-06-05) — GNN routing-fill prefilter feasibility.**
 Tested whether a cheap surrogate can triage *wide* candidate pools (the premise of

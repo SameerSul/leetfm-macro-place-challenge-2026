@@ -80,10 +80,20 @@ def _will_legalize(
         sep_x_idx = sep_x_mat[idx]
         sep_y_idx = sep_y_mat[idx]
 
+        # In-place accept requires the macro be BOTH non-conflicting AND in
+        # bounds. A far-OOB seed macro sitting in empty space has no conflict, so
+        # without the bounds gate it was accepted at its illegal position and the
+        # spiral search (which clips to canvas) was never reached — leaving OOB
+        # seed macros uncorrected. Forcing OOB macros into the spiral pulls them
+        # inside; in-bounds macros are unaffected, so the normal output is unchanged.
+        in_bounds = (
+            legal[idx, 0] - hw[idx] >= 0.0 and legal[idx, 0] + hw[idx] <= cw and
+            legal[idx, 1] - hh[idx] >= 0.0 and legal[idx, 1] + hh[idx] <= ch
+        )
         # Current-position conflict check (only over actually-placed macros).
         # When no macros are placed yet, fall through to spiral search to match
         # the prior behavior of always moving the first movable macro by 1 step.
-        if placed.any():
+        if in_bounds and placed.any():
             cdx = np.abs(legal[idx, 0] - legal[placed, 0])
             cdy = np.abs(legal[idx, 1] - legal[placed, 1])
             if not (
@@ -102,7 +112,11 @@ def _will_legalize(
         placed_y = legal[placed, 1]
         sep_xp = sep_x_idx[placed]
         sep_yp = sep_y_idx[placed]
+        # Fallback (used only if all rings fail) clamped in-bounds, so a macro the
+        # spiral can't seat never lands outside the canvas.
         best = legal[idx].copy()
+        best[0] = min(max(float(best[0]), hw_idx), cw - hw_idx)
+        best[1] = min(max(float(best[1]), hh_idx), ch - hh_idx)
 
         for r in range(1, MAX_R):
             ring = _ring_offsets(r)

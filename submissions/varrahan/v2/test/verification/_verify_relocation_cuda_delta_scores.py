@@ -144,6 +144,11 @@ def _check(name: str, tol: float = 5e-4) -> None:
         "density_updates",
         "macro_route_updates",
         "net_route_updates",
+        "hpwl_segments",
+        "hpwl_pins",
+        "hpwl_rows",
+        "grid_dynamic_bytes_per_proposal",
+        "hpwl_dynamic_bytes_per_proposal",
     ):
         if key not in stats:
             raise AssertionError(f"{name}: missing scorer stat {key!r}")
@@ -151,6 +156,15 @@ def _check(name: str, tol: float = 5e-4) -> None:
         raise AssertionError(f"{name}: negative timing stats {stats}")
     if stats["density_updates"] <= 0 or stats["macro_route_updates"] <= 0:
         raise AssertionError(f"{name}: expected nonzero scatter update stats {stats}")
+    if stats["hpwl_segments"] <= 0 or stats["hpwl_pins"] <= 0 or stats["hpwl_rows"] <= 0:
+        raise AssertionError(f"{name}: expected nonzero HPWL workload stats {stats}")
+    grid_only_dynamic = scorer.grid_row * scorer.grid_col * 10 * np.dtype(np.float32).itemsize
+    if stats["dynamic_bytes_per_proposal"] <= grid_only_dynamic:
+        raise AssertionError(f"{name}: expected HPWL-aware dynamic byte estimate {stats}")
+    if stats["grid_dynamic_bytes_per_proposal"] != grid_only_dynamic:
+        raise AssertionError(f"{name}: unexpected grid dynamic byte estimate {stats}")
+    if stats["hpwl_dynamic_bytes_per_proposal"] <= 0:
+        raise AssertionError(f"{name}: expected HPWL dynamic byte component {stats}")
 
     max_delta = 0.0
     for proposal in proposals:
