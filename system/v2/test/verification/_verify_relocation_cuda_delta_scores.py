@@ -6,8 +6,8 @@ builds legal hard-relocation proposals, scores them with the CUDA-capable path,
 and compares those values to exact per-proposal trials.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_relocation_cuda_delta_scores.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_relocation_cuda_delta_scores.py
 """
 
 from __future__ import annotations

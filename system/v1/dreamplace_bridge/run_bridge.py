@@ -99,7 +99,7 @@ def _write_cache(work_dir: Path, key: str, hard: np.ndarray, soft: np.ndarray) -
 
 # Sibling-module imports - work whether this package is loaded as
 # `dreamplace_bridge.run_bridge` (placer-side, after sys.path injection)
-# or as `submissions.varrahan.v1.dreamplace_bridge.run_bridge` (CLI from repo root).
+# or as `system.v1.dreamplace_bridge.run_bridge` (CLI from repo root).
 try:
     from .pb_to_bookshelf import convert
     from .bookshelf_to_pb import read_dreamplace_positions, read_dreamplace_positions_full
@@ -110,7 +110,7 @@ except ImportError:
 
 # Where DREAMPlace lives (set up by Phase 1 build).
 DREAMPLACE_INSTALL = (
-    REPO_ROOT / "submissions" / "varrahan" / "dreamplace_build" / "install"
+    REPO_ROOT / "system" / "dreamplace_build" / "install"
 )
 DREAMPLACE_PLACER = DREAMPLACE_INSTALL / "dreamplace" / "Placer.py"
 

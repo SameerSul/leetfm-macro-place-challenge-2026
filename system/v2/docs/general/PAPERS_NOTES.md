@@ -16,7 +16,7 @@
 | 5 | **IncreMacro** | TCAD 2025 | 🔲 Next | Hill-climbing local search after restarts |
 | 6 | **RUDY Demand Map** | ePlace-MS (TCAD 2015) | 🔲 Next | Fast in-loop congestion estimation |
 | 7 | **Congestion-aware legalization** | UCSD/general | 🔲 Next | Weight displacement by congestion in legalize |
-| 8 | **ChiPFormer** | ICML 2023 | 🔲 Future | `submissions/ml_placer/` (Role B) |
+| 8 | **ChiPFormer** | ICML 2023 | 🔲 Future | `system/ml_placer/` (Role B) |
 | 9 | DREAMPlace | DAC 2019 | 🔲 Future | `scripts/pb_to_bookshelf.py` (Role C) |
 | 10 | MaskPlace | NeurIPS 2022 | 🔲 Future | Foundation for ChiPFormer |
 
@@ -613,7 +613,7 @@ We're NOT implementing the full DT (requires GPU training + dataset collection).
 
 **Planned implementation path (Week 2+):**
 ```
-submissions/ml_placer/
+system/ml_placer/
     gnn_model.py     ← VGAE circuit embeddings (adapt from graph_model.py)
     placer.py        ← MacroPlacer using GNN-predicted perturbation directions
     train.py         ← Train on collected (benchmark, placement, proxy_score) data
@@ -717,7 +717,7 @@ over greedy legalization is unclear for our use case (we're already doing many r
 
 ```bash
 # Quick test on ibm01 (fast, ~30s)
-python -m macro_place.evaluate submissions/sameer_v1/placer.py -b ibm01
+python -m macro_place.evaluate system/v1/placer.py -b ibm01
 
 # Expected output with directed restarts:
 #   Restart 0 (baseline)...          proxy=1.2253
@@ -731,7 +731,7 @@ python -m macro_place.evaluate submissions/sameer_v1/placer.py -b ibm01
 # If directed restarts find better → update baselines above
 
 # Full 17-benchmark run (~30 min):
-python -m macro_place.evaluate submissions/sameer_v1/placer.py --all
+python -m macro_place.evaluate system/v1/placer.py --all
 ```
 
 ---

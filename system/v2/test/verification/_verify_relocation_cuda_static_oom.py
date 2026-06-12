@@ -4,8 +4,8 @@ Batch OOMs can be fixed by reducing the proposal chunk size. Static-cache OOMs
 come from pass-level tensors and should fail fast with a clear message.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_relocation_cuda_static_oom.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_relocation_cuda_static_oom.py
 """
 
 from __future__ import annotations

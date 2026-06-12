@@ -14,8 +14,8 @@ retraining) from "the filter removes useful tail diversity" (a trajectory
 problem, where a single fixed K cannot win every benchmark).
 
 Usage:
-    PYTHONPATH=submissions/varrahan/v2/src \
-    uv run python submissions/varrahan/v2/test/diagnostic/_filter_recall_by_benchmark.py
+    PYTHONPATH=system/v2/src \
+    uv run python system/v2/test/diagnostic/_filter_recall_by_benchmark.py
 """
 
 from __future__ import annotations

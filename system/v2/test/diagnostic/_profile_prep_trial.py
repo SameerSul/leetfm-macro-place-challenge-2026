@@ -3,7 +3,7 @@ the realistic same-macro / nearby-target pattern that the relocation passes
 use. score_move_soft per-call hasn't changed; the prep/trial pattern amortizes
 the subtract-old across n_targets candidates.
 
-    uv run python submissions/varrahan/v2/test/diagnostic/_profile_prep_trial.py
+    uv run python system/v2/test/diagnostic/_profile_prep_trial.py
 """
 import sys
 import time
@@ -15,7 +15,7 @@ import torch
 
 THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
-REPO_ROOT = THIS.parents[5]
+REPO_ROOT = THIS.parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(V2_DIR / "src"))
 

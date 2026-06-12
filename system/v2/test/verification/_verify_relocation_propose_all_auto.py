@@ -1,8 +1,8 @@
 """Verify hard-relocation propose-all env parsing, including CUDA auto mode.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_relocation_propose_all_auto.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_relocation_propose_all_auto.py
 """
 
 from __future__ import annotations

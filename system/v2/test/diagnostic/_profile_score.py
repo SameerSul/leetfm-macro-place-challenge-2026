@@ -4,14 +4,14 @@ import pstats
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[5]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
 import importlib.util
 
 from macro_place.loader import load_benchmark_from_dir
 
-V2 = ROOT / "submissions" / "varrahan" / "v2" / "src" / "main.py"
+V2 = ROOT / "system" / "v2" / "src" / "main.py"
 spec = importlib.util.spec_from_file_location("v2_placer", V2)
 v2 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v2)

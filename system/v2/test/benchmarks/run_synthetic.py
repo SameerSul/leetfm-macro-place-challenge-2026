@@ -11,9 +11,9 @@ Outputs (under this directory):
     results.json             per-benchmark cost breakdown
 
 Usage:
-    uv run python submissions/varrahan/v2/test/benchmarks/run_synthetic.py
+    uv run python system/v2/test/benchmarks/run_synthetic.py
     uv run python .../run_synthetic.py -b syn02_fixed
-    uv run python .../run_synthetic.py --placer submissions/varrahan/v1/placer.py
+    uv run python .../run_synthetic.py --placer system/v1/placer.py
     uv run python .../run_synthetic.py --budget 60 --skip-initial-vis
 """
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import torch
 
-ROOT = Path(__file__).resolve().parents[5]
+ROOT = Path(__file__).resolve().parents[4]
 OUT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -64,7 +64,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--placer",
-        default=str(ROOT / "submissions/varrahan/v2/src/main.py"),
+        default=str(ROOT / "system/v2/src/main.py"),
         help="placer .py file (default: v2 main.py)",
     )
     parser.add_argument("-b", "--benchmark", help="run a single benchmark by name")

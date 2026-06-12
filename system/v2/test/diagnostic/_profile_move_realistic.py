@@ -5,7 +5,7 @@ struct cache HITS and the touched bbox stays small); the random-k profile picks 
 random macro + a random far target each call (cache MISS + wide bbox), which is
 the worst case for both optimizations.
 
-    uv run python submissions/varrahan/v2/test/diagnostic/_profile_move_realistic.py ibm10 ibm15
+    uv run python system/v2/test/diagnostic/_profile_move_realistic.py ibm10 ibm15
 """
 import sys
 import time
@@ -17,7 +17,7 @@ import torch
 
 THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
-REPO_ROOT = THIS.parents[5]
+REPO_ROOT = THIS.parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(V2_DIR / "src"))
 

@@ -7,7 +7,7 @@ Tests:
   4. Many sequential commits don't drift from the full recompute.
 
 Usage:
-  uv run python submissions/varrahan/v2/test/verification/_verify_incremental_scorer.py
+  uv run python system/v2/test/verification/_verify_incremental_scorer.py
 """
 
 import sys

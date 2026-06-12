@@ -4,7 +4,7 @@ _compute_cong_cost (full re-smooth + top-5% partition over all cells) and
 _compute_density_cost (top-10% partition). This breaks down where the ms go on a
 large-grid benchmark so we optimize the right thing.
 
-    uv run python submissions/varrahan/v2/test/diagnostic/_profile_move.py ibm15 ibm17
+    uv run python system/v2/test/diagnostic/_profile_move.py ibm15 ibm17
 """
 import sys
 import time
@@ -16,7 +16,7 @@ import torch
 
 THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
-REPO_ROOT = THIS.parents[5]
+REPO_ROOT = THIS.parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(V2_DIR / "src"))
 

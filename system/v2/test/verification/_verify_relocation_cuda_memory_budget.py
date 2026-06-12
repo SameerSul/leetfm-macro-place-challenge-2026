@@ -4,8 +4,8 @@ This monkeypatches the relocation module to exercise CUDA chunk selection
 without requiring a visible GPU.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_relocation_cuda_memory_budget.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_relocation_cuda_memory_budget.py
 """
 
 from __future__ import annotations

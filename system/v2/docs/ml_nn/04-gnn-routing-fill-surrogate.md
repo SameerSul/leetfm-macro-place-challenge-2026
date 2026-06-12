@@ -10,7 +10,7 @@ decision gates that stop the work early if the premise fails.
 Read [`01-candidate-ranker-design.md`](01-candidate-ranker-design.md) and
 [`02-why-it-can-improve.md`](02-why-it-can-improve.md) first — this builds on the
 same "exact gate stays the oracle" principle. The bottleneck numbers come from
-`docs/ARCHITECTURE.md` §5.3 (vectorized routing fill) and §6.2 (S2, the GPU-batch
+`../general/ARCHITECTURE.md` §5.3 (vectorized routing fill) and §6.2 (S2, the GPU-batch
 attempt that lost).
 
 ## 1. The premise, in one paragraph
@@ -39,10 +39,10 @@ These are non-negotiable; any step that violates one is wrong.
    tools, `< 1 h` for all 17 IBM, zero hard-macro overlaps.
 4. **Do not modify the tracer's hot path to change scores.** Enabling tracing
    already perturbs timing-gated control flow (see the ml-trace gotcha in
-   `docs/ISSUES.md`). Add fields behind the existing `if trace is not None` guards
+   `../general/ISSUES.md`). Add fields behind the existing `if trace is not None` guards
    only; verify any change with the arithmetic-equivalence test, not end-to-end
    score identity.
-5. **Write scope:** everything lives under `submissions/varrahan/v2/**`
+5. **Write scope:** everything lives under `system/v2/**`
    (`src/placer/ml/`, `src/placer/local_search/`, `test/diagnostic/`, `ml_data/`).
 6. **Do not overshadow the shipped S11 scoring-cost cuts.** The validated default
    (`--all` **1.1423**) is the *sequential* prep→trial path carrying the WL-delta
@@ -97,7 +97,7 @@ expensive parts.
    deployed 32-wide model) so recall isn't optimistic — reuse `placer.ml.train`
    with `--test-benchmarks`. This bounds what an XGBoost surrogate can do; a GNN
    must beat it to be worth the cost.
-3. Record the curve + the legal-width distribution in `docs/ISSUES.md` S10.
+3. Record the curve + the legal-width distribution in `../general/ISSUES.md` S10.
 
 **Exit criteria:** a recall@K(width) table + the legal-width distribution. Decides
 Gate A and Gate B.

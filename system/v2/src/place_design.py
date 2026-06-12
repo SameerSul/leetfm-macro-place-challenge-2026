@@ -6,7 +6,7 @@ combination of updated DEF, Tcl placement script, and QoR report.
 
 Usage:
     # canonical flow: LEF + DEF in, everything out
-    uv run python submissions/varrahan/v2/src/place_design.py \
+    uv run python system/v2/src/place_design.py \
         --lef tech.lef --lef macros.lef --def floorplan.def \
         --out-def placed.def --out-tcl place_macros.tcl --report qor.rpt
 

@@ -5,8 +5,8 @@ If t_score < 100s, EXACT_GRID_CELL_LIMIT can be raised to 2200 so ibm15
 (=100s) in placer.py acts as a runtime safety net even if our estimate is wrong.
 
 Run:
-    uv run python submissions/varrahan/v1/_ibm15_timing_test.py
-    uv run python submissions/varrahan/v1/_ibm15_timing_test.py ibm18  # for comparison
+    uv run python system/v1/_ibm15_timing_test.py
+    uv run python system/v1/_ibm15_timing_test.py ibm18  # for comparison
 """
 
 from __future__ import annotations
@@ -19,21 +19,21 @@ import numpy as np
 import torch
 
 HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(REPO_ROOT))
 
 from macro_place.loader import load_benchmark_from_dir  # noqa: E402
 from macro_place.objective import compute_proxy_cost  # noqa: E402
 
-SAMEER_DIR = HERE.parent.parent / "sameer_v1"
-sys.path.insert(0, str(SAMEER_DIR))
 from placer import _will_legalize  # type: ignore  # noqa: E402
 
-ICCAD_DIR = "/home/varrahan/Development/hackathon/external/MacroPlacement/Testcases/ICCAD04"
+ICCAD_DIR = REPO_ROOT / "external" / "MacroPlacement" / "Testcases" / "ICCAD04"
 
 
 def run(name: str):
     print(f"\n=== {name} ===")
-    bm, plc = load_benchmark_from_dir(f"{ICCAD_DIR}/{name}")
+    bm, plc = load_benchmark_from_dir(str(ICCAD_DIR / name))
     n = bm.num_hard_macros
     cw, ch = bm.canvas_width, bm.canvas_height
     grid_cells = bm.grid_rows * bm.grid_cols

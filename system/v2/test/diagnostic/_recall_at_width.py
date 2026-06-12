@@ -16,9 +16,9 @@ holdout for clean-wide32-holdout-ibm13; other benchmarks were in its train set, 
 their recall is optimistic — read ibm13 as the generalization signal.
 
 Usage:
-    PYTHONPATH=submissions/varrahan/v2/src \
-    uv run python submissions/varrahan/v2/test/diagnostic/_recall_at_width.py \
-      submissions/varrahan/v2/ml_data/recall_study/*.jsonl.gz
+    PYTHONPATH=system/v2/src \
+    uv run python system/v2/test/diagnostic/_recall_at_width.py \
+      system/v2/ml_data/recall_study/*.jsonl.gz
 """
 
 from __future__ import annotations

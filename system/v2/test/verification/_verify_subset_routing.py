@@ -8,7 +8,7 @@ Test 2: subset of a few nets at weight=+1 then -1 should net to zero
         modification of the flat arrays (subtract-then-add roundtrip).
 
 Usage:
-  uv run python submissions/varrahan/v2/test/verification/_verify_subset_routing.py
+  uv run python system/v2/test/verification/_verify_subset_routing.py
 """
 import sys
 from pathlib import Path
@@ -17,7 +17,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve()
 V2_DIR = HERE.parents[2]
-REPO_ROOT = HERE.parents[5]
+REPO_ROOT = HERE.parents[4]
 for p in (str(REPO_ROOT), str(V2_DIR / "src")):
     if p not in sys.path:
         sys.path.insert(0, p)

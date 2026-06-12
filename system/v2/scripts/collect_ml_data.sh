@@ -8,15 +8,15 @@
 #
 set -euo pipefail
 
-# Resolve repo root from this script's location (scripts/ -> v2 -> varrahan ->
-# submissions -> root) so the relative paths the evaluator needs resolve.
+# Resolve repo root from this script's location (scripts/ -> v2 -> system -> root)
+# so the relative paths the evaluator needs resolve.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
-PLACER="submissions/varrahan/v2/src/main.py"
-OUT_DIR="submissions/varrahan/v2/ml_data/traces"
-LOG_DIR="submissions/varrahan/v2/ml_data/logs"
+PLACER="system/v2/src/main.py"
+OUT_DIR="system/v2/ml_data/traces"
+LOG_DIR="system/v2/ml_data/logs"
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
 # Optional leading mode flag selects the benchmark set.
@@ -57,7 +57,7 @@ for seed in "${SEEDS[@]}"; do
   echo "    trace: $trace_path"
   echo "    log  : $log_path"
 
-  # V2_SEED is read by submissions/varrahan/v2/src/main.py (default-preserving).
+  # V2_SEED is read by system/v2/src/main.py (default-preserving).
   # ML_RUN_ID feeds the {run_id} substitution in ML_TRACE_PATH.
   V2_SEED="$seed" \
   ML_RUN_ID="$run_id" \

@@ -56,8 +56,8 @@ Enable it only on CUDA-visible runs:
 ```bash
 V2_RELOC_PROPOSE_ALL=auto \
 V2_RELOC_PROPOSE_LOG=1 \
-PYTHONPATH=submissions/varrahan/v2/src \
-uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01
+PYTHONPATH=system/v2/src \
+uv run evaluate system/v2/src/main.py -b ibm01
 ```
 
 Force it regardless of backend:
@@ -131,8 +131,8 @@ different search policy, not treated as an equivalent acceleration.
 Check that this machine can run the CUDA path:
 
 ```bash
-PYTHONPATH=submissions/varrahan/v2/src \
-uv run python submissions/varrahan/v2/test/diagnostic/_cuda_relocation_status.py \
+PYTHONPATH=system/v2/src \
+uv run python system/v2/test/diagnostic/_cuda_relocation_status.py \
   --benchmark ibm01 --exact-limit 9 --require-cuda
 ```
 
@@ -149,15 +149,15 @@ scorer_stats={'device': 'cuda:0', 'backend': 'cuda', ...}
 Focused verifiers:
 
 ```bash
-PYTHONPATH=submissions/varrahan/v2/src \
-uv run python submissions/varrahan/v2/test/verification/_verify_relocation_propose_all_auto.py
+PYTHONPATH=system/v2/src \
+uv run python system/v2/test/verification/_verify_relocation_propose_all_auto.py
 
-PYTHONPATH=submissions/varrahan/v2/src \
+PYTHONPATH=system/v2/src \
 V2_RELOC_PROPOSE_ALL=auto V2_RELOC_PROPOSE_LOG=1 \
-uv run python submissions/varrahan/v2/test/verification/_verify_relocation_propose_all.py
+uv run python system/v2/test/verification/_verify_relocation_propose_all.py
 
-PYTHONPATH=submissions/varrahan/v2/src \
-uv run python submissions/varrahan/v2/test/verification/_verify_relocation_cuda_delta_scores.py
+PYTHONPATH=system/v2/src \
+uv run python system/v2/test/verification/_verify_relocation_cuda_delta_scores.py
 ```
 
 Recent local evidence on this workstation:

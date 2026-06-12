@@ -5,7 +5,7 @@ three output writers (round-tripping the DEF through the parser again), and
 one end-to-end place_design.py run.
 
 Run:
-    uv run pytest submissions/varrahan/v2/test/eda_io/ -v
+    uv run pytest system/v2/test/eda_io/ -v
 """
 
 import subprocess
@@ -16,7 +16,7 @@ import pytest
 import torch
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[4]
+ROOT = HERE.parents[3]
 SRC = HERE.parents[1] / "src"
 for p in (str(ROOT), str(SRC)):
     if p not in sys.path:

@@ -6,8 +6,8 @@ Respects fixed macros. This is a minimal baseline - it typically
 performs worse than the initial placement.
 
 Usage:
-    uv run evaluate submissions/examples/simple_random_placer.py
-    uv run evaluate submissions/examples/simple_random_placer.py --all
+    uv run evaluate system/v0/simple_random_placer.py
+    uv run evaluate system/v0/simple_random_placer.py --all
 """
 
 import torch

@@ -37,14 +37,14 @@ cluster preference, calibrated so seed costs land in the IBM seed regime
 
 ```bash
 # regenerate the suite (deterministic per-benchmark RNG seeds)
-uv run python submissions/varrahan/v2/test/benchmarks/generate_benchmarks.py
+uv run python system/v2/test/benchmarks/generate_benchmarks.py
 
 # evaluate v2 on the whole suite + render visualizations
-uv run python submissions/varrahan/v2/test/benchmarks/run_synthetic.py
+uv run python system/v2/test/benchmarks/run_synthetic.py
 
 # single benchmark, custom placer or budget
 uv run python .../run_synthetic.py -b syn02_fixed
-uv run python .../run_synthetic.py --placer submissions/varrahan/v1/placer.py --budget 60
+uv run python .../run_synthetic.py --placer system/v1/placer.py --budget 60
 
 # just look at the benchmarks themselves (seed scoring + vis, no placer)
 uv run python .../run_synthetic.py --initial-only
@@ -56,7 +56,7 @@ uv run python .../run_synthetic.py --ibm
 # per-metric impact analysis: which of wirelength/density/congestion is
 # responsible for the remaining cost, per benchmark and overall. Toggle the
 # benchmark groups in/out to compare.
-uv run python submissions/varrahan/v2/test/benchmarks/analyze_impact.py
+uv run python system/v2/test/benchmarks/analyze_impact.py
 uv run python .../analyze_impact.py --no-synthetic   # IBM only
 uv run python .../analyze_impact.py --no-ibm         # synthetic only
 ```

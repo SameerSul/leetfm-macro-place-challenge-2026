@@ -15,7 +15,7 @@ Outputs (under this directory):
     metadata/<name>.json              generation config + axis description
 
 Usage:
-    uv run python submissions/varrahan/v2/test/benchmarks/generate_benchmarks.py
+    uv run python system/v2/test/benchmarks/generate_benchmarks.py
     uv run python .../generate_benchmarks.py --only syn02_fixed
 """
 
@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[5]
+ROOT = Path(__file__).resolve().parents[4]
 OUT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

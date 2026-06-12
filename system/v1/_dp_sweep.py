@@ -5,9 +5,9 @@ Loops over (target_density, density_weight) combos, runs DREAMPlace standalone
 exact proxy. Outputs a sorted table of (params -> proxy).
 
 Usage:
-    uv run python submissions/varrahan/v1/_dp_sweep.py --benchmark ibm04
+    uv run python system/v1/_dp_sweep.py --benchmark ibm04
 
-Lives under submissions/varrahan/v1/ because that's the only writable area;
+Lives under system/v1/ because that's the only writable area;
 delete after the sweep is done.
 """
 

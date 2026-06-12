@@ -5,12 +5,12 @@ CUDA visibility, the configured placer device, effective chunking stats, and a
 small exact-score parity check for the `cuda_delta` proposal scorer.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/diagnostic/_cuda_relocation_status.py --benchmark ibm01
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/diagnostic/_cuda_relocation_status.py --benchmark ibm01
 
   # Fail unless the runtime and scorer actually use CUDA:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/diagnostic/_cuda_relocation_status.py --require-cuda
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/diagnostic/_cuda_relocation_status.py --require-cuda
 """
 
 from __future__ import annotations

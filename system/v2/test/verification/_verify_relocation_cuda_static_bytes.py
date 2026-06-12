@@ -4,8 +4,8 @@ This checks the real benchmark static cache, not only monkeypatched wrapper
 paths, so future cache changes must keep byte telemetry honest.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_relocation_cuda_static_bytes.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_relocation_cuda_static_bytes.py
 """
 
 from __future__ import annotations

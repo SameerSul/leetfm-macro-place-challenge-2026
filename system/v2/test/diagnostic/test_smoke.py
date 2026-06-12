@@ -66,7 +66,7 @@ def test_greedy_row_placer(ibm01):
 
     spec = importlib.util.spec_from_file_location(
         "greedy_row_placer",
-        "submissions/examples/greedy_row_placer.py",
+        "system/v0/greedy_row_placer.py",
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

@@ -25,7 +25,7 @@ class _ZeroNoise:
 
 
 def _load_v2_placer():
-    path = Path("submissions/varrahan/v2/src/main.py")
+    path = Path("system/v2/src/main.py")
     spec = importlib.util.spec_from_file_location("varrahan_v2_placer", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

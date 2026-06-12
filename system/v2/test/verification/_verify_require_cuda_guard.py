@@ -5,8 +5,8 @@ where CUDA is visible, V2_REQUIRE_CUDA should allow import and this verifier
 reports that state.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_require_cuda_guard.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_require_cuda_guard.py
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def main() -> int:
     env["V2_CUDA_DEVICE"] = requested_device
     env["PYTHONPATH"] = os.pathsep.join(
         part for part in [
-            "submissions/varrahan/v2/src",
+            "system/v2/src",
             env.get("PYTHONPATH", ""),
         ]
         if part

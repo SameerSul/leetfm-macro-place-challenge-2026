@@ -51,7 +51,7 @@ except ImportError:
     _warnings.warn(
         "numba not installed — routing-apply runs the slow numpy fallback "
         "and may miss deadline-bound search rounds. Install "
-        "submissions/varrahan/v2/requirements.txt for the JIT path.",
+        "system/v2/requirements.txt for the JIT path.",
         stacklevel=2,
     )
     _numba_njit = None

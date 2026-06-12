@@ -11,7 +11,7 @@ Inputs are the results JSONs written by run_synthetic.py:
     results_ibm.json    the 17 IBM benchmarks (run_synthetic.py --ibm)
 
 Usage:
-    uv run python submissions/varrahan/v2/test/benchmarks/analyze_impact.py
+    uv run python system/v2/test/benchmarks/analyze_impact.py
     uv run python .../analyze_impact.py --no-synthetic   # IBM only
     uv run python .../analyze_impact.py --no-ibm         # synthetic only
     uv run python .../analyze_impact.py --worst 5        # deep-dive count

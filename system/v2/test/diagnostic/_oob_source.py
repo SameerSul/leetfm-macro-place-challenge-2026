@@ -1,13 +1,13 @@
 """Diagnose out-of-bounds macros in the placer's output: hard vs soft, edge, overhang.
 
-Usage: uv run python submissions/varrahan/v2/test/diagnostic/_oob_source.py ibm10 ibm09
+Usage: uv run python system/v2/test/diagnostic/_oob_source.py ibm10 ibm09
 """
 import sys
 from pathlib import Path
 
 import torch
 
-ROOT = Path(__file__).resolve().parents[5]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 from macro_place.evaluate import _load_placer  # noqa: E402
 from macro_place.loader import load_benchmark  # noqa: E402
@@ -15,7 +15,7 @@ from macro_place.loader import load_benchmark  # noqa: E402
 
 def main():
     names = sys.argv[1:] or ["ibm10"]
-    placer = _load_placer(ROOT / "submissions/varrahan/v2/src/main.py")
+    placer = _load_placer(ROOT / "system/v2/src/main.py")
     for name in names:
         d = ROOT / "external/MacroPlacement/Testcases/ICCAD04" / name
         benchmark, plc = load_benchmark(str(d / "netlist.pb.txt"), str(d / "initial.plc"))

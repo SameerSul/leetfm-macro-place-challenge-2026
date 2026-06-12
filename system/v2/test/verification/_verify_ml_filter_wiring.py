@@ -4,7 +4,7 @@ Importing src/main.py with no ML_* env vars must enable the S10 config-B
 filter (wide-32 pool, ranker keeps 16), and any preset ML_* var must keep
 the defaults out of the way.
 
-Run: uv run python submissions/varrahan/v2/test/verification/_verify_ml_filter_wiring.py
+Run: uv run python system/v2/test/verification/_verify_ml_filter_wiring.py
 """
 
 import os

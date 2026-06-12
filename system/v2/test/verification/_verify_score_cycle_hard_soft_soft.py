@@ -1,7 +1,7 @@
 """Bit-exactness check for HS3's score_cycle_hard_soft_soft /
 commit_cycle_hard_soft_soft against the full _exact_proxy.
 
-    uv run python submissions/varrahan/v2/test/verification/_verify_score_cycle_hard_soft_soft.py
+    uv run python system/v2/test/verification/_verify_score_cycle_hard_soft_soft.py
 """
 import sys
 import importlib.util
@@ -12,7 +12,7 @@ import torch
 
 THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
-REPO_ROOT = THIS.parents[5]
+REPO_ROOT = THIS.parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(V2_DIR / "src"))
 
