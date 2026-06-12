@@ -17,6 +17,7 @@ from placer.legalize.spiral import _will_legalize
 from placer.legalize.swap import _two_opt_swap
 from placer.local_search.fields import _congestion_field
 from placer.local_search.hard_soft import _three_opt_hard_soft_soft, _two_opt_hard_soft_swap
+from placer.local_search.lsmc_explore import _explore_enabled, _lsmc_explore
 from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
 from placer.local_search.soft_moves import _two_opt_soft_swap
 from placer.local_search.two_opt import _two_opt_proxy_swap
@@ -971,6 +972,22 @@ class MacroPlacer:
             if twoopt_best_score < best_score:
                 best_score = twoopt_best_score
                 best_pl = twoopt_best_pl
+
+        # LSMC exploration (GPU-ops.md Stage 2a) - opt-in via V2_GPU_EXPLORE.
+        # Kick/descent/accept from the incumbent best; exact-gated, so a
+        # failed exploration leaves best_pl/best_score untouched.
+        if _explore_enabled(_GPU_BACKEND):
+            _exp_time = float(os.environ.get("V2_GPU_EXPLORE_TIME_S", "10.0"))
+            try:
+                best_pl, best_score, _exp_iters, _exp_acc = _lsmc_explore(
+                    best_pl, best_score, benchmark, plc, _exact_proxy,
+                    sizes, hw, hh, cw, ch, movable, n,
+                    time_budget_s=_exp_time, log=_log,
+                )
+                _log(f"  LSMC explore: {_exp_acc} accepts / {_exp_iters} iters, "
+                     f"best={best_score:.4f}")
+            except Exception as exc:
+                _log(f"  LSMC explore failed: {type(exc).__name__}: {exc}")
 
         # R2: keep trying local moves while they still improve the score.
         R2_MAX_ROUNDS = 20
