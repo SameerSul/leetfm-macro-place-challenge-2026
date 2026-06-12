@@ -3,6 +3,40 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-12 — GPU staged rollout: Stage 0 re-baseline + Stage 1
+> propose-all A/B done; verdict WASH, stays opt-in; see docs/gpu/GPU-ops.md and
+> ISSUES.md S17):**
+>
+> **Stage 0 re-baseline (2026-06-11): avg 1.1243, 17/17 VALID, 2679s** — same
+> placer as the 1.1252 record within single-seed noise, locked as the pre-GPU
+> reference. CUDA relocation diagnostic PASS (torch 2.10.0+cu128, cuda_delta on
+> cuda:0, exact parity 1.541e-07); DREAMPlace dpenv healthy (torch 2.4.1+cu121,
+> **built sm_89-only** — rebuild required on any other GPU arch); numba 0.65.1
+> present. Hardware unchanged: 1× RTX 4050 Laptop 6GB. The new multi-GPU
+> machines are not reachable from this box yet — second half of Stage 0
+> (inventory, DP rebuild, re-baseline there) pending access.
+>
+> **Stage 1 (2026-06-12): `V2_RELOC_PROPOSE_ALL=auto` paired multi-seed A/B —
+> WASH, stays opt-in.** Both verifiers PASS (in-loop scorer-vs-exact delta
+> 1.4e-11). Paired same-box sequential `--all` runs, seeds 1/2/3
+> (logs `ml_data/compare/all_20260612_propall_*`): seed1 off 1.1231 / auto
+> 1.1237 (+0.0090 cum), seed2 1.1277 / 1.1280 (+0.0047), seed3 1.1250 / 1.1246
+> (−0.0076). Mean +0.0020 cumulative (+0.0001/bench), 2/3 seeds worse — far
+> from the S10 ship bar (3/3, −0.0041 mean). No `--all` wall-time win either
+> (2415 vs 2408s, 2454 vs 2492s): the budget allocator reabsorbs per-benchmark
+> speedups (ibm01 alone runs 77.6s vs 109.4s at identical proxy 0.9146).
+> 10–13 of 17 benchmarks per seed are bit-identical between arms; divergences
+> are deterministic but seed-dependent in sign (ibm11 −0.0103/−0.0047/+0.0030;
+> ibm18 +0.0188 on seed1 only, replay-confirmed bit-exact 1.3967 under clean
+> conditions — a genuinely worse basin, not a budget artifact). Caveats noted:
+> the seed-1 pair straddles dead-code commit 04ae002 (behavior-neutral — 10/17
+> bit-identical across the boundary); seed-1 auto crossed a laptop sleep (wall
+> 35233s) with per-benchmark monotonic budgets unaffected. **Takeaway for
+> Stage 2:** the GPU pool-scoring machinery is validated and fast; the ±0.02
+> per-benchmark policy divergence is exactly what an exact-gated multi-candidate
+> selector can harvest. Next: Stage 2 exploration engine (V2_GPU_EXPLORE) per
+> docs/gpu/GPU-ops.md §2–3.
+
 > **Status (2026-06-11 — ML hard-relocation ranker connected as production
 > default, ISSUES.md S10):** The trained XGBoost filter was validated 2026-06-05
 > (equal-budget net ≈ −0.008/10, no robust regressions) but had been left
