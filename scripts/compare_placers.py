@@ -8,16 +8,16 @@ Results are saved to results/comparison_<timestamp>.json for tracking.
 
 Usage:
     # Compare sameer_v1 vs will_seed on ibm01
-    uv run python scripts/compare_placers.py submissions/sameer_v1/placer.py submissions/will_seed/placer.py
+    uv run python scripts/compare_placers.py system/v1/placer.py system/v0/greedy_row_placer.py
 
     # Compare on all 17 benchmarks
-    uv run python scripts/compare_placers.py --all submissions/sameer_v1/placer.py submissions/will_seed/placer.py
+    uv run python scripts/compare_placers.py --all system/v1/placer.py system/v0/greedy_row_placer.py
 
     # Compare on specific benchmarks
-    uv run python scripts/compare_placers.py -b ibm01 ibm02 ibm03 submissions/sameer_v1/placer.py submissions/will_seed/placer.py
+    uv run python scripts/compare_placers.py -b ibm01 ibm02 ibm03 system/v1/placer.py system/v0/greedy_row_placer.py
 
     # Quick mode: one benchmark, suppress verbose output
-    uv run python scripts/compare_placers.py -b ibm01 --quiet submissions/sameer_v1/placer.py
+    uv run python scripts/compare_placers.py -b ibm01 --quiet system/v1/placer.py
 """
 
 import argparse
@@ -85,7 +85,7 @@ def _pct(val, ref):
 
 def _fmt_pct(p):
     if p is None:
-        return "    —    "
+        return "    -    "
     sign = "+" if p >= 0 else ""
     return f"{sign}{p:6.1f}%"
 
@@ -125,7 +125,7 @@ def _print_per_benchmark(benchmarks, all_results, names):
                 row += f"  {r['proxy_cost']:>{col_w}.4f}"
             else:
                 vals.append(None)
-                row += f"  {'—':>{col_w}}"
+                row += f"  {'-':>{col_w}}"
         # Indicate the winner
         valid_vals = [(v, i) for i, v in enumerate(vals) if v is not None]
         if valid_vals:
@@ -143,7 +143,7 @@ def _print_per_benchmark(benchmarks, all_results, names):
         if vals:
             row += f"  {sum(vals)/len(vals):>{col_w}.4f}"
         else:
-            row += f"  {'—':>{col_w}}"
+            row += f"  {'-':>{col_w}}"
     print(row)
     print()
 
@@ -200,7 +200,7 @@ def _print_ranking(benchmarks, all_results, names):
     for avg_p, lname, avg_sa, avg_rep in leaderboard_rows:
         vs_sa = _fmt_pct(_pct(avg_p, avg_sa))
         vs_rep = _fmt_pct(_pct(avg_p, avg_rep))
-        print(f"  {'—':>4}  {lname:<28}  {avg_p:>10.4f}  {vs_sa}  {vs_rep}  {'(published)':>8}")
+        print(f"  {'-':>4}  {lname:<28}  {avg_p:>10.4f}  {vs_sa}  {vs_rep}  {'(published)':>8}")
 
     print("=" * 72)
     print()

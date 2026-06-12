@@ -241,13 +241,13 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 
 # Verify installation
-uv run evaluate submissions/examples/greedy_row_placer.py -b ibm01
+uv run evaluate system/v0/greedy_row_placer.py -b ibm01
 ```
 
 If `uv` is not available, use standard Python:
 ```bash
 pip install -e .
-python -m macro_place.evaluate submissions/examples/greedy_row_placer.py -b ibm01
+python -m macro_place.evaluate system/v0/greedy_row_placer.py -b ibm01
 ```
 
 ### Step 3: (Optional) OpenROAD for Full Flow
@@ -272,14 +272,12 @@ For development, the Tier 1 proxy evaluation is sufficient.
 ```
 macro-place-challenge-2026/
 │
-├── submissions/                  # All placer implementations
-│   ├── sameer_v1/placer.py       # Our submission (sameersul)
-│   ├── will_seed/placer.py       # Challenge organizer's baseline
-│   ├── examples/                 # Example placers for reference
+├── system/                       # Varrahan placers and active system work
+│   ├── v0/                       # Simple reference placers
 │   │   ├── greedy_row_placer.py  # Simple greedy baseline
-│   │   ├── sa_placer.py          # Pure SA (no ML)
-│   │   └── fd_placer.py          # Force-directed placer
-│   └── _test_legonly.py          # Test: legalization only (no SA)
+│   │   └── simple_random_placer.py
+│   ├── v1/placer.py              # Frozen checkpoint
+│   └── v2/src/main.py            # Active placer entrypoint
 │
 ├── macro_place/                  # Core framework
 │   ├── evaluate.py               # Main evaluation harness
@@ -322,13 +320,13 @@ class Benchmark:
 **`macro_place/evaluate.py`**: Running evaluations:
 ```bash
 # Single benchmark
-python -m macro_place.evaluate submissions/sameer_v1/placer.py -b ibm01
+python -m macro_place.evaluate system/v1/placer.py -b ibm01
 
 # All 17 IBM benchmarks
-python -m macro_place.evaluate submissions/sameer_v1/placer.py --all
+python -m macro_place.evaluate system/v1/placer.py --all
 
 # NG45 designs (requires setup)
-python -m macro_place.evaluate submissions/sameer_v1/placer.py --ng45
+python -m macro_place.evaluate system/v1/placer.py --ng45
 ```
 
 ---
@@ -447,15 +445,15 @@ git checkout -b feature/proxy-aware-sa           # member C
 
 ```bash
 # Quick test: single benchmark
-python -m macro_place.evaluate submissions/sameer_v1/placer.py -b ibm01
+python -m macro_place.evaluate system/v1/placer.py -b ibm01
 
 # Full test: all 17 benchmarks (takes ~8 min)
-python -m macro_place.evaluate submissions/sameer_v1/placer.py --all
+python -m macro_place.evaluate system/v1/placer.py --all
 
 # Compare two placers head-to-head
 python scripts/compare_placers.py \
-    submissions/sameer_v1/placer.py \
-    submissions/will_seed/placer.py
+    system/v1/placer.py \
+    system/v0/greedy_row_placer.py
 ```
 
 ### Key Metrics to Track
@@ -487,7 +485,7 @@ Congestion dominates proxy for most benchmarks. Reducing congestion has 2x the i
 
 ### Step 1: Prepare Your Submission
 
-Your submission must be a single Python file at `submissions/sameer_v1/placer.py` (or your own folder) with a `MacroPlacer` class. It must:
+Your submission must be a single Python file at `system/v1/placer.py` (or your own folder) with a `MacroPlacer` class. It must:
 - Work with the exact `place(benchmark) -> torch.Tensor` interface
 - Complete all 17 IBM benchmarks in under 1 hour total
 - Produce no overlaps (the evaluator checks this)
@@ -497,7 +495,7 @@ Your submission must be a single Python file at `submissions/sameer_v1/placer.py
 
 ```bash
 # Run all 17 IBM benchmarks
-python -m macro_place.evaluate submissions/sameer_v1/placer.py --all
+python -m macro_place.evaluate system/v1/placer.py --all
 
 # Check average proxy score in the final output line
 # Format: AVG our_score sa_score replace_score
@@ -506,7 +504,7 @@ python -m macro_place.evaluate submissions/sameer_v1/placer.py --all
 ### Step 3: Push to GitHub
 
 ```bash
-git add submissions/sameer_v1/placer.py
+git add system/v1/placer.py
 git commit -m "Add sameer_v1 competitive macro placer"
 git push origin main
 ```
@@ -534,13 +532,13 @@ Three roles split by expertise. Each person has a clear onboarding path, owns a 
 
 ### Role A: Algorithm Lead (Sameer)
 
-**Owns:** `submissions/sameer_v1/placer.py` · competition timeline · final submission
+**Owns:** `system/v1/placer.py` · competition timeline · final submission
 
 **Why this role:** You built the project from scratch, understand every file, and have already beaten will_seed. You drive the main submission loop.
 
 #### Week 1 Onboarding Checklist
-- [ ] Re-read `submissions/sameer_v1/placer.py` top-to-bottom, especially `_will_legalize()` and the restart loop
-- [ ] Run `python -m macro_place.evaluate submissions/sameer_v1/placer.py --all` and record the full 17-benchmark avg
+- [ ] Re-read `system/v1/placer.py` top-to-bottom, especially `_will_legalize()` and the restart loop
+- [ ] Run `python -m macro_place.evaluate system/v1/placer.py --all` and record the full 17-benchmark avg
 - [ ] Read `macro_place/objective.py` (`compute_proxy_cost`) to understand exactly how WL, density, and congestion are computed from positions
 - [ ] Read `macro_place/evaluate.py` (`evaluate_benchmark`) for the full harness pipeline
 - [ ] Read `external/MacroPlacement/CodeElements/Plc_client/plc_client_os.py`, which is the PlacementCost evaluator used by `compute_proxy_cost`
@@ -553,8 +551,8 @@ Three roles split by expertise. Each person has a clear onboarding path, owns a 
 
 #### Files You Own
 ```
-submissions/sameer_v1/placer.py     ← main submission
-submissions/_test_legonly.py        ← test harness
+system/v1/placer.py     ← main submission
+system/v2/test/diagnostic/test_smoke.py ← smoke-test harness
 TEAM_GUIDE.md                       ← this document
 ```
 
@@ -562,13 +560,13 @@ TEAM_GUIDE.md                       ← this document
 
 ### Role B: ML Research Lead
 
-**Owns:** `submissions/ml_placer/` (create this) · literature review · learning-based approach
+**Owns:** `system/ml_placer/` (create this) · literature review · learning-based approach
 
 **Why this role:** The gap from our current avg (≈1.49) to RePlAce (1.4578) is small with perturbation heuristics alone. Closing it and going below likely needs a learned model. This role brings machine learning to the placement problem.
 
 #### Week 1 Onboarding Checklist
 - [ ] Read §12 (Related Research) in this document to understand all 10 papers at a high level
-- [ ] Run the existing placer on ibm01: `python -m macro_place.evaluate submissions/sameer_v1/placer.py -b ibm01`
+- [ ] Run the existing placer on ibm01: `python -m macro_place.evaluate system/v1/placer.py -b ibm01`
 - [ ] Read `macro_place/benchmark.py` to understand the `Benchmark` dataclass fields
 - [ ] Understand the netlist format: open `external/MacroPlacement/Testcases/ICCAD04/ibm01/netlist.pb.txt` in a text editor and look at the node, net, and pin structure
 - [ ] Clone and browse **WireMask-BBO** (`github.com/lamda-bbo/WireMask-BBO`), the most practically competitive ML method
@@ -581,7 +579,7 @@ TEAM_GUIDE.md                       ← this document
 
 #### Files You Will Create
 ```
-submissions/ml_placer/
+system/ml_placer/
     __init__.py
     placer.py          ← MacroPlacer class using a learned model
     gnn_model.py       ← GNN architecture
@@ -598,7 +596,7 @@ submissions/ml_placer/
 **Why this role:** As the team runs dozens of experiments (tuning noise, trying new algorithms, comparing methods), someone needs to make sure results are logged, reproducible, and comparable. This role also investigates the GPU path (DREAMPlace) which could unlock 30× speedup.
 
 #### Week 1 Onboarding Checklist
-- [ ] Run `python scripts/compare_placers.py submissions/sameer_v1/placer.py submissions/_test_legonly.py` and understand the comparison output format
+- [ ] Run `python scripts/compare_placers.py system/v1/placer.py system/v0/greedy_row_placer.py` and understand the comparison output format
 - [ ] Read `scripts/compare_placers.py` end-to-end
 - [ ] Read `macro_place/evaluate.py` `main()` function to understand all CLI flags
 - [ ] Set up a results log: create `results/runs.csv` with columns: `date, placer, benchmark, proxy, wl, density, congestion, runtime, notes`

@@ -5,9 +5,9 @@ Loads a placer from a Python file, runs it on benchmarks, and prints results
 with baseline comparisons.
 
 Usage:
-    uv run evaluate submissions/examples/greedy_row_placer.py
-    uv run evaluate submissions/examples/greedy_row_placer.py --all
-    uv run evaluate submissions/examples/greedy_row_placer.py -b ibm03
+    uv run evaluate system/v0/greedy_row_placer.py
+    uv run evaluate system/v0/greedy_row_placer.py --all
+    uv run evaluate system/v0/greedy_row_placer.py -b ibm03
 """
 
 import argparse
@@ -195,8 +195,8 @@ def _print_summary_table(results):
                 if r["replace_baseline"]
                 else 0
             )
-            sa_str = f"{r['sa_baseline']:>8.4f}" if r["sa_baseline"] else f"{'—':>8}"
-            rep_str = f"{r['replace_baseline']:>8.4f}" if r["replace_baseline"] else f"{'—':>8}"
+            sa_str = f"{r['sa_baseline']:>8.4f}" if r["sa_baseline"] else f"{'-':>8}"
+            rep_str = f"{r['replace_baseline']:>8.4f}" if r["replace_baseline"] else f"{'-':>8}"
             print(
                 f"{r['name']:>13}  {r['proxy_cost']:>8.4f}"
                 f"  {sa_str}  {rep_str}"
@@ -252,7 +252,7 @@ def main():
     )
     parser.add_argument(
         "placer",
-        help="Path to a placer .py file (e.g. submissions/examples/greedy_row_placer.py).",
+        help="Path to a placer .py file (e.g. system/v0/greedy_row_placer.py).",
     )
     parser.add_argument(
         "--benchmark",
