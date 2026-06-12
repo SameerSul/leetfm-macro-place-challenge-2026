@@ -8,16 +8,16 @@ Results are saved to results/comparison_<timestamp>.json for tracking.
 
 Usage:
     # Compare sameer_v1 vs will_seed on ibm01
-    uv run python scripts/compare_placers.py submissions/sameer_v1/placer.py submissions/will_seed/placer.py
+    uv run python scripts/compare_placers.py system/v1/placer.py system/v0/greedy_row_placer.py
 
     # Compare on all 17 benchmarks
-    uv run python scripts/compare_placers.py --all submissions/sameer_v1/placer.py submissions/will_seed/placer.py
+    uv run python scripts/compare_placers.py --all system/v1/placer.py system/v0/greedy_row_placer.py
 
     # Compare on specific benchmarks
-    uv run python scripts/compare_placers.py -b ibm01 ibm02 ibm03 submissions/sameer_v1/placer.py submissions/will_seed/placer.py
+    uv run python scripts/compare_placers.py -b ibm01 ibm02 ibm03 system/v1/placer.py system/v0/greedy_row_placer.py
 
     # Quick mode: one benchmark, suppress verbose output
-    uv run python scripts/compare_placers.py -b ibm01 --quiet submissions/sameer_v1/placer.py
+    uv run python scripts/compare_placers.py -b ibm01 --quiet system/v1/placer.py
 """
 
 import argparse
