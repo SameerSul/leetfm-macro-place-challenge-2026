@@ -1,6 +1,0 @@
-# Generated suite artifacts - regenerable via generate_benchmarks.py (~90MB,
-# deterministic RNG seeds). vis/ is already ignored by the repo-root .gitignore;
-# sample_initial.png / sample_placed.png live next to this file so one example
-# of the visualization output stays in the repo.
-testcases/
-processed/
