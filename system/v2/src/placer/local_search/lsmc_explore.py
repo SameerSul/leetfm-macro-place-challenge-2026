@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 from placer.legalize.spiral import _will_legalize
-from placer.local_search.relocation import _relocation_moves
+from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
 from placer.scoring.incremental import IncrementalScorer
 
 
@@ -73,6 +73,10 @@ def _lsmc_explore(
     n: int,
     time_budget_s: float,
     log=None,
+    soft_hw: np.ndarray | None = None,
+    soft_hh: np.ndarray | None = None,
+    soft_movable: np.ndarray | None = None,
+    n_soft: int = 0,
 ) -> tuple[torch.Tensor, float, int, int]:
     """Run the kick/descent/accept loop. Returns (pl, score, iters, accepts).
 
@@ -106,9 +110,13 @@ def _lsmc_explore(
         cand_np = cand.detach().cpu().numpy().astype(np.float64)
         scorer = IncrementalScorer(plc, benchmark, cand_np)
 
-        # Descend to a local optimum: alternate cong/density propose-all
-        # passes until a full round stops improving or the wall is hit.
+        # Descend to a local optimum: alternate hard cong/density propose-all
+        # passes, then soft relocation passes (most of the congestion-dominated
+        # proxy lives in soft placement), until a full round stops improving.
         desc_xy = kicked
+        desc_soft = None
+        if n_soft > 0:
+            desc_soft = cand[n:n + n_soft].detach().cpu().numpy().astype(np.float64)
         desc_score = kick_score
         while time.monotonic() < wall:
             round_start = desc_score
@@ -122,11 +130,26 @@ def _lsmc_explore(
                     use_density=use_density,
                     propose_all=True,
                 )
+            if desc_soft is not None:
+                for use_density in (False, True):
+                    if time.monotonic() >= wall:
+                        break
+                    desc_soft, _, desc_score = _soft_relocation_moves(
+                        desc_soft, soft_hw, soft_hh, cw, ch, n, plc,
+                        benchmark, scorer, desc_score,
+                        deadline=wall,
+                        top_hot=1024, n_targets=4,
+                        soft_movable=soft_movable,
+                        use_density=use_density,
+                    )
             if round_start - desc_score < 1e-4:
                 break
 
         cand[:n, 0] = torch.tensor(desc_xy[:, 0], dtype=torch.float32)
         cand[:n, 1] = torch.tensor(desc_xy[:, 1], dtype=torch.float32)
+        if desc_soft is not None:
+            cand[n:n + n_soft, 0] = torch.tensor(desc_soft[:, 0], dtype=torch.float32)
+            cand[n:n + n_soft, 1] = torch.tensor(desc_soft[:, 1], dtype=torch.float32)
         true_score = float(exact_proxy(cand, benchmark, plc))
 
         if true_score < best_score - 1e-6:

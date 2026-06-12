@@ -1569,25 +1569,6 @@ class MacroPlacer:
             else:
                 _r2_tiny_streak = 0
 
-        # LSMC exploration (GPU-ops.md Stage 2a) - opt-in via V2_GPU_EXPLORE.
-        # Kicks from the R2 local optimum and accepts on exact post-descent
-        # score: gating pre-R2 was tested and steered R2 into worse basins.
-        if _explore_enabled(_GPU_BACKEND):
-            _exp_time = float(os.environ.get("V2_GPU_EXPLORE_TIME_S", "10.0"))
-            _rem_exp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            _exp_slice = min(_exp_time, _rem_exp - t_one_score * 1.5)
-            if _exp_slice > t_one_score:
-                try:
-                    best_pl, best_score, _exp_iters, _exp_acc = _lsmc_explore(
-                        best_pl, best_score, benchmark, plc, _exact_proxy,
-                        sizes, hw, hh, cw, ch, movable, n,
-                        time_budget_s=_exp_slice, log=_log,
-                    )
-                    _log(f"  LSMC explore: {_exp_acc} accepts / {_exp_iters} iters, "
-                         f"best={best_score:.4f}")
-                except Exception as exc:
-                    _log(f"  LSMC explore failed: {type(exc).__name__}: {exc}")
-
         # Spend leftover time on one last soft relocation pass.
         if _n_soft > 0:
             for _post_field, _post_ud in (("cong", False), ("density", True)):
@@ -1645,6 +1626,29 @@ class MacroPlacer:
                         float(_exact_proxy(best_pl, benchmark, plc))
                     except Exception:
                         pass
+
+        # LSMC exploration (GPU-ops.md Stage 2a) - opt-in via V2_GPU_EXPLORE.
+        # Final quality phase: kicks from the fully-refined optimum and accepts
+        # on exact post-descent score. Earlier placements (pre-R2, pre-post-soft)
+        # were tested and disproven - any refinement AFTER the accept gate makes
+        # the gate compare the wrong objective.
+        if _explore_enabled(_GPU_BACKEND):
+            _exp_time = float(os.environ.get("V2_GPU_EXPLORE_TIME_S", "10.0"))
+            _rem_exp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+            _exp_slice = min(_exp_time, _rem_exp - t_one_score * 1.5)
+            if _exp_slice > t_one_score:
+                try:
+                    best_pl, best_score, _exp_iters, _exp_acc = _lsmc_explore(
+                        best_pl, best_score, benchmark, plc, _exact_proxy,
+                        sizes, hw, hh, cw, ch, movable, n,
+                        time_budget_s=_exp_slice, log=_log,
+                        soft_hw=soft_hw, soft_hh=soft_hh,
+                        soft_movable=_soft_movable, n_soft=_n_soft,
+                    )
+                    _log(f"  LSMC explore: {_exp_acc} accepts / {_exp_iters} iters, "
+                         f"best={best_score:.4f}")
+                except Exception as exc:
+                    _log(f"  LSMC explore failed: {type(exc).__name__}: {exc}")
 
         _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
         _ml_finish("completed", best_score)
