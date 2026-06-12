@@ -10,7 +10,7 @@ from .density import (
     _patch_plc_density,
     _vectorized_get_grid_cells_density,
 )
-from .exact import _exact_proxy, _proxy_decomp
+from .exact import _exact_proxy
 from .incremental import IncrementalScorer
 from .wirelength import (
     _build_wl_cache,
@@ -27,7 +27,6 @@ __all__ = [
     "_patch_plc_congestion",
     "_patch_plc_density",
     "_patch_plc_wirelength",
-    "_proxy_decomp",
     "_vectorized_get_congestion_cost",
     "_vectorized_get_grid_cells_density",
     "_vectorized_wirelength",

@@ -39,13 +39,3 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
         _exact_stats["calls"] += 1
         _exact_stats["total_s"] += time.perf_counter() - _t0
     return float(wl + 0.5 * dens + 0.5 * cong)
-
-
-def _proxy_decomp(placement: torch.Tensor, benchmark: Benchmark, plc):
-    """(proxy, wl, 0.5*den, 0.5*cong) - the WEIGHTED proxy split. Re-scores the
-    placement (mutates plc state), so use only in diagnostic contexts."""
-    p = _exact_proxy(placement, benchmark, plc)
-    wl = float(plc.get_cost())
-    den = 0.5 * float(plc.get_density_cost())
-    cong = 0.5 * float(plc.get_congestion_cost())
-    return p, wl, den, cong

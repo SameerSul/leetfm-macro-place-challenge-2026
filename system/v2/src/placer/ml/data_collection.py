@@ -63,7 +63,6 @@ class CandidateTrace:
         self.run_id = run_id or os.environ.get("ML_RUN_ID") or uuid.uuid4().hex
         self.run_started_ns = time.time_ns()
         self.host = socket.gethostname()
-        self._owner_pid = os.getpid()
         self.path = self._resolve_path(child=False)
         self._rows = []
         self._group_seq = 0
@@ -85,7 +84,6 @@ class CandidateTrace:
 
     def _after_fork_child(self) -> None:
         """Discard inherited parent buffers and select a child-specific path."""
-        self._owner_pid = os.getpid()
         self.path = self._resolve_path(child=True)
         self._rows = []
         self._group_seq = 0
