@@ -5,8 +5,8 @@ hosts. This verifier patches subprocess behavior in-process so it does not
 depend on the current machine's GPU access state.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_cuda_diagnostic_status.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_cuda_diagnostic_status.py
 """
 
 from __future__ import annotations

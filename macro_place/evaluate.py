@@ -5,9 +5,9 @@ Loads a placer from a Python file, runs it on benchmarks, and prints results
 with baseline comparisons.
 
 Usage:
-    uv run evaluate submissions/examples/greedy_row_placer.py
-    uv run evaluate submissions/examples/greedy_row_placer.py --all
-    uv run evaluate submissions/examples/greedy_row_placer.py -b ibm03
+    uv run evaluate system/v0/greedy_row_placer.py
+    uv run evaluate system/v0/greedy_row_placer.py --all
+    uv run evaluate system/v0/greedy_row_placer.py -b ibm03
 """
 
 import argparse
@@ -252,7 +252,7 @@ def main():
     )
     parser.add_argument(
         "placer",
-        help="Path to a placer .py file (e.g. submissions/examples/greedy_row_placer.py).",
+        help="Path to a placer .py file (e.g. system/v0/greedy_row_placer.py).",
     )
     parser.add_argument(
         "--benchmark",

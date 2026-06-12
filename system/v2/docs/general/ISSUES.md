@@ -548,7 +548,7 @@ live in the *sequential* prep→trial path. The Phase-C propose-all / CUDA-batch
 relocation path (`V2_RELOC_PROPOSE_ALL`, currently hard-only + default off) replaces
 that loop and bypasses the prefilters, so it must stay opt-in until it beats the
 prefiltered CPU default (now 1.1403) on the deadline-bound IBM benchmarks — see
-constraint 6 in `ml_notes/04-gnn-routing-fill-surrogate.md`. `_soft_relocation_moves`
+constraint 6 in `../ml_nn/04-gnn-routing-fill-surrogate.md`. `_soft_relocation_moves`
 has no propose-all branch today, so the soft prefilter (the biggest win) is always
 active on the default path; keep it so.
 
@@ -805,13 +805,13 @@ benign: **top-10 captures ~95 % of achievable gain at width-94** (regret@10 5.3 
 Verdict: a cheap XGBoost already triages wide pools well enough; ranking quality is
 not the bottleneck, so the GNN is **not justified** for IBM/hard-relocation — the
 73 % strip-gen cost is better attacked by vectorizing the *exact* kernel
-cross-macro. Full roadmap + gates: [`ml_notes/04-gnn-routing-fill-surrogate.md`](ml_notes/04-gnn-routing-fill-surrogate.md).
+cross-macro. Full roadmap + gates: [`../ml_nn/04-gnn-routing-fill-surrogate.md`](../ml_nn/04-gnn-routing-fill-surrogate.md).
 
 **NG45 re-check (2026-06-05).** Re-ran on the 4 NG45 designs (`ml_data/recall_study_ng45/`):
 the verdict holds, for stronger reasons. (1) NG45 **converges with ~40 % budget to
 spare** (150 s budget, 90–97 s elapsed) — not deadline-bound, so the filter's
 "free budget → more rounds" premise is void (the downside-only regime of
-`ml_notes/02`). (2) hard-relocation is **near-idle** on NG45 (1.9–3.0 % improving
+`../ml_nn/02`). (2) hard-relocation is **near-idle** on NG45 (1.9–3.0 % improving
 groups vs 20–25 % on IBM); the productive operators are **soft_2opt (34 %)** and
 soft_relocation (13 %). Caveat: this tier is coarse-grid (504–1404 cells), *not* the
 large-grid/deadline-bound industrial regime where a learned routing-fill surrogate
@@ -874,7 +874,7 @@ data matters most here)**, hard_soft_swap 71k, hard_soft_soft_cycle 62k. Trainin
 deps (`xgboost`, `scikit-learn`) are offline-only in `requirements.txt`. Next
 step is the offline training scaffold (rank + gater heads, recall@K curve) under
 `test/diagnostic/`, starting with hard_relocation. See README "ML candidate-ranker
-data collection" for the collection workflow, and `docs/ml_notes/` for the
+data collection" for the collection workflow, and `../ml_nn/` for the
 conceptual design (why it can improve, selection mechanism).
 
 ---

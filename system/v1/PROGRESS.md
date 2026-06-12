@@ -3,7 +3,7 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Note (2026-05-20):** This is varrahan/v1's local copy of the team's `PROGRESS.md`,
+> **Note (2026-05-20):** This is system/v1's local copy of the team's `PROGRESS.md`,
 > updated with v12 → v14 findings. The team copy at `/PROGRESS.md` is read-only for this
 > submission slot — apply the edits there manually if you want them in the team log.
 > Most recent: v14 (Tier 3 vectorize legalize + 2-opt baseline-only + running-max + async
@@ -97,7 +97,7 @@ Target: beat RePlAce avg of 1.4578.
 
 ## Per-Benchmark Detail (confirmed from full evals)
 
-v12 = current best (varrahan/v1, --all confirmed 2026-05-10 with budget-relaxation fix).
+v12 = current best (system/v1, --all confirmed 2026-05-10 with budget-relaxation fix).
 v12 stable --all avg = **1.4854**. Reproduced in 2 of 3 runs (3rd run had Run-1 ibm04 spike,
 fixed by adding `BUDGET_OVERRUN_S=60s` allowance for directed-restart phases).
 
@@ -127,9 +127,9 @@ fixed by adding `BUDGET_OVERRUN_S=60s` allowance for directed-restart phases).
 
 ---
 
-### v12 = varrahan/v1 (2026-05-08 → 2026-05-10): threshold change + budget-relaxation fix
+### v12 = system/v1 (2026-05-08 → 2026-05-10): threshold change + budget-relaxation fix
 
-Three concrete code changes vs sameer_v1/v11:
+Three concrete code changes vs sameer_v1 and v11:
 
 1. **EXACT_MACRO_THRESHOLD: 340 → 400** (re-includes ibm11, ibm15)
 2. **EXACT_GRID_CELL_LIMIT: 2000 → 2200** (re-includes ibm15, ibm18)
@@ -343,7 +343,7 @@ one extra iteration. ibm06=**1.6797** (slightly better than 1.6802 from isolated
 (t_score≈6.4s) the placer fits 7 cong-grad iters + Phase 2 wide + Phase 3 perturb; Phase 3 from
 the best-so-far position with stale plc consistently lands on 1.3316. Confirmed in 3-for-3 isolated
 runs. No code change — emerges naturally from existing v10b code under clean CPU. PROGRESS.md's
-1.3390 was a slower-timing artifact (6 iters instead of 7+). Likely also reproducible in `sameer_v1/`.
+1.3390 was a slower-timing artifact (6 iters instead of 7+). Likely also reproducible in `sameer_v1` legacy.
 
 ### v10: Adaptive cong-grad frac + range(12)
 - Extended iterative loop from range(4) to range(12)
@@ -380,7 +380,7 @@ baseline; no restarts possible. ibm10, ibm12 already beat RePlAce at legalizatio
   apparently taken under heavy CPU load. v12's threshold change re-included them after re-measuring
   clean (2026-05-08). The `SLOW_SCORE_THRESHOLD_S=100s` safety guard catches any regression under
   load — falls back to baseline, identical to v11 behavior.
-- **Surrogate ranker (varrahan/v1/surrogate.py) was tested and rejected.** WL-only weighting had
+- **Surrogate ranker (system/v1/surrogate.py) was tested and rejected.** WL-only weighting had
   Spearman +0.83/+0.94 vs real proxy on ibm11/ibm15, but ties between near-optimal candidates
   broke the wrong way. Net effect: zero or slightly negative. Documented in `surrogate.py`,
   `_calibration_test.py`. See README in v1.
@@ -474,7 +474,7 @@ SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
 # v14 (2026-05-20): Async DREAMPlace as Phase 5 candidate. Launch at place() entry,
 # wait_for_result(max_wait_s=30) after Phase 3, follow with one cong-grad iter from
 # DREAMPlace's legalized position. Gated by `is_available()` so placer is a no-op
-# when DREAMPlace isn't built. Build location: submissions/varrahan/dreamplace_build/
+# when DREAMPlace isn't built. Build location: system/dreamplace_build/
 # (gitignored, ~500MB).
 ```
 
@@ -485,7 +485,7 @@ SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
 1. [x] Full v4 17-benchmark eval -- confirmed all 17 baselines
 2. [x] v5 budget-filling restarts -- ibm01 confirmed 1.1854 with 11 restarts (no improvement beyond 6% win)
 3. [x] v6 congestion-gradient perturbation -- ibm02 (-0.060) and ibm06 (-0.036) confirmed
-4. [x] CLEAN full v6 eval -- ran 2026-05-08 (varrahan/v1). Avg 1.4901 under heavy load (ibm04 safety-net fired at 666s); estimated 1.4853 clean.
+4. [x] CLEAN full v6 eval -- ran 2026-05-08 (system/v1). Avg 1.4901 under heavy load (ibm04 safety-net fired at 666s); estimated 1.4853 clean.
 5. [x] ibm15 scoring time test (n=393, grid=2166) -- DONE (v12, 2026-05-08): 43s clean, included via raised limits. Baseline still wins (1.6061).
 6. [~] ibm08 + ibm07 congestion-grad clean test -- DONE (v12, 2026-05-09): ibm07 1% noise wins (1.4924); ibm08 6% noise wins (1.5251); cong-grad doesn't help either.
 7. [ ] Additional congestion-grad fracs (0.08, 0.12) for high-cong benchmarks:

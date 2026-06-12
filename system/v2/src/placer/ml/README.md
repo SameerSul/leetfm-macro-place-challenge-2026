@@ -37,7 +37,7 @@ Tracing is opt-in and does not change placement decisions:
 
 ```bash
 ML_TRACE_PATH=/tmp/ibm_moves.jsonl.gz \
-  uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01
+  uv run evaluate system/v2/src/main.py -b ibm01
 ```
 
 For any run that enables subprocess-based local search, use placeholders so
@@ -45,7 +45,7 @@ each process writes its own valid JSONL stream:
 
 ```bash
 ML_TRACE_PATH='/tmp/traces/{run_id}-{pid}.jsonl.gz' \
-  uv run evaluate submissions/varrahan/v2/src/main.py --all
+  uv run evaluate system/v2/src/main.py --all
 ```
 
 For broader data, run all public benchmarks across multiple seeds/configurations
@@ -156,9 +156,9 @@ manifest:
 
 ```bash
 ML_TRACE_PATH='/tmp/traces/{run_id}-{pid}.jsonl.gz' \
-ML_MODEL_MANIFEST=submissions/varrahan/v2/ml_data/models/latest/manifest.json \
+ML_MODEL_MANIFEST=system/v2/ml_data/models/latest/manifest.json \
 ML_SHADOW_TOP_K=1,3,5,10,16 \
-  uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01
+  uv run evaluate system/v2/src/main.py -b ibm01
 ```
 
 Shadow mode currently records `ml_shadow_group` events for hard and soft
@@ -174,12 +174,12 @@ relocation only:
 
 ```bash
 ML_TRACE_PATH='/tmp/traces/{run_id}-{pid}.jsonl.gz' \
-ML_MODEL_MANIFEST=submissions/varrahan/v2/ml_data/models/holdout-ibm01-ibm02-reloc-001/manifest.json \
+ML_MODEL_MANIFEST=system/v2/ml_data/models/holdout-ibm01-ibm02-reloc-001/manifest.json \
 ML_FILTER_OPERATORS=hard_relocation \
 ML_FILTER_TOP_K=5 \
 ML_FILTER_KEEP_HEURISTIC_FIRST=2 \
 ML_HARD_RELOCATION_N_TARGETS=32 \
-  uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01
+  uv run evaluate system/v2/src/main.py -b ibm01
 ```
 
 The filter chooses which legal hard-relocation candidates to exact-score, but
@@ -202,9 +202,9 @@ trace files. It is offline-only and is not imported by the placer runtime.
 Small smoke run:
 
 ```bash
-PYTHONPATH=submissions/varrahan/v2/src \
+PYTHONPATH=system/v2/src \
 uv run python -m placer.ml.train \
-  submissions/varrahan/v2/ml_data/traces/s42_20260604_181419.jsonl.gz \
+  system/v2/ml_data/traces/s42_20260604_181419.jsonl.gz \
   --output-dir /tmp/v2_ml_models \
   --operators soft_relocation,soft_2opt \
   --objective ranker \
@@ -215,10 +215,10 @@ uv run python -m placer.ml.train \
 Full run shape:
 
 ```bash
-PYTHONPATH=submissions/varrahan/v2/src \
+PYTHONPATH=system/v2/src \
 uv run python -m placer.ml.train \
-  submissions/varrahan/v2/ml_data/traces/*.jsonl.gz \
-  --output-dir submissions/varrahan/v2/ml_data/models/latest \
+  system/v2/ml_data/traces/*.jsonl.gz \
+  --output-dir system/v2/ml_data/models/latest \
   --objective ranker \
   --rounds 200
 ```

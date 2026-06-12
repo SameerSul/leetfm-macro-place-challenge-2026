@@ -5,8 +5,8 @@ without mutating PLC state. This verifier checks those sparse helpers against
 the authoritative `_apply_net_routing_subset` implementation for touched nets.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_relocation_cuda_routing_helpers.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_relocation_cuda_routing_helpers.py
 """
 
 from __future__ import annotations

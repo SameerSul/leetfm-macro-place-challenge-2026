@@ -11,9 +11,9 @@ optimize wirelength, density, or congestion. Use it as a starting
 point for your own algorithm.
 
 Usage:
-    uv run evaluate submissions/examples/greedy_row_placer.py
-    uv run evaluate submissions/examples/greedy_row_placer.py --all
-    uv run evaluate submissions/examples/greedy_row_placer.py -b ibm03
+    uv run evaluate system/v0/greedy_row_placer.py
+    uv run evaluate system/v0/greedy_row_placer.py --all
+    uv run evaluate system/v0/greedy_row_placer.py -b ibm03
 """
 
 import torch

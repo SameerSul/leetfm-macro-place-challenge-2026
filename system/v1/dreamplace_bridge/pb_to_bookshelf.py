@@ -22,7 +22,7 @@ Conventions:
 - Net direction: TILOS driver pin → Bookshelf 'O', TILOS sink pins → 'I'.
 
 Run as a script:
-    uv run python submissions/varrahan/v1/dreamplace_bridge/pb_to_bookshelf.py \
+    uv run python system/v1/dreamplace_bridge/pb_to_bookshelf.py \
         --benchmark external/MacroPlacement/Testcases/ICCAD04/ibm04 \
         --output /tmp/ibm04_bookshelf
 """

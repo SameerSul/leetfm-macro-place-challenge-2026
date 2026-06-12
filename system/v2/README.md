@@ -17,7 +17,7 @@ restored) → **1.1252** (S10 ML hard-relocation filter enabled by default).
 > runtime). numba is in `requirements.txt` but **not** `pyproject.toml`, so
 > `uv sync` alone won't install it; **install `requirements.txt`**. Without numba
 > the placer still runs (numpy fallback) but materially slower and gives up
-> deadline-bound refinement. See `docs/ISSUES.md` S13.
+> deadline-bound refinement. See `docs/general/ISSUES.md` S13.
 Driven by a **family of dual-field soft + hard moves** (cong-field +
 density-field for every move type, plus HXS hard ⇄ soft cross-swaps), a
 bit-exact incremental scoring core, a parallelized pipeline, an **adaptive
@@ -67,8 +67,8 @@ R2/skip-empty) → 1.1993 (+ HXS+R6+WL-prefilter+shared-scorer+numba) →
 1.1782 (+ HS3+3pin-JIT, 11/17 wins) → 1.1379 (S14 hand-JIT, DP-off) →
 1.1272 (S16 DP restored) → **1.1252** (ML hard-relocation filter default).
 
-> Source of truth for numbers and experiment history is [`docs/PROGRESS.md`];
-> open issues / closed dead-ends are in [`docs/ISSUES.md`]. This README is the
+> Source of truth for numbers and experiment history is [`docs/general/PROGRESS.md`];
+> open issues / closed dead-ends are in [`docs/general/ISSUES.md`]. This README is the
 > architectural overview.
 
 ## What's being optimized
@@ -226,7 +226,7 @@ the same-macro / nearby pattern vs the cache-defeating random-k pattern).
 
 | Direction | Outcome |
 |---|---|
-| **DP1** congestion-aware DREAMPlace (`routability_opt`) | CLOSED — DREAMPlace's RUDY congestion ≠ TILOS proxy; no-op or worse across a 64× capacity sweep. Details are in `docs/ISSUES.md` DP1. |
+| **DP1** congestion-aware DREAMPlace (`routability_opt`) | CLOSED — DREAMPlace's RUDY congestion ≠ TILOS proxy; no-op or worse across a 64× capacity sweep. Details are in `docs/general/ISSUES.md` DP1. |
 | **Phase 7b** post-hoc DP-basin repair | REVERTED — recoverable in a probe but budget-hungry, high-variance, not reproducible at fixed seed. |
 | **S1** basin-hopping 2-opt (cong-grad kick) | DISPROVEN — slicing the budget starves the deadline-bound search; 6/7 worse. |
 | **O3** soft-macro repositioning (bulk/gradient) | CLOSED for bulk methods — R5 discrete soft relocation is what works. |
@@ -241,7 +241,7 @@ keeps compatibility delegation for diagnostics that still reach private helpers
 through the submission module.
 
 ```
-submissions/varrahan/v2/
+system/v2/
 ├── README.md
 ├── requirements.txt
 ├── scripts/                 # collect_ml_data.sh — ML training-data collection
@@ -314,9 +314,9 @@ submissions/varrahan/v2/
 | `src/dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async DREAMPlace subprocess launcher. |
 | `src/eda_io/` | Plug-and-play EDA I/O layer: parses LEF/DEF/Verilog/SDC/Liberty into a neutral `Design`, converts to ICCAD04 pb+plc (placer + exact scorer unchanged), writes updated DEF / ICC2-Innovus Tcl / QoR reports. See `src/eda_io/README.md`. |
 | `src/place_design.py` | CLI for the eda_io layer — any input combo in, any output combo out. |
-| `docs/ARCHITECTURE.md` | Design overview + pipeline visualization + algorithm explanations. Start here for the "how it works" tour. |
-| `docs/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
-| `docs/ISSUES.md` | Open issues + closed dead-ends with evidence. |
+| `docs/general/ARCHITECTURE.md` | Design overview + pipeline visualization + algorithm explanations. Start here for the "how it works" tour. |
+| `docs/general/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
+| `docs/general/ISSUES.md` | Open issues + closed dead-ends with evidence. |
 | `test/verification/` | Bit-exactness checks vs the scalar reference. |
 | `test/diagnostic/` | Profiling + analysis. |
 
@@ -359,7 +359,7 @@ submissions/varrahan/v2/
 - Updated package `__init__.py` exports for `scoring`, `routing`, `plc`,
   `local_search`, `legalize`, `perturb`, and `pipeline`.
 - Verified the reorganized entrypoint with bytecode compilation, import smoke,
-  and `uv run evaluate submissions/varrahan/v2/src/main.py -b ibm01`
+  and `uv run evaluate system/v2/src/main.py -b ibm01`
   (`VALID`, proxy `0.9078`, CUDA backend detected locally).
 
 ## ML candidate-ranker data collection
@@ -375,14 +375,14 @@ collection, shadow diagnostics, and sweeps at their exact prior semantics; a
 missing model file or missing `xgboost` also falls back to the pure-heuristic
 narrow-16 path. Wiring check:
 `test/verification/_verify_ml_filter_wiring.py`. Full design + validation:
-`docs/ISSUES.md` S10; conceptual notes: `docs/ml_notes/`.
+`docs/general/ISSUES.md` S10; conceptual notes: `docs/ml_nn/`.
 
 How the data is produced:
 
 ```bash
 # IBM (17 benchmarks) and NG45 (Tier 2) seed sweeps; runs detached for hours.
-submissions/varrahan/v2/scripts/collect_ml_data.sh 42 43 44          # IBM
-submissions/varrahan/v2/scripts/collect_ml_data.sh --ng45 42 43 44   # NG45
+system/v2/scripts/collect_ml_data.sh 42 43 44          # IBM
+system/v2/scripts/collect_ml_data.sh --ng45 42 43 44   # NG45
 ```
 
 - The script sets `ML_TRACE_PATH`, so `placer.ml.data_collection.CandidateTrace`
@@ -417,12 +417,12 @@ so critical macros are pulled together; fixed components and DEF blockages
 are honored. Full documentation: [`src/eda_io/README.md`](src/eda_io/README.md).
 
 ```bash
-uv run python submissions/varrahan/v2/src/place_design.py \
+uv run python system/v2/src/place_design.py \
     --lef tech.lef --lef macros.lef --def floorplan.def --sdc top.sdc \
     --out-def placed.def --out-tcl place.tcl --report qor.rpt
 ```
 
-Tests: `uv run --with pytest python -m pytest submissions/varrahan/v2/test/eda_io/ -v`
+Tests: `uv run --with pytest python -m pytest system/v2/test/eda_io/ -v`
 
 ## Reproducing the DREAMPlace build (`dreamplace_build/`, gitignored ~500MB)
 
@@ -434,13 +434,13 @@ make -j2 install      # NOT -j$(nproc) — OOM
 sed -i 's/np\.string_/np.bytes_/g' install/dreamplace/PlaceDB.py   # NumPy 2.0
 ```
 The retired routability experiment and vendor-patch notes are summarized in
-`docs/ISSUES.md` DP1; the production bridge keeps only the active seed flow.
+`docs/general/ISSUES.md` DP1; the production bridge keeps only the active seed flow.
 
 ## Commands
 
 ```bash
-uv run evaluate submissions/varrahan/v2/src/main.py -b ibm04      # single benchmark
-uv run evaluate submissions/varrahan/v2/src/main.py --all         # headline (~39 min)
-uv run python scripts/compare_placers.py submissions/varrahan/v1/placer.py submissions/varrahan/v2/src/main.py
-uv run python submissions/varrahan/v2/test/verification/_verify_score_move.py
+uv run evaluate system/v2/src/main.py -b ibm04      # single benchmark
+uv run evaluate system/v2/src/main.py --all         # headline (~39 min)
+uv run python scripts/compare_placers.py system/v1/placer.py system/v2/src/main.py
+uv run python system/v2/test/verification/_verify_score_move.py
 ```

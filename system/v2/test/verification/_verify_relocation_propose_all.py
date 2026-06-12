@@ -6,8 +6,8 @@ invariant needed before A/B testing: after serial exact verify/commit, the
 incremental scorer's returned proxy matches a fresh exact proxy recompute.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_relocation_propose_all.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_relocation_propose_all.py
 """
 
 from __future__ import annotations

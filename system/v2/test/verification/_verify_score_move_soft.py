@@ -5,7 +5,7 @@ routing blockage (only hard macros block) - a distinct code path from the hard
 score_move. It must equal a full _exact_proxy recompute of the same soft-moved
 placement, with no drift over sequential commits.
 
-    uv run python submissions/varrahan/v2/test/verification/_verify_score_move_soft.py
+    uv run python system/v2/test/verification/_verify_score_move_soft.py
 """
 import sys
 from pathlib import Path

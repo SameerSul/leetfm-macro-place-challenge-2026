@@ -25,15 +25,15 @@ This document specifies the changes needed to make the DREAMPlace bridge actuall
 
 ## Repository state (what you're working with)
 
-- **`submissions/varrahan/v1/placer.py`** — main placer (894 lines). Async DREAMPlace launch is at `place()` start; Phase 5 check after Phase 3. Look for the comment blocks: `Async DREAMPlace launch` and `Async DREAMPlace check`.
-- **`submissions/varrahan/v1/dreamplace_bridge/`** — 4 files:
+- **`system/v1/placer.py`** — main placer (894 lines). Async DREAMPlace launch is at `place()` start; Phase 5 check after Phase 3. Look for the comment blocks: `Async DREAMPlace launch` and `Async DREAMPlace check`.
+- **`system/v1/dreamplace_bridge/`** — 4 files:
   - `run_bridge.py` — `launch_dreamplace_async`, `AsyncDreamplaceHandle`, `_default_dreamplace_config`.
   - `pb_to_bookshelf.py` — TILOS → Bookshelf forward converter. `convert(soft_macros_movable=True)` works correctly (verified 2026-05-20: produces 287 terminals = ports only, 1380 movable).
   - `bookshelf_to_pb.py` — Bookshelf → TILOS back-converter. `read_dreamplace_positions_full()` (added 2026-05-20) returns BOTH hard and soft positions.
   - `__init__.py` — trivial.
-- **`submissions/varrahan/dreamplace_build/install/`** — built DREAMPlace (~75-min build, NumPy 2.0 patch applied). DREAMPlace is fully functional.
+- **`system/dreamplace_build/install/`** — built DREAMPlace (~75-min build, NumPy 2.0 patch applied). DREAMPlace is fully functional.
 
-**Important:** if any code change "doesn't take effect", delete `submissions/varrahan/v1/dreamplace_bridge/__pycache__/` first. Stale `.pyc` cache caused the initial soft_macros_movable bug to silently persist after the code was already correct.
+**Important:** if any code change "doesn't take effect", delete `system/v1/dreamplace_bridge/__pycache__/` first. Stale `.pyc` cache caused the initial soft_macros_movable bug to silently persist after the code was already correct.
 
 ---
 
@@ -67,7 +67,7 @@ Compare: UT Austin's DREAMPlace-based leaderboard entry achieves **1.4076 averag
 - `placer.py` passes `soft_macros_movable=True` to `launch_dreamplace_async`.
 
 ### What needs to be verified:
-1. **Run on ibm04 standalone** (`uv run evaluate submissions/varrahan/v1/placer.py -b ibm04`). Look for log line `DREAMPlace launched async (soft-movable, ...)` and `Candidate N (dreamplace hard+soft): proxy=...`. The proxy should be ≤ 1.6 ideally; if it's still ≥ 1.5, Fix 2 (density tuning) is what's actually needed — not Fix 1's fault.
+1. **Run on ibm04 standalone** (`uv run evaluate system/v1/placer.py -b ibm04`). Look for log line `DREAMPlace launched async (soft-movable, ...)` and `Candidate N (dreamplace hard+soft): proxy=...`. The proxy should be ≤ 1.6 ideally; if it's still ≥ 1.5, Fix 2 (density tuning) is what's actually needed — not Fix 1's fault.
 2. **Run on ibm11**. v13 (PROGRESS.md) reported wins here. Look for whether the DREAMPlace candidate beats baseline 1.2354.
 3. **Inspect the `.nodes` file** at `/tmp/dreamplace_v1/<benchmark>/<benchmark>.nodes`. The line `NumTerminals : X` should equal the **port count** (~287 for ibm04). If it's >1000, the soft_macros_movable flag isn't propagating — clear `__pycache__/` and retry.
 
@@ -79,10 +79,10 @@ Compare: UT Austin's DREAMPlace-based leaderboard entry achieves **1.4076 averag
 
 ```bash
 # Should show ~287 terminals (just ports), ~1380 movable (hard + soft)
-rm -rf /tmp/dreamplace_v1 submissions/varrahan/v1/dreamplace_bridge/__pycache__
+rm -rf /tmp/dreamplace_v1 system/v1/dreamplace_bridge/__pycache__
 uv run python -c "
 import sys
-sys.path.insert(0, 'submissions/varrahan/v1')
+sys.path.insert(0, 'system/v1')
 from dreamplace_bridge.pb_to_bookshelf import convert
 convert('external/MacroPlacement/Testcases/ICCAD04/ibm04', '/tmp/dp_test', soft_macros_movable=True)
 "
@@ -195,10 +195,10 @@ After each fix:
 
 1. **Smoke test** the bridge code in isolation (avoids subprocess overhead):
    ```bash
-   rm -rf /tmp/dreamplace_v1 submissions/varrahan/v1/dreamplace_bridge/__pycache__
+   rm -rf /tmp/dreamplace_v1 system/v1/dreamplace_bridge/__pycache__
    uv run python -c "
    import sys, time
-   sys.path.insert(0, 'submissions/varrahan/v1')
+   sys.path.insert(0, 'system/v1')
    from dreamplace_bridge.run_bridge import run_dreamplace
    t0 = time.perf_counter()
    pos = run_dreamplace('external/MacroPlacement/Testcases/ICCAD04/ibm04',
@@ -210,7 +210,7 @@ After each fix:
 
 2. **Standalone benchmark test** on ibm04 (the v13 win candidate):
    ```bash
-   timeout 280 uv run evaluate submissions/varrahan/v1/placer.py -b ibm04
+   timeout 280 uv run evaluate system/v1/placer.py -b ibm04
    ```
    Look for the `Candidate N (dreamplace hard+soft): proxy=X.XXXX` line. Target: X.XXXX < 1.4101 (baseline). Ideal: X.XXXX < 1.3316 (Phase 3 win).
 
@@ -218,7 +218,7 @@ After each fix:
 
 4. **--all run** (only if standalone tests show consistent wins):
    ```bash
-   timeout 3600 uv run evaluate submissions/varrahan/v1/placer.py --all
+   timeout 3600 uv run evaluate system/v1/placer.py --all
    ```
    v12 baseline: avg 1.4854. Target: ≤ 1.470 (any improvement is meaningful given the failures we've already tried).
 

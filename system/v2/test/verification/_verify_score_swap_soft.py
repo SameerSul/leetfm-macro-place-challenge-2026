@@ -3,7 +3,7 @@ the full _exact_proxy. Mirrors the existing _verify_incremental_scorer.py
 methodology: for random (k1, k2, swap-xy pairs), compare the incremental
 score against a fresh _exact_proxy of the swap-applied placement.
 
-    uv run python submissions/varrahan/v2/test/verification/_verify_score_swap_soft.py
+    uv run python system/v2/test/verification/_verify_score_swap_soft.py
 """
 import sys
 import importlib.util
@@ -14,7 +14,7 @@ import torch
 
 THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
-REPO_ROOT = THIS.parents[5]
+REPO_ROOT = THIS.parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(V2_DIR / "src"))
 

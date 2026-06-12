@@ -4,8 +4,8 @@ On CUDA-visible hosts, --require-cuda should pass. On CPU-backed or GPU-blocked
 hosts, it should fail after printing enough runtime detail to explain why.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_cuda_diagnostic_require_cuda.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_cuda_diagnostic_require_cuda.py
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ def main() -> int:
     env["PYTHONPATH"] = os.pathsep.join(
         part
         for part in [
-            "submissions/varrahan/v2/src",
+            "system/v2/src",
             env.get("PYTHONPATH", ""),
         ]
         if part
@@ -30,7 +30,7 @@ def main() -> int:
     proc = subprocess.run(
         [
             sys.executable,
-            "submissions/varrahan/v2/test/diagnostic/_cuda_relocation_status.py",
+            "system/v2/test/diagnostic/_cuda_relocation_status.py",
             "--benchmark",
             "ibm01",
             "--exact-limit",

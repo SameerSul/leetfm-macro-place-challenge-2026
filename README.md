@@ -121,24 +121,24 @@ git submodule update --init external/MacroPlacement
 uv sync
 
 # Verify the setup
-uv run evaluate submissions/examples/greedy_row_placer.py -b ibm01
+uv run evaluate system/v0/greedy_row_placer.py -b ibm01
 ```
 
 ### Run Your First Example
 
 ```bash
 # Run the greedy row placer on ibm01
-uv run evaluate submissions/examples/greedy_row_placer.py
+uv run evaluate system/v0/greedy_row_placer.py
 
 # Run on all 17 IBM benchmarks
-uv run evaluate submissions/examples/greedy_row_placer.py --all
+uv run evaluate system/v0/greedy_row_placer.py --all
 
 # Run on NG45 commercial designs (ariane133, ariane136, mempool_tile, nvdla)
-uv run evaluate submissions/examples/greedy_row_placer.py --ng45
+uv run evaluate system/v0/greedy_row_placer.py --ng45
 
 # Visualize the result
-uv run evaluate submissions/examples/greedy_row_placer.py --vis
-uv run evaluate submissions/examples/greedy_row_placer.py --all --vis
+uv run evaluate system/v0/greedy_row_placer.py --vis
+uv run evaluate system/v0/greedy_row_placer.py --all --vis
 ```
 
 Running on all benchmarks produces a summary like:
@@ -150,7 +150,7 @@ Benchmark     Proxy        SA   RePlAce     vs SA  vs RePlAce  Overlaps
      AVG    2.2109    2.1251    1.4578     -4.0%      -51.7%         0
 ```
 
-The greedy placer achieves zero overlaps but makes no attempt to optimize wirelength or connectivity — your job is to do better! See [`SETUP.md`](SETUP.md) for the full API reference and [`submissions/examples/`](submissions/examples/) for working examples.
+The greedy placer achieves zero overlaps but makes no attempt to optimize wirelength or connectivity — your job is to do better! See [`SETUP.md`](SETUP.md) for the full API reference and [`system/v0/`](system/v0/) for working examples.
 
 ## 🎯 IBM Benchmark Suite (ICCAD04)
 
@@ -205,7 +205,7 @@ Classical methods (SA, RePlAce) have been refined for decades but still have roo
 ## 📖 Documentation
 
 - **Setup & API Reference**: [`SETUP.md`](SETUP.md) - Infrastructure details, benchmark format, cost computation, testing
-- **Example Submissions**: [`submissions/examples/`](submissions/examples/) - Working placer examples
+- **Example Submissions**: [`system/v0/`](system/v0/) - Working placer examples
 
 ## 📚 References
 

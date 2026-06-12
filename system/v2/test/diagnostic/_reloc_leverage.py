@@ -11,7 +11,7 @@ relocation leverage, so we can correlate them with the measured R2 gains:
 Hypothesis: high gain ↔ few dominant macros (high max_frac/top5_frac) + open
 space (low hard_util) + high baseline congestion (more to relieve).
 
-    uv run python submissions/varrahan/v2/test/diagnostic/_reloc_leverage.py
+    uv run python system/v2/test/diagnostic/_reloc_leverage.py
 """
 import sys
 import importlib.util
@@ -22,7 +22,7 @@ import torch
 
 THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
-REPO_ROOT = THIS.parents[5]
+REPO_ROOT = THIS.parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(V2_DIR / "src"))
 

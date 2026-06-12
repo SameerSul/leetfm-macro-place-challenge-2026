@@ -24,8 +24,10 @@ uv sync
 │   ├── objective.py        # Proxy cost computation
 │   ├── utils.py            # Validation and visualization
 │   └── def_writer.py       # DEF file export
-├── submissions/
-│   └── examples/           # Example placers (greedy_row_placer.py, simple_random_placer.py)
+├── system/
+│   ├── v0/                 # Example placers (greedy_row_placer.py, simple_random_placer.py)
+│   ├── v1/                 # Frozen checkpoint placer
+│   └── v2/                 # Active placer system
 ├── external/
 │   └── MacroPlacement/     # TILOS evaluator and ICCAD04 testcases
 ├── benchmarks/
@@ -156,7 +158,7 @@ Key constraints:
 - **Zero hard macro overlaps** required (soft macros may overlap — they are standard cell cluster abstractions)
 - Moving hard macros without repositioning soft macros will degrade wirelength and density
 
-See `submissions/examples/greedy_row_placer.py` for a simple example and `submissions/will_seed/placer.py` for a more complete approach.
+See `system/v0/greedy_row_placer.py` for a simple example and `system/v1/placer.py` for a more complete approach.
 
 ## Net Connectivity
 
@@ -202,10 +204,10 @@ The 17 IBM ICCAD04 benchmarks are in `external/MacroPlacement/Testcases/ICCAD04/
 
 ```bash
 # Single benchmark
-uv run evaluate submissions/examples/greedy_row_placer.py -b ibm01
+uv run evaluate system/v0/greedy_row_placer.py -b ibm01
 
 # All 17 benchmarks with comparison table
-uv run evaluate submissions/examples/greedy_row_placer.py --all
+uv run evaluate system/v0/greedy_row_placer.py --all
 ```
 
 To evaluate your own placer on all benchmarks, follow the same pattern — loop over the benchmark directories:

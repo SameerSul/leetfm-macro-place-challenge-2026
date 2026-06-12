@@ -11,9 +11,9 @@ reporting the tradeoff:
 
 Pick the smallest T with lost% ≈ 0 (maximizes reject% without dropping gains).
 
-    PYTHONPATH=submissions/varrahan/v2/src uv run python \
-      submissions/varrahan/v2/test/diagnostic/_calibrate_wl_prefilter.py \
-      submissions/varrahan/v2/ml_data/calib_hard2opt_ibm13.jsonl.gz
+    PYTHONPATH=system/v2/src uv run python \
+      system/v2/test/diagnostic/_calibrate_wl_prefilter.py \
+      system/v2/ml_data/calib_hard2opt_ibm13.jsonl.gz
 """
 import gzip
 import json
@@ -34,7 +34,7 @@ def _iter(path):
 
 
 def main(argv):
-    paths = argv or ["submissions/varrahan/v2/ml_data/calib_hard2opt_ibm13.jsonl.gz"]
+    paths = argv or ["system/v2/ml_data/calib_hard2opt_ibm13.jsonl.gz"]
     # per op: list of (wl_delta, score_gain)
     rows = defaultdict(list)
     for p in paths:

@@ -22,7 +22,7 @@ cd /path/to/macro-place-challenge-2026
 uv sync
 
 # Run the example
-python submissions/examples/simple_random_placer.py
+python system/v0/simple_random_placer.py
 ```
 
 ### Expected Output

@@ -4,7 +4,7 @@ Runs on the baseline legalization (fast, no full pipeline) so we can see which
 term dominates the proxy and how much it varies across benchmarks. The point is
 strategic: where is the mass, and where is the spread (= movable headroom).
 
-    uv run python submissions/varrahan/v2/test/diagnostic/_term_breakdown.py ibm01 ibm04 ibm10 ibm16
+    uv run python system/v2/test/diagnostic/_term_breakdown.py ibm01 ibm04 ibm10 ibm16
 """
 import sys
 import importlib.util
@@ -15,7 +15,7 @@ import torch
 
 THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
-REPO_ROOT = THIS.parents[5]
+REPO_ROOT = THIS.parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(V2_DIR / "src"))
 

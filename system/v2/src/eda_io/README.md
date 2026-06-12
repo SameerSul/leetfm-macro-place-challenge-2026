@@ -84,7 +84,7 @@ Liberty scales weights by sink capacitance.
 
 ```bash
 # canonical: LEF + DEF in, everything out
-uv run python submissions/varrahan/v2/src/place_design.py \
+uv run python system/v2/src/place_design.py \
     --lef tech.lef --lef macros.lef --def floorplan.def \
     --out-def placed.def --out-tcl place_macros.tcl --report qor.rpt
 
@@ -136,4 +136,4 @@ vendor-agnostic - any tool's LEF/DEF loads.
 - `../place_design.py` - the CLI tying it together
 
 Tests + fixture design (LEF/DEF/Verilog/SDC/Liberty for a 4-macro,
-13-cell `chiptop`): `submissions/varrahan/v2/test/eda_io/`.
+13-cell `chiptop`): `system/v2/test/eda_io/`.

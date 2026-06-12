@@ -3,7 +3,7 @@
 Conceptual / "why it works" notes for the per-operator XGBoost candidate ranker.
 This is the explanatory companion to:
 
-- **`docs/ISSUES.md` S10** — the terse experiment-tracker entry (status, plan,
+- **`../general/ISSUES.md` S10** — the terse experiment-tracker entry (status, plan,
   dataset counts).
 - **top-level `README.md` → "ML candidate-ranker data collection"** — how to run
   the collection script.
@@ -13,7 +13,7 @@ equal budget — comparable-or-better than the exhaustive interleave (net ~−0.
 over 10 benchmarks, no robust regression). Production default unchanged.** Key
 finding: the ranker is not the bottleneck (`best_recall@16` ≈ 1.0), so retraining
 has no headroom; the leverage is integration policy and the routing-fill cost. See
-`docs/ISSUES.md` S10 for the numbers.
+`../general/ISSUES.md` S10 for the numbers.
 
 ## Notes
 

@@ -6,7 +6,7 @@ Two properties the prefilter relies on:
      the normalized total_wl_raw delta that relocating soft k to xy actually
      produces (via _prepare_move_soft + _commit_after_prep_soft).
 
-    uv run python submissions/varrahan/v2/test/verification/_verify_wl_delta_move_soft.py
+    uv run python system/v2/test/verification/_verify_wl_delta_move_soft.py
 """
 import sys
 import importlib.util
@@ -17,7 +17,7 @@ import torch
 
 THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
-REPO_ROOT = THIS.parents[5]
+REPO_ROOT = THIS.parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(V2_DIR / "src"))
 

@@ -10,7 +10,7 @@ Tests three properties for each benchmark, for both hard and soft paths:
   T3: prep(k) + commit_after_prep(k, target) leaves the same state as
       commit_move(k, target).
 
-    uv run python submissions/varrahan/v2/test/verification/_verify_prep_trial.py
+    uv run python system/v2/test/verification/_verify_prep_trial.py
 """
 import sys
 import importlib.util
@@ -21,7 +21,7 @@ import torch
 
 THIS = Path(__file__).resolve()
 V2_DIR = THIS.parents[2]
-REPO_ROOT = THIS.parents[5]
+REPO_ROOT = THIS.parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(V2_DIR / "src"))
 

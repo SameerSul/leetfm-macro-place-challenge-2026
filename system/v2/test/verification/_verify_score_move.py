@@ -4,7 +4,7 @@ score_move is the single-macro relocation analogue of score_swap (used by the
 congestion-directed relocation pass). It must equal a full _exact_proxy recompute
 of the same single-macro-moved placement, and sequential commits must not drift.
 
-    uv run python submissions/varrahan/v2/test/verification/_verify_score_move.py
+    uv run python system/v2/test/verification/_verify_score_move.py
 """
 import sys
 from pathlib import Path

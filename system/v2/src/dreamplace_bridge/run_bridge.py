@@ -88,13 +88,13 @@ except ImportError:
 
 # Where DREAMPlace is installed.
 DREAMPLACE_INSTALL = (
-    REPO_ROOT / "submissions" / "varrahan" / "dreamplace_build" / "install"
+    REPO_ROOT / "system" / "dreamplace_build" / "install"
 )
 DREAMPLACE_PLACER = DREAMPLACE_INSTALL / "dreamplace" / "Placer.py"
 
 # DREAMPlace extensions must run with the Python used to build them.
 _DP_BUILD_PYTHON = (
-    REPO_ROOT / "submissions" / "varrahan" / "dreamplace_build" / "dpenv" / "bin" / "python"
+    REPO_ROOT / "system" / "dreamplace_build" / "dpenv" / "bin" / "python"
 )
 _REPO_VENV_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
 VENV_PYTHON = _DP_BUILD_PYTHON if _DP_BUILD_PYTHON.exists() else _REPO_VENV_PYTHON
@@ -168,7 +168,7 @@ def run_dreamplace(
     if not is_available():
         raise RuntimeError(
             f"DREAMPlace not installed at {DREAMPLACE_INSTALL}. "
-            f"See submissions/varrahan/v2/README.md to rebuild."
+            f"See system/v2/README.md to rebuild."
         )
 
     benchmark_dir = Path(benchmark_dir).resolve()
@@ -427,7 +427,7 @@ def launch_dreamplace_async(
     if not is_available():
         raise RuntimeError(
             f"DREAMPlace not installed at {DREAMPLACE_INSTALL}. "
-            f"See submissions/varrahan/v2/README.md to rebuild."
+            f"See system/v2/README.md to rebuild."
         )
 
     benchmark_dir_p = Path(benchmark_dir).resolve()

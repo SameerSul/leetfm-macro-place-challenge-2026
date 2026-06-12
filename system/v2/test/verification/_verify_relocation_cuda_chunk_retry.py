@@ -6,8 +6,8 @@ process: the first oversized batch raises a CUDA-OOM-like RuntimeError, then
 the wrapper should retry with smaller chunks and score every proposal.
 
 Usage:
-  PYTHONPATH=submissions/varrahan/v2/src \
-  uv run python submissions/varrahan/v2/test/verification/_verify_relocation_cuda_chunk_retry.py
+  PYTHONPATH=system/v2/src \
+  uv run python system/v2/test/verification/_verify_relocation_cuda_chunk_retry.py
 """
 
 from __future__ import annotations

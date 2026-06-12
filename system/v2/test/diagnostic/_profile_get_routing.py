@@ -5,7 +5,7 @@ forced dirty flag so each call does the full recompute. Reports per-
 stage averages.
 
 Usage:
-  uv run python submissions/varrahan/v2/test/diagnostic/_profile_get_routing.py
+  uv run python system/v2/test/diagnostic/_profile_get_routing.py
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve()
 V2_DIR = HERE.parents[2]
-REPO_ROOT = HERE.parents[5]
+REPO_ROOT = HERE.parents[4]
 for p in (str(REPO_ROOT), str(V2_DIR / "src")):
     if p not in sys.path:
         sys.path.insert(0, p)
