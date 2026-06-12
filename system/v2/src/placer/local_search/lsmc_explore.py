@@ -106,18 +106,24 @@ def _lsmc_explore(
         cand_np = cand.detach().cpu().numpy().astype(np.float64)
         scorer = IncrementalScorer(plc, benchmark, cand_np)
 
+        # Descend to a local optimum: alternate cong/density propose-all
+        # passes until a full round stops improving or the wall is hit.
         desc_xy = kicked
         desc_score = kick_score
-        for use_density in (False, True):
-            if time.monotonic() >= wall:
+        while time.monotonic() < wall:
+            round_start = desc_score
+            for use_density in (False, True):
+                if time.monotonic() >= wall:
+                    break
+                desc_xy, _, desc_score = _relocation_moves(
+                    desc_xy, sizes, hw, hh, cw, ch, movable, n, plc,
+                    benchmark, scorer, desc_score,
+                    deadline=wall,
+                    use_density=use_density,
+                    propose_all=True,
+                )
+            if round_start - desc_score < 1e-4:
                 break
-            desc_xy, n_acc, desc_score = _relocation_moves(
-                desc_xy, sizes, hw, hh, cw, ch, movable, n, plc,
-                benchmark, scorer, desc_score,
-                deadline=wall,
-                use_density=use_density,
-                propose_all=True,
-            )
 
         cand[:n, 0] = torch.tensor(desc_xy[:, 0], dtype=torch.float32)
         cand[:n, 1] = torch.tensor(desc_xy[:, 1], dtype=torch.float32)
