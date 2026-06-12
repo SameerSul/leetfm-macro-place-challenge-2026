@@ -330,8 +330,10 @@ submissions/varrahan/v2/
   Verified: `test/verification/_verify_ml_filter_wiring.py` + ibm01
   end-to-end (proxy 0.9146, VALID, 71s, filter line present) + same-day
   `--all` re-baseline: **avg 1.1252, 17/17 VALID, 0 overlaps, 2337s** (new
-  best; was 1.1272). Multi-seed repeat still wanted before crediting the
-  −0.0020 as more than single-rep variance.
+  best; was 1.1272). **Gain confirmed by same-day paired multi-seed `--all`**:
+  Δ(ON−OFF) = −0.0051 / −0.0044 / −0.0029 across 3 seeds (mean **−0.0041**,
+  filter wins 3/3; ON mean 1.1245 vs OFF 1.1286; all 6 runs 17/17 VALID).
+  Logs: `ml_data/compare/all_20260611_{on,off}_s{def,43,44}.log`.
 - **ML candidate-ranker data collection (2026-06-04).** Added
   `scripts/collect_ml_data.sh` + a default-preserving `V2_SEED` knob in
   `src/main.py` to capture the training traces (see the section below). No

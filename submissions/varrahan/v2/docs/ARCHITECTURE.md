@@ -32,11 +32,13 @@
 
 ## Current Best Result (2026-06-11)
 
-**Average proxy cost: 1.1252** across all 17 IBM ICCAD04 benchmarks. This is the
-first `--all` re-baseline with the ML hard-relocation filter enabled by default;
-it clears the no-regression bar, but a multi-seed repeat is still wanted before
-crediting the full −0.0020 over the S16 DP-restored reference as signal rather
-than single-rep timing variance.
+**Average proxy cost: 1.1252** across all 17 IBM ICCAD04 benchmarks, with the
+ML hard-relocation filter enabled by default. The filter's gain is confirmed by
+a same-day paired multi-seed `--all` (3 seeds × ON/OFF, sequential): Δ(ON−OFF)
+= −0.0051 / −0.0044 / −0.0029, mean **−0.0041**, filter wins 3/3, all 6 runs
+17/17 VALID. ON mean 1.1245 vs OFF mean 1.1286 (seed 44's ON run hit 1.1235 —
+seed variance, not a selectable config; the harness runs the default seed).
+See ISSUES.md S10 and PROGRESS.md 2026-06-11.
 
 | Benchmark | Hard macros | v2 score | vs RePlAce (1.4578) |
 |-----------|-------------|----------|---------------------|

@@ -26,9 +26,23 @@ Target: beat RePlAce avg of 1.4578.
 > ±0.005–0.01 single-run noise: ibm11 −0.0094, ibm13 −0.0083 (the model's
 > held-out benchmark), ibm16 −0.0088, ibm17 −0.0078 vs ibm06 +0.0166, ibm10
 > +0.0133, ibm18 +0.0085. NB ibm10 regressing here despite being the robust S10
-> compare win underlines that this is ONE rep — the −0.0020 aggregate confirms
-> "no regression, default holds" but a multi-seed repeat is still wanted before
-> claiming the improvement itself. Next lever unchanged: budget-aware pruning
+> compare win underlines that single reps are noisy — which the paired
+> multi-seed below resolved.
+>
+> **Multi-seed paired confirmation (same day): the filter gain is REAL — mean
+> Δ −0.0041, filter wins 3/3 pairs.** Six sequential same-day `--all` runs,
+> paired ON-vs-OFF per seed (OFF = `ML_FILTER_OPERATORS=""`, the exact prior
+> production path; logs
+> `ml_data/compare/all_20260611_{on,off}_s{def,43,44}.log`): default seed
+> 1.1252 vs 1.1303 (−0.0051); seed 43 1.1248 vs 1.1292 (−0.0044); seed 44
+> **1.1235** vs 1.1264 (−0.0029). ON mean 1.1245, OFF mean 1.1286; all 6 runs
+> 17/17 VALID / 0 overlaps / 2219–2504s. ON runs cluster tighter (spread
+> 0.0017 vs 0.0039 OFF). Note the same-day OFF baseline (1.1303) was worse
+> than the prior-day 1.1272 reference — day-to-day machine drift exceeds the
+> effect size, so only paired same-day runs can resolve filter-sized deltas;
+> never compare against a different-day reference. **Headline stays the
+> default-seed 1.1252** (the harness runs the default seed; seed 44's 1.1235
+> is seed variance, not a selectable config). Next lever: budget-aware pruning
 > (`ML_FILTER_TOP_K` sweep under time pressure only).
 
 > **Status (2026-06-10 — fixed a silent DREAMPlace ABI break, ISSUES.md S16):**
