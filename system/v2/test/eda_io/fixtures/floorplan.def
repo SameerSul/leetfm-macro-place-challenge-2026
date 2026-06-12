@@ -1,0 +1,60 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN chiptop ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 10000 10000 ) ( 130000 130000 ) ;
+
+COMPONENTS 17 ;
+- u_rom ROM32 + FIXED ( 12000 12000 ) N ;
+- u_ram0 RAM16 + PLACED ( 30000 30000 ) N ;
+- u_ram1 RAM16 + PLACED ( 90000 90000 ) FS ;
+- u_pll PLL ;
+- u0 INVX1 + PLACED ( 40000 40000 ) N ;
+- u1 NAND2 + PLACED ( 42000 40000 ) N ;
+- u2 INVX1 + PLACED ( 44000 40000 ) N ;
+- u3 NAND2 + PLACED ( 46000 40000 ) N ;
+- u4 INVX1 + PLACED ( 48000 40000 ) N ;
+- u5 NAND2 + PLACED ( 50000 40000 ) N ;
+- u6 INVX1 + PLACED ( 80000 80000 ) N ;
+- u7 NAND2 + PLACED ( 82000 80000 ) N ;
+- u8 INVX1 + PLACED ( 84000 80000 ) N ;
+- u9 NAND2 + PLACED ( 86000 80000 ) N ;
+- u10 INVX1 + PLACED ( 88000 80000 ) N ;
+- u11 NAND2
+  + PLACED ( 60000 60000 ) N ;
+- u_buf BUFX2 + PLACED ( 52000 40000 ) N ;
+END COMPONENTS
+
+PINS 4 ;
+- clk + NET clk + DIRECTION INPUT + USE SIGNAL
+  + LAYER M2 ( -200 -200 ) ( 200 200 )
+  + PLACED ( 10000 70000 ) N ;
+- rst + NET rst + DIRECTION INPUT + USE SIGNAL
+  + PLACED ( 10000 90000 ) N ;
+- in1 + NET in1 + DIRECTION INPUT + USE SIGNAL
+  + PLACED ( 70000 10000 ) N ;
+- out1 + NET out1 + DIRECTION OUTPUT + USE SIGNAL
+  + PLACED ( 130000 70000 ) N ;
+END PINS
+
+BLOCKAGES 1 ;
+- PLACEMENT RECT ( 110000 12000 ) ( 126000 24000 ) ;
+END BLOCKAGES
+
+NETS 12 ;
+- clk ( PIN clk ) ( u_pll REF ) + USE CLOCK ;
+- pllout ( u_pll OUT ) ( u_ram0 CK ) ( u_ram1 CK ) ;
+- in1 ( PIN in1 ) ( u0 A ) ;
+- n0 ( u0 Y ) ( u_ram0 D ) ;
+- ramq0 ( u_ram0 Q ) ( u1 A ) ( u2 A ) ;
+- n1 ( u1 Y ) ( u3 A ) ( u3 B ) ;
+- romdo ( u_rom DO ) ( u4 A ) ;
+- n2 ( u4 Y ) ( u_rom A ) ( u_ram1 D ) ;
+- n4 ( u5 Y ) ( u_buf A ) ;
+- out1 ( u_buf Y ) ( PIN out1 ) ;
+- rst ( PIN rst ) ( u6 A ) ;
+- n3 ( u6 Y ) ( u7 A ) ( u7 B ) ( u8 A ) + WEIGHT 3 ;
+END NETS
+
+END DESIGN
