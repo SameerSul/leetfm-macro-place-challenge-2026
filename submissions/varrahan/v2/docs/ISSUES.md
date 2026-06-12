@@ -777,12 +777,18 @@ their exact semantics. Wiring verified by
 `test/verification/_verify_ml_filter_wiring.py` and an ibm01 end-to-end run
 (`R2 hard relocation ML filter on (pool=32, top_k=16)` in the log; proxy
 0.9146, VALID, 71s, reproduced twice). First `--all` rep with the default on:
-**avg 1.1252, 17/17 VALID, 0 overlaps, 2337s** — −0.0020 vs the 1.1272
-reference, new best (per-benchmark table in PROGRESS.md 2026-06-11). That
-clears the "no regression" bar for keeping the default; a multi-seed repeat
-(+ NG45) is still wanted before crediting the −0.0020 as real improvement
-rather than single-rep variance (note ibm10 regressed +0.0133 in this rep
-despite being the robust win in the equal-budget compare).
+**avg 1.1252, 17/17 VALID, 0 overlaps, 2337s** (per-benchmark table in
+PROGRESS.md 2026-06-11). **Acceptance gate met same day via paired multi-seed
+`--all`**: 3 seeds × (ON, OFF) run sequentially under same-day machine
+conditions — Δ(ON−OFF) = −0.0051 (default seed), −0.0044 (s43), −0.0029
+(s44); mean **−0.0041, filter wins 3/3 pairs**, all 6 runs 17/17 VALID /
+0 overlaps. ON mean 1.1245 vs OFF mean 1.1286. Logs:
+`ml_data/compare/all_20260611_{on,off}_s{def,43,44}.log`. Methodology note:
+day-to-day drift (prior-day OFF reference 1.1272 vs same-day OFF 1.1303)
+exceeds the effect size, so unpaired cross-day comparisons cannot resolve
+filter-sized deltas — use paired same-day runs for all future filter
+experiments. NG45 spot-check remains open but expected ~neutral
+(hard_relocation is near-idle on NG45, see the 2026-06-05 re-check below).
 
 **Recall-vs-width study (2026-06-05) — GNN routing-fill prefilter feasibility.**
 Tested whether a cheap surrogate can triage *wide* candidate pools (the premise of
