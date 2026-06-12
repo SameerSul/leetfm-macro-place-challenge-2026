@@ -1,4 +1,4 @@
-# Open issues — v2 placer (last revised 2026-06-11)
+# Open issues — v2 placer (last revised 2026-06-12)
 
 This is a **clean rewrite**. All issues that have been resolved or
 rejected have been removed; their findings are captured in commit
@@ -49,6 +49,35 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 ---
 
 ## Open issues
+
+### S17. GPU staged rollout — Stage 0/1 DONE 2026-06-12 (propose-all WASH, opt-in); Stage 2 exploration engine NEXT
+
+Plan of record: `docs/gpu/GPU-ops.md` (rewritten 2026-06-11 — cuda_delta-based
+LSMC exploration, island model, evidence-gated phase pruning).
+
+**Stage 0 (done 2026-06-11):** re-baseline avg **1.1243**, 17/17 VALID, 2679s
+(noise-equivalent to the 1.1252 record). CUDA diagnostic PASS (parity 1.541e-07);
+DREAMPlace dpenv healthy but **sm_89-only**; numba present. Open half: the new
+multi-GPU machines aren't reachable from this box — on access, run GPU
+inventory, rebuild DP for their arch, re-baseline, and re-run the Stage 1
+winner with raised `V2_RELOC_PROPOSE_{MAX_MB,TOP_M}` / pool sizes.
+
+**Stage 1 (done 2026-06-12):** paired multi-seed A/B of
+`V2_RELOC_PROPOSE_ALL=auto` vs off, seeds 1/2/3
+(`ml_data/compare/all_20260612_propall_*`): +0.0090 / +0.0047 / −0.0076
+cumulative — mean +0.0020, 2/3 seeds worse → **stays opt-in** (S10 ship bar is
+3/3 wins). No `--all` wall-time win: budget allocator reabsorbs per-benchmark
+speedups. Divergences vs the CPU policy are deterministic (ibm18 seed1 +0.0188
+replays bit-exact) but seed-dependent in sign — the GPU policy finds different
+basins, not better ones, when single-candidate.
+
+**Open → Stage 2 (`V2_GPU_EXPLORE`):** build the chain engine per GPU-ops.md
+§2 (kick ≈0.10 → cuda_delta descent → post-descent zero-temp accept, batched
+chains) + §3 handoff (spiral legalize → fresh `IncrementalScorer` → adaptive K
+from `t_one_score`). The Stage 1 result sharpens the thesis: single-candidate
+GPU policy is a wash, so the win must come from *many* candidates + the exact
+gate harvesting the ±0.02 per-benchmark spread. Verification checklist in
+GPU-ops.md §6 before any score run; gate vs Stage 1 via paired multi-seed.
 
 ### S16. Silent DREAMPlace ABI break — DP was dead since S13 (SHIPPED 2026-06-10 — 1.1379 → 1.1272)
 
