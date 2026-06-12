@@ -26,7 +26,6 @@ def _build_wl_cache(plc):
     net_starts: "list[int]" = []
     net_weights: "list[float]" = []
     cursor = 0
-    skipped_nets = 0
 
     name_to_idx = plc.mod_name_to_indices
     mods = plc.modules_w_pins
@@ -47,11 +46,9 @@ def _build_wl_cache(plc):
     for driver_pin_name, sink_pin_names in plc.nets.items():
         driver_idx = name_to_idx.get(driver_pin_name)
         if driver_idx is None:
-            skipped_nets += 1
             continue
         driver_info = _pin_info(driver_idx)
         if driver_info is None:
-            skipped_nets += 1
             continue
         driver_pin = mods[driver_idx]
         try:
@@ -69,7 +66,6 @@ def _build_wl_cache(plc):
                 continue
             local_pins.append(info)
         if len(local_pins) < 1:
-            skipped_nets += 1
             continue
 
         net_starts.append(cursor)

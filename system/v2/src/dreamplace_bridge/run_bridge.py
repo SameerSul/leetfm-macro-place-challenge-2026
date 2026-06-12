@@ -303,7 +303,6 @@ class AsyncDreamplaceHandle:
         self._result: "Optional[tuple[np.ndarray, np.ndarray]]" = None
         self._failed = False
         self._kill_called = False
-        self._watchdog_thread = None
 
     def _start_watchdog(self) -> None:
         """Kill the subprocess from a daemon thread if it exceeds timeout_s."""
@@ -332,7 +331,6 @@ class AsyncDreamplaceHandle:
 
         t = threading.Thread(target=_watch, daemon=True, name=f"dp-watchdog-{self.design}")
         t.start()
-        self._watchdog_thread = t
 
     def poll(self) -> Optional[int]:
         """Return exit code if process done, None if still running."""

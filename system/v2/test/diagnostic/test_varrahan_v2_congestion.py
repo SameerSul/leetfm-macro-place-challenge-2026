@@ -20,7 +20,7 @@ class _FakePlc:
 
 
 class _ZeroNoise:
-    def normal(self, loc, scale, size):
+    def normal(self, _loc, _scale, size):
         return np.zeros(size, dtype=np.float64)
 
 

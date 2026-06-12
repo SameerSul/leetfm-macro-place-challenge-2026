@@ -445,7 +445,7 @@ def _write_pb(path, design, canvas_w, canvas_h, hard_names, hard_sizes,
 
     blocks = [_node("__metadata__", None,
                     [("soft_macro_area_bloating_ratio", "f", 1.0)])]
-    for p, pname in enumerate(ports):
+    for p in range(len(ports)):
         x, y = port_pos[p]
         blocks.append(_node(
             f"p{p}", port_inputs.get(p),

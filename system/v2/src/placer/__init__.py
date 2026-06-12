@@ -33,7 +33,7 @@ from .scoring.congestion import (
     _vectorized_get_congestion_cost,
 )
 from .scoring.density import _patch_plc_density, _vectorized_get_grid_cells_density
-from .scoring.exact import _exact_proxy, _proxy_decomp
+from .scoring.exact import _exact_proxy
 from .scoring.incremental import IncrementalScorer
 from .scoring.wirelength import _build_wl_cache, _patch_plc_wirelength
 
@@ -57,7 +57,6 @@ __all__ = [
     "_patch_plc_congestion",
     "_patch_plc_density",
     "_patch_plc_wirelength",
-    "_proxy_decomp",
     "_ring_offsets",
     "_smooth_routing_cong_vec",
     "_vectorized_get_congestion_cost",
