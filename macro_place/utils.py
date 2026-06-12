@@ -250,7 +250,7 @@ def visualize_placement(
                 LineCollection(lines, colors="gray", alpha=0.05, linewidths=0.5, zorder=1)
             )
 
-    ax.set_title(f"{benchmark.name} — Placement")
+    ax.set_title(f"{benchmark.name} - Placement")
     legend_elements = [
         Patch(facecolor="blue", alpha=0.5, edgecolor="black", label="Hard macros"),
         Patch(facecolor="lightsteelblue", alpha=0.1, edgecolor="black",
@@ -286,7 +286,7 @@ def visualize_placement(
         fig.colorbar(im_dens, ax=ax, fraction=0.046, pad=0.04, label="Density")
 
     _draw_hard_macros(ax, placement, benchmark)
-    ax.set_title(f"{benchmark.name} — Density")
+    ax.set_title(f"{benchmark.name} - Density")
 
     # ── Panel 3: Congestion heatmap ──────────────────────────────────────
     ax = axes[2]
@@ -309,7 +309,7 @@ def visualize_placement(
         fig.colorbar(im_cong, ax=ax, fraction=0.046, pad=0.04, label="Congestion (max H/V)")
 
     _draw_hard_macros(ax, placement, benchmark)
-    ax.set_title(f"{benchmark.name} — Congestion")
+    ax.set_title(f"{benchmark.name} - Congestion")
 
     fig.tight_layout()
 

@@ -28,7 +28,7 @@ from macro_place.utils import validate_placement
 
 
 class ShelfPackPlacer:
-    """FFDH shelf-packing placer — zero overlaps guaranteed."""
+    """FFDH shelf-packing placer - zero overlaps guaranteed."""
 
     def __init__(self, halo_x: float = 0.0, halo_y: float = 0.0):
         """

@@ -152,7 +152,7 @@ def run_orfs_flow(design_dir: Path, orfs_root: Path, use_docker: bool = True, sk
         return {'error': f'ORFS flow failed with code {result.returncode}'}
 
     if result.returncode != 0:
-        print(f"WARNING: ORFS exited with code {result.returncode} but final artifacts exist — parsing metrics anyway")
+        print(f"WARNING: ORFS exited with code {result.returncode} but final artifacts exist - parsing metrics anyway")
 
     # Parse results from ORFS logs and reports
     metrics = parse_orfs_results(flow_dir, tech, design_name)
@@ -424,7 +424,7 @@ def evaluate_benchmark(
                 print(f"  ✓ Reduced ariane136 MACRO_PLACE_HALO to 11.2 7.56 (from default 22.4 15.12)")
 
             if source_name == "black_parrot":
-                # Disable hierarchical synthesis — we use our own macro placement
+                # Disable hierarchical synthesis - we use our own macro placement
                 config_content = re.sub(
                     r'export SYNTH_HIERARCHICAL = 1',
                     '# export SYNTH_HIERARCHICAL = 1  # Disabled: using our macro placement',
