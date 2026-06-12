@@ -1,0 +1,21 @@
+# DREAMPlace source (third-party clone, ~800MB). Reproduce via:
+# git clone --recursive https://github.com/limbo018/DREAMPlace.git \
+dreamplace_src/
+
+# DREAMPlace build artifacts (~500MB).
+# Reproduce by following install steps in v1/DREAMPLACE_FIXES.md.
+dreamplace_build/
+
+# Data and logs collected from runs
+*/ml_data/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.so
+
+*.log
+*.env.*
+*.json
+*.json.gz
+*.gz
