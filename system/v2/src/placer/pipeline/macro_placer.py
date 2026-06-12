@@ -973,22 +973,6 @@ class MacroPlacer:
                 best_score = twoopt_best_score
                 best_pl = twoopt_best_pl
 
-        # LSMC exploration (GPU-ops.md Stage 2a) - opt-in via V2_GPU_EXPLORE.
-        # Kick/descent/accept from the incumbent best; exact-gated, so a
-        # failed exploration leaves best_pl/best_score untouched.
-        if _explore_enabled(_GPU_BACKEND):
-            _exp_time = float(os.environ.get("V2_GPU_EXPLORE_TIME_S", "10.0"))
-            try:
-                best_pl, best_score, _exp_iters, _exp_acc = _lsmc_explore(
-                    best_pl, best_score, benchmark, plc, _exact_proxy,
-                    sizes, hw, hh, cw, ch, movable, n,
-                    time_budget_s=_exp_time, log=_log,
-                )
-                _log(f"  LSMC explore: {_exp_acc} accepts / {_exp_iters} iters, "
-                     f"best={best_score:.4f}")
-            except Exception as exc:
-                _log(f"  LSMC explore failed: {type(exc).__name__}: {exc}")
-
         # R2: keep trying local moves while they still improve the score.
         R2_MAX_ROUNDS = 20
         R2_HOT = 48
@@ -1584,6 +1568,25 @@ class MacroPlacer:
                     break
             else:
                 _r2_tiny_streak = 0
+
+        # LSMC exploration (GPU-ops.md Stage 2a) - opt-in via V2_GPU_EXPLORE.
+        # Kicks from the R2 local optimum and accepts on exact post-descent
+        # score: gating pre-R2 was tested and steered R2 into worse basins.
+        if _explore_enabled(_GPU_BACKEND):
+            _exp_time = float(os.environ.get("V2_GPU_EXPLORE_TIME_S", "10.0"))
+            _rem_exp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
+            _exp_slice = min(_exp_time, _rem_exp - t_one_score * 1.5)
+            if _exp_slice > t_one_score:
+                try:
+                    best_pl, best_score, _exp_iters, _exp_acc = _lsmc_explore(
+                        best_pl, best_score, benchmark, plc, _exact_proxy,
+                        sizes, hw, hh, cw, ch, movable, n,
+                        time_budget_s=_exp_slice, log=_log,
+                    )
+                    _log(f"  LSMC explore: {_exp_acc} accepts / {_exp_iters} iters, "
+                         f"best={best_score:.4f}")
+                except Exception as exc:
+                    _log(f"  LSMC explore failed: {type(exc).__name__}: {exc}")
 
         # Spend leftover time on one last soft relocation pass.
         if _n_soft > 0:
