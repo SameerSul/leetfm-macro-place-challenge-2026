@@ -3,6 +3,22 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-13 — Stage 2b kick pre-screen SHIPPED AS DEFAULT
+> (PRESCREEN=8); on-arm best 1.1176 is the NEW BEST `--all`):** each LSMC
+> iteration now scores a batch of kicks (`V2_GPU_EXPLORE_PRESCREEN`, default 8)
+> and descends only the best one — the cuGenOpt evaluate→reduce→descend-one
+> pattern at the kick level, since descent dominates iteration cost.
+> **Full-stack paired gate (DP+ML active, dp=17 both arms; B8 vs B1=2a
+> behavior): seed1 1.1198→1.1176 (−0.0022), seed2 1.1237→1.1219 (−0.0018) —
+> 2/2 wins, mean −0.0020.** Accepts roughly doubled (seed1 8→17, seed2 11→16)
+> and land as broad small gains (ibm12 −0.0091, ibm13 −0.0065, ibm15 −0.0066,
+> ibm09 −0.0061), not one lucky basin. B8 is also marginally faster
+> (3050s vs 3107s) — descending one well-chosen kick beats descending several
+> mediocre ones. Lone seed1 regression ibm16 +0.0046 is upstream R2 timing
+> jitter (final-phase gate can't itself regress). `PRESCREEN=1` is
+> bit-equivalent to the prior 2a default. Logs `ml_data/compare/stage2b_*`.
+> Default-path ibm01 smoke: 0.9134 VALID. Next: 2c options re-analysis.
+
 > **Status (2026-06-12 evening — Stage 2 LSMC exploration SHIPPED AS DEFAULT;
 > seed-1 on-arm avg 1.1194 is the NEW BEST `--all`):** the post-R2 LSMC
 > kick/descent/accept phase (`local_search/lsmc_explore.py`, hook as the FINAL
