@@ -50,9 +50,24 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ## Open issues
 
-### S17. GPU staged rollout — Stage 2 LSMC exploration SHIPPED AS DEFAULT 2026-06-12 (2/2 paired wins, mean −0.0042; best --all 1.1194)
+### S17. GPU staged rollout — Stage 2a+2b SHIPPED AS DEFAULT (best --all 1.1176); Stage 2c options open
 
-**Stage 2 verdict (2026-06-12 evening):** post-R2 LSMC kick/descent/accept
+**Stage 2b (2026-06-13):** kick pre-screen `V2_GPU_EXPLORE_PRESCREEN` (default
+8) — score a batch of kicks, descend the best (cuGenOpt evaluate-reduce at the
+kick level). Paired gate 2/2: seed1 1.1198→1.1176, seed2 1.1237→1.1219, mean
+−0.0020; accepts ~doubled; B8 slightly faster than B1. `PRESCREEN=1` = prior
+2a behavior. Shipped (default already 8 in code).
+
+**Stage 2c (open — re-analyze options):** candidate directions are (a) richer
+descent — add R2's HXS/HS3/soft-2opt/2-opt operators to the LSMC descent
+(reference-grounded "full descent suite", runnable on this box, trades 2b
+breadth for depth); (b) true multi-chain (cuGenOpt P-blocks) with GPU-batched
+descent — the higher-leverage architectural leap but **blocked on the new
+multi-GPU hardware**; (c) adaptive kick sizing (cuGenOpt AOS / stagnation
+reset). NOT a candidate: annealed/non-greedy acceptance (LAHC disproven here).
+Decide direction with the user before building.
+
+**Stage 2a verdict (2026-06-12 evening):** post-R2 LSMC kick/descent/accept
 (`lsmc_explore.py`) shipped default-on under CUDA, kick=0.02, 30s slice.
 Full-stack paired gate: seed1 −0.0051 (on-arm 1.1194 = NEW BEST), seed2
 −0.0033. Design invariants discovered: the accept gate must be the final
