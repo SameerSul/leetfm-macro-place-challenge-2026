@@ -58,14 +58,20 @@ kick level). Paired gate 2/2: seed1 1.1198→1.1176, seed2 1.1237→1.1219, mean
 −0.0020; accepts ~doubled; B8 slightly faster than B1. `PRESCREEN=1` = prior
 2a behavior. Shipped (default already 8 in code).
 
-**Stage 2c (open — re-analyze options):** candidate directions are (a) richer
-descent — add R2's HXS/HS3/soft-2opt/2-opt operators to the LSMC descent
-(reference-grounded "full descent suite", runnable on this box, trades 2b
-breadth for depth); (b) true multi-chain (cuGenOpt P-blocks) with GPU-batched
-descent — the higher-leverage architectural leap but **blocked on the new
-multi-GPU hardware**; (c) adaptive kick sizing (cuGenOpt AOS / stagnation
-reset). NOT a candidate: annealed/non-greedy acceptance (LAHC disproven here).
-Decide direction with the user before building.
+**Stage 2c (multi-chain — PROBED, REFACTOR REJECTED 2026-06-13).** Hardware is
+single-GPU-always, so "multi-chain" means batched chains on one device, not
+islands. Built `V2_GPU_EXPLORE_CHAINS` scaffolding (single-process keep-best,
+CHAINS=1 = verified no-op; commit fd6ceee, **merged as a dormant knob**, default
+off). Diversity-vs-depth probe at matched 90s compute (3 chains vs 1) on 6
+benchmarks: ibm12 −0.0095 (real), ibm04/09/11/15/16 between 0 and −0.0009
+(noise floor). **The entire signal is one benchmark.** Extra chains add accepts
+(1→3) but to equivalent basins. Conclusion: the GPU-batched-descent refactor
+(batch the relocation scorer across a chain dim + per-chain commits, a multi-day
+rewrite) is NOT justified by a ~1/17-benchmark payoff at 1.1176 with shrinking
+increments. Budget-split multi-chain is also unshippable (10s/chain too shallow
+at the 30s cap; 90s breaks the 1h `--all` cap). Knob left dormant for possible
+revisit. NOT a candidate: annealed acceptance (LAHC disproven). **Next lever:
+Stage 4 phase pruning** (cheaper, frees budget) or accept 1.1176.
 
 **Stage 2a verdict (2026-06-12 evening):** post-R2 LSMC kick/descent/accept
 (`lsmc_explore.py`) shipped default-on under CUDA, kick=0.02, 30s slice.
