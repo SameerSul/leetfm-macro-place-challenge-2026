@@ -3,6 +3,23 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-13 — Stage 4: multi-seed 2-opt PRUNED by default; NEW BEST
+> `--all` 1.1169):** the pre-R2 multi-seed 2-opt phase is now skipped by default
+> (`V2_PRUNE_MULTISEED_2OPT=0` restores it). Paired gate keep-vs-prune,
+> full-stack (dp=17 both arms): seed1 1.1175→1.1169 (−0.0006), seed2
+> 1.1229→1.1178 (−0.0051) — 2/2 prune-wins, mean −0.0029, and faster
+> (seed2 2816s vs 2926s). The phase was net-harmful: it steers R2 into worse
+> basins on more benchmarks than it helps. Big winners from removal: ibm04
+> (−0.020/−0.026), ibm12 (−0.015/−0.023), ibm17 (−0.024 s2), ibm11/13.
+> Consistent small regressions: ibm01 +0.007, ibm02 +0.010, ibm05 +0.006;
+> ibm14 high-variance (+0.026 s1 / −0.004 s2). Net win on the scored 17-average
+> on both seeds → shipped. (The per-benchmark split flags a future targeted
+> question: why does 2-opt help ibm01/02/05 but hurt ibm04/12/17? — a conditional,
+> not a blanket phase.) Logs `ml_data/compare/stage4_*`. Earlier ibm04 smoke
+> (0.9850) was directionally right but the early 3-benchmark gate peek
+> (ibm01/02/03 all regress) was a small-sample trap — the full 17 reversed it.
+> Next Stage 4 target: the cong-grad restart phases.
+
 > **Status (2026-06-13 — Stage 2b kick pre-screen SHIPPED AS DEFAULT
 > (PRESCREEN=8); on-arm best 1.1176 is the NEW BEST `--all`):** each LSMC
 > iteration now scores a batch of kicks (`V2_GPU_EXPLORE_PRESCREEN`, default 8)

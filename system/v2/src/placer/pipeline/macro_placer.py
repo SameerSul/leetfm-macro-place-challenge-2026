@@ -768,11 +768,13 @@ class MacroPlacer:
         # -- Proxy-driven 2-opt swap on the cong-grad winner (additive) ---------
         # Bounds and conflict checks filter candidates before proxy scoring.
         remaining_2opt = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-        # Stage 4 pruning probe: V2_PRUNE_MULTISEED_2OPT skips the whole
-        # multi-seed 2-opt phase so R2 starts from the cong-grad best_pl.
-        _prune_ms2opt = os.environ.get("V2_PRUNE_MULTISEED_2OPT", "").strip() in {"1", "true", "on"}
+        # Stage 4: multi-seed 2-opt is PRUNED by default — paired gate (2/2
+        # seeds, mean -0.0029, best 1.1169) showed it is net-harmful, steering
+        # R2 into worse basins on more benchmarks than it helps. R2 now starts
+        # from the cong-grad best_pl. Restore the phase with V2_PRUNE_MULTISEED_2OPT=0.
+        _prune_ms2opt = os.environ.get("V2_PRUNE_MULTISEED_2OPT", "1").strip() not in {"0", "false", "off"}
         if _prune_ms2opt:
-            _log("  multi-seed 2-opt: PRUNED (V2_PRUNE_MULTISEED_2OPT)")
+            _log("  multi-seed 2-opt: PRUNED (default; set V2_PRUNE_MULTISEED_2OPT=0 to restore)")
         if not _prune_ms2opt and remaining_2opt >= t_one_score + 15.0:
             # Run 2-opt from MULTIPLE basins (best_pl + each DP basin), not just
             # best_pl: raw DP proxy doesn't predict the final 2-opt result, so a
