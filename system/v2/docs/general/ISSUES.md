@@ -50,7 +50,17 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ## Open issues
 
-### S17. GPU staged rollout — Stage 0/1 DONE 2026-06-12 (propose-all WASH, opt-in); Stage 2 exploration engine NEXT
+### S17. GPU staged rollout — Stage 2 LSMC exploration SHIPPED AS DEFAULT 2026-06-12 (2/2 paired wins, mean −0.0042; best --all 1.1194)
+
+**Stage 2 verdict (2026-06-12 evening):** post-R2 LSMC kick/descent/accept
+(`lsmc_explore.py`) shipped default-on under CUDA, kick=0.02, 30s slice.
+Full-stack paired gate: seed1 −0.0051 (on-arm 1.1194 = NEW BEST), seed2
+−0.0033. Design invariants discovered: the accept gate must be the final
+quality phase (earlier hooks accepted states that lost after later
+refinement), and worktree-pinned runs need gitignored assets symlinked in
+(DP/ML silently off otherwise — invalidated the first gate attempt).
+Remaining in this entry: Stage 0 hardware half + Stage 2b/3 (batched chains,
+islands) below.
 
 Plan of record: `docs/gpu/GPU-ops.md` (rewritten 2026-06-11 — cuda_delta-based
 LSMC exploration, island model, evidence-gated phase pruning).

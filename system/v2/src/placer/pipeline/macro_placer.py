@@ -1633,7 +1633,7 @@ class MacroPlacer:
         # were tested and disproven - any refinement AFTER the accept gate makes
         # the gate compare the wrong objective.
         if _explore_enabled(_GPU_BACKEND):
-            _exp_time = float(os.environ.get("V2_GPU_EXPLORE_TIME_S", "10.0"))
+            _exp_time = float(os.environ.get("V2_GPU_EXPLORE_TIME_S", "30.0"))
             _rem_exp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             _exp_slice = min(_exp_time, _rem_exp - t_one_score * 1.5)
             if _exp_slice > t_one_score:
