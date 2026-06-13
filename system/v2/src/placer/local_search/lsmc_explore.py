@@ -100,16 +100,35 @@ def _lsmc_explore(
     accepts = 0
     fails = 0
 
+    # Stage 2b kick pre-screen: score a batch of kicks and descend only the
+    # best one (descent dominates iteration cost; kick scoring is cheap).
+    # Batch size adapts down when scoring one kick is slow on large grids.
+    prescreen = max(1, int(os.environ.get("V2_GPU_EXPLORE_PRESCREEN", "8")))
+
     while time.monotonic() < wall and fails < max_fails:
         iters += 1
         hard_xy = best_pl[:n].detach().cpu().numpy().astype(np.float64)
-        kicked = _kick(hard_xy, sizes, hw, hh, cw, ch, movable, n,
-                       kick_ratio, rng, deadline=wall)
 
+        kicked = None
+        kick_score = float("inf")
         cand = best_pl.clone()
+        for _b in range(prescreen):
+            trial = _kick(hard_xy, sizes, hw, hh, cw, ch, movable, n,
+                          kick_ratio, rng, deadline=wall)
+            t_ks = time.monotonic()
+            cand[:n, 0] = torch.tensor(trial[:, 0], dtype=torch.float32)
+            cand[:n, 1] = torch.tensor(trial[:, 1], dtype=torch.float32)
+            trial_score = float(exact_proxy(cand, benchmark, plc))
+            t_ks = time.monotonic() - t_ks
+            if trial_score < kick_score:
+                kicked, kick_score = trial, trial_score
+            # Keep the pre-screen a small fraction of the slice.
+            if time.monotonic() + t_ks > wall - t_ks or t_ks > time_budget_s / (2 * prescreen):
+                break
+        if kicked is None:
+            break
         cand[:n, 0] = torch.tensor(kicked[:, 0], dtype=torch.float32)
         cand[:n, 1] = torch.tensor(kicked[:, 1], dtype=torch.float32)
-        kick_score = float(exact_proxy(cand, benchmark, plc))
 
         cand_np = cand.detach().cpu().numpy().astype(np.float64)
         scorer = IncrementalScorer(plc, benchmark, cand_np)
