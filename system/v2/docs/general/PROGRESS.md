@@ -3,6 +3,26 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-12 evening — Stage 2 LSMC exploration SHIPPED AS DEFAULT;
+> seed-1 on-arm avg 1.1194 is the NEW BEST `--all`):** the post-R2 LSMC
+> kick/descent/accept phase (`local_search/lsmc_explore.py`, hook as the FINAL
+> quality phase in `macro_placer.py`) is default-on under CUDA
+> (`V2_GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice —
+> exactly the measured gate config. **Full-stack paired gate (DP + ML filter
+> verified active in every log; user-authorized 2-seed bar): seed1 off 1.1245 /
+> on 1.1194 (−0.0051), seed2 1.1275 / 1.1242 (−0.0033) — 2/2 wins, mean
+> −0.0042.** On-arm totals 3107s/3024s (~51min, watch the 1h cap under
+> contention; the per-bench budget clamp shrinks the slice as t_one_score
+> rises). Logs `ml_data/compare/` (stage2 full-stack set). Two structural
+> lessons baked into the design: (1) acceptance must gate the FINAL score —
+> pre-R2 and pre-post-soft hooks both accepted states that lost after later
+> refinement; (2) an earlier gate run was invalidated because the code-pinning
+> worktree silently lacked gitignored assets (dreamplace_build, ml_data) — DP
+> and the ML filter were OFF (+0.018 on the off-arm); symlink assets into any
+> worktree that runs the placer and grep logs for "DREAMPlace launched" + "ML
+> filter on". Degraded-stack pair (DP/ML absent): explore was worth −0.0067
+> there — relevant if eval hardware ever lacks the full stack.
+
 > **Status (2026-06-12 — GPU staged rollout: Stage 0 re-baseline + Stage 1
 > propose-all A/B done; verdict WASH, stays opt-in; see docs/gpu/GPU-ops.md and
 > ISSUES.md S17):**

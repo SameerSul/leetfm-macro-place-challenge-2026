@@ -25,13 +25,17 @@ from placer.scoring.incremental import IncrementalScorer
 
 
 def _explore_enabled(gpu_backend: str) -> bool:
-    """V2_GPU_EXPLORE: '1' forces on, 'auto' requires the CUDA backend, default off."""
-    raw = os.environ.get("V2_GPU_EXPLORE", "").strip().lower()
+    """V2_GPU_EXPLORE: '1' forces on, '0' disables, default/auto requires CUDA.
+
+    Default-on under CUDA since the 2026-06-12 paired gate (2/2 seeds,
+    mean -0.0042; see ISSUES.md S17).
+    """
+    raw = os.environ.get("V2_GPU_EXPLORE", "auto").strip().lower()
     if raw in {"1", "true", "on"}:
         return True
-    if raw in {"auto", "cuda", "gpu"}:
-        return gpu_backend == "cuda"
-    return False
+    if raw in {"0", "false", "off"}:
+        return False
+    return gpu_backend == "cuda"
 
 
 def _kick(
@@ -86,7 +90,7 @@ def _lsmc_explore(
     then accept only on strict true-proxy improvement. Early exit after
     V2_GPU_EXPLORE_FAILS consecutive non-improving iterations.
     """
-    kick_ratio = float(os.environ.get("V2_GPU_EXPLORE_KICK", "0.10"))
+    kick_ratio = float(os.environ.get("V2_GPU_EXPLORE_KICK", "0.02"))
     max_fails = int(os.environ.get("V2_GPU_EXPLORE_FAILS", "5"))
     seed = int(os.environ.get("V2_GPU_EXPLORE_SEED", "0"))
     rng = np.random.default_rng(seed)
