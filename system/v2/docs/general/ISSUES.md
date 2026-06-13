@@ -50,7 +50,20 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ## Open issues
 
-### S17. GPU staged rollout — Stage 2a+2b SHIPPED AS DEFAULT (best --all 1.1176); Stage 2c options open
+### S17. GPU staged rollout — Stages 2a/2b + Stage 4 multi-seed-2opt-prune SHIPPED (best --all 1.1169)
+
+**Stage 4 (2026-06-13): multi-seed 2-opt PRUNED by default.** The pre-R2
+multi-seed 2-opt phase (workers pool on best_pl + DP basins) is net-harmful —
+paired gate keep-vs-prune 2/2 seeds (seed1 1.1175→1.1169, seed2 1.1229→1.1178,
+mean −0.0029), and faster. Default now skips it; `V2_PRUNE_MULTISEED_2OPT=0`
+restores. Wins broad (ibm04/12/17/11/13), regresses ibm01/02/05 (small) +
+ibm14 (high-variance) — net win on the scored average. Code left behind the
+flag (inert at default); optional dead-code deletion is a follow-up. **Open
+Stage 4 targets:** cong-grad restart phases (macro_placer.py ~449–712) next,
+each its own paired gate. Lesson: the 3-benchmark early gate peek mis-predicted
+(ibm01/02/03 are 2-opt beneficiaries) — judge prunes on full 17, not a prefix.
+
+### S17-prev. Stages 2a+2b (best --all 1.1176)
 
 **Stage 2b (2026-06-13):** kick pre-screen `V2_GPU_EXPLORE_PRESCREEN` (default
 8) — score a batch of kicks, descend the best (cuGenOpt evaluate-reduce at the
