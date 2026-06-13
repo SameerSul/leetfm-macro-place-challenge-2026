@@ -608,7 +608,10 @@ class MacroPlacer:
                     directed_ran += 1
 
         # Wide step from current best.
-        if cong_improved:
+        # Stage 4 pruning probe: V2_PRUNE_P5C skips the "wide-from-best f=0.08"
+        # restart (PROGRESS.md flagged it as pure insurance — no wins observed).
+        _prune_p5c = os.environ.get("V2_PRUNE_P5C", "").strip() in {"1", "true", "on"}
+        if cong_improved and not _prune_p5c:
             remaining_5c = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if remaining_5c >= t_one_score * 1.3:
                 best_pos_5c = np.stack(
