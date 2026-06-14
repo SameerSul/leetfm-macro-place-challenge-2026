@@ -13,10 +13,10 @@ multi-GPU island model; "many chains" means a batch dimension on one GPU, not sh
 across devices.
 
 **Implementation status (2026-06-14):** Stages 0–2b are shipped (see §5). The single-chain
-engine (`src/placer/local_search/lsmc_explore.py`), kick pre-screen, congestion-targeted
-kick mode, and multi-incumbent final exploration are default-on under CUDA. Stage 2c
-(multi-chain batched on one GPU) is the next build. `V2_GPU_EXPLORE_*` variables marked
-"proposed" below are not yet wired.
+engine (`src/placer/local_search/lsmc_explore.py`), kick pre-screen, and final-phase
+multi-incumbent scheduling are default-on under CUDA. Stage 2c (multi-chain batched on
+one GPU) is the next build. `V2_GPU_EXPLORE_*` variables marked "proposed" below are not
+yet wired.
 
 ## Revision notes (what changed from the previous draft and why)
 
@@ -73,13 +73,10 @@ The exploration engine is a control loop around this machinery, not a new scorer
 
 Each chain holds a private copy of the macro positions and runs:
 
-1. **Kick move (large step).** Relocate a subset of movable hard macros, then
-   spiral-legalize. The shipped default alternates random kicks with congestion-targeted
-   kicks that choose hot-cell hard macros and move them toward cold routing cells
-   (`V2_GPU_EXPLORE_KICK_MODE=mixed`). The GPU-DPO starting point was
-   `kick_ratio ≈ 0.10`; tuning on IBM found smaller is better (shipped **0.02**;
-   0.02 > 0.05 > 0.10) because the post-R2 incumbent is already well-refined and
-   large kicks cannot be recovered in one descent.
+1. **Kick move (large step).** Relocate a random subset of movable hard macros, then
+   spiral-legalize. The GPU-DPO starting point was `kick_ratio ≈ 0.10`; tuning on IBM
+   found smaller is better (shipped **0.02**; 0.02 > 0.05 > 0.10) because the post-R2
+   incumbent is already well-refined and large kicks cannot be recovered in one descent.
 2. **Greedy descent.** A few rounds of propose-all relocation restricted to the chain's
    own state: generate candidate targets for hot macros, score the pool with
    `cuda_delta`, apply the best non-conflicting improvement per round. Within a chain,
@@ -150,8 +147,7 @@ V2_GPU_EXPLORE_KICK=0.02    # kick ratio (fraction of movable hard macros per ki
 V2_GPU_EXPLORE_FAILS=5      # per-chain early-exit failure tolerance (F)
 V2_GPU_EXPLORE_TIME_S=30.0  # wall ceiling per benchmark for the exploration loop
 V2_GPU_EXPLORE_PRESCREEN=8  # kicks scored per iteration; descend only the best (2b)
-V2_GPU_EXPLORE_KICK_MODE=mixed       # random | congestion | mixed
-V2_GPU_EXPLORE_MULTI_INCUMBENT=1     # final phase explores several seed basins
+V2_GPU_EXPLORE_MULTI_INCUMBENT=1     # final phase explores generic local seeds
 V2_GPU_EXPLORE_MAX_SEEDS=3           # top distinct incumbents by exact score
 V2_GPU_EXPLORE_SEED_MARGIN=0.08      # keep non-best seed candidates within this gap
 ```
