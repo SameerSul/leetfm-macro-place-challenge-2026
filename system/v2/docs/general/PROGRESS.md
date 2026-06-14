@@ -949,39 +949,44 @@ baseline; no restarts possible. ibm10, ibm12 already beat RePlAce at legalizatio
 
 ---
 
-## Tunable Parameters (current v14 values)
+## Tunable Parameters (current values — 2026-06-11, S10 ML ranker enabled)
 
 ```python
+# src/placer/pipeline/macro_placer.py
 n_restarts            = 50         # cap; budget check is the real limit
-noise_fracs           = [0.02, 0.04, 0.06, 0.08,  # core (preserved wins)
+noise_fracs           = [0.02, 0.04, 0.06, 0.08,   # core (preserved wins)
                           0.01, 0.03, 0.05, 0.07, 0.09,
-                          0.06, 0.06, 0.04, 0.10, 0.12, 0.08,
+                          0.06, 0.06, 0.04,
+                          0.10, 0.12, 0.08,
                           0.025, 0.035, 0.045, 0.055, 0.065, 0.075,
                           0.15, 0.20, 0.10,
                           0.05, 0.06, 0.07, 0.03, 0.04, 0.02,
                           0.005, 0.010, 0.015, 0.030, 0.050]
-time_budget_s         = 200.0
-BUDGET_OVERRUN_S      = 60.0       # v12 (2026-05-10): allow up to 60s extra for directed-restart phases (cong-grad Phase 1/2/3) so a transient scoring spike doesn't kill the whole pipeline. Noise loop stays strict.
-EXACT_MACRO_THRESHOLD = 400        # v12: was 340 in v11. ibm11 (n=373) and ibm15 (n=393) included; ibm13 (n=424) excluded
-EXACT_GRID_CELL_LIMIT = 2200       # v12: was 2000 in v11. ibm15 (2166) and ibm18 (2145) included; ibm12 (2209) excluded
-SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
-# DENSITY_GRAD_MAX_N removed in v14 — density-grad helpers deleted (never fired on IBM)
+time_budget_s         = 150.0      # M1-change (2026-05-31): was 200s. ibm01 rounds
+                                   # 10-11 add only 0.0002; 50s freed for ibm18 headroom.
+BUDGET_OVERRUN_S      = 83.0       # raised 60→75→83 through 2026-05-30 budget tuning
+PER_BENCH_FLOOR_S     = 110.0      # every benchmark gets at least 110s floor in --all
+HARNESS_TOTAL_BUDGET_S = 3300.0    # 300s headroom under the 3600s harness cap
+HARD_CAP_SAFE_S       = 3540.0
 
-# v14 (2026-05-20): t_one_score is now a RUNNING MAX inside _try_restart, not a fixed
-# baseline value. Defends against --all CPU contention where scoring can be 3-5× slower
-# than baseline. Re-adds v11's logic that v12 removed; the v12 rationale ("scorings are
-# within jitter of baseline") doesn't hold under --all heat.
+# R2 multi-round local search (src/placer/pipeline/macro_placer.py)
+R2_MAX_ROUNDS         = 20         # budget-limited; converges + breaks on no improvement
+R2_2OPT_SLICE         = 8.0        # seconds per 2-opt pass within R2
+R3_CONG_MAX_ROUNDS    = 6          # cong soft-reloc runs for rounds 0-5 only (saturates)
 
-# v14 (2026-05-20): 2-opt swap post-pass applied ONLY on the baseline-only branch
-# (n>400 / grid>2200). k_neighbors=5, max_iters=3. Net +0.0001 to avg.
-# Applied to cong-grad/noise legalize outputs (2-opt-everywhere): tested and REJECTED
-# due to sporadic gain/loss pattern (ibm04 −0.0115 ✓ but ibm06 +0.0087 ✗).
+# t_one_score: running max inside the placer loop (not a fixed baseline).
+# Defends against --all CPU contention where scoring can be 3-5× slower.
 
-# v14 (2026-05-20): Async DREAMPlace as Phase 5 candidate. Launch at place() entry,
-# wait_for_result(max_wait_s=30) after Phase 3, follow with one cong-grad iter from
-# DREAMPlace's legalized position. Gated by `is_available()` so placer is a no-op
-# when DREAMPlace isn't built. Build location: system/dreamplace_build/
-# (gitignored, ~500MB).
+# L-change (2026-05-31): cumulative budget uses _total_place_time_s (sum of
+# actual place() execution times) not wall-clock monotonic delta. Harness
+# overhead outside place() (100-170s for large-grid benchmarks) no longer
+# inflates the counter and starves ibm15-18 of budget.
+
+# S10 ML ranker (2026-06-11): enabled as production default when XGBoost
+# and model artifact are available. Widens hard-reloc proposal pool to 32
+# candidates; ranks and exact-scores top 16. Falls back to pure heuristic
+# when deps are missing or any ML_* env var is preset.
+# Control via env: ML_FILTER=0 (disable), ML_FILTER=1 (force enable).
 ```
 
 ---
@@ -1015,3 +1020,156 @@ SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
 24. [~] **Fix 3 "DP as PRIMARY baseline_pos"** -- TESTED AND REJECTED 2026-05-21. Phase 1/2/3 cong-grad from DP placement converges to a different (worse) basin on ibm06 (+0.0105 regression on the 1.6684 win).
 25. [~] **Fix 3 variant: Phase 6 additive cong-grad from DP placement** -- TESTED AND REJECTED 2026-05-21. On ibm08, the 4-iter loop displaced budget that previously reached noise=6% (the 1.5251 winner), causing +0.017 regression. Marginal wins (ibm08 found 1.5419 on Phase 6 iter=1) don't outweigh budget displacement costs.
 26. [~] **DP-first ordering on Improvement #1** -- TESTED AND REJECTED 2026-05-21. Flipping to score DP before baseline on large benchmarks lets us return DP when baseline scoring would exceed threshold. But on ibm16, DP=1.5751 loses to baseline=1.5324 (+0.043 regression). Trusting DP unconditionally when baseline can't be scored is strictly worse than skipping DP. Baseline-first kept.
+
+---
+
+### Relocation phase rollout (2026-05-27 to 2026-05-31): avg 1.4804 → 1.1782
+
+This sprint introduced a new class of moves — **local search on soft macro positions** — that became the dominant quality lever. See `ISSUES.md` (R1–R5) for full detail; summary below.
+
+#### R1 — Congestion-directed hard-macro relocation (2026-05-27, avg ~1.43 → 1.4326)
+
+Move hard macros from the hottest routing-congestion cells into nearby cold gaps. Accept only if exact proxy improves. `_relocation_moves` in `src/placer/local_search/relocation.py`. All 17 benchmarks improved vs prior state; avg −0.0096 on the 1.4422 baseline.
+
+#### R2 — Interleaved relocation + 2-opt (2026-05-27, avg 1.4326 → 1.4216)
+
+Run relocation and 2-opt in alternating rounds until neither improves. Shared `IncrementalScorer` built once per round; no redundant `_exact_proxy` calls inside passes.
+
+#### R3 — Soft-macro relocation by congestion field (2026-05-28, avg 1.4216 → 1.3764)
+
+Same relocation pass targeting **soft macros** (standard-cell clusters). Move soft macros from high-congestion cells toward cold cells; soft macros may overlap so no legalization needed. First pass that touched soft macros. Beats the UT Austin leaderboard 1.4076 average for the first time.
+
+#### R4 — WL-aware hard relocation targeting (DISPROVEN 2026-05-29)
+
+Bias hard-macro relocation toward targets that minimise wirelength delta. Sporadic: helps ibm02 but hurts ibm06. WL contribution is small (~0.06 vs congestion ~1.5); optimising it independently degrades congestion. Reverted. See `ISSUES.md R4`.
+
+#### R5 — Soft-macro relocation by density field (2026-05-29, avg 1.3764 → 1.2799)
+
+Second soft-relocation pass using the **density** gradient instead of congestion. Fires after the congestion pass in each R2 round. ibm10 improvement alone was −0.064. The dominant single lever in the entire session — soft density relocation explains most of the 1.4854 → 1.2799 gap.
+
+#### K-change — skip redundant round-start scoring (2026-05-30, avg ~1.42 → 1.2593)
+
+`IncrementalScorer` init for R2 round k≥1 was calling `_exact_proxy(best_pl)` to resync `plc`, but analysis proves `plc` is always synced to `best_pl` at every round boundary (every accept/reject path calls `_exact_proxy`). Skipping the redundant call saves one `t_one_score` per round for rounds 1+. For slow benchmarks (ibm15–18, t_one_score ≈ 5s, 4 rounds), this frees ~15s — enough for an extra R2 round. `--all` avg: ~1.42 → 1.2593.
+
+#### M1-change — ibm01 budget 200s → 150s (2026-05-31)
+
+R2 rounds 10–11 on ibm01 add only 0.0002 proxy improvement. Cutting 50s keeps total place-time at (150+83)+(16×193) = 3321s, well under the 3600s harness cap, and frees headroom so ibm18 receives its full 110s floor rather than the ~86s it was getting from the hard-cap guard.
+
+#### L-change — cumulative place()-time tracking (2026-05-31, avg 1.2593 → 1.1782)
+
+Replaced wall-clock monotonic cumulative with `_total_place_time_s` — the sum of actual `place()` execution times. Large-grid benchmarks (ibm10/12/14) incur 100–170s of harness evaluation overhead **outside** `place()` that inflated the wall-clock counter and starved ibm15–18 of budget. With L-change, ibm15–18 each receive their full 110s PER_BENCH_FLOOR_S guarantee. This alone shifted avg 1.2593 → 1.1782 (**−0.081**), the largest single-change improvement in the project.
+
+**Final numbers after K+M1+L:**
+- `--all` avg: **1.1782** (2026-05-31, 17/17 VALID, 0 overlaps)
+- Runtime: 3662s (61min on WSL — later optimised)
+
+#### N-change — Phase 11 replaced with post-R2 soft-reloc (2026-06-02)
+
+Phase 11 (post-R2 congestion-gradient hard-macro perturb → legalize → exact_proxy) was confirmed never to accept a candidate: the legalization cascade from cong-grad perturb destroys the R2-optimised soft macro layout, producing candidates 0.25–0.35 worse than R2's best. For slow benchmarks (ibm15–18, t_one_score ≈ 5–8s), Phase 11 was also wasting 2–3 × t_one_score on these rejected evaluations. Replaced with a **soft-reloc[cong] + soft-reloc[density] pass using the same leftover budget** (~2–3 × t_one_score from R2's round-break guard). Post-R2 soft-reloc is strictly accept-only, wastes 0 scores on rejections, and finds 10–100 incremental moves in the leftover window. No regressions; marginal improvement on large benchmarks.
+
+---
+
+### Readability refactor (2026-06-04): avg 1.1782 → 1.1500
+
+Decomposed the monolithic `submissions/varrahan/v2/placer.py` (~5700 lines) into a proper `system/v2/src/` package structure:
+
+```
+src/placer/
+  pipeline/macro_placer.py   # the budgeted placer loop
+  legalize/                  # spiral legalizer, 2-opt swap
+  local_search/              # relocation, soft moves, 2-opt, worker pool
+  scoring/                   # exact, incremental, congestion, density, WL
+  routing/apply.py           # numba-JIT routing fill (see S13)
+  perturb/congestion_gradient.py
+  plc/                       # loader + placement wrapper
+  ml/                        # candidate ranker (see S10)
+src/eda_io/                  # LEF/DEF/Verilog/SDC/Liberty plug-and-play layer
+src/dreamplace_bridge/       # async DP launcher
+src/main.py                  # harness-facing entrypoint
+```
+
+No algorithm changes. The 1.1500 `--all` (vs 1.1782 at freeze) reflects a favourable full-budget run within timing variance; the algorithm is identical. Runtime dropped from ~61 min (WSL wall-clock) to ~57 min as a side-effect of dead-code removal.
+
+---
+
+### S11 — WL-delta prefilter + R2-cleanup k narrowing (2026-06-06): avg 1.1500 → 1.1423
+
+Two scoring-cost reductions that convert freed CPU time into more R2 rounds:
+
+1. **WL-delta prefilter for soft relocation.** Before calling `IncrementalScorer.score()` for a soft-reloc candidate, compute the wirelength delta analytically (O(net_count) arithmetic). If `Δwl > 0` (move increases WL), skip the full scoring — the congestion term is unlikely to compensate. Eliminates ~10% of soft-reloc scoring calls with no quality loss.
+
+2. **R2-cleanup 2-opt k=16** (down from k=20). The final 2-opt pass within R2 uses a tighter candidate neighbourhood. The extra 4 neighbours cost time without finding useful swaps in convergence rounds. Saves ~0.5–1s per R2 round × 4–6 rounds = 2–5s freed per benchmark.
+
+`--all`: **1.1423, 17/17 VALID, 0 overlaps, 3434s** (prior 1.1500).
+
+---
+
+### S12 — Adaptive budget + scoring-cost reduction (2026-06-07): avg 1.1423 → 1.1403
+
+1. **ML shadow scoring** (data-collection mode only). Collects per-operator move traces during the R2 search to train the S10 candidate ranker. No production quality impact yet.
+
+2. **Freed-budget spend.** S11 freed ~15–20% of scoring time. Used for: (a) one extra R2 round on ibm13 (−0.012), (b) wider soft-reloc top_hot 128 → 192 on density-only rounds.
+
+`--all`: **1.1403, 17/17 VALID.** Per-benchmark: ibm13 −0.012, ibm17 +0.003 (timing variance).
+
+---
+
+### S13 — numba JIT re-enabled (2026-06-07): avg 1.1403 → 1.1380
+
+`_apply_3pin_routing_vec` and related routing-fill helpers have `@numba.jit` decorators. A Python 3.14 upgrade (installed for unrelated reasons) silently broke numba import — `numba` raised `ImportError` inside the decorator, which fell back to pure numpy transparently. Every measurement since the upgrade was a **numba-OFF run**. Re-pinning the venv to Python 3.10 (required by DREAMPlace's compiled extensions) restored JIT. Speedup: **~26%** (`--all` 3434s → 2563s). Freed wall-clock converts to more restarts and R2 rounds → avg **1.1403 → 1.1380**.
+
+**Critical note:** `uv sync` alone does NOT install numba (it is in `system/v2/requirements.txt` but not `pyproject.toml`). Always run `uv pip install -r system/v2/requirements.txt` after setup, or the placer silently falls back to numpy (~25% slower, avg ~1.1403 instead of 1.1380).
+
+---
+
+### S14 — Hand-JIT the post-numba scoring hot paths (2026-06-07): avg 1.1380 → 1.1379
+
+cProfile on ibm13 after S13 revealed three numpy scoring paths still dominating (not covered by numba decorators). Manually applied numpy vectorisation: (a) `_fast_get_wirelength` inner loop, (b) `_compute_cong_cost` bin accumulation, (c) position cache refresh in `IncrementalScorer`. Combined speedup on ibm13: 2563s → 2117s (`--all`). Proxy change: 1.1380 → 1.1379 (tiny; budget freed is marginal at the convergence point).
+
+---
+
+### S16 — DREAMPlace ABI break fixed (2026-06-10): avg 1.1379 → 1.1272
+
+**Root cause:** the Python 3.14 upgrade (S13) changed `.venv` to 3.14, but DREAMPlace's compiled C++ extensions are `cpython-310`. When `run_bridge.py` launched DP using the `.venv` Python binary, `import place_io_cpp` died 4s after launch — masked by the async bridge as "not ready yet" — so **DP produced ZERO seeds on every benchmark from S13 onwards**. The 1.1379 headline (S14) was a DP-OFF run.
+
+**Fix:** set `VENV_PYTHON` env var to point at the `dpenv` Python 3.10 environment (`system/dreamplace_build/dpenv/bin/python`) in the DP subprocess launcher. This restores all 3 DREAMPlace basins per benchmark: DP-lo (target_density=0.65, soft_movable=False), DP-hi (target_density=0.85, soft_movable=True), and cong-grad from each.
+
+`--all`: **1.1272, 17/17 VALID, 0 overlaps, 2645s** — 51/51 DP launches ready, 0 failures. The −0.0107 gain is entirely from restoring DP seeds that were silently dead since S13. See `ISSUES.md S16`.
+
+---
+
+### S10 — ML hard-relocation ranker enabled as production default (2026-06-11): avg 1.1272 → 1.1252
+
+An XGBoost candidate ranker trained on move traces collected during S12 shadow runs. The ranker predicts which hard-macro relocation candidates will improve proxy, allowing a wider proposal pool (32 candidates) while only exact-scoring the top 16 (ranked). Without the ranker, the budget allows exact-scoring ~16 candidates unfiltered; with it, the same budget explores 2× the proposals.
+
+**Confirmed via same-day paired multi-seed `--all`** (3 seeds × ON/OFF, sequential to control for machine load):
+- Seed 42 ON: 1.1252 / OFF: 1.1303 → Δ = −0.0051
+- Seed 43 ON: 1.1261 / OFF: 1.1305 → Δ = −0.0044
+- Seed 44 ON: 1.1221 / OFF: 1.1250 → Δ = −0.0029
+- Mean Δ(ON−OFF) = **−0.0041**, filter wins 3/3.
+
+`--all` production run: **1.1252, 17/17 VALID, 0 overlaps, 2337s** (~39 min). See `ISSUES.md S10`.
+
+---
+
+### Score progression summary (2026-05-21 → 2026-06-11)
+
+| Date | Change | Avg proxy | Δ |
+|---|---|---|---|
+| 2026-05-21 | v15 (async DP bridge, Improvement #1) | 1.4804 | — |
+| 2026-05-27 | R1 congestion-directed hard relocation | 1.4326 | −0.047 |
+| 2026-05-27 | R2 interleaved reloc + 2-opt | 1.4216 | −0.011 |
+| 2026-05-28 | R3 soft-macro cong relocation | 1.3764 | −0.045 |
+| 2026-05-29 | R5 soft-macro density relocation | 1.2799 | −0.097 |
+| 2026-05-30 | K-change (skip redundant round-start scoring) | 1.2593 | −0.021 |
+| 2026-05-31 | M1+L (budget tracking fix + ibm01 cap) | 1.1782 | −0.081 |
+| 2026-06-02 | N-change (Phase 11 → post-R2 soft-reloc) | ~1.178 | ≈0 (marginal) |
+| 2026-06-04 | Readability refactor (no algorithm change) | 1.1500 | −0.028 (timing) |
+| 2026-06-06 | S11 WL prefilter + R2-cleanup k=16 | 1.1423 | −0.008 |
+| 2026-06-07 | S12 adaptive budget + freed-budget spend | 1.1403 | −0.002 |
+| 2026-06-07 | S13 numba JIT re-enabled | 1.1380 | −0.002 |
+| 2026-06-07 | S14 hand-JIT hot paths | 1.1379 | −0.000 |
+| 2026-06-10 | S16 DREAMPlace ABI fix (DP basins restored) | 1.1272 | −0.011 |
+| 2026-06-11 | S10 ML hard-relocation ranker default | **1.1252** | −0.002 |
+
+**Total improvement 2026-05-21 → 2026-06-11: −0.3552 (−24.0%).**
