@@ -3,7 +3,21 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-06-14 — Stage 4 MAJOR CLEANUP: pruned phases DELETED from
+> **Status (2026-06-14 — ALL cong-grad code DELETED (on the reverted multi-seed
+> LSMC base, e2c8d04).** Removed the congestion-gradient spine (phases 1-3, 5b
+> DP-rescue, P7 DP-chains; 136 lines) from `macro_placer.py` + the orphaned
+> `placer/perturb/` package and its test. `rng_cong` kept (Phase 9 tie-breaks);
+> the `_remember_lsmc_seed` machinery stays (it seeds from random-noise restarts
+> + r2-best, not cong-grad). Verified: ibm04 1.0002 VALID, no cong-grad lines,
+> multi-seed LSMC seeds from survivors `{post/pre-r2-best, random noise}`.
+> **Accepted regression, by directive:** cong-grad was net-positive on the
+> reverted code (+0.0134 over ibm01/04/09/12/17/18 single-seed, worst ibm17
+> +0.0153) and the regression is somewhat larger on this multi-seed base
+> (ibm04 1.0002 vs cong-on ~0.9947) because cong-grad indirectly improves the
+> seed pool. Deleted for pipeline simplification; git-revertable. A full 2-seed
+> `--all` should size the true cost before relying on the number.
+
+> **(historical, my earlier branch) Stage 4 MAJOR CLEANUP: pruned phases DELETED from
 > source.** Removed 272 lines from `macro_placer.py` + the whole
 > `local_search/workers.py` (and the `mp` import + `__init__` export): the
 > multi-seed 2-opt phase, Phase 5c (wide-from-best), and Phase 8 (TOP-K
