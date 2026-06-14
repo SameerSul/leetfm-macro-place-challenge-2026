@@ -2,16 +2,23 @@
 
 ## Overview
 
-This document specifies a GPU-accelerated global exploration phase that sits between seed
-generation and the R2 greedy finisher. The engine runs many independent Markov chains in
-parallel, each following the LSMC structure (kick move, greedy descent, accept on
-post-descent cost), with the cost evaluated by the existing `cuda_delta` scorer. The best
-candidates are legalized and verified through the bit-exact CPU `IncrementalScorer` gate
-before entering R2. Multiple GPUs, when present, run independent islands of chains with
-periodic elite migration.
+This document specifies a GPU-accelerated global exploration phase that runs as the final
+quality phase after R2. The engine runs many independent Markov chains, each following the
+LSMC structure (kick move, greedy descent, accept on post-descent cost), with the cost
+evaluated by the existing `cuda_delta` scorer / bit-exact `IncrementalScorer` gate.
 
-Nothing in this design is implemented yet. The `V2_GPU_EXPLORE_*` variables below are the
-proposed interface, named to match the existing `V2_RELOC_PROPOSE_*` convention.
+**Hardware target: a single GPU, always** (the deployment hardware is fixed at max 1 GPU —
+the 6 GB RTX 4050 this was developed on is representative, not a placeholder). There is no
+multi-GPU island model; "many chains" means a batch dimension on one GPU, not sharding
+across devices.
+
+**Implementation status (2026-06-14):** Stages 0–2b are shipped (see §5). The single-chain
+engine (`src/placer/local_search/lsmc_explore.py`), kick pre-screen, and final-phase
+multi-incumbent scheduling are default-on under CUDA. Congestion-gradient phases have
+been deleted from the active pipeline, so the LSMC seed pool is deliberately limited to
+generic local placements: legalized baseline, random-noise restarts, random-order
+legalize trials, pre-R2 best, and post-R2 best. LSMC must not depend on DREAMPlace/bridge
+outputs or cong-grad state for future improvements.
 
 ## Revision notes (what changed from the previous draft and why)
 
@@ -56,7 +63,7 @@ already provides:
   full proxy shape (`wl + 0.5·density + 0.5·congestion`) for pools of relocation
   proposals, with static tensors built once and reused across chunks.
 - Memory-budgeted chunking (`V2_RELOC_PROPOSE_MAX_MB` / `_AUTO_MEM_FRAC`), sized for the
-  6 GB laptop GPU it was developed on — these caps open up on larger cards.
+  6 GB GPU — the permanent VRAM budget, so chain count × proposal-pool size must fit here.
 - Parity verification (~1e-7 max delta on ibm01/ibm04) and CUDA-execution diagnostics
   (`test/diagnostic/_cuda_relocation_status.py`).
 
@@ -68,11 +75,10 @@ The exploration engine is a control loop around this machinery, not a new scorer
 
 Each chain holds a private copy of the macro positions and runs:
 
-1. **Kick move (large step).** Relocate/swap a random subset of hard macros,
-   `kick_ratio ≈ 0.10` of movable macros as the starting point (the GPU-DPO default;
-   the paper shows kick size is the critical knob — too large destroys the placement,
-   too small cannot escape the basin). Kicks are generated as batched tensor ops, not
-   per-chain CPU loops.
+1. **Kick move (large step).** Relocate a random subset of movable hard macros, then
+   spiral-legalize. The GPU-DPO starting point was `kick_ratio ≈ 0.10`; tuning on IBM
+   found smaller is better (shipped **0.02**; 0.02 > 0.05 > 0.10) because the post-R2
+   incumbent is already well-refined and large kicks cannot be recovered in one descent.
 2. **Greedy descent.** A few rounds of propose-all relocation restricted to the chain's
    own state: generate candidate targets for hot macros, score the pool with
    `cuda_delta`, apply the best non-conflicting improvement per round. Within a chain,
@@ -84,8 +90,10 @@ Each chain holds a private copy of the macro positions and runs:
    counters and early exit after `F` consecutive failures. A low-temperature SA variant
    is a later experiment, not the default.
 
-Chains are independent: a batch dimension over chains, hundreds per GPU. Static netlist
-tensors are shared; only positions, costs, and counters are per-chain.
+Chains are independent: a batch dimension over chains on the one GPU. Static netlist
+tensors are shared across chains; only positions, costs, and counters are per-chain. Chain
+count is bounded by the 6 GB budget (chains × proposal-pool dynamic bytes + shared static),
+not by device count.
 
 ### 2.2 Soft macros
 
@@ -94,31 +102,82 @@ relocation stays in R2/post-R2 on CPU. Extending `cuda_delta` to soft-macro move
 separate follow-up — it matters because soft macros left behind after large hard-macro
 displacement is a documented failure mode.
 
-### 2.3 Multi-GPU: island model
+### 2.3 Multi-incumbent scheduling (current)
 
-With `D = torch.cuda.device_count() > 1`, run one worker process per GPU (sidesteps the
-GIL; chain state is small to serialize). Each island starts its chains from a different
-seed — baseline legalization, DREAMPlace at target density 0.85, DREAMPlace at 0.65 —
-and every `M` rounds the islands exchange their elite states through the host.
-Degradation is graceful by construction: one GPU means one island; no GPU means the
-exploration phase is skipped and the pipeline is unchanged.
+The final LSMC phase now runs over a small exact-scored seed pool instead of only the
+post-R2 incumbent. The pool intentionally excludes bridge/DREAMPlace-specific placements
+and any congestion-gradient-derived placements. Current sources are:
 
-**Open assumption:** the organizer's evaluation hardware is not confirmed. Until it is,
-multi-GPU is a development-side capability and the submission must win on the
-single-GPU and CPU-only fallback paths too.
+- `baseline`: legalized `initial.plc`.
+- `random noise`: ordinary Gaussian restart winners and near-best candidates.
+- `random-order-legalize`: alternate legalizer tie-break outcomes.
+- `pre-r2-best`: the best generic seed before the R2 finisher.
+- `post-r2-best`: the fully refined incumbent and mandatory fallback seed.
+
+`V2_GPU_EXPLORE_MAX_SEEDS` caps the number of seeds explored, sorted by exact proxy.
+`V2_GPU_EXPLORE_SEED_MARGIN` keeps only near-best non-forced candidates. Each selected
+seed receives an equal share of the final LSMC time slice, and the global incumbent is
+updated only by exact strict improvement. This keeps the final gate unchanged while
+giving LSMC basin diversity after cong-grad deletion.
+
+### 2.4 Multi-chain on one GPU (probed, dormant)
+
+The single-chain engine (2a) descends one kick at a time; the pre-screen (2b) batches the
+*kick selection* but still descends serially. Stage 2c batches the *descent* itself: K
+chains advance together as a leading batch dimension, so one `cuda_delta` call scores all
+chains' relocation pools at once over the shared static tensors. The accept/reject is
+per-chain (each keeps its own best + failure counter); the handoff (§3) takes the best
+chain's state.
+
+This is the cuGenOpt "P independent solutions" structure realized on a single device — no
+islands, no inter-device migration, no worker-per-GPU. Diversity comes from independent
+per-chain kick RNG and from the generic incumbent pool above. The hard constraint is the
+6 GB budget: chain count is chosen so `K × proposal-pool dynamic bytes + shared static`
+fits, reusing the existing memory accounting (`_relocation_*_bytes` in `relocation.py`).
+The serial `V2_GPU_EXPLORE_CHAINS` probe found a narrow payoff and is left dormant; a
+batched rewrite needs a fresh paired gate before it becomes active work.
+
+Degradation: no GPU → exploration skipped, pipeline unchanged.
+
+### 2.5 Next LSMC improvement methods
+
+These are the current improvement directions for LSMC. They preserve the final exact
+accept gate and avoid bridge/cong-grad coupling.
+
+1. **Seed-pool calibration.** Tune `MAX_SEEDS`, `SEED_MARGIN`, and time allocation across
+   baseline/random/P9/pre-R2/post-R2 seeds. Equal time is simple; a better scheduler may
+   give the post-R2 incumbent a fixed floor and distribute the remainder by seed diversity
+   or score gap.
+2. **Generic kick families.** Keep kicks random-field independent, but vary their shape:
+   area-weighted macro picks, displacement-window kicks, edge-biased legal regions,
+   group kicks for nearby macro clusters, and lower kick ratios for already-tight seeds.
+   These use only placement geometry, not routed congestion fields.
+3. **Soft-aware large steps.** After a hard kick, reposition a bounded subset of soft
+   macros using existing soft relocation or cheap geometric anchors before descent. This
+   addresses stale soft placement after larger hard moves without calling external tools.
+4. **Adaptive pre-screen.** Let `PRESCREEN` depend on measured exact-score time and seed
+   type. Cheap benchmarks can score more kicks; slow grids should preserve time for
+   descent and final exact restoration.
+5. **R2-as-descent experiment.** For one or two seeds only, treat a shortened R2 finisher
+   as the descent part of the chain, then exact-accept after the final score. This tests
+   whether LSMC can find basins that normal post-R2 kicks cannot reach, without moving
+   the accept gate earlier.
+6. **Acceptance schedule, final-gated.** Low-temperature or late-acceptance hill climbing
+   can be tested inside a chain, but returned placements still must beat the global
+   incumbent on exact proxy. This keeps downside bounded to wasted time.
 
 ## 3. CPU handoff
 
 The GPU cost is a ranking score, not the true proxy. The handoff per benchmark:
 
-1. Take the top candidate(s) across all islands.
+1. Take the best chain's candidate(s).
 2. **Legalize** each with the existing spiral legalizer — kicks create hard-macro
    overlaps, and R2 is a refinement loop, not a legalizer. Legalization time is charged
    to the exploration budget, not R2's.
 3. Exact-score through a **fresh `IncrementalScorer` initialization** (never patch the
    pre-GPU scorer state with the bulk GPU delta).
-4. Feed the winner into R2 only if it strictly beats the incumbent on true proxy. The
-   accept-on-true-proxy guarantee is unchanged.
+4. Keep the winner as the final placement only if it strictly beats the incumbent on true
+   proxy. The accept-on-true-proxy guarantee is unchanged.
 
 **Adaptive K.** Exact scoring costs ~160 s on ibm15 and ~220 s on ibm18, so a flat
 top-K=5 handoff is unaffordable there. K is sized per benchmark from the running-max
@@ -128,49 +187,57 @@ extra candidate would breach `PER_BENCH_FLOOR_S`.
 
 ## 4. Configuration
 
-```
-V2_GPU_EXPLORE=auto         # auto: run when CUDA visible; 1: force; 0: off (default)
-V2_GPU_EXPLORE_CHAINS=256   # chains per island
-V2_GPU_EXPLORE_KICK=0.10    # kick ratio (fraction of movable hard macros per kick)
+Shipped (default-on under CUDA):
+
+```env
+V2_GPU_EXPLORE=auto         # auto: run when CUDA visible (default); 1: force; 0: off
+V2_GPU_EXPLORE_KICK=0.02    # kick ratio (fraction of movable hard macros per kick)
 V2_GPU_EXPLORE_FAILS=5      # per-chain early-exit failure tolerance (F)
-V2_GPU_EXPLORE_TIME_S=10.0  # wall ceiling per benchmark for the exploration loop
-V2_GPU_EXPLORE_K=auto       # handoff candidates; auto = adaptive from t_one_score
-V2_GPU_EXPLORE_MIGRATE=8    # rounds between island elite exchanges (multi-GPU)
+V2_GPU_EXPLORE_TIME_S=30.0  # wall ceiling per benchmark for the exploration loop
+V2_GPU_EXPLORE_PRESCREEN=8  # kicks scored per iteration; descend only the best (2b)
+V2_GPU_EXPLORE_MULTI_INCUMBENT=1     # final phase explores generic local seeds
+V2_GPU_EXPLORE_MAX_SEEDS=3           # top distinct incumbents by exact score
+V2_GPU_EXPLORE_SEED_MARGIN=0.08      # keep non-best seed candidates within this gap
 ```
 
-Budget: the exploration loop should overlap CPU work wherever possible — the async
-DREAMPlace launcher is the model. Run exploration on the GPU while the CPU executes the
-early phases on the baseline seed; as written in the old draft (GPU phase strictly
-between seeding and R2), the time slice is purely additive, ~170 s across 17 benchmarks.
-Overlap is what actually "frees up CPU cycles."
+Dormant probe:
+
+```env
+V2_GPU_EXPLORE_CHAINS=1     # serial chain split; >1 is exploratory, not default
+```
+
+Budget: the exploration phase runs after R2 within the per-benchmark budget; the
+floor-reservation allocator shrinks its time slice as `t_one_score` rises so it never
+breaches `PER_BENCH_FLOOR_S`. Measured cost at the shipped 30 s slice is ~0–60 s/benchmark
+(`--all` on-arm ~51 min, under the 1 h cap).
 
 ## 5. Staged rollout
 
 Each stage gates the next. Quality comparisons are paired multi-seed `--all` runs —
 never cross-day single runs.
 
-- **Stage 0 — re-baseline on new hardware.** Run
-  `_cuda_relocation_status.py --require-cuda`, rebuild DREAMPlace for the new GPU arch
-  (the documented build assumed CUDA 12.1/sm_89), re-measure `t_one_score` and `--all`
-  wall time. All budget constants were tuned on the old machine.
-- **Stage 1 — validate the existing CUDA path at scale.** `V2_RELOC_PROPOSE_ALL=auto`
-  with raised memory caps, `TOP_M`, and pool sizes on the larger GPU. Zero new code
-  before the first measurement.
-- **Stage 2 — single-island exploration engine.** Implement §2.1/§3 on one GPU. Gate:
-  paired multi-seed `--all` win over Stage 1.
-- **Stage 3 — islands.** Multi-GPU sharding plus migration. Also exploit extra GPUs for
-  development throughput: paired-seed `--all` runs and kick/chain/temperature sweeps in
-  parallel. Gate: wins over Stage 2 under the same wall budget.
-- **Stage 4 — prune legacy phases, one at a time.** Start with multi-seed 2-opt, then
-  the cong-grad phases (1–3, 5b/c, 7, 8). Each deletion is its own paired comparison;
-  a deletion that loses gets reverted, not bandaged.
+- **Stage 0 — re-baseline (DONE 2026-06-11).** avg 1.1243, CUDA diagnostic parity
+  1.5e-07, DREAMPlace sm_89 build healthy, numba present.
+- **Stage 1 — validate the existing CUDA propose-all path (DONE 2026-06-12).** Paired
+  gate WASH (mean +0.0020, 2/3 seeds worse) → `V2_RELOC_PROPOSE_ALL` stays opt-in.
+- **Stage 2a — single-chain exploration engine (SHIPPED 2026-06-12).** Post-R2 LSMC
+  kick/descent/accept. Paired gate 2/2, mean −0.0042, best 1.1194.
+- **Stage 2b — kick pre-screen (SHIPPED 2026-06-13).** Score a batch of kicks, descend
+  the best. Paired gate 2/2, mean −0.0020, best 1.1176.
+- **Stage 2c — multi-chain on one GPU (PROBED, DORMANT).** Serial chain-split diversity
+  produced too little signal to justify a batched-descent rewrite at the current score.
+- **Stage 2d — multi-incumbent final scheduling (CURRENT).** Explore a bounded generic
+  seed pool after R2: baseline/random/P9/pre-R2/post-R2 only. Gate: paired multi-seed
+  `--all` win over single-incumbent 2b.
+- **Stage 3 — LSMC-only improvements.** Test the methods in §2.5 one at a time. Do not
+  add bridge-specific seeds or cong-grad-derived kicks/seeds.
 
 The end state, if every gate passes, is the simplified spine:
 
-    seeds (baseline + async DREAMPlace)
-        → GPU island exploration (kick / descent / post-descent accept, cuda_delta cost)
-        → legalize + exact gate (adaptive K)
+   generic local seeds
         → R2 finisher (bit-exact CPU)
+        → GPU LSMC exploration (kick / descent / post-descent accept)
+        → final exact gate
 
 ## 6. Verification
 

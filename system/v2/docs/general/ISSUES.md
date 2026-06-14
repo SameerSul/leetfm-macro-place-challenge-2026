@@ -1,4 +1,4 @@
-# Open issues — v2 placer (last revised 2026-06-11)
+# Open issues — v2 placer (last revised 2026-06-12)
 
 This is a **clean rewrite**. All issues that have been resolved or
 rejected have been removed; their findings are captured in commit
@@ -49,6 +49,94 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 ---
 
 ## Open issues
+
+### S17. GPU / LSMC staged rollout — current work is generic multi-incumbent LSMC
+
+**Current state (2026-06-14):** cong-grad phases have been deleted from the
+active pipeline, and LSMC is the remaining GPU-backed final exploration layer.
+The active LSMC expansion is intentionally generic: it seeds from legalized
+baseline, random-noise restarts, random-order legalize trials, pre-R2 best, and
+post-R2 best. It does **not** use DREAMPlace/bridge-specific placements as LSMC
+seeds and does **not** use cong-grad-derived kicks or seed sources. The exact
+post-descent accept gate remains the safety invariant.
+
+**Next LSMC improvement methods:** update and gate one at a time:
+- seed-pool calibration (`V2_GPU_EXPLORE_MAX_SEEDS`, `SEED_MARGIN`, and per-seed
+  time allocation);
+- generic geometry-only kick families (area-weighted picks, displacement-window
+  kicks, edge-biased targets, group kicks);
+- soft-aware hard-kick recovery using existing soft relocation;
+- adaptive kick pre-screen based on score time and seed type;
+- a small R2-as-descent experiment where acceptance still happens after the
+  final exact score;
+- chain-local non-greedy acceptance variants that remain final-gated against the
+  global incumbent.
+
+Lesson from the earlier pruning gates: judge changes on full 17-benchmark paired
+runs, not prefix smokes. The final LSMC gate cannot itself accept a worse score,
+but time displaced from R2/post-soft phases can still regress the final result.
+
+### S17-prev. Stages 2a+2b (best --all 1.1176)
+
+**Stage 2b (2026-06-13):** kick pre-screen `V2_GPU_EXPLORE_PRESCREEN` (default
+8) — score a batch of kicks, descend the best (cuGenOpt evaluate-reduce at the
+kick level). Paired gate 2/2: seed1 1.1198→1.1176, seed2 1.1237→1.1219, mean
+−0.0020; accepts ~doubled; B8 slightly faster than B1. `PRESCREEN=1` = prior
+2a behavior. Shipped (default already 8 in code).
+
+**Stage 2c (multi-chain — PROBED, REFACTOR REJECTED 2026-06-13).** Hardware is
+single-GPU-always, so "multi-chain" means batched chains on one device, not
+islands. Built `V2_GPU_EXPLORE_CHAINS` scaffolding (single-process keep-best,
+CHAINS=1 = verified no-op; commit fd6ceee, **merged as a dormant knob**, default
+off). Diversity-vs-depth probe at matched 90s compute (3 chains vs 1) on 6
+benchmarks: ibm12 −0.0095 (real), ibm04/09/11/15/16 between 0 and −0.0009
+(noise floor). **The entire signal is one benchmark.** Extra chains add accepts
+(1→3) but to equivalent basins. Conclusion: the GPU-batched-descent refactor
+(batch the relocation scorer across a chain dim + per-chain commits, a multi-day
+rewrite) is NOT justified by a ~1/17-benchmark payoff at 1.1176 with shrinking
+increments. Budget-split multi-chain is also unshippable (10s/chain too shallow
+at the 30s cap; 90s breaks the 1h `--all` cap). Knob left dormant for possible
+revisit. NOT a candidate by itself: annealed acceptance (LAHC disproven). **Next
+lever:** LSMC-only seed/kick/descent improvements from the current generic pool.
+
+**Stage 2a verdict (2026-06-12 evening):** post-R2 LSMC kick/descent/accept
+(`lsmc_explore.py`) shipped default-on under CUDA, kick=0.02, 30s slice.
+Full-stack paired gate: seed1 −0.0051 (on-arm 1.1194 = NEW BEST), seed2
+−0.0033. Design invariants discovered: the accept gate must be the final
+quality phase (earlier hooks accepted states that lost after later
+refinement), and worktree-pinned runs need gitignored assets symlinked in
+(DP/ML silently off otherwise — invalidated the first gate attempt).
+Remaining in this entry: Stage 0 hardware half and possible LSMC-only
+experiments. The old island/multi-GPU framing is retired; target hardware is one
+GPU, and extra chains mean either serial budget splits or a future one-device
+batch dimension.
+
+Plan of record: `docs/gpu/GPU-ops.md` (cuda_delta-based LSMC exploration on one
+GPU, generic multi-incumbent scheduling, evidence-gated LSMC-only changes).
+
+**Stage 0 (done 2026-06-11):** re-baseline avg **1.1243**, 17/17 VALID, 2679s
+(noise-equivalent to the 1.1252 record). CUDA diagnostic PASS (parity 1.541e-07);
+DREAMPlace dpenv healthy but **sm_89-only**; numba present. Open half: the new
+multi-GPU machines aren't reachable from this box — on access, run GPU
+inventory, rebuild DP for their arch, re-baseline, and re-run the Stage 1
+winner with raised `V2_RELOC_PROPOSE_{MAX_MB,TOP_M}` / pool sizes.
+
+**Stage 1 (done 2026-06-12):** paired multi-seed A/B of
+`V2_RELOC_PROPOSE_ALL=auto` vs off, seeds 1/2/3
+(`ml_data/compare/all_20260612_propall_*`): +0.0090 / +0.0047 / −0.0076
+cumulative — mean +0.0020, 2/3 seeds worse → **stays opt-in** (S10 ship bar is
+3/3 wins). No `--all` wall-time win: budget allocator reabsorbs per-benchmark
+speedups. Divergences vs the CPU policy are deterministic (ibm18 seed1 +0.0188
+replays bit-exact) but seed-dependent in sign — the GPU policy finds different
+basins, not better ones, when single-candidate.
+
+**Open → Stage 2 (`V2_GPU_EXPLORE`):** build the chain engine per GPU-ops.md
+§2 (kick ≈0.10 → cuda_delta descent → post-descent zero-temp accept, batched
+chains) + §3 handoff (spiral legalize → fresh `IncrementalScorer` → adaptive K
+from `t_one_score`). The Stage 1 result sharpens the thesis: single-candidate
+GPU policy is a wash, so the win must come from *many* candidates + the exact
+gate harvesting the ±0.02 per-benchmark spread. Verification checklist in
+GPU-ops.md §6 before any score run; gate vs Stage 1 via paired multi-seed.
 
 ### S16. Silent DREAMPlace ABI break — DP was dead since S13 (SHIPPED 2026-06-10 — 1.1379 → 1.1272)
 
@@ -568,10 +656,10 @@ slack. Two attempts to convert it to score, both negative:
   everywhere (no per-benchmark branching). Not shipped; defaults stay tgt32/k16.
 
 **Conclusion: at the practical floor for this move set on IBM.** Budget and width
-are exhausted; further gains need basin diversity (more DREAMPlace seeds) or new
-move types — bigger bets with diminishing IBM return (we already beat the
-leaderboard 1.4076 by 19%). Env knobs `V2_TIME_BUDGET` / `V2_SOFT_TGT` / `HARD_2OPT_K`
-kept for future experiments.
+are exhausted; further gains need generic LSMC seed/kick/descent improvements or
+new move types — bigger bets with diminishing IBM return (we already beat the
+leaderboard 1.4076 by 19%). Env knobs `V2_TIME_BUDGET` / `V2_SOFT_TGT` /
+`HARD_2OPT_K` kept for future experiments.
 
 ### S14. Hand-JIT the post-numba scoring hot paths (2026-06-07, --all 2563s→2117s)
 
@@ -936,16 +1024,16 @@ benchmarks that dominate the --all average. On small/mid benchmarks
 (ibm01/04) the speedup lets 2-opt *converge* before 15s — which is the
 budget S1 needs to fire (see S1).
 
-### P4. Skip `_routing_congestion_perturb` on Phase 9 trials
+### P4. Skip `_routing_congestion_perturb` on Phase 9 trials (OBSOLETE)
 
 Phase 9 (random-order legalize) doesn't use congestion gradient —
 it just legalizes from init_pos with a shuffled order. The
 `_routing_congestion_perturb` calls in Phase 1/2/3/5b/5c/7/8 are
-needed for cong-grad. Phase 9 trials currently don't call
-_routing_congestion_perturb (correct), but verify no redundant
-state computation.
+retired cong-grad calls from the old pipeline. Phase 9 trials currently don't
+call `_routing_congestion_perturb` (correct), and the active pipeline no longer
+has cong-grad phases to prune here.
 
-**Status:** likely a no-op fix; flagged for completeness.
+**Status:** obsolete after cong-grad deletion.
 
 ### P5. Interleave speedup — shipped as a different stack (RESOLVED 2026-05-29)
 

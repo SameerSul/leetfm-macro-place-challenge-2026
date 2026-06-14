@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file gives Claude Code the context to work productively in this repository on the first try. It is a living document - when something here turns out to be wrong or missing, fix it immediately rather than working around it.
+This file gives coding agents the context to work productively in this repository on the first try. It is a living document - when something here turns out to be wrong or missing, fix it immediately rather than working around it.
 
 ## What this repo is
 
@@ -66,23 +66,22 @@ If `uv` is not on PATH, fall back to `pip install -e .` and replace `uv run` wit
 
 ## File modification scope
 
-**IMPORTANT - write scope is restricted to `system/v2/**` plus root `CLAUDE.md`.** Anything outside that is read-only, including the prior system slot `system/v1/**`.
+**IMPORTANT - write scope is restricted to `system/v2/**` plus root `AGENTS.md` and `CLAUDE.md`.** Anything outside that is read-only, including the prior system slot `system/v1/**`.
 
 Writable:
-- `system/v2/**` - the active system slot (entrypoint `src/main.py`, the `src/placer/` package, any new files Claude creates here)
+- `system/v2/**` - the active system slot (entrypoint `src/main.py`, the `src/placer/` package, any new files agents create here)
 - `system/dreamplace_build/**` - DREAMPlace install tree (rebuilds / patches allowed)
 - `system/dreamplace_src/**` - DREAMPlace source (custom forks / modifications allowed)
-- `CLAUDE.md` - this file
+- `AGENTS.md` - this file
+- `CLAUDE.md` - the Claude Code instruction file
 
-Read-only (Claude may read but must not edit, create, move, or delete):
+Read-only (agents may read but must not edit, create, move, or delete):
 - **`system/v1/**`** - frozen v17 checkpoint, kept for comparison. Treat as if it lived under `external/`.
 - Everything outside `system/` - `macro_place/`, `external/`, `scripts/`, `benchmarks/`, `pyproject.toml`, `README.md`, `SETUP.md`, `TEAM_GUIDE.md`, `LICENSE.md`, etc.
 
-If a task seems to require modifying a read-only file (e.g. fixing a bug in `macro_place/`, adding a script under `scripts/`, correcting an error outside `system/v2/`, or porting/tweaking something from `v1/`), stop and surface the proposed change to the user instead of editing. They will lift the restriction explicitly when appropriate - typically by asking Claude to copy the v1 file into v2 first, then modify the v2 copy.
+If a task seems to require modifying a read-only file (e.g. fixing a bug in `macro_place/`, adding a script under `scripts/`, correcting an error outside `system/v2/`, or porting/tweaking something from `v1/`), stop and surface the proposed change to the user instead of editing. They will lift the restriction explicitly when appropriate - typically by asking the agent to copy the v1 file into v2 first, then modify the v2 copy.
 
-This rule is documented here so Claude follows it. If local tool settings are
-needed, keep them at the repository root; do not add per-subtree `.claude/`
-directories under `system/v2/src/`.
+This rule is documented here so agents follow it. If local tool settings are needed, keep them at the repository root; do not add per-subtree agent configuration directories under `system/v2/src/`.
 
 ## Submission contract (don't break these)
 
@@ -152,8 +151,8 @@ test/                     Project-level pytest smoke tests. READ-ONLY for v2 wor
 - Numpy `float64` for placement math; convert to `torch.float32` only at the API boundary.
 - Position arrays are `[N, 2]` with `(x, y)` in canvas microns. Centers, not corners.
 - Avoid premature abstraction - submissions are short-lived experiments. Inline beats refactor here.
-- When writing comments and docstrings, ensure simplicity with all descriptions for functions and code blocks
-- Simplicity of code first. Our code must be human readable, and as such, we should prioritize the simplicity of our code and program structure, while ensuring that simplicity does not dampen our programs performance
+- When writing comments and docstrings, ensure simplicity with all descriptions for functions and code blocks.
+- Simplicity of code first. Our code must be human readable, and as such, prioritize the simplicity of code and program structure while ensuring that simplicity does not dampen performance.
 
 ## Workflow
 
@@ -161,7 +160,7 @@ test/                     Project-level pytest smoke tests. READ-ONLY for v2 wor
 - When a change improves one benchmark, verify it does not regress others before committing. The repo's history (`git log`) shows several "win on ibm04, lose on ibm09" reverts.
 - Record concrete numbers in `system/v2/docs/general/PROGRESS.md` when a change becomes the new best - that file is the source of truth for "what works", not commit messages.
 - Once a change has been accepted and verified, ensure that all relevant documentation, such as `system/v2/README.md`, `system/v2/docs/general/ARCHITECTURE.md`, `system/v2/docs/general/ISSUES.md`, `system/v2/docs/general/PROGRESS.md`, and `system/v2/docs/general/DESIGN_FLOW.md`, has been updated with the latest changes to avoid stale documentation.
-- **All v2-specific tests, diagnostics, and probes live under `system/v2/test/`** (current subdirs: `benchmarks/`, `diagnostic/`, `eda_io/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks Claude to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `system/v2/test/` under the matching subdirectory - and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.
+- **All v2-specific tests, diagnostics, and probes live under `system/v2/test/`** (current subdirs: `benchmarks/`, `diagnostic/`, `eda_io/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks an agent to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `system/v2/test/` under the matching subdirectory - and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.
 - Never commit unless asked.
 - Do not push, force-push, or create PRs unless asked.
 
