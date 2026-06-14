@@ -266,14 +266,8 @@ class _CachedDreamplaceHandle:
     def poll(self) -> Optional[int]:
         return 0
 
-    def is_done(self) -> bool:
-        return True
-
     def time_elapsed(self) -> float:
         return time.time() - self.start_time
-
-    def wait_for_result(self, max_wait_s: float = 0.0) -> Optional[np.ndarray]:
-        return self._result[0]
 
     def wait_for_result_full(
         self, max_wait_s: float = 0.0
@@ -338,16 +332,8 @@ class AsyncDreamplaceHandle:
             return self.popen.returncode
         return self.popen.poll()
 
-    def is_done(self) -> bool:
-        return self.poll() is not None
-
     def time_elapsed(self) -> float:
         return time.time() - self.start_time
-
-    def wait_for_result(self, max_wait_s: float = 0.0) -> Optional[np.ndarray]:
-        """Return hard positions, or None if the process is not ready."""
-        full = self.wait_for_result_full(max_wait_s=max_wait_s)
-        return None if full is None else full[0]
 
     def wait_for_result_full(
         self, max_wait_s: float = 0.0

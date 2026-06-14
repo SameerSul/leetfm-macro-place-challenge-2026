@@ -480,10 +480,6 @@ class MacroPlacer:
             t_leg = time.monotonic() - t1
             _log(f"  Restart {k} ({label}) legalized in {t_leg:.1f}s")
 
-            # No 2-opt here: it pulls cong-grad-perturbed positions back toward
-            # their target, undoing the exploration away from congested cells.
-            # 2-opt runs only on the baseline (no cong-grad trajectory to undo).
-
             t_score_start = time.monotonic()
             score = _score(leg)
             t_score_observed = time.monotonic() - t_score_start
