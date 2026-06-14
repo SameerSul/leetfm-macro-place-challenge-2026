@@ -22,7 +22,6 @@ from placer.local_search.soft_moves import _two_opt_soft_swap
 from placer.local_search.two_opt import _two_opt_proxy_swap
 from placer.ml.data_collection import get_candidate_trace
 from placer.ml.shadow import is_filter_enabled
-from placer.perturb.congestion_gradient import _routing_congestion_perturb
 from placer.plc.loader import _load_plc
 from placer.scoring.exact import _exact_proxy
 from placer.scoring.incremental import IncrementalScorer
@@ -511,72 +510,6 @@ class MacroPlacer:
 
         # Routing-congestion restarts use their own RNG so noise draws stay stable.
         rng_cong = np.random.RandomState(self.seed + 1)
-        cong_pos = baseline_pos
-        cong_improved = False
-        cong_frac = 0.04
-        for cong_iter in range(12):
-            if cong_iter > 0:
-                # Match the relaxed cap used by directed restarts.
-                remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                # Smaller retry steps need less reserve.
-                budget_factor = 3.0 if cong_frac >= 0.04 else 1.5
-                if remaining < budget_factor * t_one_score * 1.3:
-                    break
-            cong_perturbed = _routing_congestion_perturb(
-                cong_pos, plc, benchmark, n, cw, ch, hw, hh, movable,
-                frac=cong_frac, rng=rng_cong,
-            )
-            score_before = best_score
-            if not _try_restart(f"cong-grad iter={cong_iter + 1} f={cong_frac:.2f}",
-                                 cong_perturbed, k=1 + directed_ran,
-                                 allow_overrun=True):
-                break
-            directed_ran += 1
-            if best_score < score_before:
-                cong_pos = np.stack(
-                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
-                )
-                cong_improved = True
-                cong_frac = 0.04  # reset frac on success
-            elif cong_improved and cong_frac > 0.01 and cong_iter >= 2:
-                # Try a gentler step before giving up.
-                cong_frac *= 0.5
-            else:
-                break  # plc's map is stale, stop iterating
-
-        # Wide steps from baseline after an improving congestion pass.
-        if cong_improved:
-            for wide_frac in [0.08, 0.12]:
-                remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                if remaining < t_one_score * 1.3:
-                    break
-                cong_wide = _routing_congestion_perturb(
-                    baseline_pos, plc, benchmark, n, cw, ch, hw, hh, movable,
-                    frac=wide_frac, rng=rng_cong,
-                )
-                score_before = best_score
-                if not _try_restart(f"cong-grad wide={wide_frac:.0%}", cong_wide,
-                                     k=1 + directed_ran, allow_overrun=True):
-                    break
-                directed_ran += 1
-                if best_score >= score_before:
-                    break  # stop wide steps if this one didn't improve
-
-        # Congestion step from the current best placement.
-        if cong_improved:
-            remaining = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if remaining >= t_one_score * 1.3:
-                best_pos_now = np.stack(
-                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
-                )
-                phase3_perturbed = _routing_congestion_perturb(
-                    best_pos_now, plc, benchmark, n, cw, ch, hw, hh, movable,
-                    frac=0.04, rng=rng_cong,
-                )
-                if _try_restart("cong-grad phase3", phase3_perturbed,
-                                 k=1 + directed_ran, allow_overrun=True):
-                    directed_ran += 1
-
         # Score any DREAMPlace seeds that finished in time.
         dp_placements: list[tuple[str, float, torch.Tensor]] = []
         for tag, td, h in dp_handles:
@@ -628,22 +561,6 @@ class MacroPlacer:
                 best_pl = dp_pl.clone()
             dp_placements.append((tag, dp_score, dp_pl))
 
-        # Congestion step after DREAMPlace candidates.
-        if dp_placements:
-            remaining_5b = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if remaining_5b >= t_one_score * 1.3:
-                best_pos_now = np.stack(
-                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
-                )
-                dp_perturbed = _routing_congestion_perturb(
-                    best_pos_now, plc, benchmark, n, cw, ch, hw, hh, movable,
-                    frac=0.04, rng=rng_cong,
-                )
-                if _try_restart("cong-grad-best from-dreamplace-plc f=0.04",
-                                 dp_perturbed,
-                                 k=1 + directed_ran, allow_overrun=True):
-                    directed_ran += 1
-
         # Random Gaussian restarts.
         noise_scale_base = min(cw, ch)
         for k, frac in enumerate(
@@ -657,59 +574,6 @@ class MacroPlacer:
             )
             if not _try_restart(f"random noise={frac:.0%}", perturbed, k=k):
                 break
-
-        # Try short congestion chains from DREAMPlace placements.
-        rng_cong_pre_p7 = rng_cong.get_state()
-        P7_ITER1_MARGIN_GATE = 0.06
-        MAX_P7_ITERS = 3
-        for tag, _dp_score_unused, dp_pl_saved in dp_placements:
-            current_pos = np.stack(
-                [dp_pl_saved[:n, 0].numpy(), dp_pl_saved[:n, 1].numpy()], axis=1
-            ).astype(np.float64)
-            prev_iter_score = float("inf")
-            pre_chain_best = best_score
-            for it in range(1, MAX_P7_ITERS + 1):
-                remaining_p7 = (
-                    effective_budget_s + BUDGET_OVERRUN_S
-                ) - (time.monotonic() - t0)
-                if remaining_p7 < t_one_score * 1.3:
-                    break
-                rescue_perturbed = _routing_congestion_perturb(
-                    current_pos, plc, benchmark, n, cw, ch, hw, hh, movable,
-                    frac=0.04, rng=rng_cong,
-                )
-                t1 = time.monotonic()
-                leg = _will_legalize(
-                    rescue_perturbed, movable, sizes, hw, hh, cw, ch, n,
-                    deadline=t1 + 60.0,
-                )
-                t_leg = time.monotonic() - t1
-                directed_ran += 1
-                _log(f"  Restart {directed_ran} (cong-grad from-dp[{tag}] "
-                     f"iter={it} f=0.04) legalized in {t_leg:.1f}s")
-                t_score_start = time.monotonic()
-                score = _score(leg)
-                t_score_observed = time.monotonic() - t_score_start
-                if t_score_observed > t_one_score:
-                    t_one_score = t_score_observed
-                _log(f"  Candidate {directed_ran}: proxy={score:.4f}")
-                if score < best_score:
-                    best_score = score
-                    best_pl = pl_scratch.clone()
-                # Drop chains that start too far behind the current best.
-                if it == 1 and (score - pre_chain_best) > P7_ITER1_MARGIN_GATE:
-                    break
-                # Greedy descent: stop if this iter didn't improve over the last.
-                if score >= prev_iter_score - 1e-4:
-                    break
-                prev_iter_score = score
-                current_pos = leg
-                # Hard cap after scoring.
-                if time.monotonic() - t0 > effective_budget_s + BUDGET_OVERRUN_S:
-                    break
-
-        # Restore RNG so later steps do not depend on DP-chain length.
-        rng_cong.set_state(rng_cong_pre_p7)
 
         # Retry legalization with random tie-breaks.
         N_ORDER_TRIALS = 3
