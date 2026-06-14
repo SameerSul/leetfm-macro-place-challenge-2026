@@ -1,17 +1,25 @@
 # v2 — Varrahan's Submission
 
 Active placer for the Partcl/HRT Macro Placement Challenge. A multi-restart
-legalization placer with **congestion-gradient global moves**, a **fully-
-incremental proxy scorer**, and **move-based local search** (2-opt swaps +
-congestion-directed relocation) on top.
+legalization placer with async DREAMPlace seed candidates, generic random/local
+restart diversity, a **fully-incremental proxy scorer**, deep **R2 move-based
+local search**, and a final **LSMC kick/descent/accept** exploration layer.
 
-**Headline (`--all`, 2026-06-11): avg `1.1252`** (17/17 VALID, 0 overlaps,
+**Reference headline (`--all`, 2026-06-11): avg `1.1252`** (17/17 VALID, 0 overlaps,
 **2337s ~39min**) — beats the RePlAce target (`1.4578`) by **22.8%** and the
 #1 leaderboard (UT Austin DREAMPlace, `1.4076`) by **0.282 (−20.1%)**, on every
 single benchmark. Trajectory: 1.1782 → 1.1500 → 1.1423 (S11 prefilters) →
 1.1403 (S12 wider soft pool) → 1.1380 (S13 numba re-enabled) → 1.1379 (S14
 hand-JIT scoring hot paths, DP-off) → 1.1272 (S16 DREAMPlace ABI fix, DP basins
 restored) → **1.1252** (S10 ML hard-relocation filter enabled by default).
+
+The active 2026-06-14 design has since pruned the congestion-gradient spine. LSMC
+is now deliberately generic: its seed pool comes from the legalized baseline,
+random-noise restarts, random-order legalization, pre-R2 best, and post-R2 best.
+DREAMPlace still contributes ordinary scored candidates to `best_pl`, but LSMC
+does not depend on DREAMPlace/bridge-specific seed pools or cong-grad-derived
+state. See [`docs/general/PROGRESS.md`](docs/general/PROGRESS.md) for the latest
+post-pruning measurements.
 
 > ⚠ **Requires numba** for full speed — it JITs the routing-apply (~half the
 > runtime). numba is in `requirements.txt` but **not** `pyproject.toml`, so
@@ -52,8 +60,7 @@ boost**, (vi) **S1 prep/trial/commit/revert + S3 bincount strip-batch**
 (hoist the loop-invariant subtract-old — 25–43% faster per-trial),
 (vii) **A3 net-centroid candidate ordering** for soft passes,
 (viii) **H5 hard density relocation** (the R5-for-hards symmetry),
-(ix) **Phase 9 + DREAMPlace ×3 parallelization** plus drafted multi-seed
-2-opt subprocess parallelization (#3v2 env-gated), (x) **DREAMPlace ABI fix**
+(ix) **Phase 9 + DREAMPlace ×3 parallelization**, (x) **DREAMPlace ABI fix**
 so the three DP basins actually run under the Python 3.10 DP build env, and
 (xi) **default ML hard-relocation filtering** for the wide-32 candidate pool.
 The entire chain is
@@ -77,9 +84,9 @@ R2/skip-empty) → 1.1993 (+ HXS+R6+WL-prefilter+shared-scorer+numba) →
 proxy_cost = 1.0·wirelength + 0.5·density + 0.5·congestion
 ```
 After normalization, **congestion ≈ 65% of proxy**, density ≈ 30%, wirelength
-≈ 5%. The whole strategy follows from this: our edge is **direct hard-macro
-congestion optimization**, and WL-only optimization reliably makes proxy *worse*
-(clustering spikes congestion).
+≈ 5%. The whole strategy follows from this: local moves are ranked and accepted
+against the exact congestion-aware proxy, and WL-only optimization reliably makes
+proxy *worse* (clustering spikes congestion).
 
 ## Pipeline
 
@@ -87,21 +94,20 @@ congestion optimization**, and WL-only optimization reliably makes proxy *worse*
 0    Baseline           legalize from initial.plc (vectorized _will_legalize)
 ─    Multi-DP (async)   3 DREAMPlace candidates launched in parallel:
                           lo-fix (td=0.65, soft fixed), hi-mov (td=0.85, soft
-                          movable), hi-fix (td=0.85, soft fixed)
-1-3  cong-grad          iterative max(H,V) gradient descent from baseline
-                          (frac 0.04, wide 0.08/0.12, adaptive halving)
-5b/5c cong-grad         from best_pl / wide-from-best
-7    DP-rescue          cong-grad chains seeded from each DP candidate
-8    TOP-K cong-grad     move only the K hottest macros from best_pl
+                          movable), hi-fix (td=0.85, soft fixed); scored as
+                          normal candidates only
+─    random restarts     Gaussian perturbations of initial hard positions,
+                          legalize + exact-score
 9    random-order        legalize with randomized tie-break order
-─    multi-seed 2-opt    proxy-driven 2-opt (k=20) from best_pl + each DP basin,
-                          select by true _exact_proxy (prune window 0.02)
 ─    R2 interleave       alternate relocation/swap/cycle passes until neither
                           improves (≤20 budget-gated rounds) — see "Relocation" below
+─    post-R2 soft reloc  leftover soft congestion/density cleanup
+─    LSMC final explore  random hard-macro kick -> legalize -> hard/soft descent
+                          -> strict exact accept, over generic local seed pool
 ```
 All candidates legalized then scored via exact `PlacementCost` proxy; lowest
 wins. The floor-reservation allocator uses a 150s first-benchmark soft budget,
-a 110s per-benchmark floor, and an 83s directed-phase overrun reserve under the
+a 110s per-benchmark floor, and an 83s overrun reserve under the
 3300s internal `--all` place-time cap; thresholds admit all 17.
 Every return path goes through a final movable-macro in-bounds clamp; hard macros
 are already legalized, so this safety net primarily catches stray soft macro
