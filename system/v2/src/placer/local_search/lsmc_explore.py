@@ -3,11 +3,10 @@
 Single-chain Large-Step Markov Chain: kick a fraction of movable hard macros
 to random spots, legalize, descend with GPU-scored propose-all relocation,
 then accept on the bit-exact proxy of the descended state (zero-temperature,
-strict improvement). Runs between seed selection and R2.
+strict improvement). Runs as the final quality phase after R2.
 
-Stage 2b (batched multi-chain Torch, island model) builds on this once the
-multi-GPU hardware is available; this version keeps acceptance exact, so no
-approximate-cost handoff is needed.
+Stage 2c (batched multi-chain Torch on one GPU) can build on this. This
+version keeps acceptance exact, so no approximate-cost handoff is needed.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ import numpy as np
 import torch
 
 from placer.legalize.spiral import _will_legalize
+from placer.local_search.fields import _congestion_field
 from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
 from placer.scoring.incremental import IncrementalScorer
 
@@ -62,6 +62,107 @@ def _kick(
     return _will_legalize(kicked, movable, sizes, hw, hh, cw, ch, n, deadline=deadline)
 
 
+def _congestion_kick(
+    hard_xy: np.ndarray,
+    sizes: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    cw: float,
+    ch: float,
+    movable: np.ndarray,
+    n: int,
+    kick_ratio: float,
+    rng: np.random.Generator,
+    deadline: float,
+    plc,
+    benchmark,
+) -> np.ndarray:
+    """Move a hot-congestion subset of movable hard macros toward cold cells."""
+    field = _congestion_field(plc, benchmark.grid_rows, benchmark.grid_cols)
+    if field is None:
+        return _kick(hard_xy, sizes, hw, hh, cw, ch, movable, n, kick_ratio, rng, deadline)
+
+    movable_idx = np.flatnonzero(movable[:n])
+    if movable_idx.size == 0:
+        return hard_xy.copy()
+
+    n_kick = max(1, math.ceil(kick_ratio * movable_idx.size))
+    n_kick = min(n_kick, movable_idx.size)
+    cell_w = cw / benchmark.grid_cols
+    cell_h = ch / benchmark.grid_rows
+    ci = np.clip((hard_xy[:n, 0] / cell_w).astype(np.int64), 0, benchmark.grid_cols - 1)
+    ri = np.clip((hard_xy[:n, 1] / cell_h).astype(np.int64), 0, benchmark.grid_rows - 1)
+    local = field[ri, ci]
+
+    # Sample from the hot half, weighted by local congestion. This keeps diversity
+    # while biasing kicks toward macros that are actually sitting in routed hot spots.
+    hot_pool_size = min(movable_idx.size, max(n_kick * 4, n_kick))
+    hot_pool = movable_idx[np.argsort(-local[movable_idx])[:hot_pool_size]]
+    weights = local[hot_pool] - float(local[hot_pool].min()) + 1e-9
+    if not np.isfinite(weights).all() or float(weights.sum()) <= 0.0:
+        weights = None
+    else:
+        weights = weights / float(weights.sum())
+    picks = rng.choice(hot_pool, size=n_kick, replace=False, p=weights)
+
+    flat = field.ravel()
+    cold_count = min(flat.size, max(64, n_kick * 16))
+    cold = np.argsort(flat)[:cold_count]
+    tgt_c = (cold % benchmark.grid_cols).astype(np.float64)
+    tgt_r = (cold // benchmark.grid_cols).astype(np.float64)
+    tgt_x = (tgt_c + 0.5) * cell_w
+    tgt_y = (tgt_r + 0.5) * cell_h
+
+    kicked = hard_xy.copy()
+    for i in picks:
+        # Try several cold cells so large macros do not collapse to clipped edges.
+        for _attempt in range(8):
+            t = int(rng.integers(0, cold_count))
+            x = float(np.clip(tgt_x[t], hw[i], cw - hw[i]))
+            y = float(np.clip(tgt_y[t], hh[i], ch - hh[i]))
+            if np.isfinite(x) and np.isfinite(y):
+                kicked[i, 0] = x
+                kicked[i, 1] = y
+                break
+
+    return _will_legalize(kicked, movable, sizes, hw, hh, cw, ch, n, deadline=deadline)
+
+
+def _select_kick(
+    hard_xy: np.ndarray,
+    sizes: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    cw: float,
+    ch: float,
+    movable: np.ndarray,
+    n: int,
+    kick_ratio: float,
+    rng: np.random.Generator,
+    deadline: float,
+    plc,
+    benchmark,
+    mode: str,
+    iteration: int,
+) -> np.ndarray:
+    """Dispatch the LSMC large step."""
+    if mode == "random":
+        return _kick(hard_xy, sizes, hw, hh, cw, ch, movable, n, kick_ratio, rng, deadline)
+    if mode == "congestion":
+        return _congestion_kick(
+            hard_xy, sizes, hw, hh, cw, ch, movable, n, kick_ratio,
+            rng, deadline, plc, benchmark,
+        )
+    # Mixed mode preserves some basin diversity while spending every other kick
+    # on congestion escape, the dominant term in this objective.
+    if iteration % 2 == 0:
+        return _congestion_kick(
+            hard_xy, sizes, hw, hh, cw, ch, movable, n, kick_ratio,
+            rng, deadline, plc, benchmark,
+        )
+    return _kick(hard_xy, sizes, hw, hh, cw, ch, movable, n, kick_ratio, rng, deadline)
+
+
 def _lsmc_explore(
     best_pl: torch.Tensor,
     best_score: float,
@@ -93,6 +194,9 @@ def _lsmc_explore(
     kick_ratio = float(os.environ.get("V2_GPU_EXPLORE_KICK", "0.02"))
     max_fails = int(os.environ.get("V2_GPU_EXPLORE_FAILS", "5"))
     seed = int(os.environ.get("V2_GPU_EXPLORE_SEED", "0"))
+    kick_mode = os.environ.get("V2_GPU_EXPLORE_KICK_MODE", "mixed").strip().lower()
+    if kick_mode not in {"random", "congestion", "mixed"}:
+        kick_mode = "mixed"
     rng = np.random.default_rng(seed)
 
     # Stage 2b kick pre-screen: score a batch of kicks and descend only the
@@ -117,6 +221,8 @@ def _lsmc_explore(
         wall = time.monotonic() + per_chain_s
         c_best_pl, c_best_score = start_pl, start_score
         fails = 0
+        if kick_mode != "random":
+            c_best_score = float(exact_proxy(c_best_pl, benchmark, plc))
 
         while time.monotonic() < wall and fails < max_fails:
             iters += 1
@@ -126,8 +232,11 @@ def _lsmc_explore(
             kick_score = float("inf")
             cand = c_best_pl.clone()
             for _b in range(prescreen):
-                trial = _kick(hard_xy, sizes, hw, hh, cw, ch, movable, n,
-                              kick_ratio, rng, deadline=wall)
+                trial = _select_kick(
+                    hard_xy, sizes, hw, hh, cw, ch, movable, n,
+                    kick_ratio, rng, deadline=wall, plc=plc, benchmark=benchmark,
+                    mode=kick_mode, iteration=iters + _b,
+                )
                 t_ks = time.monotonic()
                 cand[:n, 0] = torch.tensor(trial[:, 0], dtype=torch.float32)
                 cand[:n, 1] = torch.tensor(trial[:, 1], dtype=torch.float32)
@@ -198,6 +307,8 @@ def _lsmc_explore(
                         f"kick={kick_score:.4f} descended={true_score:.4f} ACCEPT")
             else:
                 fails += 1
+                if kick_mode != "random":
+                    float(exact_proxy(c_best_pl, benchmark, plc))
                 if log:
                     log(f"  LSMC chain {chain + 1}/{chains} iter {iters}: "
                         f"kick={kick_score:.4f} descended={true_score:.4f} "

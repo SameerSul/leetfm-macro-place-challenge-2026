@@ -12,10 +12,11 @@ the 6 GB RTX 4050 this was developed on is representative, not a placeholder). T
 multi-GPU island model; "many chains" means a batch dimension on one GPU, not sharding
 across devices.
 
-**Implementation status (2026-06-13):** Stages 0–2b are shipped (see §5). The single-chain
-engine (`src/placer/local_search/lsmc_explore.py`) and the kick pre-screen are default-on
-under CUDA. Stage 2c (multi-chain batched on one GPU) is the next build. `V2_GPU_EXPLORE_*`
-variables marked "proposed" below are not yet wired.
+**Implementation status (2026-06-14):** Stages 0–2b are shipped (see §5). The single-chain
+engine (`src/placer/local_search/lsmc_explore.py`), kick pre-screen, congestion-targeted
+kick mode, and multi-incumbent final exploration are default-on under CUDA. Stage 2c
+(multi-chain batched on one GPU) is the next build. `V2_GPU_EXPLORE_*` variables marked
+"proposed" below are not yet wired.
 
 ## Revision notes (what changed from the previous draft and why)
 
@@ -72,10 +73,13 @@ The exploration engine is a control loop around this machinery, not a new scorer
 
 Each chain holds a private copy of the macro positions and runs:
 
-1. **Kick move (large step).** Relocate a random subset of movable hard macros, then
-   spiral-legalize. The GPU-DPO starting point was `kick_ratio ≈ 0.10`; tuning on IBM
-   found smaller is better (shipped **0.02**; 0.02 > 0.05 > 0.10) because the post-R2
-   incumbent is already well-refined and large kicks cannot be recovered in one descent.
+1. **Kick move (large step).** Relocate a subset of movable hard macros, then
+   spiral-legalize. The shipped default alternates random kicks with congestion-targeted
+   kicks that choose hot-cell hard macros and move them toward cold routing cells
+   (`V2_GPU_EXPLORE_KICK_MODE=mixed`). The GPU-DPO starting point was
+   `kick_ratio ≈ 0.10`; tuning on IBM found smaller is better (shipped **0.02**;
+   0.02 > 0.05 > 0.10) because the post-R2 incumbent is already well-refined and
+   large kicks cannot be recovered in one descent.
 2. **Greedy descent.** A few rounds of propose-all relocation restricted to the chain's
    own state: generate candidate targets for hot macros, score the pool with
    `cuda_delta`, apply the best non-conflicting improvement per round. Within a chain,
@@ -139,15 +143,22 @@ extra candidate would breach `PER_BENCH_FLOOR_S`.
 ## 4. Configuration
 
 Shipped (default-on under CUDA):
-```
+
+```env
 V2_GPU_EXPLORE=auto         # auto: run when CUDA visible (default); 1: force; 0: off
 V2_GPU_EXPLORE_KICK=0.02    # kick ratio (fraction of movable hard macros per kick)
 V2_GPU_EXPLORE_FAILS=5      # per-chain early-exit failure tolerance (F)
 V2_GPU_EXPLORE_TIME_S=30.0  # wall ceiling per benchmark for the exploration loop
 V2_GPU_EXPLORE_PRESCREEN=8  # kicks scored per iteration; descend only the best (2b)
+V2_GPU_EXPLORE_KICK_MODE=mixed       # random | congestion | mixed
+V2_GPU_EXPLORE_MULTI_INCUMBENT=1     # final phase explores several seed basins
+V2_GPU_EXPLORE_MAX_SEEDS=3           # top distinct incumbents by exact score
+V2_GPU_EXPLORE_SEED_MARGIN=0.08      # keep non-best seed candidates within this gap
 ```
+
 Proposed for Stage 2c:
-```
+
+```env
 V2_GPU_EXPLORE_CHAINS=auto  # parallel chains; auto = max that fits the 6 GB budget
 ```
 
@@ -177,7 +188,7 @@ never cross-day single runs.
 
 The end state, if every gate passes, is the simplified spine:
 
-    seeds (baseline + async DREAMPlace)
+   seeds (baseline + async DREAMPlace)
         → R2 finisher (bit-exact CPU)
         → GPU multi-chain exploration (kick / batched descent / post-descent accept)
         → final exact gate
