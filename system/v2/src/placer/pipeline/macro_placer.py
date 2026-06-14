@@ -697,8 +697,12 @@ class MacroPlacer:
         rng_cong.set_state(rng_cong_pre_p7)
 
         # Move only the hottest macros in short greedy chains.
+        # Stage 4 pruning probe: V2_PRUNE_P8 skips the TOP-K cong-grad chains.
         MAX_P8_ITERS = 3
-        if cong_improved:
+        _prune_p8 = os.environ.get("V2_PRUNE_P8", "").strip() in {"1", "true", "on"}
+        if _prune_p8:
+            _log("  Phase 8 TOP-K cong-grad chains: PRUNED (V2_PRUNE_P8)")
+        if cong_improved and not _prune_p8:
             for top_k_val in (5, 10, 20):
                 prev_chain_score = best_score
                 for chain_iter in range(MAX_P8_ITERS):
