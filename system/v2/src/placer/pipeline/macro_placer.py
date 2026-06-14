@@ -1,7 +1,6 @@
 """Main macro-placement pipeline."""
 
 import concurrent.futures
-import multiprocessing as mp
 import os
 import random
 import time
@@ -21,7 +20,6 @@ from placer.local_search.lsmc_explore import _explore_enabled, _lsmc_explore
 from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
 from placer.local_search.soft_moves import _two_opt_soft_swap
 from placer.local_search.two_opt import _two_opt_proxy_swap
-from placer.local_search.workers import _multiseed_2opt_worker
 from placer.ml.data_collection import get_candidate_trace
 from placer.ml.shadow import is_filter_enabled
 from placer.perturb.congestion_gradient import _routing_congestion_perturb
@@ -607,28 +605,6 @@ class MacroPlacer:
                                  k=1 + directed_ran, allow_overrun=True):
                     directed_ran += 1
 
-        # Wide step from current best.
-        # Stage 4: "wide-from-best f=0.08" restart PRUNED by default for pipeline
-        # simplification. NB the paired gate showed keep is marginally BETTER
-        # (seed1 +0.0014, seed2 partial +0.0051) — 5c does real work on
-        # ibm09/12/17, so this trades a near-noise score regression for a leaner
-        # pipeline. Restore with V2_PRUNE_P5C=0.
-        _prune_p5c = os.environ.get("V2_PRUNE_P5C", "1").strip() not in {"0", "false", "off"}
-        if cong_improved and not _prune_p5c:
-            remaining_5c = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if remaining_5c >= t_one_score * 1.3:
-                best_pos_5c = np.stack(
-                    [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
-                )
-                wide_perturbed = _routing_congestion_perturb(
-                    best_pos_5c, plc, benchmark, n, cw, ch, hw, hh, movable,
-                    frac=0.08, rng=rng_cong,
-                )
-                if _try_restart("cong-grad wide-from-best f=0.08",
-                                 wide_perturbed,
-                                 k=1 + directed_ran, allow_overrun=True):
-                    directed_ran += 1
-
         # Random Gaussian restarts.
         noise_scale_base = min(cw, ch)
         for k, frac in enumerate(
@@ -696,39 +672,6 @@ class MacroPlacer:
         # Restore RNG so later steps do not depend on DP-chain length.
         rng_cong.set_state(rng_cong_pre_p7)
 
-        # Move only the hottest macros in short greedy chains.
-        # Stage 4 pruning probe: V2_PRUNE_P8 skips the TOP-K cong-grad chains.
-        MAX_P8_ITERS = 3
-        _prune_p8 = os.environ.get("V2_PRUNE_P8", "").strip() in {"1", "true", "on"}
-        if _prune_p8:
-            _log("  Phase 8 TOP-K cong-grad chains: PRUNED (V2_PRUNE_P8)")
-        if cong_improved and not _prune_p8:
-            for top_k_val in (5, 10, 20):
-                prev_chain_score = best_score
-                for chain_iter in range(MAX_P8_ITERS):
-                    remaining_p8 = (
-                        effective_budget_s + BUDGET_OVERRUN_S
-                    ) - (time.monotonic() - t0)
-                    if remaining_p8 < t_one_score * 1.3:
-                        break
-                    best_pos_now = np.stack(
-                        [best_pl[:n, 0].numpy(), best_pl[:n, 1].numpy()], axis=1
-                    )
-                    p8_perturbed = _routing_congestion_perturb(
-                        best_pos_now, plc, benchmark, n, cw, ch, hw, hh, movable,
-                        frac=0.04, rng=rng_cong, top_k=top_k_val,
-                    )
-                    if not _try_restart(
-                        f"cong-grad-best TOP-{top_k_val} iter={chain_iter+1} f=0.04",
-                        p8_perturbed,
-                        k=1 + directed_ran, allow_overrun=True,
-                    ):
-                        break
-                    directed_ran += 1
-                    if best_score >= prev_chain_score - 1e-4:
-                        break
-                    prev_chain_score = best_score
-
         # Retry legalization with random tie-breaks.
         N_ORDER_TRIALS = 3
         area = sizes[:n, 0] * sizes[:n, 1]
@@ -774,221 +717,6 @@ class MacroPlacer:
             if time.monotonic() - t0 > (effective_budget_s + BUDGET_OVERRUN_S):
                 _log(f"  Over budget after P9 trial {trial}; stopping")
                 break
-
-        # -- Proxy-driven 2-opt swap on the cong-grad winner (additive) ---------
-        # Bounds and conflict checks filter candidates before proxy scoring.
-        remaining_2opt = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-        # Stage 4: multi-seed 2-opt is PRUNED by default — paired gate (2/2
-        # seeds, mean -0.0029, best 1.1169) showed it is net-harmful, steering
-        # R2 into worse basins on more benchmarks than it helps. R2 now starts
-        # from the cong-grad best_pl. Restore the phase with V2_PRUNE_MULTISEED_2OPT=0.
-        _prune_ms2opt = os.environ.get("V2_PRUNE_MULTISEED_2OPT", "1").strip() not in {"0", "false", "off"}
-        if _prune_ms2opt:
-            _log("  multi-seed 2-opt: PRUNED (default; set V2_PRUNE_MULTISEED_2OPT=0 to restore)")
-        if not _prune_ms2opt and remaining_2opt >= t_one_score + 15.0:
-            # Run 2-opt from MULTIPLE basins (best_pl + each DP basin), not just
-            # best_pl: raw DP proxy doesn't predict the final 2-opt result, so a
-            # losing basin can still 2-opt below the winner. Keep the global min.
-            twoopt_seeds: list[tuple[str, torch.Tensor, float]] = [
-                ("best", best_pl.clone(), best_score)
-            ]
-            for _tag, _dp_sc, _dp_pl in dp_placements:
-                twoopt_seeds.append((f"dp[{_tag}]", _dp_pl.clone(), _dp_sc))
-
-            # Prune hopeless DP basins: a seed whose raw proxy is >DP_SEED_2OPT_WINDOW
-            # above best_score can't close the gap. "best" is never pruned.
-            DP_SEED_2OPT_WINDOW = 0.02
-
-            # Compare seeds by TRUE _exact_proxy, not the scorer's final_score: the
-            # incremental WL drifts per-seed, so cross-seed comparison on it picks
-            # phantom winners. The scorer still guides which swaps to accept.
-            twoopt_best_pl = best_pl
-            twoopt_best_score = float(_exact_proxy(best_pl, benchmark, plc))
-            # Optional time-shifted multi-seed parallelism (env-gated): run only
-            # "best" inline with solo CPU, then the DP seeds in a pool after.
-            # Running all seeds at once degraded every search.
-            _use_mp = bool(os.environ.get("V2_MULTISEED_MP"))
-
-            for seed_tag, seed_pl, seed_score in twoopt_seeds:
-                # With MP on, DP seeds are handled by the pool after this loop.
-                if _use_mp and seed_tag != "best":
-                    continue
-                rem = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                if rem < 2.0 * t_one_score + 15.0:
-                    _log(f"  2-opt seed {seed_tag}: skipped (budget {rem:.0f}s)")
-                    break
-                if seed_tag != "best" and seed_score > best_score + DP_SEED_2OPT_WINDOW:
-                    _log(f"  2-opt seed {seed_tag}: pruned "
-                         f"(raw {seed_score:.4f} > best {best_score:.4f} + "
-                         f"{DP_SEED_2OPT_WINDOW})")
-                    continue
-                t_2opt = time.monotonic()
-                global_2opt_deadline = t_2opt + 15.0
-
-                work_pl = seed_pl.clone()
-                work_hard = np.stack(
-                    [seed_pl[:n, 0].numpy(), seed_pl[:n, 1].numpy()], axis=1
-                ).astype(np.float64)
-                work_score = seed_score
-                seed_best_pl = seed_pl.clone()
-                seed_best_score = float("inf")
-                accept_count = 0
-                score_calls = 0
-                try:
-                    incremental_scorer = IncrementalScorer(
-                        plc, benchmark, work_pl.cpu().numpy().astype(np.float64)
-                    )
-                except Exception as exc:
-                    _log(f"  IncrementalScorer init failed: {type(exc).__name__}: "
-                         f"{exc}; falling back to full scoring")
-                    incremental_scorer = None
-
-                opt_scratch = work_pl.clone()
-
-                def _2opt_score(pos_arr: np.ndarray, _scr=opt_scratch) -> float:
-                    pos32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
-                    _scr[:n, 0] = pos32[:, 0]
-                    _scr[:n, 1] = pos32[:, 1]
-                    return float(_exact_proxy(_scr, benchmark, plc))
-
-                # S9: per-macro local max(H,V) snapshot for congestion-aware
-                # 2-opt ordering and cold-region teleport augmentation.
-                macro_cong = None
-                try:
-                    nr_g, nc_g = benchmark.grid_rows, benchmark.grid_cols
-                    h_arr = np.asarray(
-                        plc.get_horizontal_routing_congestion(), dtype=np.float64
-                    )
-                    v_arr = np.asarray(
-                        plc.get_vertical_routing_congestion(), dtype=np.float64
-                    )
-                    if h_arr.size == nr_g * nc_g and v_arr.size == nr_g * nc_g:
-                        cell_cong = np.maximum(
-                            h_arr.reshape(nr_g, nc_g), v_arr.reshape(nr_g, nc_g)
-                        )
-                        cwc, chc = cw / nc_g, ch / nr_g
-                        ci = np.clip(
-                            (work_hard[:, 0] / cwc).astype(np.int64), 0, nc_g - 1
-                        )
-                        ri = np.clip(
-                            (work_hard[:, 1] / chc).astype(np.int64), 0, nr_g - 1
-                        )
-                        macro_cong = cell_cong[ri, ci]
-                except Exception:
-                    macro_cong = None
-
-                if _ml_trace is not None:
-                    _ml_trace.set_context(
-                        phase="multi_seed_2opt",
-                        pass_name="hard_2opt",
-                        seed_tag=seed_tag,
-                        elapsed_s=time.monotonic() - t0,
-                        remaining_budget_s=rem,
-                        current_best_score=work_score,
-                    )
-                opt_pos, ac, _fs, sc = _two_opt_proxy_swap(
-                    work_hard, sizes, hw, hh, cw, ch, movable, n,
-                    score_fn=_2opt_score, initial_score=work_score,
-                    k_neighbors=20, max_iters=6, deadline=global_2opt_deadline,
-                    incremental_scorer=incremental_scorer,
-                    macro_cong=macro_cong,
-                )
-                accept_count += ac
-                score_calls += sc
-
-                cand = work_pl.clone()
-                cand[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
-                cand[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
-                cand_true = float(_exact_proxy(cand, benchmark, plc))
-                if cand_true < seed_best_score:
-                    seed_best_score = cand_true
-                    seed_best_pl = cand
-
-                cand = seed_best_pl
-                true_final = seed_best_score
-                scorer_tag = "incr" if incremental_scorer is not None else "full"
-                _log(f"  2-opt seed {seed_tag} (proxy/{scorer_tag}): {accept_count} "
-                     f"accepts / {score_calls} scores, true={true_final:.4f} "
-                     f"(was {seed_score:.4f}) "
-                     f"in {time.monotonic()-t_2opt:.1f}s")
-                if true_final < twoopt_best_score:
-                    twoopt_best_score = true_final
-                    twoopt_best_pl = cand
-
-            # After the inline best-seed 2-opt, run the DP seeds in a subprocess
-            # pool (they contend only with each other; "best" already had solo
-            # CPU). ~30-33s vs ~60s sequential, saves ~27-30s/bench.
-            if _use_mp:
-                _mp_pool = None
-                _mp_futures: list = []
-                try:
-                    _iccad_path = (Path("external/MacroPlacement/Testcases/ICCAD04")
-                                   / benchmark.name)
-                    if _iccad_path.exists():
-                        _eligible_dp = []
-                        for _t, _pl, _sc in twoopt_seeds:
-                            if _t == "best":
-                                continue
-                            if _sc > best_score + DP_SEED_2OPT_WINDOW:
-                                _log(f"  2-opt seed {_t}: pruned (raw {_sc:.4f} > "
-                                     f"best {best_score:.4f} + {DP_SEED_2OPT_WINDOW})")
-                                continue
-                            _eligible_dp.append((_t, _pl, _sc))
-                        if _eligible_dp:
-                            # fork (not spawn): inherits loaded modules + sys.path,
-                            # skipping re-import / numba recompile. The worker calls
-                            # _force_worker_cpu() first (CUDA can't survive fork).
-                            _mp_pool = concurrent.futures.ProcessPoolExecutor(
-                                max_workers=len(_eligible_dp),
-                                mp_context=mp.get_context("fork"),
-                            )
-                            for _t, _pl, _sc in _eligible_dp:
-                                _fut = _mp_pool.submit(
-                                    _multiseed_2opt_worker,
-                                    benchmark.name, str(_iccad_path),
-                                    _pl.cpu().numpy().astype(np.float64),
-                                    float(_sc), _t,
-                                    int(n), float(cw), float(ch),
-                                    sizes, hw, hh, movable,
-                                    15.0, 20, 6,
-                                )
-                                _mp_futures.append((_t, _fut))
-                            _log(f"  2-opt v2: launched {len(_mp_futures)} DP "
-                                 f"seeds in subprocesses (time-shifted: best "
-                                 f"already done, no main-thread contention)")
-                except Exception as exc:
-                    _log(f"  2-opt subprocess pool launch failed: "
-                         f"{type(exc).__name__}: {exc}")
-                    _mp_pool = None
-                    _mp_futures = []
-
-                # Collect DP-seed subprocess results.
-                if _mp_pool is not None:
-                    for _t, _fut in _mp_futures:
-                        try:
-                            _res = _fut.result(timeout=60.0)
-                            _log(f"  2-opt seed {_t} (proxy/subproc): "
-                                 f"{_res['accept_count']} accepts / "
-                                 f"{_res['score_calls']} scores, "
-                                 f"true={_res['true_final']:.4f}")
-                            if _res["true_final"] < twoopt_best_score:
-                                twoopt_best_score = _res["true_final"]
-                                _opt_full = _res["opt_pos_full"]
-                                _cand = best_pl.clone()
-                                _cand[:, 0] = torch.tensor(_opt_full[:, 0], dtype=torch.float32)
-                                _cand[:, 1] = torch.tensor(_opt_full[:, 1], dtype=torch.float32)
-                                twoopt_best_pl = _cand
-                        except Exception as exc:
-                            _log(f"  2-opt seed {_t} subprocess failed: "
-                                 f"{type(exc).__name__}: {exc}")
-                    try:
-                        _mp_pool.shutdown(wait=False, cancel_futures=True)
-                    except Exception:
-                        pass
-
-            if twoopt_best_score < best_score:
-                best_score = twoopt_best_score
-                best_pl = twoopt_best_pl
 
         # R2: keep trying local moves while they still improve the score.
         R2_MAX_ROUNDS = 20

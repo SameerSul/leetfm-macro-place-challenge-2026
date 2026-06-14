@@ -3,6 +3,18 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-14 — Stage 4 MAJOR CLEANUP: pruned phases DELETED from
+> source.** Removed 272 lines from `macro_placer.py` + the whole
+> `local_search/workers.py` (and the `mp` import + `__init__` export): the
+> multi-seed 2-opt phase, Phase 5c (wide-from-best), and Phase 8 (TOP-K
+> cong-grad chains), plus their `V2_PRUNE_*` flags. These were all pruned-by-
+> default already, so deletion is behaviorally equivalent — verified on ibm01/
+> 04/12/18 (seed1) within ±0.0003 of the flag-pruned references, all VALID.
+> Shipped `--all` stays ~1.1170–1.1176 (the all-pruned value); the lone real
+> score win in Stage 4 was multi-seed 2-opt removal (1.1169), 5c/8 were
+> near-noise simplification. NB: the "restore via V2_PRUNE_*=0" knobs no longer
+> exist; ARCHITECTURE.md / README phase lists for these three are now superseded.
+
 > **Status (2026-06-14 — Stage 4: Phase 5c (wide-from-best) PRUNED by default
 > for pipeline simplification, despite a near-noise score cost.** Pruned `--all`
 > = **1.1170** (seed1, full 17/17). The paired gate actually favored KEEPING 5c
