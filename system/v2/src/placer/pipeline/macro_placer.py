@@ -608,9 +608,12 @@ class MacroPlacer:
                     directed_ran += 1
 
         # Wide step from current best.
-        # Stage 4 pruning probe: V2_PRUNE_P5C skips the "wide-from-best f=0.08"
-        # restart (PROGRESS.md flagged it as pure insurance — no wins observed).
-        _prune_p5c = os.environ.get("V2_PRUNE_P5C", "").strip() in {"1", "true", "on"}
+        # Stage 4: "wide-from-best f=0.08" restart PRUNED by default for pipeline
+        # simplification. NB the paired gate showed keep is marginally BETTER
+        # (seed1 +0.0014, seed2 partial +0.0051) — 5c does real work on
+        # ibm09/12/17, so this trades a near-noise score regression for a leaner
+        # pipeline. Restore with V2_PRUNE_P5C=0.
+        _prune_p5c = os.environ.get("V2_PRUNE_P5C", "1").strip() not in {"0", "false", "off"}
         if cong_improved and not _prune_p5c:
             remaining_5c = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             if remaining_5c >= t_one_score * 1.3:

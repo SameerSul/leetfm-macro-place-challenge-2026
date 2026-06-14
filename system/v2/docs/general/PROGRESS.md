@@ -3,6 +3,15 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-14 — Stage 4: Phase 5c (wide-from-best) PRUNED by default
+> for pipeline simplification, despite a near-noise score cost.** Pruned `--all`
+> = **1.1170** (seed1, full 17/17). The paired gate actually favored KEEPING 5c
+> (keep seed1 1.1156 / seed2 1.1191 vs prune seed1 1.1170; 5c does real work on
+> ibm09/12/17), so its "pure insurance" label in older notes was stale. Pruned
+> anyway by directive to keep the pipeline lean; `V2_PRUNE_P5C=0` restores it.
+> So 1.1156 (5c kept) is the lower achievable; the shipped lean default is 1.1170.
+> Gate stopped after 3/4 runs (decision was made); logs `ml_data/compare/stage4p5c_*`.
+
 > **Status (2026-06-13 — Stage 4: multi-seed 2-opt PRUNED by default; NEW BEST
 > `--all` 1.1169):** the pre-R2 multi-seed 2-opt phase is now skipped by default
 > (`V2_PRUNE_MULTISEED_2OPT=0` restores it). Paired gate keep-vs-prune,
