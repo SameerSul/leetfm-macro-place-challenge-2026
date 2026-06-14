@@ -18,7 +18,7 @@ has no headroom; the leverage is integration policy and the routing-fill cost. S
 ## Notes
 
 | File | Question it answers |
-|---|---|
+| --- | --- |
 | [`01-candidate-ranker-design.md`](01-candidate-ranker-design.md) | What does XGBoost replace, and how is it wired so the search stays non-regressing? |
 | [`02-why-it-can-improve.md`](02-why-it-can-improve.md) | If it's trained on our own placer, how can its placements beat our placer? |
 | [`03-selection-mechanism.md`](03-selection-mechanism.md) | Concretely, what does the model select, and how does that differ from what the placer does today? |

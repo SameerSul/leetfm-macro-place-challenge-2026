@@ -396,6 +396,41 @@ class MacroPlacer:
         best_pl = pl_scratch.clone()
         _log(f"  Candidate 0: proxy={best_score:.4f}  (scored in {t_one_score:.1f}s)")
 
+        lsmc_seed_pool: list[tuple[str, float, torch.Tensor]] = []
+
+        def _remember_lsmc_seed(
+            label: str,
+            score: float,
+            pl: torch.Tensor,
+            *,
+            force: bool = False,
+        ) -> None:
+            """Keep distinct near-best placements for final LSMC basin exploration."""
+            if not np.isfinite(score):
+                return
+            margin_raw = os.environ.get("V2_GPU_EXPLORE_SEED_MARGIN", "0.08")
+            try:
+                margin = max(0.0, float(margin_raw))
+            except ValueError:
+                margin = 0.08
+            if not force and score > best_score + margin:
+                return
+
+            snap = pl.detach().cpu().clone()
+            hard = snap[:n]
+            for idx, (old_label, old_score, old_pl) in enumerate(lsmc_seed_pool):
+                if old_label == label:
+                    if score < old_score:
+                        lsmc_seed_pool[idx] = (label, float(score), snap)
+                    return
+                if torch.max(torch.abs(hard - old_pl[:n])).item() < 1e-3:
+                    if score < old_score:
+                        lsmc_seed_pool[idx] = (label, float(score), snap)
+                    return
+            lsmc_seed_pool.append((label, float(score), snap))
+
+        _remember_lsmc_seed("baseline", best_score, best_pl, force=True)
+
         # Safety net: if the first exact score is slow (CPU contention), it would
         # eat the whole per-benchmark budget, so return baseline instead.
         SLOW_SCORE_THRESHOLD_S = 80.0
@@ -456,9 +491,13 @@ class MacroPlacer:
             if t_score_observed > t_one_score:
                 t_one_score = t_score_observed
             _log(f"  Candidate {k}: proxy={score:.4f}")
+            if label.startswith("cong-grad"):
+                _remember_lsmc_seed(label, score, pl_scratch)
             if score < best_score:
                 best_score = score
                 best_pl = pl_scratch.clone()  # snapshot only on improvement
+                if label.startswith("cong-grad"):
+                    _remember_lsmc_seed(f"best-{label}", score, best_pl, force=True)
 
             # Safety: if scoring overran the (possibly relaxed) cap, stop immediately
             # rather than launching another restart that would push time further over.
@@ -588,6 +627,7 @@ class MacroPlacer:
                 best_score = dp_score
                 best_pl = dp_pl.clone()
             dp_placements.append((tag, dp_score, dp_pl))
+            _remember_lsmc_seed(f"dreamplace[{tag}]", dp_score, dp_pl)
 
         # Congestion step after DREAMPlace candidates.
         if dp_placements:
@@ -654,9 +694,13 @@ class MacroPlacer:
                 if t_score_observed > t_one_score:
                     t_one_score = t_score_observed
                 _log(f"  Candidate {directed_ran}: proxy={score:.4f}")
+                _remember_lsmc_seed(f"dp-chain[{tag}]-iter{it}", score, pl_scratch)
                 if score < best_score:
                     best_score = score
                     best_pl = pl_scratch.clone()
+                    _remember_lsmc_seed(
+                        f"best-dp-chain[{tag}]-iter{it}", score, best_pl, force=True
+                    )
                 # Drop chains that start too far behind the current best.
                 if it == 1 and (score - pre_chain_best) > P7_ITER1_MARGIN_GATE:
                     break
@@ -717,6 +761,8 @@ class MacroPlacer:
             if time.monotonic() - t0 > (effective_budget_s + BUDGET_OVERRUN_S):
                 _log(f"  Over budget after P9 trial {trial}; stopping")
                 break
+
+        _remember_lsmc_seed("pre-r2-best", best_score, best_pl, force=True)
 
         # R2: keep trying local moves while they still improve the score.
         R2_MAX_ROUNDS = 20
@@ -1378,19 +1424,57 @@ class MacroPlacer:
         # were tested and disproven - any refinement AFTER the accept gate makes
         # the gate compare the wrong objective.
         if _explore_enabled(_GPU_BACKEND):
+            _remember_lsmc_seed("post-r2-best", best_score, best_pl, force=True)
             _exp_time = float(os.environ.get("V2_GPU_EXPLORE_TIME_S", "30.0"))
             _rem_exp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
             _exp_slice = min(_exp_time, _rem_exp - t_one_score * 1.5)
             if _exp_slice > t_one_score:
                 try:
-                    best_pl, best_score, _exp_iters, _exp_acc = _lsmc_explore(
-                        best_pl, best_score, benchmark, plc, _exact_proxy,
-                        sizes, hw, hh, cw, ch, movable, n,
-                        time_budget_s=_exp_slice, log=_log,
-                        soft_hw=soft_hw, soft_hh=soft_hh,
-                        soft_movable=_soft_movable, n_soft=_n_soft,
+                    multi_raw = os.environ.get("V2_GPU_EXPLORE_MULTI_INCUMBENT", "1")
+                    multi_on = multi_raw.strip() not in _FALSE_ENV
+                    max_seeds_raw = os.environ.get("V2_GPU_EXPLORE_MAX_SEEDS", "3")
+                    try:
+                        max_seeds = max(1, int(max_seeds_raw))
+                    except ValueError:
+                        max_seeds = 3
+                    if not multi_on:
+                        seeds = [("post-r2-best", best_score, best_pl.detach().cpu().clone())]
+                    else:
+                        seeds = sorted(lsmc_seed_pool, key=lambda x: x[1])[:max_seeds]
+                        if not any(label == "post-r2-best" for label, _, _ in seeds):
+                            seeds = [("post-r2-best", best_score, best_pl.detach().cpu().clone())] + seeds
+                            seeds = sorted(seeds, key=lambda x: x[1])[:max_seeds]
+                    per_seed_slice = _exp_slice / max(1, len(seeds))
+                    _log(
+                        "  LSMC explore seeds: "
+                        + ", ".join(f"{label}={score:.4f}" for label, score, _ in seeds)
+                        + f"  slice={per_seed_slice:.1f}s each"
                     )
-                    _log(f"  LSMC explore: {_exp_acc} accepts / {_exp_iters} iters, "
+
+                    total_iters = 0
+                    total_acc = 0
+                    for _seed_label, _seed_score, _seed_pl in seeds:
+                        if per_seed_slice <= t_one_score * 0.5:
+                            break
+                        _cand_pl, _cand_score, _exp_iters, _exp_acc = _lsmc_explore(
+                            _seed_pl, _seed_score, benchmark, plc, _exact_proxy,
+                            sizes, hw, hh, cw, ch, movable, n,
+                            time_budget_s=per_seed_slice, log=_log,
+                            soft_hw=soft_hw, soft_hh=soft_hh,
+                            soft_movable=_soft_movable, n_soft=_n_soft,
+                        )
+                        total_iters += _exp_iters
+                        total_acc += _exp_acc
+                        if _cand_score < best_score - 1e-6:
+                            _log(
+                                f"  LSMC seed[{_seed_label}] improved global: "
+                                f"{best_score:.4f} -> {_cand_score:.4f}"
+                            )
+                            best_pl, best_score = _cand_pl, _cand_score
+                        else:
+                            # Restore plc to the global incumbent before the next seed.
+                            float(_exact_proxy(best_pl, benchmark, plc))
+                    _log(f"  LSMC explore: {total_acc} accepts / {total_iters} iters, "
                          f"best={best_score:.4f}")
                 except Exception as exc:
                     _log(f"  LSMC explore failed: {type(exc).__name__}: {exc}")
