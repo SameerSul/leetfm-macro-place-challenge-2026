@@ -3,6 +3,19 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **HEADLINE (2026-06-14, current `varrahan` 786e749): `--all` avg = 1.1203,
+> 17/17 VALID, 0 overlaps, 2806s (~47min), default seed.** This is the
+> simplified pipeline: cong-grad spine deleted, multi-seed LSMC explore (other
+> agent), all Stage 4 prunes (multi-seed 2-opt / 5c / 8 / cong-grad), dead code
+> removed. +0.0034 vs the prior high-water 1.1169 (multi-seed-2-opt prune, my
+> earlier branch) — a deliberate near-noise score cost for a much leaner
+> codebase; not a clean A/B since the LSMC engine differs. Still −23% vs RePlAce
+> (1.4578) and −20% vs the DREAMPlace leaderboard (1.4076), beating both on every
+> benchmark. Per-bench: ibm01 0.9233, ibm02 1.1496, ibm03 0.9864, ibm04 1.0002,
+> ibm06 1.1855, ibm07 1.1721, ibm08 1.1527, ibm09 0.8384, ibm10 1.0903, ibm11
+> 0.9358, ibm12 1.3145, ibm13 0.9809, ibm14 1.2091, + back four. Single-seed, so
+> ±~0.002 noise.
+
 > **Status (2026-06-14 — ALL cong-grad code DELETED (on the reverted multi-seed
 > LSMC base, e2c8d04).** Removed the congestion-gradient spine (phases 1-3, 5b
 > DP-rescue, P7 DP-chains; 136 lines) from `macro_placer.py` + the orphaned
