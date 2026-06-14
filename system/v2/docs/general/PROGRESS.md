@@ -3,6 +3,141 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **HEADLINE (2026-06-14, current `varrahan` 786e749): `--all` avg = 1.1203,
+> 17/17 VALID, 0 overlaps, 2806s (~47min), default seed.** This is the
+> simplified pipeline: cong-grad spine deleted, multi-seed LSMC explore (other
+> agent), all Stage 4 prunes (multi-seed 2-opt / 5c / 8 / cong-grad), dead code
+> removed. +0.0034 vs the prior high-water 1.1169 (multi-seed-2-opt prune, my
+> earlier branch) — a deliberate near-noise score cost for a much leaner
+> codebase; not a clean A/B since the LSMC engine differs. Still −23% vs RePlAce
+> (1.4578) and −20% vs the DREAMPlace leaderboard (1.4076), beating both on every
+> benchmark. Per-bench: ibm01 0.9233, ibm02 1.1496, ibm03 0.9864, ibm04 1.0002,
+> ibm06 1.1855, ibm07 1.1721, ibm08 1.1527, ibm09 0.8384, ibm10 1.0903, ibm11
+> 0.9358, ibm12 1.3145, ibm13 0.9809, ibm14 1.2091, + back four. Single-seed, so
+> ±~0.002 noise.
+
+> **Status (2026-06-14 — ALL cong-grad code DELETED (on the reverted multi-seed
+> LSMC base, e2c8d04).** Removed the congestion-gradient spine (phases 1-3, 5b
+> DP-rescue, P7 DP-chains; 136 lines) from `macro_placer.py` + the orphaned
+> `placer/perturb/` package and its test. `rng_cong` kept (Phase 9 tie-breaks);
+> the `_remember_lsmc_seed` machinery stays (it seeds from random-noise restarts
+> + r2-best, not cong-grad). Verified: ibm04 1.0002 VALID, no cong-grad lines,
+> multi-seed LSMC seeds from survivors `{post/pre-r2-best, random noise}`.
+> **Accepted regression, by directive:** cong-grad was net-positive on the
+> reverted code (+0.0134 over ibm01/04/09/12/17/18 single-seed, worst ibm17
+> +0.0153) and the regression is somewhat larger on this multi-seed base
+> (ibm04 1.0002 vs cong-on ~0.9947) because cong-grad indirectly improves the
+> seed pool. Deleted for pipeline simplification; git-revertable. A full 2-seed
+> `--all` should size the true cost before relying on the number.
+
+> **(historical, my earlier branch) Stage 4 MAJOR CLEANUP: pruned phases DELETED from
+> source.** Removed 272 lines from `macro_placer.py` + the whole
+> `local_search/workers.py` (and the `mp` import + `__init__` export): the
+> multi-seed 2-opt phase, Phase 5c (wide-from-best), and Phase 8 (TOP-K
+> cong-grad chains), plus their `V2_PRUNE_*` flags. These were all pruned-by-
+> default already, so deletion is behaviorally equivalent — verified on ibm01/
+> 04/12/18 (seed1) within ±0.0003 of the flag-pruned references, all VALID.
+> Shipped `--all` stays ~1.1170–1.1176 (the all-pruned value); the lone real
+> score win in Stage 4 was multi-seed 2-opt removal (1.1169), 5c/8 were
+> near-noise simplification. NB: the "restore via V2_PRUNE_*=0" knobs no longer
+> exist; ARCHITECTURE.md / README phase lists for these three are now superseded.
+
+> **Status (2026-06-14 — Stage 4: Phase 5c (wide-from-best) PRUNED by default
+> for pipeline simplification, despite a near-noise score cost.** Pruned `--all`
+> = **1.1170** (seed1, full 17/17). The paired gate actually favored KEEPING 5c
+> (keep seed1 1.1156 / seed2 1.1191 vs prune seed1 1.1170; 5c does real work on
+> ibm09/12/17), so its "pure insurance" label in older notes was stale. Pruned
+> anyway by directive to keep the pipeline lean; `V2_PRUNE_P5C=0` restores it.
+> So 1.1156 (5c kept) is the lower achievable; the shipped lean default is 1.1170.
+> Gate stopped after 3/4 runs (decision was made); logs `ml_data/compare/stage4p5c_*`.
+
+> **Status (2026-06-13 — Stage 4: multi-seed 2-opt PRUNED by default; NEW BEST
+> `--all` 1.1169):** the pre-R2 multi-seed 2-opt phase is now skipped by default
+> (`V2_PRUNE_MULTISEED_2OPT=0` restores it). Paired gate keep-vs-prune,
+> full-stack (dp=17 both arms): seed1 1.1175→1.1169 (−0.0006), seed2
+> 1.1229→1.1178 (−0.0051) — 2/2 prune-wins, mean −0.0029, and faster
+> (seed2 2816s vs 2926s). The phase was net-harmful: it steers R2 into worse
+> basins on more benchmarks than it helps. Big winners from removal: ibm04
+> (−0.020/−0.026), ibm12 (−0.015/−0.023), ibm17 (−0.024 s2), ibm11/13.
+> Consistent small regressions: ibm01 +0.007, ibm02 +0.010, ibm05 +0.006;
+> ibm14 high-variance (+0.026 s1 / −0.004 s2). Net win on the scored 17-average
+> on both seeds → shipped. (The per-benchmark split flags a future targeted
+> question: why does 2-opt help ibm01/02/05 but hurt ibm04/12/17? — a conditional,
+> not a blanket phase.) Logs `ml_data/compare/stage4_*`. Earlier ibm04 smoke
+> (0.9850) was directionally right but the early 3-benchmark gate peek
+> (ibm01/02/03 all regress) was a small-sample trap — the full 17 reversed it.
+> Next Stage 4 target: the cong-grad restart phases.
+
+> **Status (2026-06-13 — Stage 2b kick pre-screen SHIPPED AS DEFAULT
+> (PRESCREEN=8); on-arm best 1.1176 is the NEW BEST `--all`):** each LSMC
+> iteration now scores a batch of kicks (`V2_GPU_EXPLORE_PRESCREEN`, default 8)
+> and descends only the best one — the cuGenOpt evaluate→reduce→descend-one
+> pattern at the kick level, since descent dominates iteration cost.
+> **Full-stack paired gate (DP+ML active, dp=17 both arms; B8 vs B1=2a
+> behavior): seed1 1.1198→1.1176 (−0.0022), seed2 1.1237→1.1219 (−0.0018) —
+> 2/2 wins, mean −0.0020.** Accepts roughly doubled (seed1 8→17, seed2 11→16)
+> and land as broad small gains (ibm12 −0.0091, ibm13 −0.0065, ibm15 −0.0066,
+> ibm09 −0.0061), not one lucky basin. B8 is also marginally faster
+> (3050s vs 3107s) — descending one well-chosen kick beats descending several
+> mediocre ones. Lone seed1 regression ibm16 +0.0046 is upstream R2 timing
+> jitter (final-phase gate can't itself regress). `PRESCREEN=1` is
+> bit-equivalent to the prior 2a default. Logs `ml_data/compare/stage2b_*`.
+> Default-path ibm01 smoke: 0.9134 VALID. Next: 2c options re-analysis.
+
+> **Status (2026-06-12 evening — Stage 2 LSMC exploration SHIPPED AS DEFAULT;
+> seed-1 on-arm avg 1.1194 is the NEW BEST `--all`):** the post-R2 LSMC
+> kick/descent/accept phase (`local_search/lsmc_explore.py`, hook as the FINAL
+> quality phase in `macro_placer.py`) is default-on under CUDA
+> (`V2_GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice —
+> exactly the measured gate config. **Full-stack paired gate (DP + ML filter
+> verified active in every log; user-authorized 2-seed bar): seed1 off 1.1245 /
+> on 1.1194 (−0.0051), seed2 1.1275 / 1.1242 (−0.0033) — 2/2 wins, mean
+> −0.0042.** On-arm totals 3107s/3024s (~51min, watch the 1h cap under
+> contention; the per-bench budget clamp shrinks the slice as t_one_score
+> rises). Logs `ml_data/compare/` (stage2 full-stack set). Two structural
+> lessons baked into the design: (1) acceptance must gate the FINAL score —
+> pre-R2 and pre-post-soft hooks both accepted states that lost after later
+> refinement; (2) an earlier gate run was invalidated because the code-pinning
+> worktree silently lacked gitignored assets (dreamplace_build, ml_data) — DP
+> and the ML filter were OFF (+0.018 on the off-arm); symlink assets into any
+> worktree that runs the placer and grep logs for "DREAMPlace launched" + "ML
+> filter on". Degraded-stack pair (DP/ML absent): explore was worth −0.0067
+> there — relevant if eval hardware ever lacks the full stack.
+
+> **Status (2026-06-12 — GPU staged rollout: Stage 0 re-baseline + Stage 1
+> propose-all A/B done; verdict WASH, stays opt-in; see docs/gpu/GPU-ops.md and
+> ISSUES.md S17):**
+>
+> **Stage 0 re-baseline (2026-06-11): avg 1.1243, 17/17 VALID, 2679s** — same
+> placer as the 1.1252 record within single-seed noise, locked as the pre-GPU
+> reference. CUDA relocation diagnostic PASS (torch 2.10.0+cu128, cuda_delta on
+> cuda:0, exact parity 1.541e-07); DREAMPlace dpenv healthy (torch 2.4.1+cu121,
+> **built sm_89-only** — rebuild required on any other GPU arch); numba 0.65.1
+> present. Hardware unchanged: 1× RTX 4050 Laptop 6GB. The new multi-GPU
+> machines are not reachable from this box yet — second half of Stage 0
+> (inventory, DP rebuild, re-baseline there) pending access.
+>
+> **Stage 1 (2026-06-12): `V2_RELOC_PROPOSE_ALL=auto` paired multi-seed A/B —
+> WASH, stays opt-in.** Both verifiers PASS (in-loop scorer-vs-exact delta
+> 1.4e-11). Paired same-box sequential `--all` runs, seeds 1/2/3
+> (logs `ml_data/compare/all_20260612_propall_*`): seed1 off 1.1231 / auto
+> 1.1237 (+0.0090 cum), seed2 1.1277 / 1.1280 (+0.0047), seed3 1.1250 / 1.1246
+> (−0.0076). Mean +0.0020 cumulative (+0.0001/bench), 2/3 seeds worse — far
+> from the S10 ship bar (3/3, −0.0041 mean). No `--all` wall-time win either
+> (2415 vs 2408s, 2454 vs 2492s): the budget allocator reabsorbs per-benchmark
+> speedups (ibm01 alone runs 77.6s vs 109.4s at identical proxy 0.9146).
+> 10–13 of 17 benchmarks per seed are bit-identical between arms; divergences
+> are deterministic but seed-dependent in sign (ibm11 −0.0103/−0.0047/+0.0030;
+> ibm18 +0.0188 on seed1 only, replay-confirmed bit-exact 1.3967 under clean
+> conditions — a genuinely worse basin, not a budget artifact). Caveats noted:
+> the seed-1 pair straddles dead-code commit 04ae002 (behavior-neutral — 10/17
+> bit-identical across the boundary); seed-1 auto crossed a laptop sleep (wall
+> 35233s) with per-benchmark monotonic budgets unaffected. **Takeaway for
+> Stage 2:** the GPU pool-scoring machinery is validated and fast; the ±0.02
+> per-benchmark policy divergence is exactly what an exact-gated multi-candidate
+> selector can harvest. Next: Stage 2 exploration engine (V2_GPU_EXPLORE) per
+> docs/gpu/GPU-ops.md §2–3.
+
 > **Status (2026-06-11 — ML hard-relocation ranker connected as production
 > default, ISSUES.md S10):** The trained XGBoost filter was validated 2026-06-05
 > (equal-budget net ≈ −0.008/10, no robust regressions) but had been left

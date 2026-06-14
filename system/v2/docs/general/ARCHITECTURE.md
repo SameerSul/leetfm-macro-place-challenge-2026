@@ -1,6 +1,6 @@
 # CongFlow v2 -- Architecture & Experiment Log
 
-> **Current best `--all`: 1.1252** (2026-06-11, all 17 VALID / 0 overlaps,
+> **Reference `--all`: 1.1252** (2026-06-11, all 17 VALID / 0 overlaps,
 > **2337s ~39min**) — **S10 ML hard-relocation ranker enabled as the production
 > default.** `src/main.py` now enables the shipped XGBoost ranker when no `ML_*`
 > env var is preset and the model artifact + `xgboost` are available, widening
@@ -29,8 +29,14 @@
 > it. The deadline-bound 2-opt converges fast to a strong basin minimum, so
 > non-monotonic acceptance just wastes budget wandering (consistent with the S1
 > basin-hopping disproof). The accept gate stays strict-improvement greedy.
+>
+> **Active design note (2026-06-14):** the congestion-gradient spine has been
+> pruned from the current code. The active pipeline is baseline + async DP
+> candidate scoring + random restarts + Phase 9 random-order legalization + R2 +
+> post-R2 soft relocation + generic multi-incumbent LSMC. See `PROGRESS.md` for
+> post-pruning measurements.
 
-## Current Best Result (2026-06-11)
+## Reference Result (2026-06-11)
 
 **Average proxy cost: 1.1252** across all 17 IBM ICCAD04 benchmarks, with the
 ML hard-relocation filter enabled by default. The filter's gain is confirmed by
@@ -81,19 +87,23 @@ Congestion dominates by ~30x. Optimizing WL alone reliably increases proxy cost.
 
 ### Phase pipeline (per benchmark call)
 
-1. Load seed -- read initial.plc, legalize overlaps
-2. DP variants -- dual-density DP (target 0.85 and 0.65), async when the bridge is available
-3. Phase 1/2/3 -- iterative cong-grad chain from the baseline
-4. Phase 5 -- score DP placements, merge winners, retain DP basins
-5. Phase 5b/5c + Phase 8 -- cong-grad from best and TOP-K hot-macro refinement
-6. Phase 9 -- 3 random-order legalization trials
-7. 2-opt -- pairwise macro swap from top seeds, 15s budget
-8. R2 -- multi-round local refinement:
+1. Load seed -- read `initial.plc`, legalize hard-macro overlaps.
+2. DP variants -- async DREAMPlace candidates are launched when the bridge is available; they are scored as ordinary candidates only.
+3. Random restarts -- Gaussian perturbations of initial hard positions, legalize, exact-score.
+4. Phase 9 -- 3 random-order legalization trials.
+5. R2 -- multi-round local refinement:
    - reloc: single-macro repositioning to reduce cong/density/combined fields
    - soft-reloc[cong]: gradient-driven cong reduction
    - soft-reloc[density]: gradient-driven density spreading
    - soft-soft, hard-soft, and hard-soft-soft swaps/cycles
    - 2-opt: pairwise swap accepting proxy improvements
+6. Post-R2 soft relocation -- leftover soft congestion/density cleanup.
+7. LSMC final exploration -- random hard-macro kick, legalize, descend with hard/soft moves, accept only exact post-descent improvement.
+
+The congestion-gradient spine, DP-rescue chains, TOP-K cong-grad, and multi-seed
+2-opt phase are no longer part of the active pipeline. LSMC seed collection is
+generic: baseline, random-noise restarts, random-order legalize trials, pre-R2
+best, and post-R2 best.
 
 ### Budget allocation (L-change + M1, 2026-05-31)
 
@@ -173,11 +183,12 @@ With L-change, ibm15-18 each get the 110s PER_BENCH_FLOOR_S guarantee:
 The placer is invoked once per benchmark via `MacroPlacer.place(benchmark) →
 torch.Tensor[num_macros, 2]`. Internally, `place()` runs the following pipeline:
 
-The pipeline is **a single sequential spine** with exactly one genuinely
-concurrent branch: DREAMPlace is launched as 3 subprocesses at `place()` entry
-and harvested mid-pipeline (after Phase 3). Everything else runs in order on the
-main thread — including the noise restarts, which are an inline phase, *not* a
-parallel track.
+The pipeline is **a single sequential spine** with one genuinely concurrent
+branch: DREAMPlace is launched as up to 3 subprocesses at `place()` entry and
+harvested before random restarts. DREAMPlace outputs are scored as ordinary
+candidates; they are not retained as later LSMC seed basins. Everything else runs
+in order on the main thread, except Phase 9 legalization trials, which may run in
+a small thread pool before sequential exact scoring.
 
 ```
    ┌──────────────────────────────────────────────────────────────────────┐
@@ -187,10 +198,10 @@ parallel track.
             │ ─── async side-channel: launch at place() entry ───────────┐
             │                                                            ▼
             │                          ┌───────────────────────────────────────┐
-            │                          │  Phase 5: DREAMPlace ×3  (subprocess, │
+            │                          │  DREAMPlace ×3  (subprocess,          │
             │                          │  runs concurrently with the spine)    │
             │                          │  lo-fix / hi-mov / hi-fix configs     │
-            │                          │  Nesterov-accelerated NLP global place│
+            │                          │  legalize + exact-score as candidates │
             │                          └───────────────────────────────────────┘
             ▼                                                           │
    ┌────────────────────────┐                                           │
@@ -200,24 +211,9 @@ parallel track.
    └────────────────────────┘                                           │
             │                                                           │
             ▼                                                           │
-   ┌────────────────────────┐                                           │
-   │ Phase 1-3 cong-grad    │                                           │
-   │ iterative descent +    │                                           │
-   │ wide-step fallback     │                                           │
-   └────────────────────────┘                                           │
-            │                                                           │
-            ▼                                                           │
    ┌────────────────────────┐   harvest DP results ◄────────────────────┘
-   │ Phase 5 — collect DP   │   legalize each output + score it; best
-   │ candidates             │   updates best_pl, ALL kept in dp_placements
-   │                        │   (reused by Phase 7 + the multi-seed 2-opt)
-   └────────────────────────┘
-            │
-            ▼
-   ┌────────────────────────┐
-   │ Phase 5b/5c cong-grad  │
-   │ from best_pl + wide-   │
-   │ from-best              │
+   │ Score completed DP     │   best_pl may update; no DP-specific later seed
+   │ candidates             │   dependency in LSMC
    └────────────────────────┘
             │
             ▼
@@ -228,32 +224,9 @@ parallel track.
             │
             ▼
    ┌────────────────────────┐
-   │ Phase 7 DP-rescue      │ ◄── reads each DP basin from dp_placements
-   │ cong-grad chain from   │
-   │ each DP candidate basin│
-   └────────────────────────┘
-            │
-            ▼
-   ┌────────────────────────┐
-   │ Phase 8 TOP-K          │
-   │ cong-grad on K hottest │
-   │ macros only            │
-   └────────────────────────┘
-            │
-            ▼
-   ┌────────────────────────┐
    │ Phase 9 random-order   │
    │ legalize variants      │
    └────────────────────────┘
-            │
-            ▼
-   ┌────────────────────────────────────────────────────────────────┐
-   │  Multi-seed 2-opt (k_neighbors=20, max_iters=6)                │
-   │  seeds = best_pl + each DP candidate basin (dp_placements)     │ ◄── DP basins
-   │  with S9 cong-aware candidate selection:                       │
-   │    hot-first outer ordering + cold-region teleport             │
-   │  Final selection across seeds by true _exact_proxy             │
-   └────────────────────────────────────────────────────────────────┘
             │
             ▼
    ╔════════════════════════════════════════════════════════════════════╗
@@ -290,6 +263,20 @@ parallel track.
                 │
                 ▼
         ┌──────────────────────────┐
+        │ Post-R2 soft relocation  │
+        │ congestion then density  │
+        └──────────────────────────┘
+                │
+                ▼
+        ┌──────────────────────────┐
+        │ LSMC final exploration   │
+        │ generic seeds only:      │
+        │ baseline / random / P9 / │
+        │ pre-R2 / post-R2 best    │
+        └──────────────────────────┘
+                │
+                ▼
+        ┌──────────────────────────┐
         │  best placement returned │
         │(centers, [num_macros, 2])│
         └──────────────────────────┘
@@ -303,17 +290,19 @@ Everything above runs inside a single per-benchmark budget
 | Phase | What it does | Why |
 |---|---|---|
 | **0 Baseline** | Legalize from `initial.plc` via `_will_legalize` (vectorized greedy spiral) | Establish a valid baseline; preserve the hand-tuned spread |
-| **5 DREAMPlace ×3 (async)** | Launch DP at `place()` entry in 3 configs (lo-fix, hi-mov, hi-fix) | Side-channel seeds with different basins; legalize each and add to candidates |
-| **1-3 cong-grad** | Iterative max(H,V) gradient-descent perturbation from baseline (`frac=0.04`, ≤4 steps; wide-step fallback at frac=0.08/0.12) | Escape WL-trap local minima; relieve congestion peaks |
-| **5b/5c cong-grad-from-best** | One more cong-grad from `best_pl` + wide-from-best (frac=0.08) | Refine after multi-DP candidates settle |
+| **DREAMPlace ×3 (async)** | Launch DP at `place()` entry in 3 configs (lo-fix, hi-mov, hi-fix); legalize and exact-score completed outputs | Add independent candidate placements without blocking the main spine |
 | **Noise restarts** | Inline (sequential) random Gaussian perturbations of `initial.plc`, ~24 fracs spanning 1%–25%, accept-on-true-proxy | Broad basin-hopping around the hand-tuned seed; fills budget between the directed phases |
-| **7 DP-rescue** | Cong-grad chain from each DP candidate's basin | Mine DP's WL+density edge for proxy-friendly local minima |
-| **8 TOP-K cong-grad** | Restrict perturbation to the K hottest macros only (K ∈ {5, 10, 20}, 3-iter chains) | Focus motion on routing peaks instead of spreading across all congested cells |
 | **9 random-order legalize** | N=3 trials with randomized secondary-sort key in `_will_legalize` | Different legalization arrangements from the same starting positions |
-| **Multi-seed 2-opt** | Proxy-driven 2-opt (k=20) from `best_pl` + each DP basin; true-proxy selection | A DP seed's basin can 2-opt to a deeper minimum than `best_pl`'s; pruning at `+0.02` skips unreachable seeds |
 | **R2 interleave (≤20 budget-gated rounds)** | Hard reloc ⇄ soft-cong reloc ⇄ soft-density reloc ⇄ 2-opt cleanup plus soft/hard-soft swaps and cycles | The dominant lever — see § 2.3 |
+| **Post-R2 soft relocation** | Short leftover-budget soft relocation by congestion then density | Clean up soft macro placement after the main R2 loop saturates |
+| **LSMC final exploration** | For generic seed pool, random hard kick → legalize → hard/soft descent → exact accept | Basin exploration without bridge/cong-grad coupling; final exact gate prevents accepted regressions |
 
-> **Why the numbering skips 4 and 6.** The phase numbers are historical labels, not a contiguous sequence. **Phase 4** (cong-grad from a noise-perturbed / multi-start seed) was tested 2026-05-09 and reverted — strictly worse on every benchmark. **Phase 6** (additive cong-grad from the DP placement) was tested 2026-05-21 and rejected (+0.017 on ibm08 from budget displacement). Both numbers were retired rather than reused. Unrelated: the `B3 phase 4` tags are a *separate* scheme — the `IncrementalScorer` build stages (B3p2 = incremental WL, B3p4 = incremental routing), not pipeline phases.
+> **Historical phase numbers.** Some older notes refer to phases 1-8 and
+> multi-seed 2-opt. Those were experimental labels, not a required sequence.
+> Cong-grad phases, DP-rescue chains, TOP-K cong-grad, and multi-seed 2-opt are
+> retired from the active spine. The current numbered survivor is Phase 9
+> random-order legalization; R2 and LSMC are the main refinement/exploration
+> layers.
 
 ### 4.2 Budget allocation (floor-reservation)
 
@@ -383,22 +372,31 @@ subtraction — otherwise the float64 ties pick a different ring direction, and
 ibm04 (where the tie-break matters for the cong-grad trajectory) lands at
 1.3364 instead of 1.3316.
 
-### 5.2 Congestion-gradient perturbation (`_routing_congestion_perturb`)
+### 5.2 LSMC final exploration (`_lsmc_explore`)
 
-The global move that escapes WL-trap local minima. For each macro in a cell
-whose congestion exceeds a threshold, compute the finite-difference gradient
-of the cell-congestion field at its position, and move it **against** the
-gradient (toward lower-congestion neighbors). A small random component breaks
-symmetry. Uses an isolated `RandomState(seed+1)` so the main numpy RNG state
-isn't perturbed — noise restarts get identical draws regardless of cong-grad
-participation.
+The active global exploration layer is LSMC, not congestion-gradient
+perturbation. LSMC runs after R2 and post-R2 soft relocation, when the placement
+is already locally refined:
 
-The congestion field is `plc.get_horizontal/vertical_routing_congestion()` —
-real H/V routing congestion after a `get_congestion_cost()` call. This
-captures both the net routing demand and the hard-macro routing blockage.
+1. Select one of the generic seed placements: baseline, random-noise restart,
+   random-order legalize, pre-R2 best, or post-R2 best.
+2. Apply a random large-step kick to a small fraction of movable hard macros.
+3. Legalize the kicked hard placement.
+4. Build a fresh `IncrementalScorer` on the kicked state.
+5. Descend through hard relocation by congestion/density and soft relocation by
+   congestion/density.
+6. Exact-score the descended placement and accept only strict true-proxy
+   improvement.
 
-Used in Phases 1/2/3/5b/5c/7/8 with different perturbation strengths
-(`frac ∈ {0.04, 0.08, 0.12}`) and different top-K restrictions.
+This is not analytic gradient descent. The descent step is a discrete
+hot-to-cold field search: choose macros sitting in high congestion/density cells,
+try legal colder cells, and commit only proxy-improving moves. The exact
+post-descent gate is the invariant that lets LSMC explore without accepting a
+worse final placement.
+
+The old `_routing_congestion_perturb` cong-grad spine was deleted from the
+active pipeline. Older phase labels 1/2/3/5b/5c/7/8 in historical notes refer to
+that retired design.
 
 ### 5.3 Vectorized routing fill (`_apply_3pin_routing_vec`, `_apply_h/v_strips_batch`)
 
@@ -501,7 +499,7 @@ isolation, fully verified). The "from raw, not deltas" detail is what makes
 it bit-exact and drift-free — a delta-accumulating version would lose
 ~1e-16 / commit and slowly diverge.
 
-### 5.5 Multi-seed proxy-driven 2-opt (`_two_opt_proxy_swap`)
+### 5.5 R2 proxy-driven hard 2-opt (`_two_opt_proxy_swap`)
 
 Local search via macro pair-swaps, scored by the incremental proxy. Naive
 2-opt is O(N²) candidates per iteration; we restrict to a **spatial kNN**
@@ -523,25 +521,16 @@ true-proxy drop.
 The proxy gate validates every swap, so candidate selection only changes
 *which* swaps are tried, never *accepts* a worse placement.
 
-**S11 note.** The *R2-cleanup* invocation of this function uses `k=16` (down from
-20) to free scoring time for the productive soft passes; the multi-seed
-2-opt-on-winner described here stays `k=20`. A WL-delta prefilter (`wl_delta_swap`)
-exists but is **off** for hard 2-opt — calibration showed hard spatial-kNN swaps
-have near-zero WL spread, so it can't discriminate (it would only add cost). So
-hard 2-opt still scores every kNN candidate.
+The active invocation is the R2 cleanup pass with `k=16`, chosen to free scoring
+time for the more productive soft relocation/swap passes. A WL-delta prefilter
+(`wl_delta_swap`) exists but is **off** for hard 2-opt — calibration showed hard
+spatial-kNN swaps have near-zero WL spread, so it can't discriminate and would
+only add cost. Hard 2-opt still scores every kNN candidate it reaches within its
+budget slice.
 
-**Multi-seed selection.** The final 2-opt runs from `best_pl` *plus each DP
-candidate basin*, with true-proxy selection across seeds. A DP seed's basin
-can yield a deeper 2-opt result even when its standalone score lost the
-best_pl race (ibm04 hi-mov basin: 1.3210 standalone → 1.2797 after 2-opt).
-A seed whose raw proxy is more than `DP_SEED_2OPT_WINDOW=0.02` above the
-current best is pruned (max observed 2-opt gain ~0.04, so a +0.02 seed can't
-catch up). This is provably score-neutral and cuts `--all` wall-clock from
-~1198 s (no prune) to ~722 s.
-
-Selection uses a fresh `_exact_proxy` on the final candidates, not the
-incremental score — see O2 in `ISSUES.md` for the gotcha (the incremental WL
-can drift across seeds when plc state mutates between scorers).
+The older final multi-seed 2-opt from DP basins is retired from the active
+pipeline. Final basin exploration is now handled by LSMC's generic seed pool and
+exact post-descent accept gate.
 
 ### 5.6 Relocation moves (`_relocation_moves`, `_soft_relocation_moves`)
 
@@ -682,29 +671,17 @@ To give ibm15-18 more budget the correct lever is reducing BUDGET_OVERRUN_S:
 
 ---
 
-## 6. Planned speedups (GPU era)
+## 6. Planned speedups and GPU notes
 
 The per-move scorer is CPU + numba (~0.5 ms/move with numba; the routing-apply
 fill is ~74% of it). The score is **coupled to throughput** — accept-on-true-proxy
 is strictly non-regressing, so within a fixed budget more moves ⇒ lower proxy.
-Two speedups target this; both leave the bit-exact / accept-on-true-proxy
-guarantees intact.
+Current parallelism is intentionally narrow: DREAMPlace subprocesses run
+asynchronously when available, and Phase 9 legalization trials can run in a
+small thread pool. The retired multi-seed 2-opt multiprocessing path is no
+longer part of the active design.
 
-### 6.1 S1 — multi-core (the GPU-free win)
-
-22 cores, but the move search is single-threaded. The independent work — the 3
-DREAMPlace configs, Phase 9 legalize, and the multi-seed 2-opt — can run in
-parallel. The multi-seed 2-opt subprocess path exists (`V2_MULTISEED_MP`,
-env-gated): best seed runs solo, then the DP-basin seeds run in a forked pool.
-
-**GPU-era fix (done):** CUDA contexts do **not** survive `fork`, so once the
-parent initializes CUDA every forked worker crashed the moment it touched the
-GPU (the 2-opt kNN and the routing smoothing both gate on `_USE_GPU`).
-`workers._force_worker_cpu()` now disables GPU in every gated module in the
-child — workers are CPU-only (the GPU kNN is a tiny fraction of a 2-opt pass).
-Still env-gated; enable + validate `V2_MULTISEED_MP=1` on a free machine.
-
-### 6.2 S2 — GPU-batched candidate evaluation (explored, NOT a win — removed)
+### 6.1 S2 — GPU-batched candidate evaluation (explored, NOT a win — removed)
 
 The relocation / 2-opt passes try `n_targets` (16–24) candidate positions per hot
 macro **sequentially**, each a full `_trial_at`. They are independent trials from
@@ -738,22 +715,21 @@ overhead; IBM is simply too small. The implementation + verifiers were deleted
 ## Known Issues / Next Ideas
 
 - DREAMPlace is now built and functional. The earlier Python/ABI break is
-  resolved by launching the subprocess with the DREAMPlace build env; it
-  contributes seed basins to the multi-seed 2-opt.
+  resolved by launching the subprocess with the DREAMPlace build env; its
+  outputs are scored as ordinary candidates.
 - **numba** must be installed for full speed (JITs the routing-apply, ~half the
   runtime; soft import with a numpy fallback). **CRITICAL (S13):** numba is in
   `v2/requirements.txt` but NOT `pyproject.toml`, so `uv sync` alone does **not**
   install it and the placer falls back to numpy **silently** (~25 % slower in the
   S13 measurements, enough to lose deadline-bound refinement). `config.py` now warns
   when it's missing; **the eval env must install requirements.txt**. See ISSUES S13.
-- **S1 / S2 speedups — see §6.** S1 multi-core fork-after-CUDA fix is done
-  (env-gated). S2 GPU candidate batching was implemented, verified bit-exact, and
-  measured a net loss on IBM grids; the code + verifiers were removed (the §6.2
+- **GPU batching — see §6.** S2 GPU candidate batching was implemented, verified bit-exact, and
+  measured a net loss on IBM grids; the code + verifiers were removed (the §6.1
   finding is kept so it isn't re-run).
 - **At the IBM floor for this move set (S15):** budget is dead (benchmarks
   converge) and width tuning is noise-level. ibm12 (1.31), ibm17 (1.36), ibm18
-  (1.39) are the remaining highest-proxy benchmarks; further gains need basin
-  diversity (more DREAMPlace seeds) or new move types.
+  (1.39) are the remaining highest-proxy benchmarks; further gains need generic
+  LSMC seed/kick/descent improvements or new move types.
 - WireMask-BBO greedy evaluator: highest-leverage non-GPU idea not yet implemented.
 - Current `--all` timing has comfortable headroom (~39 min in the 2026-06-11
   run). Reducing `BUDGET_OVERRUN_S` remains the safe knob if a slower machine or

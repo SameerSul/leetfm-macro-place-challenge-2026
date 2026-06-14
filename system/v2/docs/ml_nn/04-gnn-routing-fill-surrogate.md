@@ -85,6 +85,7 @@ expensive parts.
 **Goal:** the kill-switch curve, offline, before any model is built.
 
 **Already added:**
+
 - `test/diagnostic/_recall_at_width.py` — per (benchmark, width): legal-pool-width
   distribution + `improving_recall@K` + `regret@K`, using the deployed ranker.
 - Wide-pool data generation: re-run with `ML_HARD_RELOCATION_N_TARGETS={64,128,256}`,
@@ -92,6 +93,7 @@ expensive parts.
   exact-labelled with `score_gain`).
 
 **To finish Phase A:**
+
 1. Run the analyzer across all widths/benchmarks; read the recall@K-vs-width curve.
 2. Add a **fresh-trained** surrogate with whole-benchmark holdout (not just the
    deployed 32-wide model) so recall isn't optimistic — reuse `placer.ml.train`
@@ -184,6 +186,7 @@ not hard relocation.
 **Goal:** prove the GNN is *necessary*, not just sufficient.
 
 **To add:**
+
 1. A profiling spike under `test/diagnostic/` that isolates the strip-gen loop
    (`_apply_3pin_routing_vec` / `_apply_h_v_strips_batch` per `ARCHITECTURE.md`
    §5.3) and measures whether net classification + L/Steiner segment construction
@@ -202,6 +205,7 @@ This is the real cost of the idea, not the GNN. Required because 1000-wide is
 inherently cross-macro (Gate B).
 
 **To restructure (`src/placer/local_search/relocation.py`, `_relocation_moves`):**
+
 - Current shape is **sequential greedy**: for each hot macro, prep → trial its
   targets → commit the best improving one → the commit mutates the state the next
   macro sees.
@@ -217,6 +221,7 @@ inherently cross-macro (Gate B).
   *different algorithm* and must be A/B'd, not assumed equivalent.
 
 **To add:**
+
 - A bit-exact verifier (mirror the S2 verifiers): the serial-commit result must
   equal what the sequential greedy loop would have produced **when the surrogate is
   replaced by the exact scorer** (i.e. M = full pool). This isolates "did the
@@ -234,6 +239,7 @@ work proved congestion = shared base (macro removed) + a localized, batchable de
 or directly `score_gain`, per candidate.
 
 **Inputs (must condition on current fill, not just the netlist):**
+
 - Netlist-local subgraph around the macro (nets as hyperedges, pins, macro sizes).
 - **The current local H/V congestion patch at the source and target** — without it
   the model can't tell a cold destination from an already-saturated one. This is
@@ -243,6 +249,7 @@ or directly `score_gain`, per candidate.
   rank, net degree, source/target congestion & density.
 
 **To add:**
+
 - `src/placer/ml/data_collection.py`: optionally log the **H/V congestion delta**
   per candidate (behind the `if trace is not None` guard; verify via the
   arithmetic-equivalence test, never end-to-end). Only needed if predicting the
@@ -262,17 +269,20 @@ harness on wide pools before wiring anything live.
 ## 8. Phase E — Integration + validation
 
 **To restructure (`src/placer/ml/shadow.py`):**
+
 - Generalize `filter_candidate_indices` from per-group (per-macro) to a
   **cross-macro batch** entry point that takes the whole pool, returns the global
   top-M indices. Keep the per-operator manifest, the missing-model fallback, and the
   calibration/guard rails.
 
 **To add (`src/placer/pipeline/macro_placer.py`):**
+
 - A `_USE_GPU`-gated branch in the R2 hard-relocation step that calls the
   restructured propose-all path when a model + GPU are present, else the legacy
   sequential path. Reuse `_ml_r2_context` to stamp trace context.
 
 **Validation (Gate D):**
+
 1. Offline: recall@M / regret@M on held-out benchmarks (IBM **and** NG45).
 2. Online: `--all` with the model, no tracing, **per-benchmark non-regression**,
    under the same wall-clock budget. Multi-seed — single-benchmark scores swing
@@ -283,6 +293,7 @@ harness on wide pools before wiring anything live.
 ## 9. Inventory — add vs restructure
 
 **Add:**
+
 - `test/diagnostic/_recall_at_width.py` *(done)* — recall vs width.
 - `test/diagnostic/_strip_batch_vectorize_spike.py` — Phase B exact-kernel race.
 - `test/verification/_test_propose_all_bitexact.py` — Phase C equivalence verifier.
@@ -291,6 +302,7 @@ harness on wide pools before wiring anything live.
 - DAgger collection/retrain scripts (extend `placer.ml.train`).
 
 **Restructure:**
+
 - `relocation.py::_relocation_moves` — sequential greedy → propose-all /
   serial-verify-commit (flagged, legacy path retained).
 - `shadow.py::filter_candidate_indices` — per-group → cross-macro batch entry.
@@ -308,6 +320,7 @@ non-regression guard, not the target.
 ## 11. Honest kill criteria
 
 Shelve the GNN (and prefer the exact-kernel route or nothing) if **any** hold:
+
 - Phase A: recall@M-of-1000 from a trained surrogate is materially below 1.0 on the
   held-out benchmark (drops real moves the gate never sees).
 - Phase B: the exact strip-gen vectorizes to the cross-macro batch (do that — exact
