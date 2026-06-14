@@ -405,7 +405,7 @@ class MacroPlacer:
             *,
             force: bool = False,
         ) -> None:
-            """Keep distinct near-best placements for final LSMC basin exploration."""
+            """Keep distinct generic seeds for final LSMC."""
             if not np.isfinite(score):
                 return
             margin_raw = os.environ.get("V2_GPU_EXPLORE_SEED_MARGIN", "0.08")
@@ -491,12 +491,12 @@ class MacroPlacer:
             if t_score_observed > t_one_score:
                 t_one_score = t_score_observed
             _log(f"  Candidate {k}: proxy={score:.4f}")
-            if label.startswith("cong-grad"):
+            if label.startswith("random noise"):
                 _remember_lsmc_seed(label, score, pl_scratch)
             if score < best_score:
                 best_score = score
                 best_pl = pl_scratch.clone()  # snapshot only on improvement
-                if label.startswith("cong-grad"):
+                if label.startswith("random noise"):
                     _remember_lsmc_seed(f"best-{label}", score, best_pl, force=True)
 
             # Safety: if scoring overran the (possibly relaxed) cap, stop immediately
@@ -627,7 +627,6 @@ class MacroPlacer:
                 best_score = dp_score
                 best_pl = dp_pl.clone()
             dp_placements.append((tag, dp_score, dp_pl))
-            _remember_lsmc_seed(f"dreamplace[{tag}]", dp_score, dp_pl)
 
         # Congestion step after DREAMPlace candidates.
         if dp_placements:
@@ -694,13 +693,9 @@ class MacroPlacer:
                 if t_score_observed > t_one_score:
                     t_one_score = t_score_observed
                 _log(f"  Candidate {directed_ran}: proxy={score:.4f}")
-                _remember_lsmc_seed(f"dp-chain[{tag}]-iter{it}", score, pl_scratch)
                 if score < best_score:
                     best_score = score
                     best_pl = pl_scratch.clone()
-                    _remember_lsmc_seed(
-                        f"best-dp-chain[{tag}]-iter{it}", score, best_pl, force=True
-                    )
                 # Drop chains that start too far behind the current best.
                 if it == 1 and (score - pre_chain_best) > P7_ITER1_MARGIN_GATE:
                     break
@@ -753,9 +748,13 @@ class MacroPlacer:
                 t_one_score = t_score_observed
             _log(f"  Restart {1 + directed_ran} (random-order-legalize "
                  f"trial={trial}) proxy={score:.4f}")
+            _remember_lsmc_seed(f"random-order-legalize trial={trial}", score, pl_scratch)
             if score < best_score:
                 best_score = score
                 best_pl = pl_scratch.clone()
+                _remember_lsmc_seed(
+                    f"best-random-order-legalize trial={trial}", score, best_pl, force=True
+                )
             directed_ran += 1
             # Safety: post-score budget guard, same as _try_restart's tail.
             if time.monotonic() - t0 > (effective_budget_s + BUDGET_OVERRUN_S):
@@ -1442,7 +1441,9 @@ class MacroPlacer:
                     else:
                         seeds = sorted(lsmc_seed_pool, key=lambda x: x[1])[:max_seeds]
                         if not any(label == "post-r2-best" for label, _, _ in seeds):
-                            seeds = [("post-r2-best", best_score, best_pl.detach().cpu().clone())] + seeds
+                            seeds = [
+                                ("post-r2-best", best_score, best_pl.detach().cpu().clone())
+                            ] + seeds
                             seeds = sorted(seeds, key=lambda x: x[1])[:max_seeds]
                     per_seed_slice = _exp_slice / max(1, len(seeds))
                     _log(
