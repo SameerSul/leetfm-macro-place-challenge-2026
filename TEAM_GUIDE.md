@@ -552,7 +552,7 @@ Three roles split by expertise. Each person has a clear onboarding path, owns a 
 #### Files You Own
 ```
 system/v1/placer.py     ← main submission
-system/v2/test/diagnostic/test_smoke.py ← smoke-test harness
+test/diagnostic/test_smoke.py ← smoke-test harness
 TEAM_GUIDE.md                       ← this document
 ```
 

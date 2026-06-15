@@ -6,9 +6,12 @@ This file gives Claude Code the context to work productively in this repository 
 
 Submission to the **Partcl/HRT Macro Placement Challenge** (deadline May 21, 2026, $20K grand prize). Goal: write a Python `MacroPlacer` that beats the RePlAce baseline (avg proxy cost **1.4578** across 17 IBM ICCAD04 benchmarks). Lower is better.
 
-Per-team active system slot: `system/v2/`. The prior slot `system/v1/` is **frozen / read-only** - it captures the v17 placer (multi-DP, multi-iter Phase 7, 2-opt-on-winner) as a checkpoint to compare against. All new work goes in `system/v2/`.
+The active submission now lives at the repository root: `src/`, `docs/`,
+`test/`, `scripts/`, and `ml_data/`. The prior `system/v1/` checkpoint may be
+absent after the root-layout migration; if present, treat it as frozen /
+read-only.
 
-For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](system/v2/docs/general/PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](system/v2/docs/general/PROGRESS.md). Do not duplicate that content here.
+For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](docs/general/PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). Do not duplicate that content here.
 
 ## Common commands
 
@@ -17,25 +20,25 @@ For the full problem statement see [`README.md`](README.md). For the API contrac
 git submodule update --init external/MacroPlacement
 uv sync
 # REQUIRED for full speed: numba JITs the routing-apply (~half the runtime). It's
-# in v2/requirements.txt but NOT pyproject.toml, so `uv sync` alone does NOT install
+# in requirements.txt but NOT pyproject.toml, so `uv sync` alone does NOT install
 # it — the placer then silently falls back to numpy (~25% slower, --all ~58min near
-# the 1h cap, avg 1.1403 vs 1.1380 with JIT). See system/v2/docs/general/ISSUES.md S13.
-uv pip install -r system/v2/requirements.txt
+# the 1h cap, avg 1.1403 vs 1.1380 with JIT). See docs/general/ISSUES.md S13.
+uv pip install -r requirements.txt
 
 # Single benchmark - fastest feedback loop, use this while iterating
-uv run evaluate system/v2/src/main.py -b ibm01
+uv run evaluate src/main.py -b ibm01
 
 # All 17 IBM benchmarks - the headline score (~30 min on sameer_v1)
-uv run evaluate system/v2/src/main.py --all
+uv run evaluate src/main.py --all
 
 # NG45 commercial designs (Tier 2, OpenROAD inputs)
-uv run evaluate system/v2/src/main.py --ng45
+uv run evaluate src/main.py --ng45
 
 # Visualize a placement
-uv run evaluate system/v2/src/main.py -b ibm01 --vis
+uv run evaluate src/main.py -b ibm01 --vis
 
 # Compare v2 against the v1 checkpoint
-uv run python scripts/compare_placers.py system/v1/placer.py system/v2/src/main.py
+uv run python scripts/compare_placers.py system/v1/placer.py src/main.py
 
 # Compare two placers head-to-head
 uv run python scripts/compare_placers.py path/to/placer_a.py path/to/placer_b.py
@@ -43,46 +46,58 @@ uv run python scripts/compare_placers.py path/to/placer_a.py path/to/placer_b.py
 # Smoke tests (project-level)
 uv run pytest test/
 
-# Run a v2-specific diagnostic or verification script (note the v2/test/ path,
-# not the repo-root test/ path)
-uv run python system/v2/test/diagnostic/_profile_score.py
-uv run python system/v2/test/verification/_stress_verify.py
+# Run a diagnostic or verification script
+uv run python test/diagnostic/_profile_score.py
+uv run python test/verification/_stress_verify.py
 
 # Synthetic anti-overfitting suite (generate once, then run / analyze)
-uv run python system/v2/test/benchmarks/generate_benchmarks.py
-uv run python system/v2/test/benchmarks/run_synthetic.py          # synthetic designs
-uv run python system/v2/test/benchmarks/run_synthetic.py --ibm    # IBM cross-check
-uv run python system/v2/test/benchmarks/analyze_impact.py         # cost-term breakdown
+uv run python test/benchmarks/generate_benchmarks.py
+uv run python test/benchmarks/run_synthetic.py          # synthetic designs
+uv run python test/benchmarks/run_synthetic.py --ibm    # IBM cross-check
+uv run python test/benchmarks/analyze_impact.py         # cost-term breakdown
 
-# eda_io: run the v2 placer on standard EDA inputs (LEF/DEF/Verilog/SDC/Liberty)
-uv run python system/v2/src/place_design.py \
+# eda_io: run the placer on standard EDA inputs (LEF/DEF/Verilog/SDC/Liberty)
+uv run python src/place_design.py \
     --lef tech.lef --def floorplan.def --out-def placed.def --out-tcl place.tcl --report qor.rpt
 
 # eda_io tests (pytest is not in the project venv - use --with)
-uv run --with pytest python -m pytest system/v2/test/eda_io/ -v
+uv run --with pytest python -m pytest test/eda_io/ -v
 ```
 
 If `uv` is not on PATH, fall back to `pip install -e .` and replace `uv run` with `python -m`.
 
 ## File modification scope
 
-**IMPORTANT - write scope is restricted to `system/v2/**` plus root `CLAUDE.md`.** Anything outside that is read-only, including the prior system slot `system/v1/**`.
+**IMPORTANT - active code now lives at the repository root.** Keep normal work
+inside `src/**`, `docs/**`, `test/**`, `scripts/**`, `ml_data/**`,
+`dreamplace_build/**`, `dreamplace_src/**`, plus root `AGENTS.md`, `CLAUDE.md`,
+`README.md`, and `requirements.txt`.
 
 Writable:
-- `system/v2/**` - the active system slot (entrypoint `src/main.py`, the `src/placer/` package, any new files Claude creates here)
-- `system/dreamplace_build/**` - DREAMPlace install tree (rebuilds / patches allowed)
-- `system/dreamplace_src/**` - DREAMPlace source (custom forks / modifications allowed)
+- `src/**` - evaluator entrypoint, placer package, eda_io, DREAMPlace bridge
+- `docs/**` - active documentation and experiment notes
+- `test/**` - diagnostics, verification scripts, synthetic benchmark tools
+- `scripts/**` - active helper scripts
+- `ml_data/**` - ML traces, models, logs, and generated data
+- `dreamplace_build/**` - DREAMPlace install tree (rebuilds / patches allowed)
+- `dreamplace_src/**` - DREAMPlace source (custom forks / modifications allowed)
 - `CLAUDE.md` - this file
 
 Read-only (Claude may read but must not edit, create, move, or delete):
-- **`system/v1/**`** - frozen v17 checkpoint, kept for comparison. Treat as if it lived under `external/`.
-- Everything outside `system/` - `macro_place/`, `external/`, `scripts/`, `benchmarks/`, `pyproject.toml`, `README.md`, `SETUP.md`, `TEAM_GUIDE.md`, `LICENSE.md`, etc.
+- **`system/v1/**`**, if present - frozen v17 checkpoint, kept for comparison.
+  Treat as if it lived under `external/`.
+- Framework, benchmark, and challenge files outside the active submission:
+  `macro_place/`, `external/`, `benchmarks/`, `pyproject.toml`, `SETUP.md`,
+  `TEAM_GUIDE.md`, `LICENSE.md`, etc.
 
-If a task seems to require modifying a read-only file (e.g. fixing a bug in `macro_place/`, adding a script under `scripts/`, correcting an error outside `system/v2/`, or porting/tweaking something from `v1/`), stop and surface the proposed change to the user instead of editing. They will lift the restriction explicitly when appropriate - typically by asking Claude to copy the v1 file into v2 first, then modify the v2 copy.
+If a task seems to require modifying a read-only file (e.g. fixing a bug in
+`macro_place/`, correcting challenge metadata, or porting/tweaking something
+from `v1/`), stop and surface the proposed change to the user instead of
+editing.
 
 This rule is documented here so Claude follows it. If local tool settings are
 needed, keep them at the repository root; do not add per-subtree `.claude/`
-directories under `system/v2/src/`.
+directories under `src/`.
 
 ## Submission contract (don't break these)
 
@@ -105,7 +120,7 @@ Forbidden by the rules:
 proxy_cost = 1.0 × wirelength + 0.5 × density + 0.5 × congestion
 ```
 
-After normalization, **wirelength ≈ 0.06**, **congestion ≈ 1.3–2.7**. Congestion dominates by ~30×. **Optimizing for wirelength alone reliably makes proxy cost worse** because clustering connected macros spikes density and congestion. This was tested exhaustively (see `system/v2/docs/general/PROGRESS.md`); do not retry it without a specific reason.
+After normalization, **wirelength ≈ 0.06**, **congestion ≈ 1.3–2.7**. Congestion dominates by ~30×. **Optimizing for wirelength alone reliably makes proxy cost worse** because clustering connected macros spikes density and congestion. This was tested exhaustively (see `docs/general/PROGRESS.md`); do not retry it without a specific reason.
 
 The floor v2 must clear is **the frozen v17 placer at `system/v1/placer.py`** - multi-DP at target_density 0.85/0.65 + multi-iter Phase 7 cong-grad chain from each DP + 2-opt-on-winner. 6-benchmark spot check vs v15 was −0.0258 cumulative (notable: ibm02 −0.0194, ibm04 −0.0025, ibm07 −0.0026). Headline `--all` number not yet measured at the freeze point. Earlier reference (`sameer_v1`, avg 1.486) reaches its score by legalizing from `initial.plc` then running multi-restart with congestion-gradient perturbations.
 
@@ -142,7 +157,7 @@ test/                     Project-level pytest smoke tests. READ-ONLY for v2 wor
 - **`density_score` fallback is ANTI-CORRELATED with proxy cost.** Sum-of-squares occupancy rewards spread placements, but spread placements have *worse* proxy because they hurt congestion. For any benchmark that cannot use exact scoring (`n > 340` or `grid_cells > 2000`), return the baseline legalization. See the legacy threshold notes in `system/v1/placer.py`.
 - **Exact scoring is slow on large grids.** ibm15 (n=393, grid=2166) takes ~160s; ibm18 (grid=2145) takes ~220s. Always factor scoring time into a per-benchmark time budget. The harness has a 200s/benchmark soft limit and post-scoring budget guard.
 - **CPU contention slows scoring 3–5×.** ibm08 scores in 31s clean but 95–131s under load; ibm11 scored 263s under heat. Use a running-max `t_one_score` for budget estimation, not the baseline-only measurement.
-- **`system/v2/docs/general/PAPERS_NOTES.md` describes the MaskRegulate regularity mask incorrectly.** The actual paper formula `min(x, X_max-x) + min(y, Y_max-y)` rewards placing macros near canvas *edges*. The notes describe distance-to-center, which is the opposite. The implementation in `_density_gradient_perturb` does neither - it is a pure occupancy-spreading gradient. If you see comments referencing "MaskRegulate centering", the comments are wrong, not the code.
+- **`docs/general/PAPERS_NOTES.md` describes the MaskRegulate regularity mask incorrectly.** The actual paper formula `min(x, X_max-x) + min(y, Y_max-y)` rewards placing macros near canvas *edges*. The notes describe distance-to-center, which is the opposite. The implementation in `_density_gradient_perturb` does neither - it is a pure occupancy-spreading gradient. If you see comments referencing "MaskRegulate centering", the comments are wrong, not the code.
 - **`initial.plc` is already a good seed.** It comes from a prior EDA flow with hand-tuned spread. The job of legalization is to resolve overlaps without destroying that spread. Restart from random or grid layouts has consistently lost to restarting from `initial.plc + small perturbation`.
 - **Soft macros must be repositioned when hard macros move significantly.** The `PlacementCost.optimize_stdcells` API does this but takes minutes per call in Python. The current placers leave soft macros at their initial positions - acceptable for small perturbations, problematic for large displacements (e.g., DREAMPlace-style global re-placement).
 
@@ -159,9 +174,9 @@ test/                     Project-level pytest smoke tests. READ-ONLY for v2 wor
 
 - Iterate on one benchmark (`-b ibm01` or `-b ibm04`) until the change is sound; run `--all` only when you want a full leaderboard number. A `--all` run takes ~30 minutes, so it is not a substitute for unit-style debugging.
 - When a change improves one benchmark, verify it does not regress others before committing. The repo's history (`git log`) shows several "win on ibm04, lose on ibm09" reverts.
-- Record concrete numbers in `system/v2/docs/general/PROGRESS.md` when a change becomes the new best - that file is the source of truth for "what works", not commit messages.
-- Once a change has been accepted and verified, ensure that all relevant documentation, such as `system/v2/README.md`, `system/v2/docs/general/ARCHITECTURE.md`, `system/v2/docs/general/ISSUES.md`, `system/v2/docs/general/PROGRESS.md`, and `system/v2/docs/general/DESIGN_FLOW.md`, has been updated with the latest changes to avoid stale documentation.
-- **All v2-specific tests, diagnostics, and probes live under `system/v2/test/`** (current subdirs: `benchmarks/`, `diagnostic/`, `eda_io/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks Claude to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `system/v2/test/` under the matching subdirectory - and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.
+- Record concrete numbers in `docs/general/PROGRESS.md` when a change becomes the new best - that file is the source of truth for "what works", not commit messages.
+- Once a change has been accepted and verified, ensure that all relevant documentation, such as `README.md`, `docs/general/ARCHITECTURE.md`, `docs/general/ISSUES.md`, `docs/general/PROGRESS.md`, and `docs/general/DESIGN_FLOW.md`, has been updated with the latest changes to avoid stale documentation.
+- **All v2-specific tests, diagnostics, and probes live under `test/`** (current subdirs: `benchmarks/`, `diagnostic/`, `eda_io/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks Claude to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `test/` under the matching subdirectory - and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.
 - Never commit unless asked.
 - Do not push, force-push, or create PRs unless asked.
 
@@ -169,4 +184,4 @@ test/                     Project-level pytest smoke tests. READ-ONLY for v2 wor
 
 - The leaderboard #1 entry (UT Austin DREAMPlace, 1.4076) uses `pb.txt → Bookshelf → DREAMPlace global placement → legalize`. v1's bridge (`system/v1/dreamplace_bridge/`) implements this path - v2 can import or copy it forward. The remaining gap (~0.05 from v1 to the leaderboard) is mostly congestion-aware optimization that DREAMPlace's NLP doesn't see; see v1's `_dp_diagnostic.py` for the empirical decomposition.
 - WireMask-BBO's greedy evaluator is the highest-leverage *non-GPU* unimplemented idea (avg ~27M HPWL on mixed-size IBM, no training needed). The current `_compute_wire_pull` is a continuous approximation, not the real greedy mask.
-- For anything ML-heavy (ChiPFormer-style DT, MaskPlace-style RL, diffusion), the cost/benefit ratio is poor on the remaining timeline - read `system/v2/docs/general/PAPERS_NOTES.md` for the team's reasoning before starting one.
+- For anything ML-heavy (ChiPFormer-style DT, MaskPlace-style RL, diffusion), the cost/benefit ratio is poor on the remaining timeline - read `docs/general/PAPERS_NOTES.md` for the team's reasoning before starting one.
