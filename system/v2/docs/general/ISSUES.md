@@ -48,6 +48,25 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ## Current issues and shipped context
 
+### S19. DREAMPlace was silently dead since the restructure (FIXED 2026-06-15)
+
+After the 2026-06-11 repo restructure, `system/dreamplace_build/install/
+dreamplace/ops/move_boundary/move_boundary.py` still imported
+`varrahan.dreamplace_build.install.dreamplace.configure` (the old
+`submissions/varrahan/...` path). That module no longer resolves →
+`ModuleNotFoundError: No module named 'varrahan'` killed EVERY DP subprocess
+~4s after launch, masked by the bridge as a benign "not ready; killing
+subprocess" log. **DP produced zero seeds the entire time**, so every `--all`
+since the restructure (incl. the committed 1.1203 headline) ran a basin short.
+Paired `--all` with DP restored: **DP-off 1.1325 → DP-on 1.1200 (−0.0125)**,
+corroborating the earlier S16 DP-restore (−0.0107). Fix is one line (match every
+other op: `import dreamplace.configure as configure`). The install tree is
+**gitignored**, so the fix isn't captured by git and dies on rebuild — re-apply
+it with `system/v2/scripts/patch_dreamplace_install.py` (idempotent) after any
+DREAMPlace build. **When touching DP, always confirm a "ready in Ns ... testing
+as candidate" line; a "not ready; killing" line for ALL configs means DP is
+dead, not slow — check `tail dreamplace.log` in the scratch dir.**
+
 ### S18. Cluster-coherent LSMC kicks — macro-hierarchy awareness (SHIPPED 2026-06-14)
 
 **What:** the LSMC kick now optionally moves a derived connectivity *cluster*
