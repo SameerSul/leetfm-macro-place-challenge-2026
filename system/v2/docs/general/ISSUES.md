@@ -1,11 +1,9 @@
-# Open issues — v2 placer (last revised 2026-06-12)
+# Open issues and recent shipped items — v2 placer (last revised 2026-06-15)
 
-This is a **clean rewrite**. All issues that have been resolved or
-rejected have been removed; their findings are captured in commit
-messages and in PROGRESS.md. This file now tracks **only what's
-open**: known gaps in the current placer, speculative score ideas that
-haven't been tried, and follow-up work that's been queued but not
-started.
+This file tracks current gaps, speculative score ideas, follow-up work, and a
+small number of recent shipped items that still explain active knobs. Older
+resolved or rejected findings are primarily captured in commit messages and
+`PROGRESS.md`.
 
 ---
 
@@ -48,17 +46,78 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ---
 
-## Open issues
+## Current issues and shipped context
 
-### S17. GPU / LSMC staged rollout — current work is generic multi-incumbent LSMC
+### S19. DREAMPlace was silently dead since the restructure (FIXED 2026-06-15)
 
-**Current state (2026-06-14):** cong-grad phases have been deleted from the
-active pipeline, and LSMC is the remaining GPU-backed final exploration layer.
-The active LSMC expansion is intentionally generic: it seeds from legalized
-baseline, random-noise restarts, random-order legalize trials, pre-R2 best, and
-post-R2 best. It does **not** use DREAMPlace/bridge-specific placements as LSMC
-seeds and does **not** use cong-grad-derived kicks or seed sources. The exact
-post-descent accept gate remains the safety invariant.
+After the 2026-06-11 repo restructure, `system/dreamplace_build/install/
+dreamplace/ops/move_boundary/move_boundary.py` still imported
+`varrahan.dreamplace_build.install.dreamplace.configure` (the old
+`submissions/varrahan/...` path). That module no longer resolves →
+`ModuleNotFoundError: No module named 'varrahan'` killed EVERY DP subprocess
+~4s after launch, masked by the bridge as a benign "not ready; killing
+subprocess" log. **DP produced zero seeds the entire time**, so every `--all`
+since the restructure (incl. the committed 1.1203 headline) ran a basin short.
+Paired `--all` with DP restored: **DP-off 1.1325 → DP-on 1.1200 (−0.0125)**,
+corroborating the earlier S16 DP-restore (−0.0107). Fix is one line (match every
+other op: `import dreamplace.configure as configure`). The install tree is
+**gitignored**, so the fix isn't captured by git and dies on rebuild — re-apply
+it with `system/v2/scripts/patch_dreamplace_install.py` (idempotent) after any
+DREAMPlace build. **When touching DP, always confirm a "ready in Ns ... testing
+as candidate" line; a "not ready; killing" line for ALL configs means DP is
+dead, not slow — check `tail dreamplace.log` in the scratch dir.**
+
+### S18. Cluster-coherent LSMC kicks — macro-hierarchy awareness (SHIPPED 2026-06-14)
+
+**What:** the LSMC kick now optionally moves a derived connectivity *cluster*
+as a unit instead of scattering random hard macros. Communities are inferred
+from the netlist because the user asked to keep connected subsystems together.
+
+**Key finding:** these flat ICCAD04 netlists have almost no hard-to-hard nets
+(ibm01: **0** nets with ≥2 hard pins; ibm10: 4) — hard macros talk to standard
+cells, which talk to other hard macros. So clusters are derived by union-find
+over **low-fanout nets through the bipartite hard↔soft graph**
+(`local_search/clusters.py`, cached on plc). Coverage is sparse: ~8–22% of hard
+macros cluster, groups of 2–9, many spread >50% of the canvas diagonal.
+
+**Kick modes** (`_cluster_kick` in `lsmc_explore.py`): `gather` (seed all
+members at one anchor, legalizer packs them — directly tests "keep them
+together"), `translate` (rigid relocate preserving arrangement), `both`
+(per-kick random pick). The exact post-descent accept gate is unchanged, so a
+cluster kick can never *commit* a worse placement — it only changes which basins
+are explored. Kicks fall back to random when no cluster is available.
+
+**Why it's safe vs the standing "clustering hurts congestion" warning:** the
+disproven experiments (WireMask greedy, optimize_stdcells, net-centroid hard
+bias) *forced* clustering. This only *proposes* it behind the exact gate; the
+kept moves actually *reduce* congestion (it's the term that drops in every win).
+
+**Evidence:** phase-isolation harness (`V2_LSMC_ISOLATE=1`, same incumbent /
+seed / budget) — cluster kicks beat random **6/6** benchmarks, −0.0053 avg.
+Paired multi-seed `--all` ON (p=1.0, both) vs OFF — **3/3 seeds**, mean
+1.1206→1.1183 (−0.0023), 0 regressions, all 17/17 VALID. Seed 0 was a favorable
+draw (−0.0054); steady-state ~−0.0008/seed. Shipped as default in `src/main.py`
+(`_enable_cluster_kick_defaults`), overridable via `V2_GPU_EXPLORE_CLUSTER_P`
+(0 disables), `V2_GPU_EXPLORE_CLUSTER_MODE`, `V2_GPU_EXPLORE_CLUSTER_MAXSZ`,
+`V2_GPU_EXPLORE_CLUSTER_SOFT`, `V2_CLUSTER_MAX_FANOUT`, and
+`V2_CLUSTER_MIN_EDGE`. Verified: `test/verification/_verify_cluster_kick.py`.
+
+**Open follow-ups (higher ceiling):** cluster-outlier *relocation* move (pull a
+macro far from its cluster centroid toward a cold region, gated by proxy). A
+grouped DREAMPlace variant now exists behind `V2_DP_GROUP`; it should remain
+treated as an env-gated candidate source until paired evidence justifies any
+default change. The marginal `--all` gain from kicks alone is small.
+
+### S17. LSMC staged rollout — current work is generic multi-incumbent LSMC
+
+**Current state (2026-06-15):** cong-grad phases have been deleted from the
+active pipeline, and LSMC is the remaining final exploration layer. The active
+LSMC expansion is intentionally generic: it seeds from legalized baseline,
+random-noise restarts, random-order legalize trials, pre-R2 best, and post-R2
+best. It does **not** use DREAMPlace/bridge-specific placements as LSMC seeds
+and does **not** use cong-grad-derived kicks or seed sources. Normal
+`src/main.py` runs enable cluster-coherent kicks by default, with random-kick
+fallback and the same exact post-descent accept gate.
 
 **Next LSMC improvement methods:** update and gate one at a time:
 - seed-pool calibration (`V2_GPU_EXPLORE_MAX_SEEDS`, `SEED_MARGIN`, and per-seed
@@ -111,8 +170,9 @@ experiments. The old island/multi-GPU framing is retired; target hardware is one
 GPU, and extra chains mean either serial budget splits or a future one-device
 batch dimension.
 
-Plan of record: `docs/gpu/GPU-ops.md` (cuda_delta-based LSMC exploration on one
-GPU, generic multi-incumbent scheduling, evidence-gated LSMC-only changes).
+Plan of record: `docs/gpu/GPU-ops.md` (serial exact-gated LSMC exploration,
+generic multi-incumbent scheduling, cluster-coherent kicks, and evidence-gated
+LSMC-only changes; batched CUDA descent remains dormant).
 
 **Stage 0 (done 2026-06-11):** re-baseline avg **1.1243**, 17/17 VALID, 2679s
 (noise-equivalent to the 1.1252 record). CUDA diagnostic PASS (parity 1.541e-07);

@@ -38,16 +38,25 @@ def _file_fingerprint(p: Path) -> str:
 
 def _cache_key(benchmark_dir: Path, iterations: int, random_seed: int,
                num_threads: int, soft_macros_movable: bool,
-               random_center_init: bool) -> str:
+               random_center_init: bool, group_sig: str = "") -> str:
     netlist_fp = _file_fingerprint(benchmark_dir / "netlist.pb.txt")
     init_fp = _file_fingerprint(benchmark_dir / "initial.plc")
     raw = (
         f"{CACHE_VERSION}|{benchmark_dir.name}|netlist={netlist_fp}|"
         f"init={init_fp}|iter={iterations}|seed={random_seed}|"
         f"threads={num_threads}|soft={int(soft_macros_movable)}|"
-        f"rci={int(random_center_init)}"
+        f"rci={int(random_center_init)}|grp={group_sig}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _group_sig(cluster_groups, group_weight) -> str:
+    """Stable fingerprint of grouping config for the cache key."""
+    if not cluster_groups or group_weight <= 0:
+        return ""
+    n_groups = len(cluster_groups)
+    n_members = sum(len(g) for g in cluster_groups)
+    return f"w{int(group_weight)}-g{n_groups}-m{n_members}"
 
 
 def _cache_paths(work_dir: Path, key: str) -> "tuple[Path, Path]":
@@ -163,6 +172,8 @@ def run_dreamplace(
     random_center_init: bool = False,
     keep_log: bool = False,
     target_density: float = 0.75,
+    cluster_groups: "Optional[list]" = None,
+    group_weight: int = 0,
 ) -> np.ndarray:
     """Run DREAMPlace and return hard-macro center positions."""
     if not is_available():
@@ -180,6 +191,7 @@ def run_dreamplace(
     cache_key = _cache_key(
         benchmark_dir, iterations, random_seed, num_threads,
         soft_macros_movable, random_center_init,
+        group_sig=_group_sig(cluster_groups, group_weight),
     )
     cached = _try_load_cache(work_dir, cache_key)
     if cached is not None:
@@ -190,7 +202,8 @@ def run_dreamplace(
 
     # Convert to Bookshelf.
     convert(str(benchmark_dir), str(work_dir), design=design,
-            soft_macros_movable=soft_macros_movable, plc=plc)
+            soft_macros_movable=soft_macros_movable, plc=plc,
+            cluster_groups=cluster_groups, group_weight=group_weight)
 
     # Write DREAMPlace config.
     result_dir = work_dir / "results"
@@ -406,6 +419,8 @@ def launch_dreamplace_async(
     soft_macros_movable: bool = False,
     random_center_init: bool = False,
     target_density: float = 0.75,
+    cluster_groups: "Optional[list]" = None,
+    group_weight: int = 0,
 ) -> AsyncDreamplaceHandle:
     """Launch DREAMPlace in the background and return a polling handle."""
     if not is_available():
@@ -423,6 +438,7 @@ def launch_dreamplace_async(
     cache_key = _cache_key(
         benchmark_dir_p, iterations, random_seed, num_threads,
         soft_macros_movable, random_center_init,
+        group_sig=_group_sig(cluster_groups, group_weight),
     )
     cached = _try_load_cache(work_dir, cache_key)
     if cached is not None:
@@ -430,7 +446,8 @@ def launch_dreamplace_async(
 
     # Convert to Bookshelf; reuse the caller's plc when available.
     convert(str(benchmark_dir_p), str(work_dir), design=design,
-            soft_macros_movable=soft_macros_movable, plc=plc)
+            soft_macros_movable=soft_macros_movable, plc=plc,
+            cluster_groups=cluster_groups, group_weight=group_weight)
 
     result_dir = work_dir / "results"
     result_dir.mkdir(parents=True, exist_ok=True)

@@ -3,6 +3,26 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **HEADLINE (2026-06-14 — cluster-coherent LSMC kicks SHIPPED as default):
+> paired multi-seed `--all` ON vs OFF, ON wins 3/3.** OFF (random kicks) means
+> 1.1206 → ON (pure cluster kicks, p=1.0, both modes) means **1.1183**
+> (Δ = **−0.0023**), all six runs 17/17 VALID / 0 overlaps. Per-seed:
+> seed 0 1.1228→1.1174 (−0.0054, 16/17 benchmarks improved), seed 42
+> 1.1192→1.1183 (−0.0009), seed 44 1.1199→1.1192 (−0.0007). Seed 0 was a
+> favorable draw; steady-state gain ~−0.0008/seed, so the mean is partly
+> noise-adjacent but consistently negative with **0 regressions** (the kick is
+> behind the exact post-descent accept gate). **Mechanism:** in these flat
+> netlists hard macros connect THROUGH standard cells, not to each other (ibm01
+> has 0 hard-to-hard nets), so "subsystems" are derived via union-find over the
+> bipartite hard↔soft graph on low-fanout nets (`local_search/clusters.py`).
+> LSMC then kicks a whole cluster as a unit — `gather` (collapse members to one
+> anchor, legalizer packs them) or `translate` (rigid relocate) — instead of
+> scattering random macros. Enabled in `src/main.py`
+> (`_enable_cluster_kick_defaults`, overridable via `V2_GPU_EXPLORE_CLUSTER_*`);
+> isolation-harness `V2_LSMC_ISOLATE=1` confirmed cluster kicks beat random
+> 6/6 from an identical incumbent (−0.0053 avg, congestion-driven). Verified:
+> `test/verification/_verify_cluster_kick.py`.
+>
 > **HEADLINE (2026-06-14, current `varrahan` 786e749): `--all` avg = 1.1203,
 > 17/17 VALID, 0 overlaps, 2806s (~47min), default seed.** This is the
 > simplified pipeline: cong-grad spine deleted, multi-seed LSMC explore (other
@@ -698,7 +718,7 @@ ibm10 ±0.0024 due to non-deterministic CPU scheduling affecting
   - ibm08 (~36s/score): ~4 restarts (unchanged, already at budget limit)
   - ibm11 (~81s/score): ~1 restart (unchanged)
 
-### v8: Iterative congestion-gradient descent + wide step (CURRENT CODE)
+### v8: Iterative congestion-gradient descent + wide step (HISTORICAL — RETIRED)
 - Phase 1: Iterative gradient descent at frac=0.04, up to 4 steps. After each improving step,
   extract legalized position from best_pl and use it with plc's updated congestion map for the
   next gradient step. Stop when a step fails to improve or budget < 3×t_score.
@@ -1073,7 +1093,7 @@ baseline; no restarts possible. ibm10, ibm12 already beat RePlAce at legalizatio
   Pure Python iteration over thousands of soft macros and tens of thousands of nets per
   step; no C++ binding. Effectively infeasible inside our 200s budget. Path (d) is dead;
   would need multi-day vectorized-numpy rewrite to ever be useful.
-- **Async DREAMPlace integration (salvage path (b)+(c) combined) IN PROGRESS 2026-05-20.**
+- **Async DREAMPlace integration (salvage path (b)+(c) combined) HISTORICAL IN-PROGRESS NOTE 2026-05-20.**
   Restored `dreamplace_bridge/` from commit 111f315; added `AsyncDreamplaceHandle` and
   `launch_dreamplace_async` for non-blocking subprocess management. Integrated into
   `placer.py` as Phase 5: launch at `place()` entry (subprocess runs while we score baseline
