@@ -216,6 +216,103 @@ class MacroPlacer:
         out[:, 1] = torch.where(mov, cy, out[:, 1])
         return out
 
+    def _hierarchy_floorplan(self, benchmark: Benchmark) -> "torch.Tensor | None":
+        """Non-proxy hierarchy-preserving placement (env V2_HIER_FLOORPLAN).
+
+        Grouped DREAMPlace (clusters + their connected softs) gives a
+        hierarchical global placement; cluster-consecutive legalization keeps
+        each subsystem's members together (the default global order scatters
+        them ~2x); soft-only cleanup recovers some congestion without moving
+        hard macros. Returns a valid placement, or None to fall back to the
+        normal proxy-optimized pipeline (e.g. DREAMPlace unavailable). This
+        trades proxy for hierarchy by design — see ISSUES.md / PROGRESS.md.
+        """
+        from dreamplace_bridge.run_bridge import (  # noqa: E402
+            run_dreamplace, is_available as _dp_available,
+        )
+        from dreamplace_bridge.bookshelf_to_pb import read_dreamplace_positions_full
+        from placer.legalize.spiral import _will_legalize
+        from placer.local_search.clusters import (
+            cluster_max_fanout, cluster_min_edge,
+            derive_cluster_softs, derive_hard_clusters,
+        )
+        from placer.local_search.relocation import _soft_relocation_moves
+        from placer.scoring.incremental import IncrementalScorer
+
+        if not _dp_available():
+            return None
+        iccad = Path("external/MacroPlacement/Testcases/ICCAD04") / benchmark.name
+        if not iccad.exists():
+            return None
+
+        plc = _load_plc(benchmark.name, benchmark)
+        n = benchmark.num_hard_macros
+        n_soft = benchmark.num_soft_macros
+        cw, ch = float(benchmark.canvas_width), float(benchmark.canvas_height)
+        sizes = benchmark.macro_sizes.numpy().astype(np.float64)
+        hw, hh = sizes[:n, 0] / 2.0, sizes[:n, 1] / 2.0
+        soft_hw, soft_hh = sizes[n:n + n_soft, 0] / 2.0, sizes[n:n + n_soft, 1] / 2.0
+        movable = benchmark.get_movable_mask().numpy()
+        gw = max(1, int(os.environ.get("V2_HIER_GROUP_WEIGHT", "8")))
+
+        # Derive clusters and build DP groups (hard members + their softs).
+        labels, clusters = derive_hard_clusters(
+            plc, n, n_soft=n_soft, max_fanout=cluster_max_fanout(),
+            min_edge=cluster_min_edge(),
+        )
+        csofts = derive_cluster_softs(plc, n, n_soft, labels)
+        hmi, smi = plc.hard_macro_indices, plc.soft_macro_indices
+        groups = []
+        for cid, mem in clusters.items():
+            names = [plc.modules_w_pins[hmi[int(a)]].get_name() for a in mem]
+            for p in csofts.get(cid, []):
+                names.append(plc.modules_w_pins[smi[int(p) - n]].get_name())
+            groups.append(names)
+
+        try:
+            run_dreamplace(str(iccad), plc=plc, scratch_root="/tmp/dreamplace_v1_hier",
+                           iterations=300, num_threads=2, soft_macros_movable=True,
+                           cluster_groups=(groups or None), group_weight=gw)
+            hard, soft = read_dreamplace_positions_full(
+                plc, f"/tmp/dreamplace_v1_hier/{benchmark.name}", benchmark.name)
+        except Exception as exc:
+            _log(f"  [hier] DREAMPlace failed: {type(exc).__name__}: {exc}")
+            return None
+
+        # Cluster-consecutive legalization order: each cluster's members
+        # back-to-back so they claim their region before other clusters.
+        order = []
+        for mem in sorted(clusters.values(), key=lambda m: -m.size):
+            order += sorted((int(x) for x in mem), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
+        order += sorted([i for i in range(n) if labels[i] < 0],
+                        key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
+        legal = _will_legalize(hard.copy(), movable[:n], sizes[:n], hw, hh, cw, ch, n,
+                               deadline=time.monotonic() + 120, order=order)
+        # Safety pass: dense cluster packing can leave one macro at an
+        # overlapping fallback. A default-order re-legalize keeps every
+        # non-conflicting macro in place (in-place accept) and only nudges the
+        # offender, guaranteeing a valid (overlap-free) hard placement.
+        legal = _will_legalize(legal, movable[:n], sizes[:n], hw, hh, cw, ch, n,
+                               deadline=time.monotonic() + 120, order=None)
+
+        # Soft-only cleanup (hard untouched -> hierarchy preserved).
+        pos = np.vstack([legal, soft]).astype(np.float64)
+        s_pos = soft.copy()
+        s_score = float(_exact_proxy(torch.tensor(pos, dtype=torch.float32), benchmark, plc))
+        scorer = IncrementalScorer(plc, benchmark, pos.copy())
+        soft_mov = movable[n:n + n_soft]
+        for use_density in (False, True):
+            s_pos, _, s_score = _soft_relocation_moves(
+                s_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark, scorer, s_score,
+                deadline=time.monotonic() + 30, top_hot=1024, n_targets=6,
+                soft_movable=soft_mov, use_density=use_density)
+
+        out = torch.tensor(np.vstack([legal, s_pos]).astype(np.float32), dtype=torch.float32)
+        proxy = float(_exact_proxy(out, benchmark, plc))
+        _log(f"  [hier] {len(clusters)} clusters, weight={gw}: proxy={proxy:.4f} "
+             f"(hierarchy-preserving, NON-proxy mode)")
+        return out
+
     def place(self, benchmark: Benchmark) -> torch.Tensor:
         # Final guard for any soft macro positions copied from input or DP.
         return self._clamp_in_bounds(self._place_impl(benchmark), benchmark)
@@ -227,6 +324,20 @@ class MacroPlacer:
         _log(f"[GPU] backend={_GPU_BACKEND} device={_GPU_DEVICE_NAME} | benchmark={benchmark.name}")
 
         t0 = time.monotonic()
+
+        # Hierarchy-floorplan mode (env-gated, off by default): a NON-PROXY
+        # deliverable that keeps connected subsystems together rather than
+        # optimizing the congestion-dominated proxy. Grouped DREAMPlace +
+        # cluster-consecutive legalization + soft cleanup. Costs proxy by design
+        # (this objective rewards spread); use only when hierarchy is the goal.
+        if os.environ.get("V2_HIER_FLOORPLAN", "0").strip() not in _FALSE_ENV:
+            hier = self._hierarchy_floorplan(benchmark)
+            if hier is not None:
+                self._total_place_time_s += time.monotonic() - t0
+                self._benchmarks_done += 1
+                return hier
+            _log("  [hier] floorplan mode unavailable; falling back to normal place()")
+
         n = benchmark.num_hard_macros
         cw, ch = benchmark.canvas_width, benchmark.canvas_height
         sizes = benchmark.macro_sizes[:n].numpy().astype(np.float64)
