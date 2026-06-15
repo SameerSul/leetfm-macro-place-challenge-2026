@@ -116,6 +116,8 @@ class MacroPlacer:
     def _launch_dreamplace_seeds(self, benchmark: Benchmark, plc) -> list:
         """Start DREAMPlace seed runs in the background when available."""
         dp_handles = []
+        if os.environ.get("V2_NO_DP", "0").strip() not in _FALSE_ENV:
+            return dp_handles  # DP disabled (paired DP on/off comparison)
         try:
             import sys as _sys
             _v1_dir = str(Path(__file__).resolve().parents[2])
@@ -147,6 +149,46 @@ class MacroPlacer:
                             dp_handles.append((tag, td, h))
                         except Exception as exc:
                             _log(f"  DREAMPlace[{tag}] launch failed: "
+                                 f"{type(exc).__name__}: {exc}")
+
+                    # Optional grouped config: inject cluster clique-nets so DP
+                    # softly keeps connected subsystems together (env-gated,
+                    # default off until validated). Scored as an ordinary gated
+                    # candidate, so it can only add a basin, never regress.
+                    if os.environ.get("V2_DP_GROUP", "0").strip() not in _FALSE_ENV:
+                        try:
+                            from placer.local_search.clusters import (
+                                cluster_max_fanout, cluster_min_edge,
+                                derive_hard_clusters,
+                            )
+                            gw = max(1, int(os.environ.get("V2_DP_GROUP_WEIGHT", "4")))
+                            _n = benchmark.num_hard_macros
+                            _ns = benchmark.num_soft_macros
+                            _, _clusters = derive_hard_clusters(
+                                plc, _n, n_soft=_ns,
+                                max_fanout=cluster_max_fanout(),
+                                min_edge=cluster_min_edge(),
+                            )
+                            hmi = plc.hard_macro_indices
+                            groups = [
+                                [plc.modules_w_pins[hmi[int(a)]].get_name()
+                                 for a in mem]
+                                for mem in _clusters.values()
+                            ]
+                            if groups:
+                                h = launch_dreamplace_async(
+                                    str(iccad_dir), plc=plc,
+                                    scratch_root="/tmp/dreamplace_v1_grp",
+                                    timeout_s=120.0, iterations=300,
+                                    num_threads=1, soft_macros_movable=False,
+                                    target_density=0.85,
+                                    cluster_groups=groups, group_weight=gw,
+                                )
+                                dp_handles.append(("grp", 0.85, h))
+                                _log(f"  DREAMPlace[grp] launched: "
+                                     f"{len(groups)} clusters, weight={gw}")
+                        except Exception as exc:
+                            _log(f"  DREAMPlace[grp] launch failed: "
                                  f"{type(exc).__name__}: {exc}")
                     if dp_handles:
                         _log(f"  DREAMPlace launched async x{len(dp_handles)} "

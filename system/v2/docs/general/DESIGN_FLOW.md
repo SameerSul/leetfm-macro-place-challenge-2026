@@ -7,10 +7,11 @@ This document describes the production flow implemented by
 
 `MacroPlacer.place()` is a budget-gated, accept-only search over macro
 placements. It legalizes the benchmark's initial hard macro positions, launches
-up to three DREAMPlace subprocesses as asynchronous candidate generators when the
-bridge is available, explores generic random/local restart candidates, runs a
-deep R2 local-search finisher, then uses LSMC as the final global exploration
-layer.
+three standard DREAMPlace subprocesses, plus an optional grouped-DP subprocess
+when `V2_DP_GROUP` is enabled, as asynchronous candidate generators when the
+bridge is available. It then explores generic random/local restart candidates,
+runs a deep R2 local-search finisher, and uses LSMC as the final global
+exploration layer.
 
 Every candidate that can affect the incumbent is judged by the exact proxy:
 
@@ -36,6 +37,7 @@ flowchart TD
     DP0 --> DP1[lo-fix: target density 0.65, soft fixed]
     DP0 --> DP2[hi-mov: target density 0.85, soft movable]
     DP0 --> DP3[hi-fix: target density 0.85, soft fixed]
+    DP0 -. V2_DP_GROUP .-> DP4[optional grouped DP seed with synthetic cluster nets]
 
     D --> P0[Baseline hard legalization]
     P0 --> GUARD{Exact scoring path usable?}
@@ -50,6 +52,7 @@ flowchart TD
     DP1 --> DPH[Harvest completed DP candidates]
     DP2 --> DPH
     DP3 --> DPH
+    DP4 --> DPH
     DPH --> DPL[Clip and legalize DP hard macros]
     DPL --> DPS[Copy DP soft positions, then exact proxy score]
     DPS --> DPK{Improved best?}
@@ -96,7 +99,7 @@ flowchart TD
     POST1 --> POST2[Exact proxy verify]
     POST2 --> LSMC0[Remember post-R2 best LSMC seed]
     LSMC0 --> LSMC1[Select generic LSMC seeds by exact score]
-    LSMC1 --> LSMC2[For each seed: random hard kick, legalize, descend]
+    LSMC1 --> LSMC2[For each seed: cluster/default or random hard kick, legalize, descend]
     LSMC2 --> LSMC3[Exact proxy accept only if global best improves]
     LSMC3 --> CLAMP[Final movable-macro in-bounds clamp]
     CLAMP --> RET[Return best_pl]
@@ -108,6 +111,9 @@ flowchart TD
 - **DREAMPlace:** when available, three async DP variants are scored as ordinary
   candidates. They may update `best_pl`, but they are not retained as special
   LSMC seed basins.
+- **Grouped DREAMPlace:** optional and env-gated by `V2_DP_GROUP`. It adds
+  synthetic cluster clique nets to the Bookshelf conversion and scores the
+  resulting DP placement as another ordinary candidate.
 - **Random restarts:** Gaussian perturbations of initial hard positions,
   legalized and exact-scored.
 - **Random-order legalization:** three alternate legalizer tie-break orders from
@@ -146,9 +152,14 @@ flowchart TD
 - `V2_GPU_EXPLORE=auto` enables the final LSMC layer when CUDA is visible.
   `V2_GPU_EXPLORE_MULTI_INCUMBENT`, `V2_GPU_EXPLORE_MAX_SEEDS`, and
   `V2_GPU_EXPLORE_SEED_MARGIN` control the generic seed pool.
+- `src/main.py` enables cluster-coherent LSMC kicks by default unless the caller
+  already set `V2_GPU_EXPLORE_CLUSTER_P`. The default is
+  `V2_GPU_EXPLORE_CLUSTER_P=1.0` and `V2_GPU_EXPLORE_CLUSTER_MODE=both`, with
+  random-kick fallback when no usable cluster exists. Direct imports of
+  `placer.pipeline.macro_placer` do not apply this wrapper default.
 - Every return path passes through a final in-bounds clamp for movable macros.
   Hard macros are already legalized by the normal path; the clamp mainly protects
-  against soft macro coordinates inherited from input data or DreamPlace output.
+  against soft macro coordinates inherited from input data or DREAMPlace output.
 
 ## Entry points
 

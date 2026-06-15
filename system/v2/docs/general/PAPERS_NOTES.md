@@ -1,7 +1,9 @@
 # Research Papers: Code Analysis and Implementation Notes
 
-> Tracks what we extracted from each paper's code, how it works, and what we implemented.
-> Updated: 2026-05-03
+> Historical research log. Some implementation notes describe code that was later
+> retired; use `ARCHITECTURE.md`, `DESIGN_FLOW.md`, and `docs/theory/` for the
+> active system.
+> Updated: 2026-06-15
 
 ---
 
@@ -17,7 +19,7 @@
 | 6 | **RUDY Demand Map** | ePlace-MS (TCAD 2015) | 🔲 Next | Fast in-loop congestion estimation |
 | 7 | **Congestion-aware legalization** | UCSD/general | 🔲 Next | Weight displacement by congestion in legalize |
 | 8 | **ChiPFormer** | ICML 2023 | 🔲 Future | `system/ml_placer/` (Role B) |
-| 9 | DREAMPlace | DAC 2019 | 🔲 Future | `scripts/pb_to_bookshelf.py` (Role C) |
+| 9 | DREAMPlace | DAC 2019 | ✅ Yes | `src/dreamplace_bridge/` async candidate generator |
 | 10 | MaskPlace | NeurIPS 2022 | 🔲 Future | Foundation for ChiPFormer |
 
 ---
@@ -628,7 +630,7 @@ system/ml_placer/
 |-------|-------------|
 | **MaskPlace** (NeurIPS 2022) | Needs per-circuit RL training (hours); we have no GPU training setup. The pixel-canvas state representation is cool but requires a trained CNN. |
 | **Chip+Diffusion** (ICML 2025) | Needs large pre-training dataset; too early-stage for integration. Most interesting architecturally for long-term Role B work. |
-| **DREAMPlace** (DAC 2019) | Requires LEF/DEF or Bookshelf format; our benchmarks are `.pb.txt`. Bridge converter (`scripts/pb_to_bookshelf.py`) is Role C Week 2 task. |
+| **DREAMPlace** (DAC 2019) | Now integrated through `src/dreamplace_bridge/`: TILOS/ICCAD04 `.pb.txt` + `.plc` are converted to Bookshelf, DREAMPlace runs as an async subprocess, and outputs are exact-scored as ordinary candidates. It is not the final accept objective. |
 | **RePlAce** (TCAD 2019) | This IS the competition baseline (avg 1.4578). We're trying to BEAT it, not use it. Understanding its density model is the research goal. |
 | **GiFt** (ICCAD 2024) | Only useful as DREAMPlace warm-start; depends on DREAMPlace integration first. |
 

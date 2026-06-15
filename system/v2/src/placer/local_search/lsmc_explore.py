@@ -1,12 +1,13 @@
 """LSMC exploration phase (GPU-ops.md Stage 2a).
 
-Single-chain Large-Step Markov Chain: kick a fraction of movable hard macros
-to random spots, legalize, descend with GPU-scored propose-all relocation,
-then accept on the bit-exact proxy of the descended state (zero-temperature,
-strict improvement). Runs as the final quality phase after R2.
+Large-Step Markov Chain: kick hard macros, legalize, build a fresh
+IncrementalScorer, descend with hard/soft relocation, then accept on the
+bit-exact proxy of the descended state (zero-temperature, strict improvement).
+Runs as the final quality phase after R2.
 
-Stage 2c (batched multi-chain Torch on one GPU) can build on this. This
-version keeps acceptance exact, so no approximate-cost handoff is needed.
+The shipped loop is serial and exact-gated. `V2_GPU_EXPLORE=auto` uses CUDA
+availability as the default enable condition, while the optional batched
+multi-chain GPU rewrite remains a dormant future path.
 """
 
 from __future__ import annotations
@@ -19,7 +20,12 @@ import numpy as np
 import torch
 
 from placer.legalize.spiral import _will_legalize
-from placer.local_search.clusters import cluster_max_fanout, derive_hard_clusters
+from placer.local_search.clusters import (
+    cluster_max_fanout,
+    cluster_min_edge,
+    derive_cluster_softs,
+    derive_hard_clusters,
+)
 from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
 from placer.scoring.incremental import IncrementalScorer
 
@@ -75,7 +81,12 @@ def _cluster_kick(
     rng: np.random.Generator,
     deadline: float,
     mode: str = "gather",
-) -> "np.ndarray | None":
+    max_size: int = 32,
+    soft_xy: "np.ndarray | None" = None,
+    soft_hw: "np.ndarray | None" = None,
+    soft_hh: "np.ndarray | None" = None,
+    cluster_softs: "dict[int, np.ndarray] | None" = None,
+) -> "tuple[np.ndarray, np.ndarray | None] | None":
     """Kick one connectivity cluster as a unit, then legalize.
 
     Picks a random cluster of >= 2 movable members and either:
@@ -85,24 +96,35 @@ def _cluster_kick(
       - "translate": apply one feasible rigid (dx, dy) so the subsystem's current
         internal arrangement is preserved and relocated as a whole.
       - "both": pick gather or translate at random for this kick.
-    Legalization resolves overlap with the rest of the chip; the LSMC exact
-    post-descent gate decides whether the result is kept. Returns None when no
-    usable cluster is available, so the caller falls back to the random kick.
+    When `cluster_softs`/`soft_xy` are given, the cluster's connected soft macros
+    receive the SAME transform (translate offset or gather anchor), so hard↔soft
+    proximity is preserved; softs may overlap so they only need clipping, no
+    legalization. Returns (hard_legalized, soft_new) — soft_new is None when no
+    softs are co-moved — or None when no usable cluster exists (caller falls back
+    to the random kick). The LSMC exact post-descent gate decides acceptance.
     """
     if not clusters:
         return None
     if mode == "both":
         mode = "translate" if rng.random() < 0.5 else "gather"
+    co_soft = cluster_softs is not None and soft_xy is not None
     cluster_ids = list(clusters.keys())
     rng.shuffle(cluster_ids)
     for cid in cluster_ids:
         members = clusters[cid]
         members = members[movable[members]]
-        if members.size < 2:
+        if members.size < 2 or members.size > max_size:
             continue
         x = hard_xy[members, 0]
         y = hard_xy[members, 1]
         kicked = hard_xy.copy()
+        # Soft indices to co-move (placement space -> local soft index).
+        s_local = None
+        if co_soft:
+            s_arr = cluster_softs.get(cid)
+            if s_arr is not None and s_arr.size:
+                s_local = s_arr - n
+        soft_new = soft_xy.copy() if co_soft else None
         if mode == "translate":
             # Feasible rigid translation: keep every member within [hw, cw-hw].
             tx_lo = float(np.max(hw[members] - x))
@@ -111,8 +133,15 @@ def _cluster_kick(
             ty_hi = float(np.min((ch - hh[members]) - y))
             if tx_hi < tx_lo or ty_hi < ty_lo:
                 continue
-            kicked[members, 0] = x + rng.uniform(tx_lo, tx_hi)
-            kicked[members, 1] = y + rng.uniform(ty_lo, ty_hi)
+            tx = rng.uniform(tx_lo, tx_hi)
+            ty = rng.uniform(ty_lo, ty_hi)
+            kicked[members, 0] = x + tx
+            kicked[members, 1] = y + ty
+            if s_local is not None:
+                soft_new[s_local, 0] = np.clip(soft_xy[s_local, 0] + tx,
+                                               soft_hw[s_local], cw - soft_hw[s_local])
+                soft_new[s_local, 1] = np.clip(soft_xy[s_local, 1] + ty,
+                                               soft_hh[s_local], ch - soft_hh[s_local])
         else:
             # Gather: seed all members at one anchor; legalize packs them tight.
             mhw = float(hw[members].max())
@@ -123,7 +152,16 @@ def _cluster_kick(
                                          hw[members], cw - hw[members])
             kicked[members, 1] = np.clip(ay + rng.normal(0.0, mhh, members.size),
                                          hh[members], ch - hh[members])
-        return _will_legalize(kicked, movable, sizes, hw, hh, cw, ch, n, deadline=deadline)
+            if s_local is not None:
+                soft_new[s_local, 0] = np.clip(
+                    ax + rng.normal(0.0, mhw, s_local.size),
+                    soft_hw[s_local], cw - soft_hw[s_local])
+                soft_new[s_local, 1] = np.clip(
+                    ay + rng.normal(0.0, mhh, s_local.size),
+                    soft_hh[s_local], ch - soft_hh[s_local])
+        legal_hard = _will_legalize(kicked, movable, sizes, hw, hh, cw, ch, n,
+                                    deadline=deadline)
+        return legal_hard, soft_new
     return None
 
 
@@ -179,16 +217,27 @@ def _lsmc_explore(
     # unchanged, so this only changes which basins are explored.
     cluster_p = float(os.environ.get("V2_GPU_EXPLORE_CLUSTER_P", "0.0"))
     cluster_mode = os.environ.get("V2_GPU_EXPLORE_CLUSTER_MODE", "gather").strip().lower()
+    cluster_maxsz = max(2, int(os.environ.get("V2_GPU_EXPLORE_CLUSTER_MAXSZ", "32")))
+    co_soft = os.environ.get("V2_GPU_EXPLORE_CLUSTER_SOFT", "1").strip().lower() \
+        not in {"0", "false", "off"}
     clusters: "dict[int, np.ndarray]" = {}
+    cluster_softs: "dict[int, np.ndarray]" = {}
     if cluster_p > 0.0:
         try:
-            _, clusters = derive_hard_clusters(
-                plc, n, n_soft=n_soft, max_fanout=cluster_max_fanout()
+            labels, clusters = derive_hard_clusters(
+                plc, n, n_soft=n_soft, max_fanout=cluster_max_fanout(),
+                min_edge=cluster_min_edge(),
             )
+            if co_soft and clusters and n_soft > 0 and soft_hw is not None:
+                cluster_softs = derive_cluster_softs(
+                    plc, n, n_soft, labels, max_fanout=cluster_max_fanout(),
+                )
         except Exception:
             clusters = {}
+            cluster_softs = {}
         if log:
-            log(f"  LSMC cluster kicks: p={cluster_p} clusters={len(clusters)}")
+            log(f"  LSMC cluster kicks: p={cluster_p} clusters={len(clusters)} "
+                f"co_soft={'on' if cluster_softs else 'off'}")
 
     start_pl, start_score = best_pl, best_score
     iters = 0
@@ -205,24 +254,38 @@ def _lsmc_explore(
             hard_xy = c_best_pl[:n].detach().cpu().numpy().astype(np.float64)
 
             kicked = None
+            kicked_soft = None
             kick_score = float("inf")
             cand = c_best_pl.clone()
+            soft_inc = (c_best_pl[n:n + n_soft].detach().cpu().numpy().astype(np.float64)
+                        if n_soft > 0 else None)
             for _b in range(prescreen):
                 trial = None
+                trial_soft = None
                 if clusters and rng.random() < cluster_p:
-                    trial = _cluster_kick(hard_xy, sizes, hw, hh, cw, ch,
-                                          movable, n, clusters, rng, deadline=wall,
-                                          mode=cluster_mode)
+                    res = _cluster_kick(hard_xy, sizes, hw, hh, cw, ch,
+                                        movable, n, clusters, rng, deadline=wall,
+                                        mode=cluster_mode, max_size=cluster_maxsz,
+                                        soft_xy=soft_inc, soft_hw=soft_hw,
+                                        soft_hh=soft_hh, cluster_softs=cluster_softs)
+                    if res is not None:
+                        trial, trial_soft = res
                 if trial is None:
                     trial = _kick(hard_xy, sizes, hw, hh, cw, ch, movable, n,
                                   kick_ratio, rng, deadline=wall)
                 t_ks = time.monotonic()
                 cand[:n, 0] = torch.tensor(trial[:, 0], dtype=torch.float32)
                 cand[:n, 1] = torch.tensor(trial[:, 1], dtype=torch.float32)
+                # Softs: co-moved set for a cluster kick, else reset to incumbent
+                # (cand is reused across prescreen trials).
+                if n_soft > 0:
+                    s_src = trial_soft if trial_soft is not None else soft_inc
+                    cand[n:n + n_soft, 0] = torch.tensor(s_src[:, 0], dtype=torch.float32)
+                    cand[n:n + n_soft, 1] = torch.tensor(s_src[:, 1], dtype=torch.float32)
                 trial_score = float(exact_proxy(cand, benchmark, plc))
                 t_ks = time.monotonic() - t_ks
                 if trial_score < kick_score:
-                    kicked, kick_score = trial, trial_score
+                    kicked, kicked_soft, kick_score = trial, trial_soft, trial_score
                 # Keep the pre-screen a small fraction of the slice.
                 if time.monotonic() + t_ks > wall - t_ks or t_ks > per_chain_s / (2 * prescreen):
                     break
@@ -230,6 +293,10 @@ def _lsmc_explore(
                 break
             cand[:n, 0] = torch.tensor(kicked[:, 0], dtype=torch.float32)
             cand[:n, 1] = torch.tensor(kicked[:, 1], dtype=torch.float32)
+            if n_soft > 0:
+                s_src = kicked_soft if kicked_soft is not None else soft_inc
+                cand[n:n + n_soft, 0] = torch.tensor(s_src[:, 0], dtype=torch.float32)
+                cand[n:n + n_soft, 1] = torch.tensor(s_src[:, 1], dtype=torch.float32)
 
             cand_np = cand.detach().cpu().numpy().astype(np.float64)
             scorer = IncrementalScorer(plc, benchmark, cand_np)

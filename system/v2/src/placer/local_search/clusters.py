@@ -36,23 +36,31 @@ def _find(parents: np.ndarray, i: int) -> int:
     return root
 
 
-def derive_hard_clusters(plc, n: int, n_soft: int = 0, max_fanout: int = 8):
+def derive_hard_clusters(plc, n: int, n_soft: int = 0, max_fanout: int = 8,
+                         min_edge: int = 2):
     """Partition movable hard macros [0, n) into connectivity clusters.
 
     Returns (labels, clusters):
-      - labels: int array [n]; cluster id per hard macro, -1 if singleton.
+      - labels: int array [n]; cluster id per hard macro, -1 if unclustered.
       - clusters: dict cluster_id -> np.ndarray of member hard-macro indices
-        (only clusters with >= 2 members are kept).
+        (placement space A; only clusters with >= 2 members are kept).
 
-    In these flat netlists hard macros almost never share a net directly — they
-    talk to standard cells (soft macros), which then talk to other hard macros.
-    So union-find runs over BOTH hard and soft nodes on low-fanout nets, and the
-    hard macros that land in the same component (possibly connected only through
-    shared softs) form a cluster. High-fanout nets (> max_fanout, e.g. clocks /
-    buses) connect everything and carry no grouping signal, so they are skipped.
-    Cached on plc keyed by (n, n_soft, max_fanout).
+    **Method.** Build a weighted hard-macro graph: each low-fanout net
+    (2..max_fanout pins) contributes a clique among its hard-macro pins, edge
+    weight = number of such shared nets. Union-find merges only edges with
+    weight >= min_edge, then connected components of >= 2 macros are clusters.
+    The threshold is essential: at min_edge=1 the graph is nearly one blob
+    (a few shared nets chain everything); min_edge>=2 yields separable
+    subsystems (e.g. ibm01: 9 clusters of 21..53 macros).
+
+    **Index spaces.** `_build_wl_cache` ref indices are `modules_w_pins` indices
+    (space B: ports 0.., then hard, then soft — NOT placement order). Hard pins
+    are identified by membership in `plc.hard_macro_indices` (space B), and the
+    resulting components are mapped back to placement space A
+    (`i ∈ [0, n)` = `hard_macro_indices[i]`), which is what the kick and
+    relocation use. Cached on plc keyed by (n, n_soft, max_fanout, min_edge).
     """
-    key = (int(n), int(n_soft), int(max_fanout))
+    key = (int(n), int(n_soft), int(max_fanout), int(min_edge))
     cached = getattr(plc, "_hard_clusters", None)
     if cached is not None and cached[0] == key:
         return cached[1], cached[2]
@@ -62,37 +70,102 @@ def derive_hard_clusters(plc, n: int, n_soft: int = 0, max_fanout: int = 8):
     net_starts = cache["net_starts"]
     net_lengths = cache["net_lengths"]
 
-    # Macro nodes occupy ref indices [0, n_nodes); ports use larger pin indices.
-    n_nodes = n + int(n_soft)
-    parents = _union_find_parents(n_nodes)
+    b_to_a = {int(b): a for a, b in enumerate(plc.hard_macro_indices)}
+
+    # Accumulate hard-hard edge weights (space A) from low-fanout net cliques.
+    edge_w: "dict[tuple[int, int], int]" = {}
     for net_i in range(len(net_starts)):
         length = int(net_lengths[net_i])
         if length < 2 or length > max_fanout:
             continue
         start = int(net_starts[net_i])
         pin_refs = ref_idx[start:start + length]
-        nodes = pin_refs[(pin_refs >= 0) & (pin_refs < n_nodes)]
-        if nodes.size < 2:
+        hard_a = sorted({b_to_a[int(r)] for r in pin_refs if int(r) in b_to_a})
+        if len(hard_a) < 2:
             continue
-        anchor = _find(parents, int(nodes[0]))
-        for r in nodes[1:]:
-            parents[_find(parents, int(r))] = anchor
+        for i in range(len(hard_a)):
+            for j in range(i + 1, len(hard_a)):
+                e = (hard_a[i], hard_a[j])
+                edge_w[e] = edge_w.get(e, 0) + 1
 
-    # Read off components restricted to hard macros [0, n).
-    roots = np.array([_find(parents, i) for i in range(n)], dtype=np.int64)
+    parents = _union_find_parents(n)
+    for (a, b), w in edge_w.items():
+        if w >= min_edge:
+            parents[_find(parents, a)] = _find(parents, b)
+
+    roots: "dict[int, list[int]]" = {}
+    for i in range(n):
+        roots.setdefault(_find(parents, i), []).append(i)
+
     labels = np.full(n, -1, dtype=np.int64)
     clusters: "dict[int, np.ndarray]" = {}
     next_id = 0
-    for root in np.unique(roots):
-        members = np.flatnonzero(roots == root)
-        if members.size < 2:
+    for members_a in roots.values():
+        if len(members_a) < 2:
             continue
-        labels[members] = next_id
-        clusters[next_id] = members
+        arr = np.array(sorted(members_a), dtype=np.int64)
+        labels[arr] = next_id
+        clusters[next_id] = arr
         next_id += 1
 
     plc._hard_clusters = (key, labels, clusters)
     return labels, clusters
+
+
+def derive_cluster_softs(plc, n: int, n_soft: int, labels: np.ndarray,
+                         max_fanout: int = 8):
+    """Map each hard cluster to the soft macros it drives.
+
+    For every low-fanout net, the soft pins are attributed to the cluster(s) of
+    the net's hard pins; each soft is then assigned to the single cluster it
+    shares the most such nets with. Returns dict cluster_id -> np.ndarray of
+    soft indices in PLACEMENT space (n + soft_order), so the kick can co-move a
+    subsystem's softs with its hard macros. Cached on plc.
+
+    Index spaces: hard pins via `hard_macro_indices` (space B) -> space A label;
+    soft pins via `soft_macro_indices` (space B) -> placement index n+order.
+    """
+    key = (int(n), int(n_soft), int(max_fanout), id(labels))
+    cached = getattr(plc, "_cluster_softs", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+
+    cache = _build_wl_cache(plc)
+    ref_idx = cache["ref_idx"]
+    net_starts = cache["net_starts"]
+    net_lengths = cache["net_lengths"]
+    hb2a = {int(b): a for a, b in enumerate(plc.hard_macro_indices)}
+    sb2p = {int(b): n + a for a, b in enumerate(plc.soft_macro_indices)}
+
+    # Count (soft placement idx, cluster id) co-occurrences over low-fanout nets.
+    counts: "dict[tuple[int, int], int]" = {}
+    for net_i in range(len(net_starts)):
+        length = int(net_lengths[net_i])
+        if length < 2 or length > max_fanout:
+            continue
+        start = int(net_starts[net_i])
+        refs = [int(r) for r in ref_idx[start:start + length]]
+        cids = {int(labels[hb2a[r]]) for r in refs
+                if r in hb2a and labels[hb2a[r]] >= 0}
+        if not cids:
+            continue
+        softs = [sb2p[r] for r in refs if r in sb2p]
+        for s in softs:
+            for cid in cids:
+                counts[(s, cid)] = counts.get((s, cid), 0) + 1
+
+    best: "dict[int, tuple[int, int]]" = {}  # soft -> (best_count, cid)
+    for (s, cid), c in counts.items():
+        if s not in best or c > best[s][0]:
+            best[s] = (c, cid)
+
+    cluster_softs: "dict[int, list[int]]" = {}
+    for s, (_c, cid) in best.items():
+        cluster_softs.setdefault(cid, []).append(s)
+    out = {cid: np.array(sorted(v), dtype=np.int64) for cid, v in cluster_softs.items()}
+
+    plc._cluster_softs = (key, out)
+    return out
 
 
 def cluster_max_fanout() -> int:
@@ -101,3 +174,11 @@ def cluster_max_fanout() -> int:
         return max(2, int(os.environ.get("V2_CLUSTER_MAX_FANOUT", "8")))
     except ValueError:
         return 8
+
+
+def cluster_min_edge() -> int:
+    """Min shared-net count to merge two hard macros (V2_CLUSTER_MIN_EDGE)."""
+    try:
+        return max(1, int(os.environ.get("V2_CLUSTER_MIN_EDGE", "2")))
+    except ValueError:
+        return 2

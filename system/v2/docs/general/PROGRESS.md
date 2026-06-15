@@ -718,7 +718,7 @@ ibm10 ±0.0024 due to non-deterministic CPU scheduling affecting
   - ibm08 (~36s/score): ~4 restarts (unchanged, already at budget limit)
   - ibm11 (~81s/score): ~1 restart (unchanged)
 
-### v8: Iterative congestion-gradient descent + wide step (CURRENT CODE)
+### v8: Iterative congestion-gradient descent + wide step (HISTORICAL — RETIRED)
 - Phase 1: Iterative gradient descent at frac=0.04, up to 4 steps. After each improving step,
   extract legalized position from best_pl and use it with plc's updated congestion map for the
   next gradient step. Stop when a step fails to improve or budget < 3×t_score.
@@ -1093,7 +1093,7 @@ baseline; no restarts possible. ibm10, ibm12 already beat RePlAce at legalizatio
   Pure Python iteration over thousands of soft macros and tens of thousands of nets per
   step; no C++ binding. Effectively infeasible inside our 200s budget. Path (d) is dead;
   would need multi-day vectorized-numpy rewrite to ever be useful.
-- **Async DREAMPlace integration (salvage path (b)+(c) combined) IN PROGRESS 2026-05-20.**
+- **Async DREAMPlace integration (salvage path (b)+(c) combined) HISTORICAL IN-PROGRESS NOTE 2026-05-20.**
   Restored `dreamplace_bridge/` from commit 111f315; added `AsyncDreamplaceHandle` and
   `launch_dreamplace_async` for non-blocking subprocess management. Integrated into
   `placer.py` as Phase 5: launch at `place()` entry (subprocess runs while we score baseline
