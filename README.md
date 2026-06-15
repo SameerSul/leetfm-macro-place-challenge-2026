@@ -1,269 +1,452 @@
-# Partcl/HRT Macro Placement Challenge
+# v2 — Varrahan's Submission
 
-<img src="assets/HRT.png" alt="Hudson River Trading" height="80"> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <img src="assets/partcl.png" alt="Partcl" height="80">
+Active placer for the Partcl/HRT Macro Placement Challenge. A multi-restart
+legalization placer with async DREAMPlace seed candidates, generic random/local
+restart diversity, a **fully-incremental proxy scorer**, deep **R2 move-based
+local search**, and a final **LSMC kick/descent/accept** exploration layer.
 
-**Win $20,000 by developing better macro placement algorithms!**
+**Reference headline (`--all`, 2026-06-11): avg `1.1252`** (17/17 VALID, 0 overlaps,
+**2337s ~39min**) — beats the RePlAce target (`1.4578`) by **22.8%** and the
+#1 leaderboard (UT Austin DREAMPlace, `1.4076`) by **0.282 (−20.1%)**, on every
+single benchmark. Trajectory: 1.1782 → 1.1500 → 1.1423 (S11 prefilters) →
+1.1403 (S12 wider soft pool) → 1.1380 (S13 numba re-enabled) → 1.1379 (S14
+hand-JIT scoring hot paths, DP-off) → 1.1272 (S16 DREAMPlace ABI fix, DP basins
+restored) → **1.1252** (S10 ML hard-relocation filter enabled by default).
 
-Partcl and Hudson River Trading are excited to co-host a competition to solve the macro placement problem. 
+The active 2026-06-14 design has since pruned the congestion-gradient spine. LSMC
+is now deliberately generic: its seed pool comes from the legalized baseline,
+random-noise restarts, random-order legalization, pre-R2 best, and post-R2 best.
+DREAMPlace still contributes ordinary scored candidates to `best_pl`, but LSMC
+does not depend on DREAMPlace/bridge-specific seed pools or cong-grad-derived
+state. See [`docs/general/PROGRESS.md`](docs/general/PROGRESS.md) for the latest
+post-pruning measurements.
 
-## About Macro Placement
+> ⚠ **Requires numba** for full speed — it JITs the routing-apply (~half the
+> runtime). numba is in `requirements.txt` but **not** `pyproject.toml`, so
+> `uv sync` alone won't install it; **install `requirements.txt`**. Without numba
+> the placer still runs (numpy fallback) but materially slower and gives up
+> deadline-bound refinement. See `docs/general/ISSUES.md` S13.
+Driven by a **family of dual-field soft + hard moves** (cong-field +
+density-field for every move type, plus HXS hard ⇄ soft cross-swaps), a
+bit-exact incremental scoring core, a parallelized pipeline, an **adaptive
+round/pass scheduler** that re-iterates whenever a pass keeps finding
+moves and bails when it saturates, plus a **persistent shared scorer +
+numba-JIT'd routing apply** that frees ~15-25s/benchmark of compute —
+which the R2 loop spends on additional productive rounds AND fixes the
+ibm18 starvation that previously cost +0.28 on that single benchmark. The current
+default also enables the shipped XGBoost hard-relocation ranker when the model
+artifact and `xgboost` are available and no `ML_*` env var is preset; it widens the
+hard-relocation pool to 32 and exact-scores the model's top 16, preserving the
+same strict true-proxy accept gate.
+The dominant algorithmic levers:
+(a) **single-soft relocation** R3 (cong) + R5 (density) — 1.4216 → 1.2799,
+(b) **A1 soft-soft 2-opt** + A1b cong-field + A1c cold-teleport — 1.2737
+→ 1.2195,
+(c) **A4 WL-aware candidate ordering + A5 adaptive multi-pass 2-opt +
+adaptive R2 round termination + adaptive skip-empty replacing hardcoded
+round caps** — 1.2195 → 1.2092,
+(d) **HXS hard ⇄ soft cross-swap + R6 combined cong+density relocation +
+WL-delta prefilter for soft-2opt + persistent shared scorer per R2 round
++ numba-JIT routing apply (with numpy fallback)** — 1.2092 → 1.1993
+(14/17 wins, ibm18 starvation fixed: +0.28 → −0.036),
+(e) **HS3 hard-soft 3-cycle (H → S₁ → S₂ → H) + 3-pin routing dispatcher
+numba-JIT** — 1.1993 → **1.1782** (11/17 wins, biggest mover ibm16 −0.029).
+Layered on top: (i) **incremental congestion cost** (cache smoothed H/V;
+re-smooth only the touched-net bbox per move), (ii) **#1 subset-cumsum
+strip-batch**, (iii) **#2 topology-struct cache** for the routing apply,
+(iv) a **floor-reservation budget allocator** (every benchmark ≥110 s — no
+last-benchmark starvation), (v) **round-3 cong cap + density `top_hot=192`
+boost**, (vi) **S1 prep/trial/commit/revert + S3 bincount strip-batch**
+(hoist the loop-invariant subtract-old — 25–43% faster per-trial),
+(vii) **A3 net-centroid candidate ordering** for soft passes,
+(viii) **H5 hard density relocation** (the R5-for-hards symmetry),
+(ix) **Phase 9 + DREAMPlace ×3 parallelization**, (x) **DREAMPlace ABI fix**
+so the three DP basins actually run under the Python 3.10 DP build env, and
+(xi) **default ML hard-relocation filtering** for the wide-32 candidate pool.
+The entire chain is
+**bit-exact verified** (every scoring path — including the new HXS
+score_swap_hard_soft and the numba-JIT strip-batch — has its own
+verifier; Δ ≤ 4.4e-16).
+Stacked progression: 1.4854 (v12) → 1.2799 (R5) → 1.2767 (inc cong) →
+1.2755 (+ #1+#2+floor-res+A+C) → 1.2737 (+ S1+S3) → 1.2433 (+ A1+A3) →
+1.2195 (+ H5+A1b+A1c+A1×2+Phase9-parallel) → 1.2092 (+ A4+A5+adaptive
+R2/skip-empty) → 1.1993 (+ HXS+R6+WL-prefilter+shared-scorer+numba) →
+1.1782 (+ HS3+3pin-JIT, 11/17 wins) → 1.1379 (S14 hand-JIT, DP-off) →
+1.1272 (S16 DP restored) → **1.1252** (ML hard-relocation filter default).
 
-Macro placement is the problem of positioning large fixed-size blocks (SRAMs, IPs, analog macros, etc.) on a chip floorplan so that routing congestion, timing, power delivery, and area constraints are balanced. Unlike standard-cell placement, macros have strong geometric and connectivity constraints, so the challenge is to explore a highly discrete design space while minimizing wirelength, avoiding blockages, and preserving downstream routability and timing quality.
+> Source of truth for numbers and experiment history is [`docs/general/PROGRESS.md`];
+> open issues / closed dead-ends are in [`docs/general/ISSUES.md`]. This README is the
+> architectural overview.
 
-For example, the **ibm01** benchmark has:
-- **246 hard macros** of varying sizes (ranging from 0.8 to 27 μm², with 33× size variation)
-- **7,269 nets** connecting macros to each other and to 894 pre-placed standard cell clusters
-- **A 22.9 × 23.0 μm canvas** with 42.8% area utilization
+## What's being optimized
 
-<p align="center">
-  <img src="assets/sa_ibm01.gif" alt="Simulated annealing on ibm01" width="600"><br>
-  <img src="assets/fd_ibm01.gif" alt="Force-directed placement on ibm01" width="600">
-</p>
+```
+proxy_cost = 1.0·wirelength + 0.5·density + 0.5·congestion
+```
+After normalization, **congestion ≈ 65% of proxy**, density ≈ 30%, wirelength
+≈ 5%. The whole strategy follows from this: local moves are ranked and accepted
+against the exact congestion-aware proxy, and WL-only optimization reliably makes
+proxy *worse* (clustering spikes congestion).
 
-## About HRT Hardware
+## Pipeline
 
-Hudson River Trading (HRT) is a leading quantitative trading firm at the forefront of technical innovation in global financial markets.
+```
+0    Baseline           legalize from initial.plc (vectorized _will_legalize)
+─    Multi-DP (async)   3 DREAMPlace candidates launched in parallel:
+                          lo-fix (td=0.65, soft fixed), hi-mov (td=0.85, soft
+                          movable), hi-fix (td=0.85, soft fixed); scored as
+                          normal candidates only
+─    random restarts     Gaussian perturbations of initial hard positions,
+                          legalize + exact-score
+9    random-order        legalize with randomized tie-break order
+─    R2 interleave       alternate relocation/swap/cycle passes until neither
+                          improves (≤20 budget-gated rounds) — see "Relocation" below
+─    post-R2 soft reloc  leftover soft congestion/density cleanup
+─    LSMC final explore  random hard-macro kick -> legalize -> hard/soft descent
+                          -> strict exact accept, over generic local seed pool
+```
+All candidates legalized then scored via exact `PlacementCost` proxy; lowest
+wins. The floor-reservation allocator uses a 150s first-benchmark soft budget,
+a 110s per-benchmark floor, and an 83s overrun reserve under the
+3300s internal `--all` place-time cap; thresholds admit all 17.
+Every return path goes through a final movable-macro in-bounds clamp; hard macros
+are already legalized, so this safety net primarily catches stray soft macro
+coordinates from input or DREAMPlace output.
 
-HRT’s Hardware team builds the high-performance compute systems at the core of our trading infrastructure. We use FPGAs and ASICs to drive low-latency decision-making and power custom solutions across the trading stack, from bespoke circuits to machine learning accelerators.
+## The three things that make v2 ≫ v1 (1.4854 → 1.2755)
 
-We’re proud to sponsor this competition because advancing macro placement and low-level hardware optimization directly aligns with the kinds of hard, performance-critical engineering challenges our teams tackle every day.
+### 1. Fully-incremental proxy scorer (`IncrementalScorer`)
 
-Joining Hudson River Trading’s hardware team means working alongside leading engineers in one of the most advanced computing environments in global finance. Learn more about open roles at [hudsonrivertrading.com](https://www.hudsonrivertrading.com/).
+A 2-opt/relocation move changes only 1–2 macros, so re-scoring the whole proxy
+each trial is wasteful. The scorer maintains all three terms as state and updates
+only what a move touches:
 
-## About Partcl
+| Term | Incremental strategy | Tag |
+|---|---|---|
+| Wirelength | recompute HPWL for the moved macro's nets only | B3p2 |
+| Congestion | subtract/add the touched-net routing demand + the macro's routing blockage on the maintained H/V flats | B3p4 |
+| Density | maintain the occupancy grid; update only the moved macro's footprint cells | P3 |
 
-Partcl is rebuilding chip design infrastructure from the ground up for the GPU era.
+Net: **~1.4 ms/move-eval** (vs full recompute scattering all ~1100–2800 macros).
+`score_swap`/`score_move` are **verified bit-exact** vs the full `_exact_proxy`
+(`test/verification/_verify_incremental_scorer.py`, `_verify_score_move.py`;
+Δ ≤ 1e-8, no drift over sequential commits). This speed is what makes the
+move-based local search affordable.
 
-Modern chip design is slow, fragmented, and fundamentally constrained by tools built decades ago. Critical workflows like timing analysis and placement still take hours to days - limiting how much engineers can explore and optimize.
+### 2. Congestion- & density-directed relocation (R1 / R2 / R2b / R3 / R5 — the dominant lever)
 
-We’re changing that.
+2-opt only *exchanges* two macros' positions — it can **never relocate a routing-
+heavy macro into empty low-congestion space** (a swap would dump some other macro
+into the vacated hot spot). Relocation adds exactly that missing move:
 
-Partcl develops GPU-accelerated systems for physical design that run orders of magnitude faster than legacy tools. Our goal is simple: make iteration cheap enough that design space exploration becomes the default, not the exception.
+- **R1** — a post-2-opt pass that moves the hottest *hard* macros (by live
+  `max(H,V)` congestion) into the nearest low-congestion legal cells, accept-on-
+  true-proxy. Legality = in-bounds + no overlap with other hard macros (softs may
+  overlap). `--all 1.4422 → 1.4326`, all 17 improved.
+- **R2** — *interleave* relocation ⇄ 2-opt: each relocation opens new swaps and
+  vice versa. The early implementation used ≤6 rounds (`1.4326 → 1.4243`);
+  the current loop is budget-gated up to 20 rounds and stops on saturation.
+- **R2b** — widen the per-round candidate set (`top_hot` 24→48, `n_targets`
+  12→16) so large benchmarks relieve >3% of their hot macros/round.
+  `1.4243 → 1.4216`, and faster.
+- **R3 — soft-macro relocation.** Soft macros are the bulk of the routing demand
+  and were frozen at `initial.plc` by every prior placer. Relocating the hottest
+  soft clusters into low-congestion space (`score_move_soft`, verified bit-exact;
+  no legality check since softs may overlap), as a third move type in the loop,
+  compounds: **`1.4216 → 1.3764`**, all 17 improved. Corrects O3 (which only
+  tested *bulk* soft moves).
+- **R3b / R5 — soft DENSITY relocation (the dominant win of the relocation family).**
+  Softs are the bulk of the *density* term too (and may overlap, so the cong pass
+  can pile them). A second soft pass targeting the **density** field
+  (`use_density`) finds moves the cong pass can't: a cong-converged best_pl
+  still yielded 22–68 density moves. Interleaved (hard ⇄ soft-cong ⇄
+  soft-density ⇄ 2-opt) + widened candidates (top_hot 128): **`1.3764 → 1.2799`**,
+  all 17 improved (ibm13/02/08 −0.122, ibm18 −0.21).
 
-## Background Papers
-[An Updated Assessment of Reinforcement Learning for Macro Placement](https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=11300304)
+All moves are accept-on-true-proxy, so the whole local search is **strictly
+non-regressing by construction**.
 
-[Assessment of Reinforcement Learning for Macro Placement](https://vlsicad.ucsd.edu/Publications/Conferences/396/c396.pdf)
+**Leverage** (`test/diagnostic/_reloc_leverage.py`): per-benchmark gain is driven
+by **hard-macro utilization × congestion headroom** — relocation helps where hard
+macros occupy enough canvas to drive congestion (ibm04/10/02/12, util 0.42–0.60)
+AND there's congestion above the floor. Low-hard-util benchmarks (ibm17/18) are
+soft/net-dominated and barely move → soft-macro relocation is the flagged next
+lever.
 
-[A graph placement methodology for fast chip design](https://www.nature.com/articles/s41586-021-03544-w.epdf?sharing_token=tYaxh2mR5EozfsSL0WHZLdRgN0jAjWel9jnR3ZoTv0PW0K0NmVrRsFPaMa9Y5We9O4Hqf_liatg-lvhiVcYpHL_YQpqkurA31sxqtmA-E1yNUWVMMVSBxWSp7ZFFIWawYQYnEXoBE4esRDSWqubhDFWUPyI5wK_5B_YIO-D_kS8%3D)
+### 3. Bit-exact scoring-speedup stack (1.2799 → 1.2755)
 
-## 🏆 Prizes
+Five mutually compounding changes, each *bit-exact* (every accept-on-true-proxy
+guarantee preserved; every change passes the same scorer verifiers as the base):
 
-- **$20,000 — Grand Prize:** The top 7 submissions by proxy score are evaluated through the OpenROAD flow on NG45 designs (including hidden designs). Among those 7, the submission that beats the SA and RePlAce baselines (reported in [An Updated Assessment of Reinforcement Learning for Macro Placement](https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=11300304)) by the largest margin on WNS, TNS, and Area wins the Grand Prize. 
-- **$20,000 — First Place (Proxy):** Awarded to the #1 submission by proxy score. Only awarded if no submission qualifies for the Grand Prize.
-- **$5,000 — Second Place:** Awarded to the runner-up of the Grand Prize. If no submission qualifies for the Grand Prize, awarded to the #2 submission by proxy score.
-- **$4,000 — Innovation Award:** Granted to the most creative or technically innovative approach among the top entries, as determined by the judging panel.
-- **Swag:** Every valid submission gets HRT swag!
-- **Note:** An additional score adjustment will be applied based on human-expert analysis of the resulting placement.
+- **Incremental congestion cost.** `_compute_cong_cost` used to full-re-smooth the
+  whole grid and full-partition every move (~17% of a trial). The smoother is a
+  separable box filter — H per column, V per row, each independent — so the scorer
+  now **caches the smoothed normalized H/V** as 2D state and per move re-smooths
+  only the touched-net pin-bbox columns/rows *from raw flats* (recomputing from
+  raw, not accumulating deltas, keeps it bit-identical to a full re-smooth with
+  no drift). All six move paths thread the bbox through `_resmooth_bbox`. Swap
+  Δ stays at machine eps (≤4.4e-16); hard/soft move ≤1.8e-9.
+  Isolated `--all`: **1.2799 → 1.2767**.
+- **Idea #1 subset-cumsum strip-batch.** `_apply_h/v_strips_batch` was the
+  inner-inner-loop of the 67% routing-apply path — it allocated a full
+  `(grid_row, grid_col+1)` diff array, scattered with `np.add.at`, then
+  cumsummed *every row*. The diff-array cumsum is per-row independent, so
+  unique-ing the touched rows and cumsumming only those is bit-identical, and
+  cuts both the alloc and the cumsum to the touched subset.
+- **Idea #2 topology-struct cache.** The routing apply mixes **placement-
+  independent bookkeeping** (which pins, lengths, 2/3/≥4-pin classification,
+  ≥4-pin sink index layout) with the **position-dependent fill** (gcell
+  extraction + dispatch). Split into `_build_net_routing_struct` (cacheable per
+  macro) + `_apply_net_routing_struct`; the scorer keeps a per-module struct
+  cache so single-macro paths build the structure *once per macro* and reuse it
+  across every candidate target and across the −1 / +1 applies. Swap builds
+  once per call. Init path keeps the original `_apply_net_routing_subset`
+  (additive — the full-build path is unchanged).
+- **Floor-reservation budget allocator.** Closes the ibm18-starvation bug: in
+  the old fair-share allocator a few large benchmarks' overruns ate the tail's
+  budget, and the guard returned baseline whenever `cumulative > 95%·3300`. The
+  new allocator reserves `(PER_BENCH_FLOOR_S=110 + BUDGET_OVERRUN_S=60)·(remaining−1) + 60`
+  for the others' overrun + own overrun, clamps to a 3540 s hard-cap headroom,
+  and floors at 110 s. Worst-case simulation (every benchmark overruns by 60 s)
+  has all 17 benchmarks at ≥110 s and cumulative ending exactly at 3300. The
+  guard reduces to `eff < 45 s → baseline` (only fires on genuine exhaustion).
+- **A: round-3 cong cap + C: density `top_hot` boost.** The cong soft-pass
+  saturates by round 3 (ibm09: round 4+ accepts ≤2 moves, ~zero gain) while
+  density keeps finding moves through round 6. Skip cong on `_r2 ≥ 3` (A) and
+  bump density's candidate set 128 → 192 on those rounds (C) so the freed
+  ~4–5 s/round is spent on more density attempts. Combined with the speedup
+  stack: `--all` **1.2767 → 1.2755**.
 
-## Submission Format
+The whole stack is **strictly bit-exact** (verified by the three move-path
+verifiers: `_verify_incremental_scorer.py`, `_verify_score_move.py`,
+`_verify_score_move_soft.py`) and **strictly non-regressing** (accept-on-true-
+proxy is preserved end-to-end). Diagnostics that produced and constrained the
+plan: the fixed-overhead measurement (retired the shared-scorer refactor — per-pass fixed
+overhead is 0.1–0.28 s/round, not the 60–75 s estimated), `_profile_move.py`
+and `_profile_move_internals.py` (cong cost 17%, density 0.7%, routing-apply
+67% → the latter two are where the speedups were targeted), and
+`_profile_move_realistic.py` (isolates the topology-struct cache benefit by A/B-ing
+the same-macro / nearby pattern vs the cache-defeating random-k pattern).
 
-- All submissions will be via google form. Submissions may be made public or private before the end of judging.
-- Private submissions will be required to share repository with judges so they may clone/evaluate the method.
-- Teams may be up to 5 individuals.
-- The deadline for submissions is May 21, 2026, 11:59 pacific.
-- All teams may only submit one algorithm.
-- **All winning implementations must be made open-source under Apache 2.0 or GPL**
-- All submissions must be registered via this [Submission Link](https://forms.gle/YDRtYV5Vq68SZgKW9).
-- All submissions must be under 1 hour end-to-end runtime (per benchmark) for the macro placement algorithm.
-- All submissions will be evaluated on a AMD EPYC 9655P with 16 cores + 100GB of memory and an NVIDIA RTX 6000 Ada 48GB.
+## Closed dead-ends (don't re-run without a specific reason — see ISSUES.md)
 
-## Additional Rules
+| Direction | Outcome |
+|---|---|
+| **DP1** congestion-aware DREAMPlace (`routability_opt`) | CLOSED — DREAMPlace's RUDY congestion ≠ TILOS proxy; no-op or worse across a 64× capacity sweep. Details are in `docs/general/ISSUES.md` DP1. |
+| **Phase 7b** post-hoc DP-basin repair | REVERTED — recoverable in a probe but budget-hungry, high-variance, not reproducible at fixed seed. |
+| **S1** basin-hopping 2-opt (cong-grad kick) | DISPROVEN — slicing the budget starves the deadline-bound search; 6/7 worse. |
+| **O3** soft-macro repositioning (bulk/gradient) | CLOSED for bulk methods — R5 discrete soft relocation is what works. |
+| **R4** WL-aware hard-relocation (net-centroid target bias) | DISPROVEN — slightly worse than nearest-to-current; probe scaffolding removed. |
+| **Shared-scorer interleave refactor** (the original P5 plan) | RETIRED — fixed-overhead profiling measured 0.1–0.28 s/round (not the projected 60–75 s), so the refactor would save <1.7 s/benchmark and risk the bit-exact core. Replaced by the incremental-cong-cost + #1 + #2 stack above. |
 
-### Allowed
+## Source layout
 
-- **Any algorithmic approach**: SA, RL, GNN, analytical methods, hybrid approaches, learning-based, etc.
-- **Any framework**: PyTorch, TensorFlow, JAX, or pure Python/C++
-- **Any optimization technique**: Gradient descent, evolutionary algorithms, local search, etc.
-- **Training on public benchmarks**: You can learn from the IBM benchmark data
+The submission now lives under `src/`. `src/main.py` is the evaluator-facing
+entrypoint; it imports `MacroPlacer` from `placer.pipeline.macro_placer` and
+keeps compatibility delegation for diagnostics that still reach private helpers
+through the submission module.
 
-### Not Allowed
+```
+.
+├── README.md
+├── requirements.txt
+├── scripts/                 # collect_ml_data.sh — ML training-data collection
+├── ml_data/                 # collected candidate traces + logs (gitignore-worthy)
+├── docs/
+├── test/
+└── src/
+    ├── main.py
+    ├── place_design.py      # eda_io CLI: standard EDA files in/out
+    ├── eda_io/              # LEF/DEF/Verilog/SDC/Liberty readers, DEF/Tcl/report writers
+    ├── dreamplace_bridge/
+    │   ├── bookshelf_to_pb.py
+    │   ├── pb_to_bookshelf.py
+    │   └── run_bridge.py
+    └── placer/
+        ├── config.py
+        ├── geometry.py
+        ├── pipeline/
+        │   └── macro_placer.py
+        ├── scoring/
+        │   ├── exact.py
+        │   ├── incremental.py
+        │   ├── wirelength.py
+        │   ├── density.py
+        │   └── congestion.py
+        ├── routing/
+        │   └── apply.py
+        ├── plc/
+        │   ├── loader.py
+        │   └── placement.py
+        ├── legalize/
+        │   ├── spiral.py
+        │   └── swap.py
+        ├── local_search/
+        │   ├── fields.py
+        │   ├── two_opt.py
+        │   ├── relocation.py
+        │   ├── soft_moves.py
+        │   ├── hard_soft.py
+        │   └── workers.py
+        ├── perturb/
+        │   └── congestion_gradient.py
+        └── ml/
+            ├── data_collection.py
+            ├── dataset.py
+            ├── modeling.py
+            ├── shadow.py
+            └── train.py
+```
 
-- Modifying the evaluation functions (must use TILOS MacroPlacement evaluator as-is)
-- Hardcoding solutions for specific benchmarks (must be general algorithm)
-- Using external/proprietary placement tools (must be open-source submission)
-- Exceeding runtime limits (1 hour per benchmark hard timeout)
-- Overlaps in resulting placement
+### Module responsibilities
 
-## Evaluation Details
+| Path | Purpose |
+|---|---|
+| `src/main.py` | **Submission entrypoint** for `uv run evaluate`; wraps `MacroPlacer` so the evaluator sees class module `main`. |
+| `src/placer/pipeline/macro_placer.py` | Top-level orchestration: budgeted candidate generation, DREAMPlace integration, R2 loop scheduling, final placement selection. |
+| `src/placer/config.py` | Runtime config, GPU backend detection, numba feature flag, and `_log`. |
+| `src/placer/geometry.py` | Shared geometry helpers — `separation_matrices` (pairwise minimum non-overlap separations used by the legalizer + 2-opt / relocation conflict checks). |
+| `src/placer/scoring/exact.py` | Exact proxy wrapper over patched `PlacementCost`: WL + density + congestion. |
+| `src/placer/scoring/incremental.py` | `IncrementalScorer`, the stateful bit-exact scorer used by swaps and relocation moves. |
+| `src/placer/scoring/{wirelength,density,congestion}.py` | Vectorized PLC scoring patches and cost helpers. |
+| `src/placer/routing/apply.py` | Vectorized routing demand, strip batching, 2-pin/3-pin dispatch, smoothing, and routing subset/struct apply helpers. |
+| `src/placer/plc/loader.py` | `PlacementCost` loader. |
+| `src/placer/plc/placement.py` | Position cache and fast placement setter used by scoring. |
+| `src/placer/legalize/` | Minimum-displacement legalization and hard-macro swap legality helpers. |
+| `src/placer/local_search/` | 2-opt, relocation, soft moves, hard-soft moves, hot/cold cell fields (`fields.py`), and multiprocessing workers. |
+| `src/placer/perturb/congestion_gradient.py` | Congestion-gradient perturbation used by global move phases. |
+| `src/placer/ml/` | Training-data collection and inference for the learned candidate ranker — `data_collection.py` (`CandidateTrace`, `TraceFields`, `net_degree_features`; active only when `ML_TRACE_PATH` is set), `dataset.py` (trace-JSONL loaders + `add_group_relevance`), `modeling.py` / `train.py` (offline model tooling), and `shadow.py` (shadow diagnostics + production filtering fallback guards). See "ML candidate-ranker data collection" below. |
+| `scripts/collect_ml_data.sh` | Runs the placer with `ML_TRACE_PATH` set across a seed sweep (`--all` or `--ng45`) to produce the training traces in `ml_data/`. |
+| `src/dreamplace_bridge/` | pb.txt ↔ Bookshelf converters + async DREAMPlace subprocess launcher. |
+| `src/eda_io/` | Plug-and-play EDA I/O layer: parses LEF/DEF/Verilog/SDC/Liberty into a neutral `Design`, converts to ICCAD04 pb+plc (placer + exact scorer unchanged), writes updated DEF / ICC2-Innovus Tcl / QoR reports. See `src/eda_io/README.md`. |
+| `src/place_design.py` | CLI for the eda_io layer — any input combo in, any output combo out. |
+| `docs/general/ARCHITECTURE.md` | Design overview + pipeline visualization + algorithm explanations. Start here for the "how it works" tour. |
+| `docs/general/PROGRESS.md` | Per-benchmark results + full experiment history. Source of truth for "what works". |
+| `docs/general/ISSUES.md` | Open issues + closed dead-ends with evidence. |
+| `test/verification/` | Bit-exactness checks vs the scalar reference. |
+| `test/diagnostic/` | Profiling + analysis. |
 
-Evaluation is two-tiered:
+### Recent system changes
 
-### Tier 1: Proxy Cost Ranking (All Submissions)
+- **ML hard-relocation filter connected as default (2026-06-11).**
+  `src/main.py` now enables the validated S10 config B (wide-32 pool, ranker
+  keeps 16) whenever no `ML_*` env var is set and the shipped model +
+  `xgboost` are available. The pipeline logs
+  `R2 hard relocation ML filter on (pool=32, top_k=16)` when active.
+  Verified: `test/verification/_verify_ml_filter_wiring.py` + ibm01
+  end-to-end (proxy 0.9146, VALID, 71s, filter line present) + same-day
+  `--all` re-baseline: **avg 1.1252, 17/17 VALID, 0 overlaps, 2337s** (new
+  best; was 1.1272). **Gain confirmed by same-day paired multi-seed `--all`**:
+  Δ(ON−OFF) = −0.0051 / −0.0044 / −0.0029 across 3 seeds (mean **−0.0041**,
+  filter wins 3/3; ON mean 1.1245 vs OFF 1.1286; all 6 runs 17/17 VALID).
+  Logs: `ml_data/compare/all_20260611_{on,off}_s{def,43,44}.log`.
+- **ML candidate-ranker data collection (2026-06-04).** Added
+  `scripts/collect_ml_data.sh` + a default-preserving `V2_SEED` knob in
+  `src/main.py` to capture the training traces (see the section below). No
+  change to the placer's algorithm or inference path; `V2_SEED` is unset in
+  real evaluation.
+- **Readability refactor (2026-06-04, no algorithm change).** Consolidated the
+  ML-trace per-candidate congestion/density feature lookups into a `TraceFields`
+  helper (`ml/data_collection.py`); deduped the 7× pairwise separation matrices
+  into `geometry.separation_matrices`; extracted `place()`'s budget and
+  DREAMPlace-launch setup into `_effective_budget` / `_launch_dreamplace_seeds`
+  methods (the cong-grad phase descent kept inline). Pure code-motion, ML data
+  collection byte-identical (`test/verification/test_trace_fields_equivalence.py`),
+  validated non-degrading at `--all` (avg 1.1500, 17/17 VALID, 0 overlaps).
+- Replaced the old monolithic `placer.py` submission with `src/main.py` plus
+  a package under `src/placer/`.
+- Moved `dreamplace_bridge/` under `src/` and updated bridge root discovery so
+  it still finds the repository from the nested package location.
+- Split scoring, routing, PLC state management, legalization, local-search
+  moves, perturbation, and pipeline orchestration into separate modules.
+- Moved the multiprocessing 2-opt seed worker into
+  `src/placer/local_search/workers.py`; it is now importable as a normal module
+  instead of relying on the old synthetic pickle wrapper.
+- Updated package `__init__.py` exports for `scoring`, `routing`, `plc`,
+  `local_search`, `legalize`, `perturb`, and `pipeline`.
+- Verified the reorganized entrypoint with bytecode compilation, import smoke,
+  and `uv run evaluate src/main.py -b ibm01`
+  (`VALID`, proxy `0.9078`, CUDA backend detected locally).
 
-All submissions are ranked by **proxy cost** across the 18 IBM benchmarks. This is the primary qualifying metric. Proxy cost is computed using the TILOS MacroPlacement evaluator:
+## ML candidate-ranker data collection
 
-> **Proxy Cost = 1.0 × Wirelength + 0.5 × Density + 0.5 × Congestion**
+Status: **the hard-relocation ranker is wired into the placer by default
+(2026-06-11).** `src/main.py` enables the S10 equal-budget config B when no
+`ML_*` env var is set: the R2 hard-relocation pool widens to 32 candidates and
+the shipped XGBoost ranker (`ml_data/models/clean-wide32-holdout-ibm13-001`)
+picks the 16 to exact-score. The accept-on-true-proxy gate is unchanged, so the
+search stays strictly non-regressing. Setting any `ML_*` env var (e.g.
+`ML_FILTER_OPERATORS=""`) skips the defaults entirely, keeping trace
+collection, shadow diagnostics, and sweeps at their exact prior semantics; a
+missing model file or missing `xgboost` also falls back to the pure-heuristic
+narrow-16 path. Wiring check:
+`test/verification/_verify_ml_filter_wiring.py`. Full design + validation:
+`docs/general/ISSUES.md` S10; conceptual notes: `docs/ml_nn/`.
 
-Baseline numbers are from: [An Updated Assessment of Reinforcement Learning for Macro Placement](https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=11300304)
-
-### Tier 2: OpenROAD Flow Validation (Top Submissions)
-
-The top 7 submissions by proxy score will be evaluated through the full **OpenROAD flow** on NG45 designs to measure real PnR outcomes: **WNS, TNS, and Area**.
-
-- The **Grand Prize ($20K)** is awarded based on best OpenROAD results among these top submissions.
-- To qualify, you must surpass the SA and RePlAce baselines for WNS, TNS, and Area.
-- To avoid overfitting, we will also evaluate on 1-2 hidden NG45 designs.
-
-## 🚀 Quick Start
-
-### Installation 
+How the data is produced:
 
 ```bash
-# Clone the repository
-git clone https://github.com/partcleda/partcl-macro-place-challenge.git
-cd partcl-macro-place-challenge
-
-# Initialize TILOS MacroPlacement submodule (required for evaluation)
-git submodule update --init external/MacroPlacement
-
-# Install the package and all dependencies
-uv sync
-
-# Verify the setup
-uv run evaluate system/v0/greedy_row_placer.py -b ibm01
+# IBM (17 benchmarks) and NG45 (Tier 2) seed sweeps; runs detached for hours.
+scripts/collect_ml_data.sh 42 43 44          # IBM
+scripts/collect_ml_data.sh --ng45 42 43 44   # NG45
 ```
 
-### Run Your First Example
+- The script sets `ML_TRACE_PATH`, so `placer.ml.data_collection.CandidateTrace`
+  writes one JSONL row per local-search candidate trial: pre-score features +
+  `score_gain`/`improves` labels + a `group_id` per decision. `V2_SEED` varies
+  the seed for distinct trajectories.
+- Output lands in `ml_data/traces/*.jsonl.gz` (IBM `s*`, NG45 `ng45_s*`) with
+  per-run logs in `ml_data/logs/`. Load it via `placer.ml.dataset.load_candidates`
+  + `add_group_relevance` (LambdaMART labels).
+- **Tracing changes timing, which changes scores** — these runs are for data
+  only; never read a placement score off a traced run.
+- Current dataset (seeds 42/43/44, IBM + NG45): ~12.6M candidate rows
+  (~1.2 GB). `hard_relocation` is the leanest operator (~190k rows), so the NG45
+  cross-design data matters most for it.
+- Training deps (`xgboost`, `scikit-learn`) are in `requirements.txt`,
+  offline-only — not imported on the submission's inference path. `ml_data/`
+  is large and gitignore-worthy.
+
+## Using the placer outside the challenge (eda_io)
+
+The v2 placer is usable in any physical-design flow via `src/eda_io/` +
+`src/place_design.py`: it accepts standard EDA inputs (**LEF, DEF, structural
+Verilog, SDC, Liberty** — mix freely, minimum is one geometry source + one
+instance source) and emits standard outputs (**updated DEF** with exact
+locations/orientations/PLACED-FIXED flags, **Tcl** sourceable in ICC2 or
+Innovus, **QoR .rpt** with HPWL/legality/proxy breakdown, and the standard
+visualization PNG). Every input combo is merged into one neutral `Design`
+and converted to the ICCAD04 `netlist.pb.txt` + `initial.plc` pair, so the
+unchanged placer and the exact TILOS scorer run on external designs exactly
+as on the challenge benchmarks. SDC raises weights on timing-critical nets
+so critical macros are pulled together; fixed components and DEF blockages
+are honored. Full documentation: [`src/eda_io/README.md`](src/eda_io/README.md).
 
 ```bash
-# Run the greedy row placer on ibm01
-uv run evaluate system/v0/greedy_row_placer.py
-
-# Run on all 17 IBM benchmarks
-uv run evaluate system/v0/greedy_row_placer.py --all
-
-# Run on NG45 commercial designs (ariane133, ariane136, mempool_tile, nvdla)
-uv run evaluate system/v0/greedy_row_placer.py --ng45
-
-# Visualize the result
-uv run evaluate system/v0/greedy_row_placer.py --vis
-uv run evaluate system/v0/greedy_row_placer.py --all --vis
+uv run python src/place_design.py \
+    --lef tech.lef --lef macros.lef --def floorplan.def --sdc top.sdc \
+    --out-def placed.def --out-tcl place.tcl --report qor.rpt
 ```
 
-Running on all benchmarks produces a summary like:
+Tests: `uv run --with pytest python -m pytest test/eda_io/ -v`
+
+## Reproducing the DREAMPlace build (`dreamplace_build/`, gitignored ~500MB)
+
 ```
-Benchmark     Proxy        SA   RePlAce     vs SA  vs RePlAce  Overlaps
-   ibm01    2.0463    1.3166    0.9976    -55.4%     -105.1%         0
-   ibm02    2.0431    1.9072    1.8370     -7.1%      -11.2%         0
-   ...
-     AVG    2.2109    2.1251    1.4578     -4.0%      -51.7%         0
+sudo apt install -y flex bison libboost-all-dev
+# clone DREAMPlace into dreamplace_src/, then:
+cmake .. -DCMAKE_CXX_ABI=1 -DPython_EXECUTABLE=$(which python)
+make -j2 install      # NOT -j$(nproc) — OOM
+sed -i 's/np\.string_/np.bytes_/g' install/dreamplace/PlaceDB.py   # NumPy 2.0
 ```
+The retired routability experiment and vendor-patch notes are summarized in
+`docs/general/ISSUES.md` DP1; the production bridge keeps only the active seed flow.
 
-The greedy placer achieves zero overlaps but makes no attempt to optimize wirelength or connectivity — your job is to do better! See [`SETUP.md`](SETUP.md) for the full API reference and [`system/v0/`](system/v0/) for working examples.
+## Commands
 
-## 🎯 IBM Benchmark Suite (ICCAD04)
-
-We evaluate on the complete ICCAD04 IBM benchmark suite:
-
-| Benchmark | Macros | Nets | Canvas (μm) | Area Util. | SA Baseline | RePlAce Baseline |
-|-----------|--------|------|-------------|------------|-------------|------------------|
-| **ibm01** | 246 | 7,269 | 22.9×23.0 | 42.8% | 1.3166 | **0.9976** ⭐ |
-| **ibm02** | 254 | 7,538 | 23.2×23.5 | 43.1% | 1.9072 | **1.8370** ⭐ |
-| **ibm03** | 269 | 8,045 | 24.1×24.3 | 44.2% | 1.7401 | **1.3222** ⭐ |
-| **ibm04** | 285 | 8,654 | 24.8×25.1 | 44.8% | 1.5037 | **1.3024** ⭐ |
-| **ibm06** | 318 | 9,745 | 26.1×26.5 | 46.1% | 2.5057 | **1.6187** ⭐ |
-| **ibm07** | 335 | 10,328 | 26.8×27.2 | 46.8% | 2.0229 | **1.4633** ⭐ |
-| **ibm08** | 352 | 10,901 | 27.5×27.9 | 47.4% | 1.9239 | **1.4285** ⭐ |
-| **ibm09** | 369 | 11,463 | 28.1×28.5 | 48.0% | 1.3875 | **1.1194** ⭐ |
-| **ibm10** | 387 | 12,018 | 28.8×29.2 | 48.6% | 2.1108 | **1.5009** ⭐ |
-| **ibm11** | 405 | 12,568 | 29.4×29.8 | 49.2% | 1.7111 | **1.1774** ⭐ |
-| **ibm12** | 423 | 13,111 | 30.1×30.5 | 49.8% | 2.8261 | **1.7261** ⭐ |
-| **ibm13** | 441 | 13,647 | 30.7×31.1 | 50.4% | 1.9141 | **1.3355** ⭐ |
-| **ibm14** | 460 | 14,178 | 31.4×31.8 | 51.0% | 2.2750 | **1.5436** ⭐ |
-| **ibm15** | 479 | 14,704 | 32.0×32.4 | 51.6% | 2.3000 | **1.5159** ⭐ |
-| **ibm16** | 498 | 15,225 | 32.7×33.1 | 52.2% | 2.2337 | **1.4780** ⭐ |
-| **ibm17** | 517 | 15,741 | 33.3×33.7 | 52.8% | 3.6726 | **1.6446** ⭐ |
-| **ibm18** | 537 | 16,253 | 34.0×34.4 | 53.4% | 2.7755 | **1.7722** ⭐ |
-
-Each benchmark includes:
-- Hard macros (you place these)
-- Soft macros (you can also place these)
-- Nets connecting all components
-- Initial placement (hand-crafted, serves as reference)
-
-**Baseline Analysis:**
-- RePlAce (⭐) consistently outperforms SA across all benchmarks
-- RePlAce achieves 15-55% lower proxy cost than SA
-- **To qualify for the Grand Prize, your placement must also produce better WNS, TNS, and Area than both baselines when evaluated through the OpenROAD flow on NG45 designs**
-- Both baselines achieve zero overlaps (enforced as hard constraint)
-
-## 💡 Why This Is Hard
-
-Despite "only" 246-537 macros, this problem is extremely challenging:
-
-1. **Massive search space**: ~10^800 possible placements (even with constraints)
-2. **Conflicting objectives**: Wirelength wants clustering, density wants spreading, congestion wants routing space
-3. **Non-convex landscape**: Millions of local minima, discontinuities, plateaus
-4. **Long-range dependencies**: Moving one macro affects costs globally through thousands of nets
-5. **Hard constraints**: No overlaps between heterogeneous sizes (33× size variation)
-6. **Tight packing**: 43-53% area utilization leaves little slack
-7. **Runtime matters**: Must be fast enough to be practical (< 5 minutes ideal)
-
-Classical methods (SA, RePlAce) have been refined for decades but still have room for improvement!
-
-## 📖 Documentation
-
-- **Setup & API Reference**: [`SETUP.md`](SETUP.md) - Infrastructure details, benchmark format, cost computation, testing
-- **Example Submissions**: [`system/v0/`](system/v0/) - Working placer examples
-
-## 📚 References
-
-- **TILOS MacroPlacement**: [GitHub Repository](https://github.com/TILOS-AI-Institute/MacroPlacement)
-  - Source of evaluation infrastructure
-  - ICCAD04 benchmarks
-  - SA and RePlAce baseline implementations
-
-- **ICCAD04 Benchmarks**: Classic macro placement benchmark suite used in academic research
-
-## 🏅 Leaderboard
-
-Submissions are ranked by **average proxy cost** across all 17 IBM benchmarks (lower is better). Zero overlaps required on all benchmarks. Scores are unverified until confirmed by judges.
-
-| Rank | Team | Avg Proxy Cost | Best | Worst | Overlaps | Runtime | Verified |
-|------|------|---------------|------|-------|----------|---------|----------|
-| 1 | "UT Austin" - AS (DREAMPlace Analytical) | **1.4076** | — | — | 0 | 17s/bench | |
-| 2 | "BakaBobo" (Spread+Refine) | **1.4403** | — | — | 0 | 212s/bench | |
-| — | RePlAce (baseline) | **1.4578** | 0.9976 | 1.8370 | 0 | — | :white_check_mark: |
-| 3 | "Convex Optimization" (UWaterloo Student) | **1.4556** | — | — | 0 | 16s total | |
-| 4 | "another Waterloo kid" (Batched Nesterov GP) | **1.4568** | — | — | 0 | 118s/bench | |
-| 5 | "oracleX" (Oracle) | **1.5130** | — | — | 0 | 3min/bench | |
-| 6 | "CA" (congestion_aware) | **1.5238** | — | — | 0 | 13s/bench | |
-| 7 | Will Seed (Partcl) | **1.5338** | 1.1625 | 1.7965 | 0 | 35s total | :white_check_mark: |
-| 8 | "UT Austin" - RH (DREAMPlace) | **1.6037** | — | — | 0 | 4.5s/bench | |
-| 9 | "UT Austin" - CT (PROXYCost) | **1.8706** | — | — | 0 | 187s/bench | |
-| — | SA (baseline) | 2.1251 | 1.3166 | 3.6726 | 0 | — | :white_check_mark: |
-| — | Greedy Row (demo) | 2.2109 | 1.6728 | 2.7696 | 0 | 0.3s total | :white_check_mark: |
-
-*Submit your results via the [Submission Link](https://forms.gle/YDRtYV5Vq68SZgKW9)!*
-
-## 🤔 FAQ
-
-**Q: What benchmarks are used?**
-A: Tier 1 (proxy cost) uses 17 IBM ICCAD04 benchmarks — the standard academic suite with well-established baselines. Tier 2 (OpenROAD flow) uses NG45 commercial designs (ariane133, ariane136, mempool_tile, nvdla) plus 1-2 hidden designs. You can evaluate on both with `--all` (IBM) and `--ng45` (NG45).
-
-**Q: What if I beat one baseline but not the other?**
-A: You must beat BOTH SA and RePlAce baselines on WNS, TNS, and Area to qualify for the Grand Prize. You can still win the Proxy or Innovation prizes regardless.
-
-**Q: Are there hidden test cases?**
-A: All 17 IBM benchmarks for proxy cost ranking are public. The 4 NG45 designs are also public. For the OpenROAD flow evaluation (Tier 2), we will additionally test on 1-2 hidden NG45 designs to ensure generalization.
-
-**Q: What counts as "beating" the baseline?**
-A: For proxy cost (Tier 1), your aggregate score across all IBM benchmarks must be lower than the baselines. For the Grand Prize (Tier 2), your OpenROAD results for WNS, TNS, and Area must surpass both SA and RePlAce baselines on NG45 designs.
-
-## 📧 Contact
-
-- **Issues**: [GitHub Issues](https://github.com/partcleda/partcl-macro-place-challenge/issues)
-- **Email**: contact@partcl.com
-
-## 📄 License
-
-This project is licensed under the Apache License 2.0 - see [LICENSE.md](LICENSE.md) for details.
-
-## Competition Updates
-
-The organizers may update or clarify rules, evaluation details, timelines, prizes, or infrastructure as needed to ensure fairness, technical accuracy, and smooth operation of the competition. Any updates will be communicated through official channels and will apply going forward.
-
-Participation in the competition constitutes acceptance of the current rules and any subsequent updates. The organizers’ decisions regarding scoring, eligibility, and interpretation of these rules are final.
-
-Submissions & contact information may be shared with sponsors.
+```bash
+uv run evaluate src/main.py -b ibm04      # single benchmark
+uv run evaluate src/main.py --all         # headline (~39 min)
+uv run python scripts/compare_placers.py system/v1/placer.py src/main.py
+uv run python test/verification/_verify_score_move.py
+```

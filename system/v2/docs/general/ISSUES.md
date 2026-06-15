@@ -48,6 +48,47 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ## Current issues and shipped context
 
+### S20. Macro-hierarchy awareness — full investigation (2026-06-15)
+
+Goal: keep connected subsystems together rather than sprayed out. Outcome:
+**hierarchy and the congestion-dominated proxy are fundamentally opposed** — the
+proxy rewards SPREAD, so any hierarchy-respecting (compact) layout costs proxy.
+This is the objective, not a tuning gap. Key results:
+
+- **Two index spaces (the trap).** Placement space A (`i∈[0,n)` =
+  `hard_macro_indices[i]`) vs `modules_w_pins`/`wl_cache` space B (ports first,
+  then hard, then soft). Filtering `ref_idx < n` clusters PORTS, not hard
+  macros. Correct hard clusters need a weighted hard-hard graph with
+  `min_edge>=2` (else one blob). See `local_search/clusters.py`.
+- **Cluster-coherent LSMC kick (S18): noise.** With correct clusters, paired
+  `--all` is within the ~±0.012 run-to-run noise (one run +0.0106, next −0.0145;
+  OFF alone swings 1.1201↔1.1327). Closeness effect also at noise. The kick is a
+  LATE, proxy-gated move: it only changes the result if a clustered config beats
+  the refined incumbent on proxy — which clustering rarely does. Self-defeating
+  for hierarchy. **Recommend kick default OFF** (still env-gated ON from b8d8d7c).
+- **DP soft grouping works structurally.** Clique-nets per cluster in Bookshelf
+  (`pb_to_bookshelf.py`, env `V2_DP_GROUP`) tighten raw DP output monotonically:
+  ibm10 hard↔hard 0.0190→0.0147, intra 0.0410→0.0250 as weight 0→16. But the
+  grouped DP candidate is competitive-not-winning (~1.38) so it doesn't shape the
+  final placement on its own.
+- **Legalization destroys grouping; order recovers ~half (free).** Making the
+  grouped DP overlap-free scatters it (ibm10 hh 0.019→0.080 default order).
+  **Cluster-consecutive order** (each cluster's members back-to-back) recovers
+  ~42% (hh→0.046, intra→0.057), no legalizer change (the `order` param). Centroid
+  anchoring added nothing.
+
+**Deliverable — hierarchy-floorplan mode (`V2_HIER_FLOORPLAN=1`, default OFF).**
+A NON-proxy output: grouped DP (clusters + their connected softs) →
+cluster-consecutive legalize (+ default-order safety pass for validity) →
+soft-only cleanup (hard untouched → hierarchy preserved). All VALID. Proxy cost
+scales with hierarchy structure: ibm01 ~1.02 (+0.10), ibm10 ~1.82 (+0.74),
+ibm17 ~2.52 (+1.17, has a 351-macro cluster). Knobs: `V2_HIER_GROUP_WEIGHT` (8),
+`V2_CLUSTER_MIN_EDGE` (2), `V2_CLUSTER_MAX_FANOUT` (8). `_hierarchy_floorplan` in
+`pipeline/macro_placer.py`; verified `test/verification/_verify_hier_floorplan.py`;
+diagnostics `_cluster_closeness.py`, `_dp_group_closeness.py`, `_hier_tradeoff.py`,
+`_legalize_order_probe.py`. **Use only when hierarchy is the goal, never for the
+leaderboard score.**
+
 ### S19. DREAMPlace was silently dead since the restructure (FIXED 2026-06-15)
 
 After the 2026-06-11 repo restructure, `system/dreamplace_build/install/
