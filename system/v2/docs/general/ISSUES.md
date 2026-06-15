@@ -50,6 +50,45 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ## Open issues
 
+### S18. Cluster-coherent LSMC kicks — macro-hierarchy awareness (SHIPPED 2026-06-14)
+
+**What:** the LSMC kick now optionally moves a derived connectivity *cluster*
+as a unit instead of scattering random hard macros. Communities are inferred
+from the netlist because the user asked to keep connected subsystems together.
+
+**Key finding:** these flat ICCAD04 netlists have almost no hard-to-hard nets
+(ibm01: **0** nets with ≥2 hard pins; ibm10: 4) — hard macros talk to standard
+cells, which talk to other hard macros. So clusters are derived by union-find
+over **low-fanout nets through the bipartite hard↔soft graph**
+(`local_search/clusters.py`, cached on plc). Coverage is sparse: ~8–22% of hard
+macros cluster, groups of 2–9, many spread >50% of the canvas diagonal.
+
+**Kick modes** (`_cluster_kick` in `lsmc_explore.py`): `gather` (seed all
+members at one anchor, legalizer packs them — directly tests "keep them
+together"), `translate` (rigid relocate preserving arrangement), `both`
+(per-kick random pick). The exact post-descent accept gate is unchanged, so a
+cluster kick can never *commit* a worse placement — it only changes which basins
+are explored. Kicks fall back to random when no cluster is available.
+
+**Why it's safe vs the standing "clustering hurts congestion" warning:** the
+disproven experiments (WireMask greedy, optimize_stdcells, net-centroid hard
+bias) *forced* clustering. This only *proposes* it behind the exact gate; the
+kept moves actually *reduce* congestion (it's the term that drops in every win).
+
+**Evidence:** phase-isolation harness (`V2_LSMC_ISOLATE=1`, same incumbent /
+seed / budget) — cluster kicks beat random **6/6** benchmarks, −0.0053 avg.
+Paired multi-seed `--all` ON (p=1.0, both) vs OFF — **3/3 seeds**, mean
+1.1206→1.1183 (−0.0023), 0 regressions, all 17/17 VALID. Seed 0 was a favorable
+draw (−0.0054); steady-state ~−0.0008/seed. Shipped as default in `src/main.py`
+(`_enable_cluster_kick_defaults`), overridable via `V2_GPU_EXPLORE_CLUSTER_P`
+(0 disables), `V2_GPU_EXPLORE_CLUSTER_MODE`, `V2_CLUSTER_MAX_FANOUT`. Verified:
+`test/verification/_verify_cluster_kick.py`.
+
+**Open follow-ups (higher ceiling, not started):** cluster-outlier *relocation*
+move (pull a macro far from its cluster centroid toward a cold region, gated by
+proxy); feed derived clusters into the DREAMPlace seed as soft grouping. Both
+are larger efforts; the marginal `--all` gain from kicks alone is small.
+
 ### S17. GPU / LSMC staged rollout — current work is generic multi-incumbent LSMC
 
 **Current state (2026-06-14):** cong-grad phases have been deleted from the

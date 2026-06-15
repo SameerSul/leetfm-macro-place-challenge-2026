@@ -1277,6 +1277,50 @@ class MacroPlacer:
                     except Exception:
                         pass
 
+        # LSMC phase isolation harness (diagnostic, opt-in via V2_LSMC_ISOLATE).
+        # Runs LSMC from the IDENTICAL post-R2 incumbent under several cluster-kick
+        # configs with the same seed and time budget, so the kick variants can be
+        # compared without the deadline-gated R2 timing confound. Logs per-variant
+        # deltas, keeps the best result, then skips the normal LSMC block.
+        if os.environ.get("V2_LSMC_ISOLATE"):
+            iso_s = float(os.environ.get("V2_LSMC_ISOLATE_S", "30.0"))
+            snap_pl = best_pl.detach().cpu().clone()
+            snap_score = float(best_score)
+            variants = [("off", "0.0", "gather"),
+                        ("gather", "1.0", "gather"),
+                        ("translate", "1.0", "translate")]
+            _prev_p = os.environ.get("V2_GPU_EXPLORE_CLUSTER_P")
+            _prev_m = os.environ.get("V2_GPU_EXPLORE_CLUSTER_MODE")
+            _log(f"  LSMC ISOLATE from incumbent {snap_score:.4f}  {iso_s:.0f}s/variant")
+            for _vn, _vp, _vm in variants:
+                os.environ["V2_GPU_EXPLORE_CLUSTER_P"] = _vp
+                os.environ["V2_GPU_EXPLORE_CLUSTER_MODE"] = _vm
+                float(_exact_proxy(snap_pl, benchmark, plc))  # restore plc to incumbent
+                _iso_pl, _iso_score, _iso_it, _iso_ac = _lsmc_explore(
+                    snap_pl, snap_score, benchmark, plc, _exact_proxy,
+                    sizes, hw, hh, cw, ch, movable, n,
+                    time_budget_s=iso_s, log=None,
+                    soft_hw=soft_hw, soft_hh=soft_hh,
+                    soft_movable=_soft_movable, n_soft=_n_soft,
+                )
+                _log(f"  ISOLATE[{_vn:9s}] {snap_score:.4f} -> {_iso_score:.4f} "
+                     f"(d={_iso_score - snap_score:+.4f}, {_iso_ac}/{_iso_it})")
+                if _iso_score < best_score - 1e-6:
+                    best_pl, best_score = _iso_pl, _iso_score
+            if _prev_p is None:
+                os.environ.pop("V2_GPU_EXPLORE_CLUSTER_P", None)
+            else:
+                os.environ["V2_GPU_EXPLORE_CLUSTER_P"] = _prev_p
+            if _prev_m is None:
+                os.environ.pop("V2_GPU_EXPLORE_CLUSTER_MODE", None)
+            else:
+                os.environ["V2_GPU_EXPLORE_CLUSTER_MODE"] = _prev_m
+            float(_exact_proxy(best_pl, benchmark, plc))  # leave plc on the kept result
+            _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
+            self._total_place_time_s += time.monotonic() - t0
+            self._benchmarks_done += 1
+            return best_pl
+
         # LSMC exploration (GPU-ops.md Stage 2a) - opt-in via V2_GPU_EXPLORE.
         # Final quality phase: kicks from the fully-refined optimum and accepts
         # on exact post-descent score. Earlier placements (pre-R2, pre-post-soft)

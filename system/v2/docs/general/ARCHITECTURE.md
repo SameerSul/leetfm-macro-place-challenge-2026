@@ -380,7 +380,14 @@ is already locally refined:
 
 1. Select one of the generic seed placements: baseline, random-noise restart,
    random-order legalize, pre-R2 best, or post-R2 best.
-2. Apply a random large-step kick to a small fraction of movable hard macros.
+2. Apply a large-step kick. By default (shipped 2026-06-14) this is a
+   **cluster-coherent kick** (`V2_GPU_EXPLORE_CLUSTER_P=1.0`): pick a derived
+   connectivity cluster and move it as a unit — `gather` (collapse members to
+   one anchor, the legalizer then packs them) or `translate` (rigid relocate),
+   chosen per kick in `both` mode. Clusters are inferred via union-find over the
+   bipartite hard↔soft graph (`local_search/clusters.py`) because hard macros
+   barely connect directly. Falls back to a random per-macro kick when no
+   cluster is available. See ISSUES.md S18.
 3. Legalize the kicked hard placement.
 4. Build a fresh `IncrementalScorer` on the kicked state.
 5. Descend through hard relocation by congestion/density and soft relocation by
