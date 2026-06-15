@@ -19,6 +19,7 @@ import numpy as np
 import torch
 
 from placer.legalize.spiral import _will_legalize
+from placer.local_search.clusters import cluster_max_fanout, derive_hard_clusters
 from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
 from placer.scoring.incremental import IncrementalScorer
 
@@ -59,6 +60,71 @@ def _kick(
     kicked[picks, 0] = rng.uniform(hw[picks], cw - hw[picks])
     kicked[picks, 1] = rng.uniform(hh[picks], ch - hh[picks])
     return _will_legalize(kicked, movable, sizes, hw, hh, cw, ch, n, deadline=deadline)
+
+
+def _cluster_kick(
+    hard_xy: np.ndarray,
+    sizes: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    cw: float,
+    ch: float,
+    movable: np.ndarray,
+    n: int,
+    clusters: "dict[int, np.ndarray]",
+    rng: np.random.Generator,
+    deadline: float,
+    mode: str = "gather",
+) -> "np.ndarray | None":
+    """Kick one connectivity cluster as a unit, then legalize.
+
+    Picks a random cluster of >= 2 movable members and either:
+      - "gather": seed all members at one random in-bounds anchor (with tiny
+        jitter); the legalizer's nearest-free-cell search then packs them into a
+        compact blob — directly testing "keep connected macros together".
+      - "translate": apply one feasible rigid (dx, dy) so the subsystem's current
+        internal arrangement is preserved and relocated as a whole.
+      - "both": pick gather or translate at random for this kick.
+    Legalization resolves overlap with the rest of the chip; the LSMC exact
+    post-descent gate decides whether the result is kept. Returns None when no
+    usable cluster is available, so the caller falls back to the random kick.
+    """
+    if not clusters:
+        return None
+    if mode == "both":
+        mode = "translate" if rng.random() < 0.5 else "gather"
+    cluster_ids = list(clusters.keys())
+    rng.shuffle(cluster_ids)
+    for cid in cluster_ids:
+        members = clusters[cid]
+        members = members[movable[members]]
+        if members.size < 2:
+            continue
+        x = hard_xy[members, 0]
+        y = hard_xy[members, 1]
+        kicked = hard_xy.copy()
+        if mode == "translate":
+            # Feasible rigid translation: keep every member within [hw, cw-hw].
+            tx_lo = float(np.max(hw[members] - x))
+            tx_hi = float(np.min((cw - hw[members]) - x))
+            ty_lo = float(np.max(hh[members] - y))
+            ty_hi = float(np.min((ch - hh[members]) - y))
+            if tx_hi < tx_lo or ty_hi < ty_lo:
+                continue
+            kicked[members, 0] = x + rng.uniform(tx_lo, tx_hi)
+            kicked[members, 1] = y + rng.uniform(ty_lo, ty_hi)
+        else:
+            # Gather: seed all members at one anchor; legalize packs them tight.
+            mhw = float(hw[members].max())
+            mhh = float(hh[members].max())
+            ax = rng.uniform(mhw, cw - mhw)
+            ay = rng.uniform(mhh, ch - mhh)
+            kicked[members, 0] = np.clip(ax + rng.normal(0.0, mhw, members.size),
+                                         hw[members], cw - hw[members])
+            kicked[members, 1] = np.clip(ay + rng.normal(0.0, mhh, members.size),
+                                         hh[members], ch - hh[members])
+        return _will_legalize(kicked, movable, sizes, hw, hh, cw, ch, n, deadline=deadline)
+    return None
 
 
 def _lsmc_explore(
@@ -107,6 +173,23 @@ def _lsmc_explore(
     chains = max(1, int(os.environ.get("V2_GPU_EXPLORE_CHAINS", "1")))
     per_chain_s = time_budget_s / chains
 
+    # Cluster-coherent kicks: with probability cluster_p, kick a whole derived
+    # connectivity cluster as a rigid unit instead of scattering random macros.
+    # Default off (prototype, env-gated). The exact post-descent gate is
+    # unchanged, so this only changes which basins are explored.
+    cluster_p = float(os.environ.get("V2_GPU_EXPLORE_CLUSTER_P", "0.0"))
+    cluster_mode = os.environ.get("V2_GPU_EXPLORE_CLUSTER_MODE", "gather").strip().lower()
+    clusters: "dict[int, np.ndarray]" = {}
+    if cluster_p > 0.0:
+        try:
+            _, clusters = derive_hard_clusters(
+                plc, n, n_soft=n_soft, max_fanout=cluster_max_fanout()
+            )
+        except Exception:
+            clusters = {}
+        if log:
+            log(f"  LSMC cluster kicks: p={cluster_p} clusters={len(clusters)}")
+
     start_pl, start_score = best_pl, best_score
     iters = 0
     accepts = 0
@@ -125,8 +208,14 @@ def _lsmc_explore(
             kick_score = float("inf")
             cand = c_best_pl.clone()
             for _b in range(prescreen):
-                trial = _kick(hard_xy, sizes, hw, hh, cw, ch, movable, n,
-                              kick_ratio, rng, deadline=wall)
+                trial = None
+                if clusters and rng.random() < cluster_p:
+                    trial = _cluster_kick(hard_xy, sizes, hw, hh, cw, ch,
+                                          movable, n, clusters, rng, deadline=wall,
+                                          mode=cluster_mode)
+                if trial is None:
+                    trial = _kick(hard_xy, sizes, hw, hh, cw, ch, movable, n,
+                                  kick_ratio, rng, deadline=wall)
                 t_ks = time.monotonic()
                 cand[:n, 0] = torch.tensor(trial[:, 0], dtype=torch.float32)
                 cand[:n, 1] = torch.tensor(trial[:, 1], dtype=torch.float32)
