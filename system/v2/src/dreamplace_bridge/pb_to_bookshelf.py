@@ -81,8 +81,18 @@ def extract_bookshelf_data(
     soft_macros_movable: bool = False,
     port_size: float = 1.0,
     scale: int = 1000,
+    cluster_groups: "Optional[List[List[str]]]" = None,
+    group_weight: int = 0,
 ) -> Tuple[List[BookshelfNode], List[BookshelfNet], float, float, int]:
-    """Extract scaled Bookshelf data from a parsed TILOS placement."""
+    """Extract scaled Bookshelf data from a parsed TILOS placement.
+
+    When `cluster_groups` (lists of TILOS hard-macro names) and `group_weight>0`
+    are given, append `group_weight` synthetic clique nets per cluster. These
+    extra nets add weighted bounding-box HPWL over each subsystem, so DREAMPlace
+    softly keeps connected macros together. They carry no real pins/offsets and
+    are ignored on readback (which maps by macro name only). DREAMPlace's
+    `ignore_net_degree` skips clusters larger than that cap automatically.
+    """
     canvas_w, canvas_h = plc.get_canvas_width_height()
 
     nodes: List[BookshelfNode] = []
@@ -192,6 +202,23 @@ def extract_bookshelf_data(
         if len(bs_net.pins) >= 2:
             nets.append(bs_net)
 
+    # Synthetic cluster-grouping nets: one clique net per cluster, duplicated
+    # group_weight times to scale its pull. Members are TILOS names mapped to
+    # Bookshelf node names; unresolved names are skipped.
+    if cluster_groups and group_weight > 0:
+        for gi, member_names in enumerate(cluster_groups):
+            mbs = [tilos_to_bookshelf[m] for m in member_names
+                   if m in tilos_to_bookshelf]
+            if len(mbs) < 2:
+                continue
+            for k in range(int(group_weight)):
+                net_idx += 1
+                g_net = BookshelfNet(name=f"grp{gi}_{k}")
+                g_net.pins.append(BookshelfNetPin(mbs[0], "O", 0.0, 0.0))
+                for m in mbs[1:]:
+                    g_net.pins.append(BookshelfNetPin(m, "I", 0.0, 0.0))
+                nets.append(g_net)
+
     return nodes, nets, float(canvas_w) * scale, float(canvas_h) * scale, scale
 
 
@@ -266,7 +293,9 @@ def _write_scl(out_dir: Path, design: str, canvas_w: float, canvas_h: float,
 
 def convert(benchmark_dir: str, output_dir: str, design: Optional[str] = None,
             soft_macros_movable: bool = False,
-            plc: Optional[PlacementCost] = None) -> Path:
+            plc: Optional[PlacementCost] = None,
+            cluster_groups: "Optional[List[List[str]]]" = None,
+            group_weight: int = 0) -> Path:
     """Convert a TILOS benchmark dir to Bookshelf and return the .aux path."""
     benchmark_dir = Path(benchmark_dir).resolve()
     output_dir = Path(output_dir).resolve()
@@ -286,7 +315,8 @@ def convert(benchmark_dir: str, output_dir: str, design: Optional[str] = None,
             plc.restore_placement(str(plc_file), ifInital=True, ifReadComment=True)
 
     nodes, nets, cw, ch, scale = extract_bookshelf_data(
-        plc, soft_macros_movable=soft_macros_movable
+        plc, soft_macros_movable=soft_macros_movable,
+        cluster_groups=cluster_groups, group_weight=group_weight,
     )
 
     print(f"  benchmark={benchmark_dir.name}: {len(nodes)} nodes "

@@ -88,7 +88,7 @@ Congestion dominates by ~30x. Optimizing WL alone reliably increases proxy cost.
 ### Phase pipeline (per benchmark call)
 
 1. Load seed -- read `initial.plc`, legalize hard-macro overlaps.
-2. DP variants -- async DREAMPlace candidates are launched when the bridge is available; they are scored as ordinary candidates only.
+2. DP variants -- async DREAMPlace candidates are launched when the bridge is available; they are scored as ordinary candidates only. `V2_DP_GROUP` can add one grouped DP variant with synthetic cluster nets.
 3. Random restarts -- Gaussian perturbations of initial hard positions, legalize, exact-score.
 4. Phase 9 -- 3 random-order legalization trials.
 5. R2 -- multi-round local refinement:
@@ -98,7 +98,7 @@ Congestion dominates by ~30x. Optimizing WL alone reliably increases proxy cost.
    - soft-soft, hard-soft, and hard-soft-soft swaps/cycles
    - 2-opt: pairwise swap accepting proxy improvements
 6. Post-R2 soft relocation -- leftover soft congestion/density cleanup.
-7. LSMC final exploration -- random hard-macro kick, legalize, descend with hard/soft moves, accept only exact post-descent improvement.
+7. LSMC final exploration -- cluster-coherent or random hard-macro kick, legalize, descend with hard/soft moves, accept only exact post-descent improvement.
 
 The congestion-gradient spine, DP-rescue chains, TOP-K cong-grad, and multi-seed
 2-opt phase are no longer part of the active pipeline. LSMC seed collection is
@@ -164,9 +164,8 @@ congestion/density feature lookups consolidated into a `TraceFields` helper in
 ~110 lines of trace boilerplate. (b) The 7×-duplicated pairwise separation matrices
 deduped into `geometry.separation_matrices`. (c) `place()`'s budget math and
 DREAMPlace-launch block extracted into the `_effective_budget()` and
-`_launch_dreamplace_seeds()` methods (the cong-grad phase descent kept inline — its
-mutable `best_*`/RNG state makes extraction disproportionately risky). pyflakes now
-clean across `src`. NB: ibm01's single-bench score is timing-sensitive
+`_launch_dreamplace_seeds()` methods. pyflakes now clean across `src`. NB:
+ibm01's single-bench score is timing-sensitive
 (0.9084–0.9094 by wall-time, deadline-gated R2), so non-degradation was confirmed at
 the `--all` aggregate, not by single-benchmark bit-identity.
 
@@ -184,11 +183,12 @@ The placer is invoked once per benchmark via `MacroPlacer.place(benchmark) →
 torch.Tensor[num_macros, 2]`. Internally, `place()` runs the following pipeline:
 
 The pipeline is **a single sequential spine** with one genuinely concurrent
-branch: DREAMPlace is launched as up to 3 subprocesses at `place()` entry and
-harvested before random restarts. DREAMPlace outputs are scored as ordinary
-candidates; they are not retained as later LSMC seed basins. Everything else runs
-in order on the main thread, except Phase 9 legalization trials, which may run in
-a small thread pool before sequential exact scoring.
+branch: DREAMPlace is launched as up to 3 subprocesses at `place()` entry, plus
+one optional grouped-DP subprocess when `V2_DP_GROUP` is enabled. DREAMPlace
+outputs are harvested before random restarts and scored as ordinary candidates;
+they are not retained as later LSMC seed basins. Everything else runs in order on
+the main thread, except Phase 9 legalization trials, which may run in a small
+thread pool before sequential exact scoring.
 
 ```
    ┌──────────────────────────────────────────────────────────────────────┐
@@ -201,6 +201,7 @@ a small thread pool before sequential exact scoring.
             │                          │  DREAMPlace ×3  (subprocess,          │
             │                          │  runs concurrently with the spine)    │
             │                          │  lo-fix / hi-mov / hi-fix configs     │
+            │                          │  + optional grouped-DP candidate      │
             │                          │  legalize + exact-score as candidates │
             │                          └───────────────────────────────────────┘
             ▼                                                           │
@@ -290,12 +291,12 @@ Everything above runs inside a single per-benchmark budget
 | Phase | What it does | Why |
 |---|---|---|
 | **0 Baseline** | Legalize from `initial.plc` via `_will_legalize` (vectorized greedy spiral) | Establish a valid baseline; preserve the hand-tuned spread |
-| **DREAMPlace ×3 (async)** | Launch DP at `place()` entry in 3 configs (lo-fix, hi-mov, hi-fix); legalize and exact-score completed outputs | Add independent candidate placements without blocking the main spine |
+| **DREAMPlace ×3 (async)** | Launch DP at `place()` entry in 3 configs (lo-fix, hi-mov, hi-fix); `V2_DP_GROUP` can add a grouped variant with synthetic cluster nets; legalize and exact-score completed outputs | Add independent candidate placements without blocking the main spine |
 | **Noise restarts** | Inline (sequential) random Gaussian perturbations of `initial.plc`, ~24 fracs spanning 1%–25%, accept-on-true-proxy | Broad basin-hopping around the hand-tuned seed; fills budget between the directed phases |
 | **9 random-order legalize** | N=3 trials with randomized secondary-sort key in `_will_legalize` | Different legalization arrangements from the same starting positions |
 | **R2 interleave (≤20 budget-gated rounds)** | Hard reloc ⇄ soft-cong reloc ⇄ soft-density reloc ⇄ 2-opt cleanup plus soft/hard-soft swaps and cycles | The dominant lever — see § 2.3 |
 | **Post-R2 soft relocation** | Short leftover-budget soft relocation by congestion then density | Clean up soft macro placement after the main R2 loop saturates |
-| **LSMC final exploration** | For generic seed pool, random hard kick → legalize → hard/soft descent → exact accept | Basin exploration without bridge/cong-grad coupling; final exact gate prevents accepted regressions |
+| **LSMC final exploration** | For generic seed pool, cluster-coherent or random hard kick → legalize → hard/soft descent → exact accept | Basin exploration without bridge/cong-grad coupling; final exact gate prevents accepted regressions |
 
 > **Historical phase numbers.** Some older notes refer to phases 1-8 and
 > multi-seed 2-opt. Those were experimental labels, not a required sequence.
@@ -369,8 +370,8 @@ float32 for the subtraction (the Python-scalar-meets-numpy-scalar rule), so
 ties between symmetric ring candidates are broken at float32 precision. The
 vectorized version must cast its candidate arrays to `float32` **before** the
 subtraction — otherwise the float64 ties pick a different ring direction, and
-ibm04 (where the tie-break matters for the cong-grad trajectory) lands at
-1.3364 instead of 1.3316.
+ibm04 (where the tie-break historically affected the retired cong-grad
+trajectory) landed at 1.3364 instead of 1.3316.
 
 ### 5.2 LSMC final exploration (`_lsmc_explore`)
 
@@ -380,14 +381,15 @@ is already locally refined:
 
 1. Select one of the generic seed placements: baseline, random-noise restart,
    random-order legalize, pre-R2 best, or post-R2 best.
-2. Apply a large-step kick. By default (shipped 2026-06-14) this is a
-   **cluster-coherent kick** (`V2_GPU_EXPLORE_CLUSTER_P=1.0`): pick a derived
-   connectivity cluster and move it as a unit — `gather` (collapse members to
-   one anchor, the legalizer then packs them) or `translate` (rigid relocate),
-   chosen per kick in `both` mode. Clusters are inferred via union-find over the
-   bipartite hard↔soft graph (`local_search/clusters.py`) because hard macros
-   barely connect directly. Falls back to a random per-macro kick when no
-   cluster is available. See ISSUES.md S18.
+2. Apply a large-step kick. Through `src/main.py`, cluster-coherent kicks are the
+   default (`V2_GPU_EXPLORE_CLUSTER_P=1.0`, `MODE=both`) unless the caller
+   overrides them. Direct pipeline imports default to random per-macro kicks. A
+   cluster kick picks a derived connectivity cluster and moves it as a unit:
+   `gather` collapses members toward one anchor before legalization, while
+   `translate` rigidly relocates the group. Clusters are inferred from low-fanout
+   hard-macro connectivity in `local_search/clusters.py`; connected soft macros
+   can be co-moved and clipped before descent. This remains independent of LSMC
+   seed selection and the retired cong-grad machinery.
 3. Legalize the kicked hard placement.
 4. Build a fresh `IncrementalScorer` on the kicked state.
 5. Descend through hard relocation by congestion/density and soft relocation by

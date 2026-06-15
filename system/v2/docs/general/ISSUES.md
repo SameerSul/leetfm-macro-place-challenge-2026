@@ -1,11 +1,9 @@
-# Open issues — v2 placer (last revised 2026-06-12)
+# Open issues and recent shipped items — v2 placer (last revised 2026-06-15)
 
-This is a **clean rewrite**. All issues that have been resolved or
-rejected have been removed; their findings are captured in commit
-messages and in PROGRESS.md. This file now tracks **only what's
-open**: known gaps in the current placer, speculative score ideas that
-haven't been tried, and follow-up work that's been queued but not
-started.
+This file tracks current gaps, speculative score ideas, follow-up work, and a
+small number of recent shipped items that still explain active knobs. Older
+resolved or rejected findings are primarily captured in commit messages and
+`PROGRESS.md`.
 
 ---
 
@@ -48,7 +46,7 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ---
 
-## Open issues
+## Current issues and shipped context
 
 ### S18. Cluster-coherent LSMC kicks — macro-hierarchy awareness (SHIPPED 2026-06-14)
 
@@ -81,23 +79,26 @@ Paired multi-seed `--all` ON (p=1.0, both) vs OFF — **3/3 seeds**, mean
 1.1206→1.1183 (−0.0023), 0 regressions, all 17/17 VALID. Seed 0 was a favorable
 draw (−0.0054); steady-state ~−0.0008/seed. Shipped as default in `src/main.py`
 (`_enable_cluster_kick_defaults`), overridable via `V2_GPU_EXPLORE_CLUSTER_P`
-(0 disables), `V2_GPU_EXPLORE_CLUSTER_MODE`, `V2_CLUSTER_MAX_FANOUT`. Verified:
-`test/verification/_verify_cluster_kick.py`.
+(0 disables), `V2_GPU_EXPLORE_CLUSTER_MODE`, `V2_GPU_EXPLORE_CLUSTER_MAXSZ`,
+`V2_GPU_EXPLORE_CLUSTER_SOFT`, `V2_CLUSTER_MAX_FANOUT`, and
+`V2_CLUSTER_MIN_EDGE`. Verified: `test/verification/_verify_cluster_kick.py`.
 
-**Open follow-ups (higher ceiling, not started):** cluster-outlier *relocation*
-move (pull a macro far from its cluster centroid toward a cold region, gated by
-proxy); feed derived clusters into the DREAMPlace seed as soft grouping. Both
-are larger efforts; the marginal `--all` gain from kicks alone is small.
+**Open follow-ups (higher ceiling):** cluster-outlier *relocation* move (pull a
+macro far from its cluster centroid toward a cold region, gated by proxy). A
+grouped DREAMPlace variant now exists behind `V2_DP_GROUP`; it should remain
+treated as an env-gated candidate source until paired evidence justifies any
+default change. The marginal `--all` gain from kicks alone is small.
 
-### S17. GPU / LSMC staged rollout — current work is generic multi-incumbent LSMC
+### S17. LSMC staged rollout — current work is generic multi-incumbent LSMC
 
-**Current state (2026-06-14):** cong-grad phases have been deleted from the
-active pipeline, and LSMC is the remaining GPU-backed final exploration layer.
-The active LSMC expansion is intentionally generic: it seeds from legalized
-baseline, random-noise restarts, random-order legalize trials, pre-R2 best, and
-post-R2 best. It does **not** use DREAMPlace/bridge-specific placements as LSMC
-seeds and does **not** use cong-grad-derived kicks or seed sources. The exact
-post-descent accept gate remains the safety invariant.
+**Current state (2026-06-15):** cong-grad phases have been deleted from the
+active pipeline, and LSMC is the remaining final exploration layer. The active
+LSMC expansion is intentionally generic: it seeds from legalized baseline,
+random-noise restarts, random-order legalize trials, pre-R2 best, and post-R2
+best. It does **not** use DREAMPlace/bridge-specific placements as LSMC seeds
+and does **not** use cong-grad-derived kicks or seed sources. Normal
+`src/main.py` runs enable cluster-coherent kicks by default, with random-kick
+fallback and the same exact post-descent accept gate.
 
 **Next LSMC improvement methods:** update and gate one at a time:
 - seed-pool calibration (`V2_GPU_EXPLORE_MAX_SEEDS`, `SEED_MARGIN`, and per-seed
@@ -150,8 +151,9 @@ experiments. The old island/multi-GPU framing is retired; target hardware is one
 GPU, and extra chains mean either serial budget splits or a future one-device
 batch dimension.
 
-Plan of record: `docs/gpu/GPU-ops.md` (cuda_delta-based LSMC exploration on one
-GPU, generic multi-incumbent scheduling, evidence-gated LSMC-only changes).
+Plan of record: `docs/gpu/GPU-ops.md` (serial exact-gated LSMC exploration,
+generic multi-incumbent scheduling, cluster-coherent kicks, and evidence-gated
+LSMC-only changes; batched CUDA descent remains dormant).
 
 **Stage 0 (done 2026-06-11):** re-baseline avg **1.1243**, 17/17 VALID, 2679s
 (noise-equivalent to the 1.1252 record). CUDA diagnostic PASS (parity 1.541e-07);

@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "system" / "v2" / "src"))
 import numpy as np
 
 from macro_place.loader import load_benchmark_from_dir
-from placer.local_search.clusters import derive_hard_clusters
+from placer.local_search.clusters import derive_cluster_softs, derive_hard_clusters
 from placer.local_search.lsmc_explore import _cluster_kick
 
 BENCHES = ["ibm01", "ibm04", "ibm10"]
@@ -52,14 +52,24 @@ def _check(bench):
         assert not (ms & seen), "clusters overlap"
         seen |= ms
 
-    # 3. kick legality across modes + seeds.
+    # Soft co-move inputs.
+    soft_sizes = benchmark.macro_sizes.detach().cpu().numpy().astype(np.float64)[n:n + n_soft]
+    soft_hw = soft_sizes[:, 0] / 2.0
+    soft_hh = soft_sizes[:, 1] / 2.0
+    soft_xy = benchmark.macro_positions.detach().cpu().numpy().astype(np.float64)[n:n + n_soft]
+    cluster_softs = derive_cluster_softs(plc, n, n_soft, labels_a)
+
+    # 3. kick legality across modes + seeds (with soft co-move).
     for mode in ("gather", "translate", "both"):
         for s in range(20):
             rng = np.random.default_rng(s)
-            out = _cluster_kick(hard_xy, sizes, hw, hh, cw, ch, movable, n,
-                                clusters_a, rng, deadline=float("inf"), mode=mode)
-            if out is None:
+            res = _cluster_kick(hard_xy, sizes, hw, hh, cw, ch, movable, n,
+                                clusters_a, rng, deadline=float("inf"), mode=mode,
+                                soft_xy=soft_xy, soft_hw=soft_hw, soft_hh=soft_hh,
+                                cluster_softs=cluster_softs)
+            if res is None:
                 continue
+            out, out_soft = res
             assert np.all(out[:, 0] >= hw - TOL) and np.all(out[:, 0] <= cw - hw + TOL), \
                 f"{mode} x out of bounds"
             assert np.all(out[:, 1] >= hh - TOL) and np.all(out[:, 1] <= ch - hh + TOL), \
@@ -72,8 +82,20 @@ def _check(bench):
             ok = sep_x | sep_y
             np.fill_diagonal(ok, True)
             assert ok.all(), f"{mode} produced overlapping hard macros (seed {s})"
+            if out_soft is not None:
+                # Only co-moved softs (changed vs incumbent) must be in bounds;
+                # untouched softs keep their incumbent centers verbatim.
+                moved = np.any(np.abs(out_soft - soft_xy) > TOL, axis=1)
+                m = out_soft[moved]
+                assert np.all(m[:, 0] >= soft_hw[moved] - TOL) and \
+                    np.all(m[:, 0] <= cw - soft_hw[moved] + TOL), f"{mode} soft x oob"
+                assert np.all(m[:, 1] >= soft_hh[moved] - TOL) and \
+                    np.all(m[:, 1] <= ch - soft_hh[moved] + TOL), f"{mode} soft y oob"
+                assert np.allclose(out_soft[~moved], soft_xy[~moved]), \
+                    f"{mode} mutated untouched softs"
 
-    print(f"{bench}: OK  clusters={len(clusters_a)} clustered={int((labels_a >= 0).sum())}/{n}")
+    print(f"{bench}: OK  clusters={len(clusters_a)} clustered={int((labels_a >= 0).sum())}/{n} "
+          f"cluster_softs={sum(len(v) for v in cluster_softs.values())}")
 
 
 if __name__ == "__main__":
