@@ -9,6 +9,14 @@ resolved or rejected findings are primarily captured in commit messages and
 
 ## Current state (headline)
 
+**Current production mode (2026-06-16): hierarchy-only.** The old
+proxy-optimized production path (candidate restarts, R2/2-opt/LSMC, ML ranker
+defaults, and generic LSMC cluster kicks) has been deleted from active code.
+`MacroPlacer.place()` now always routes through `_hierarchy_floorplan()` and
+raises if that path is unavailable. Current smoke: `ibm10` proxy `1.7076`,
+VALID, ~12s locally. The score table below is historical context for the
+removed proxy path, not the current hierarchy-preserving output.
+
 | Metric | Value |
 |---|---|
 | Best `--all` avg | **1.1252** (2026-06-11 — S10 ML hard-relocation ranker connected as production default; 17/17 VALID, 0 overlaps, **2337s ~39min**). |
@@ -112,6 +120,31 @@ tunable by `V2_HIER_REGION_DENSITY`). Knobs: `V2_REGION_BIAS` (1.0),
 (0=area-based), `V2_HIER_REGION_SINGLETON` (0.05). Diagnostic
 `_hier_region_relief.py`; verified `_verify_region_relief.py`.
 
+**Coldspot-aware cluster kick (2026-06-16).** Tested as a prototype for a
+proposed regional/GPU pipeline: gather a HOT cluster into a COLDSPOT of the
+congestion field (`coldest_window_anchor` in `fields.py`, `_coldspot_cluster_kick`
+in `lsmc_explore.py`, env `V2_LSMC_COLDSPOT_CLUSTER`). Hypothesis: a low-congestion
+destination with routing headroom would absorb the compaction (unlike the old
+random-anchor gather kick removed as noise). **Result (isolation, fixed incumbent):
+NO — it keeps clusters tighter on every closeness metric but still COSTS proxy**
+(ibm04 +0.0055; ibm10 produced 0 LSMC accepts vs the random kick's −0.10 win).
+Concentrating a subsystem spikes local congestion the exact-proxy gate rejects even
+at a coldspot. So the regional/GPU pipeline (Stages 2/3) was NOT pursued for proxy.
+GPU note reaffirmed: per-macro GPU batching loses on IBM's ~2000-cell grids (§6.1
+S2); only cross-macro batching on large grids (NG45) could win — out of scope for
+the leaderboard. Diagnostic `_coldspot_kick.py`, verified `_verify_coldspot_kick.py`.
+
+**Coldspot tightening pass in hier mode (`V2_HIER_COLDSPOT_KICK`, default ON in the
+floorplan/region-lock mode).** Since the kick keeps clusters tighter (just not
+proxy-free), it is wired into `_hierarchy_floorplan` AFTER region relief as a
+closeness-objective pass: accept a coldspot kick only if intra-cluster spread DROPS
+AND proxy rises < `V2_HIER_COLDSPOT_BUDGET` (0.05/kick) and total <
+`V2_HIER_COLDSPOT_TOTAL` (0.15). Deliberately trades a bounded proxy increase for
+tighter hierarchy. ibm10: 7 accepts, proxy 1.6809→1.7076 (+0.027, within caps),
+clusters tighter, VALID. Knob `V2_HIER_COLDSPOT_ROUNDS` (8). The standalone kick is
+also usable in the normal LSMC via `V2_LSMC_COLDSPOT_CLUSTER` (default OFF;
+production path bit-identical when off).
+
 **`V2_REGION_LOCK=1` (default OFF) = region-locked PRODUCTION output.** Routes
 `place()` to the hierarchy+relief path. **Finding:** region-biasing only the main
 pipeline's R2 relocation is INEFFECTIVE — its other phases (DP candidates, noise
@@ -142,7 +175,12 @@ DREAMPlace build. **When touching DP, always confirm a "ready in Ns ... testing
 as candidate" line; a "not ready; killing" line for ALL configs means DP is
 dead, not slow — check `tail dreamplace.log` in the scratch dir.**
 
-### S18. Cluster-coherent LSMC kicks — macro-hierarchy awareness (SHIPPED 2026-06-14)
+### S18. Cluster-coherent LSMC kicks — macro-hierarchy awareness (HISTORICAL; deleted 2026-06-16)
+
+**Superseded 2026-06-16:** this section is historical. The shipped generic
+cluster-kick path was later removed with the rest of the proxy optimizer. The
+hierarchy system keeps only `_coldspot_cluster_kick()` as a bounded tightening
+helper inside `_hierarchy_floorplan()`.
 
 **What:** the LSMC kick now optionally moves a derived connectivity *cluster*
 as a unit instead of scattering random hard macros. Communities are inferred

@@ -1,165 +1,131 @@
 # v2 Design Flow
 
-This document describes the production flow implemented by
+This document describes the current production flow implemented by
 `src/placer/pipeline/macro_placer.py`.
 
-## TLDR
+## Current Mode
 
-`MacroPlacer.place()` is a budget-gated, accept-only search over macro
-placements. It legalizes the benchmark's initial hard macro positions, launches
-three standard DREAMPlace subprocesses as asynchronous candidate generators when
-the bridge is available, explores generic random/local restart candidates, runs
-a deep R2 local-search finisher, and uses LSMC as the final global exploration
-layer.
-
-Every candidate that can affect the incumbent is judged by the exact proxy:
+`MacroPlacer.place()` is hierarchy-only. It no longer branches between a
+leaderboard/proxy path and a hierarchy path. If grouped DREAMPlace is unavailable,
+the placer raises:
 
 ```text
-proxy = wirelength + 0.5 * density + 0.5 * congestion
+hierarchy floorplan path unavailable; proxy fallback has been removed
 ```
 
-`best_pl` and `best_score` are the main incumbent state. They update only when
-an exact proxy score is lower.
+The deleted proxy path included random candidate restarts, R2/2-opt/swap/cycle
+search, generic LSMC exploration, generic cluster kicks, CUDA propose-all
+integration in the main loop, and ML ranker defaults.
 
 ## Flow
 
 ```mermaid
 flowchart TD
-    A[Input circuit and initial macro locations] --> RL{Hierarchy / region-lock mode requested?}
-    RL -->|Yes| HR[Regional pipeline V2_HIER_FLOORPLAN or V2_REGION_LOCK: grouped DREAMPlace, then cluster-consecutive legalize, then region-locked congestion relief]
-    HR --> O
-    RL -->|No, leaderboard path| B[Build scoring model]
-    B --> C[Repair hard-macro overlaps]
-    C --> D{Can exact proxy score run fast enough?}
-    D -->|No| E[Use the repaired initial placement]
-    D -->|Yes| F[Set baseline as the current best placement]
-
-    subgraph S1[Candidate search loop]
-        H[Try alternative placements]
-        I[Make each alternative legal]
-        J[Measure wirelength, density, congestion]
-        K{Lower proxy cost?}
-        U[Set it as the current best placement]
-
-        H -->|more candidates| I
-        I --> J
-        J --> K
-        K -->|Yes| U
-        U --> H
-        K -->|No| H
-    end
-
-    B -. optional .-> G[DREAMPlace global-placement seeds]
-    F --> H
-    G --> H
-
-    H -->|candidate budget finished| X[Enter final improvement loop]
-
-    subgraph S2[Final improvement loop]
-        L[Improve the best placement locally]
-        M[Move soft macros if time remains]
-        N[Final exploration: random-kick LSMC]
-
-        L --> M
-        M --> N
-    end
-
-    X --> L
-    E --> O
-    N --> O[Clamp all movable macros inside the canvas]
-    O --> P[Return final macro centers]
+    A[Benchmark + initial macro locations] --> B[Load PLC]
+    B --> C[Derive hard clusters from low-fanout connectivity]
+    C --> D[Attach connected soft macros to clusters]
+    D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
+    E --> F[Cluster-consecutive hard legalization]
+    F --> G[Default-order safety legalization]
+    G --> H[Soft relocation cleanup]
+    H --> I{V2_HIER_REGION_RELIEF enabled?}
+    I -->|Yes| J[Region-locked hard relocation + soft cleanup]
+    I -->|No| K
+    J --> K{V2_HIER_COLDSPOT_KICK enabled?}
+    K -->|Yes| L[Coldspot cluster tightening with bounded proxy budget]
+    K -->|No| M[Clamp movable macros in bounds]
+    L --> M
+    M --> N[Return macro centers]
 ```
 
-## Active Candidate Sources
+## Cluster Derivation
 
-- **Baseline:** legalize hard macros from `initial.plc`.
-- **DREAMPlace:** when available, three async DP variants are scored as ordinary
-  candidates. They may update `best_pl`, but they are not retained as special
-  LSMC seed basins.
-- **Random restarts:** Gaussian perturbations of initial hard positions,
-  legalized and exact-scored.
-- **Random-order legalization:** three alternate legalizer tie-break orders from
-  the initial placement.
-- **R2:** the main local-search finisher.
-- **Post-R2 soft relocation:** short leftover-budget soft cleanup.
-- **LSMC:** final generic multi-incumbent exploration over baseline/random/P9/
-  pre-R2/post-R2 seeds.
+Clusters are inferred from the flat ICCAD04-style netlist. The benchmarks do
+not provide hierarchy directly, and direct hard-to-hard nets are sparse, so the
+cluster builder uses low-fanout connectivity through soft macros.
 
-## Important Details
+Controls:
 
-- Hard and soft macro labels come from the benchmark API. The placer does not
-  infer them.
-- Congestion-gradient phases are no longer part of the active flow. Historical
-  notes may mention phases 1/2/3/5b/5c/7/8; those labels refer to retired
-  experiments.
-- Non-DREAMPlace candidates leave soft macro positions as they are in the source
-  placement until R2/post-R2/LSMC soft moves operate on them. DREAMPlace
-  candidates can carry DREAMPlace-produced soft positions.
-- Random-noise and random-order phases restart from the initial hard positions,
-  not from `best_pl`.
-- LSMC seed collection is intentionally generic. It does not use
-  DREAMPlace/bridge-specific seed pools and does not use cong-grad-derived
-  state.
-- R2 is richer than "relocation plus 2-opt": each round can run hard relocation,
-  soft relocation, soft-soft swaps, hard-soft swaps, hard-soft-soft 3-cycles, and
-  hard 2-opt cleanup.
-- By default, `src/main.py` enables the shipped hard-relocation ML filter when no
-  `ML_*` env var is preset and the model artifact plus `xgboost` are available.
-  It widens the hard-relocation pool to 32 and exact-scores the ranked top 16;
-  any preset `ML_*` var, missing model, or missing `xgboost` falls back to the
-  pure-heuristic path.
-- `V2_RELOC_PROPOSE_ALL=auto` can enable the CUDA propose-all hard-relocation
-  ranking path only when the runtime backend is CUDA. It is an opt-in search
-  variant; exact incremental scoring still gates every committed move.
-- `V2_GPU_EXPLORE=auto` enables the final LSMC layer when CUDA is visible.
-  `V2_GPU_EXPLORE_MULTI_INCUMBENT`, `V2_GPU_EXPLORE_MAX_SEEDS`, and
-  `V2_GPU_EXPLORE_SEED_MARGIN` control the generic seed pool. The LSMC kick is a
-  random per-macro kick; a cluster-coherent kick variant was tested and removed
-  as noise (ISSUES.md S20).
-- Every return path passes through a final in-bounds clamp for movable macros.
-  Hard macros are already legalized by the normal path; the clamp mainly protects
-  against soft macro coordinates inherited from input data or DREAMPlace output.
+```text
+V2_CLUSTER_MAX_FANOUT=8
+V2_CLUSTER_MIN_EDGE=2
+```
 
-## Alternate path: hierarchy-floorplan / region-lock mode (opt-in, non-proxy)
+The result is a hard-macro label array plus a map of soft macros most strongly
+associated with each hard cluster.
 
-The flow above optimizes the proxy, which **rewards spreading** connected macros
-apart. When the goal is instead to keep connected subsystems together (a
-hierarchical floorplan), `place()` short-circuits at entry into a separate
-regional pipeline (`_hierarchy_floorplan`). It is **off by default and never
-touches the leaderboard path**; enable with `V2_HIER_FLOORPLAN=1` (explicit
-non-proxy deliverable) or `V2_REGION_LOCK=1` (the production output should be
-region-locked) — both route here.
+## Grouped DREAMPlace
 
-This path trades proxy for hierarchy by design:
+The hierarchy path calls `run_dreamplace(..., cluster_groups=..., group_weight=...)`.
+The bridge writes synthetic per-cluster clique nets into the Bookshelf design so
+global placement pulls connected subsystems together.
 
-1. Derive connectivity clusters (subsystems) and the soft macros each one drives.
-2. Run grouped DREAMPlace (synthetic per-cluster clique nets) so each subsystem
-   is pulled together in global placement.
-3. Legalize with cluster members placed back-to-back, so each subsystem keeps
-   its region instead of being scattered by the default legalize order.
-4. **Region-locked congestion relief** (`V2_HIER_REGION_RELIEF`, default on
-   here): move hard macros to less-congested cells *within their own cluster
-   region only* (a soft fence), then clean up soft macros. This lowers
-   congestion while keeping connected macros close — e.g. ibm10 proxy
-   1.82→1.68 with cluster closeness essentially preserved. The lock↔relief
-   tradeoff is tuned by `V2_HIER_REGION_DENSITY` (higher = tighter regions).
+Controls:
 
-Region-locking is confined to this dedicated pipeline because region-biasing the
-*main* flow's relocation alone is overridden by its spread-oriented phases
-(DREAMPlace candidates, noise restarts, LSMC kicks). See ARCHITECTURE.md §5.9
-and ISSUES.md S20.
+```text
+V2_HIER_GROUP_WEIGHT=8
+```
 
-## Entry points
+DREAMPlace is a required part of the current path. The old proxy fallback that
+could run without it has been removed.
 
-The flow above starts from a `Benchmark`. There are two ways to produce one:
+## Legalization
 
-- **Challenge path** — the harness calls `load_benchmark` on an ICCAD04
-  `netlist.pb.txt` + `initial.plc` pair (the 17 IBM benchmarks, NG45, and the
-  synthetic suite under `test/benchmarks/`).
-- **eda_io path** — `src/place_design.py` accepts standard EDA inputs
-  (LEF / DEF / structural Verilog / SDC / Liberty), merges them into a neutral
-  `Design`, converts to the same ICCAD04 pair, and loads it through the same
-  `load_benchmark`. The flow in this document then runs completely unchanged,
-  including exact PLC proxy scoring. Results are written back out as an
-  updated DEF, ICC2/Innovus Tcl, and/or a QoR report. See
-  `src/eda_io/README.md`.
+Hard macros are legalized with a cluster-consecutive order:
+
+1. Larger clusters first.
+2. Larger macros first within each cluster.
+3. Unclustered macros last, also larger first.
+
+A second default-order legalization pass is kept as a safety pass for validity.
+Soft macros may overlap by challenge rules, so they are not hard-legalized.
+
+## Region-Locked Relief
+
+Region relief recovers some congestion while preserving the hierarchy. Each
+cluster receives a soft region derived from its footprint and area. Hard
+relocation then strongly prefers colder candidate cells inside the cluster's
+own region, followed by soft relocation cleanup.
+
+Controls:
+
+```text
+V2_HIER_REGION_RELIEF=1
+V2_HIER_REGION_DENSITY=0.65
+V2_REGION_BIAS=1.0
+V2_HIER_REGION_ROUNDS=2
+V2_HIER_REGION_BUDGET_S=40
+V2_HIER_REGION_MARGIN=0
+V2_HIER_REGION_SINGLETON=0.05
+```
+
+All committed relocation moves still pass the exact incremental proxy gate, but
+candidate ranking is region-biased so the result stays clustered.
+
+## Coldspot Tightening
+
+The retained LSMC helper is `_coldspot_cluster_kick()`. It gathers one hot
+cluster into a cold congestion window and legalizes the hard macros. In the
+current production flow it is used only as a hierarchy-tightening pass after
+region relief.
+
+Controls:
+
+```text
+V2_HIER_COLDSPOT_KICK=1
+V2_HIER_COLDSPOT_BUDGET=0.05
+V2_HIER_COLDSPOT_TOTAL=0.15
+V2_HIER_COLDSPOT_ROUNDS=8
+V2_HIER_COLDSPOT_BUDGET_S=30
+```
+
+A kick is accepted only when intra-cluster spread decreases and the proxy rise
+stays within the per-kick and total budgets.
+
+## Entry Points
+
+- Challenge path: `uv run evaluate src/main.py -b ibm10`
+- eda_io path: `uv run python src/place_design.py ...`
+- Coldspot verifier: `uv run python test/verification/_verify_coldspot_kick.py ibm10`
+
+Every return path passes through the final in-bounds clamp for movable macros.

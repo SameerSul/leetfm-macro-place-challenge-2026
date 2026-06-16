@@ -10,14 +10,6 @@ import torch
 from placer.config import _CUDA_DEVICE_REQUESTED, _GPU_BACKEND, _GPU_DEVICE, _GPU_DEVICE_NAME
 from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
-from placer.ml.data_collection import TraceFields, get_candidate_trace, net_degree_features
-from placer.ml.shadow import (
-    filter_candidate_indices,
-    is_filter_calibration_enabled,
-    is_filter_enabled,
-    shadow_rank_group,
-    update_filter_calibration,
-)
 from placer.plc.placement import _ensure_pos_cache
 
 if TYPE_CHECKING:
@@ -335,8 +327,8 @@ def _net_routing_3pin_contrib(
     cols = np.clip((pin_x / grid_w).astype(np.int64), 0, grid_col - 1)
     rows = np.clip((pin_y / grid_h).astype(np.int64), 0, grid_row - 1)
     g0 = rows[:n3] * grid_col + cols[:n3]
-    g1 = rows[n3:2 * n3] * grid_col + cols[n3:2 * n3]
-    g2 = rows[2 * n3:] * grid_col + cols[2 * n3:]
+    g1 = rows[n3 : 2 * n3] * grid_col + cols[n3 : 2 * n3]
+    g2 = rows[2 * n3 :] * grid_col + cols[2 * n3 :]
     weights = incremental_scorer.net_weights[nets_3].astype(np.float32, copy=False)
 
     eq01 = g0 == g1
@@ -377,14 +369,20 @@ def _net_routing_3pin_contrib(
         g1u = g1[uniq3]
         g2u = g2[uniq3]
         wu = weights[uniq3]
-        y_all = np.stack([g0u // grid_col, g1u // grid_col, g2u // grid_col], axis=1).astype(np.int64)
+        y_all = np.stack([g0u // grid_col, g1u // grid_col, g2u // grid_col], axis=1).astype(
+            np.int64
+        )
         x_all = np.stack([g0u % grid_col, g1u % grid_col, g2u % grid_col], axis=1).astype(np.int64)
         big = int(max(grid_row, grid_col)) + 16
         order = np.argsort(x_all * big + y_all, axis=1, kind="stable")
         y = np.take_along_axis(y_all, order, axis=1)
         x = np.take_along_axis(x_all, order, axis=1)
-        y1 = y[:, 0]; y2 = y[:, 1]; y3 = y[:, 2]
-        x1 = x[:, 0]; x2 = x[:, 1]; x3 = x[:, 2]
+        y1 = y[:, 0]
+        y2 = y[:, 1]
+        y3 = y[:, 2]
+        x1 = x[:, 0]
+        x2 = x[:, 1]
+        x3 = x[:, 2]
 
         case1 = (x1 < x2) & (x2 < x3) & (np.minimum(y1, y3) < y2) & (np.maximum(y1, y3) > y2)
         case2 = (~case1) & (x2 == x3) & (x1 < x2) & (y1 < np.minimum(y2, y3))
@@ -394,23 +392,50 @@ def _net_routing_3pin_contrib(
         if case1.any():
             m = case1
             wm = wu[m]
-            h_rows.append(y1[m]); h_los.append(x1[m]); h_his.append(x2[m]); h_ws.append(wm)
-            h_rows.append(y2[m]); h_los.append(x2[m]); h_his.append(x3[m]); h_ws.append(wm)
-            v_cols.append(x2[m]); v_los.append(np.minimum(y1[m], y2[m])); v_his.append(np.maximum(y1[m], y2[m])); v_ws.append(wm)
-            v_cols.append(x3[m]); v_los.append(np.minimum(y2[m], y3[m])); v_his.append(np.maximum(y2[m], y3[m])); v_ws.append(wm)
+            h_rows.append(y1[m])
+            h_los.append(x1[m])
+            h_his.append(x2[m])
+            h_ws.append(wm)
+            h_rows.append(y2[m])
+            h_los.append(x2[m])
+            h_his.append(x3[m])
+            h_ws.append(wm)
+            v_cols.append(x2[m])
+            v_los.append(np.minimum(y1[m], y2[m]))
+            v_his.append(np.maximum(y1[m], y2[m]))
+            v_ws.append(wm)
+            v_cols.append(x3[m])
+            v_los.append(np.minimum(y2[m], y3[m]))
+            v_his.append(np.maximum(y2[m], y3[m]))
+            v_ws.append(wm)
 
         if case2.any():
             m = case2
             wm = wu[m]
-            h_rows.append(y1[m]); h_los.append(x1[m]); h_his.append(x2[m]); h_ws.append(wm)
-            v_cols.append(x2[m]); v_los.append(y1[m]); v_his.append(np.maximum(y2[m], y3[m])); v_ws.append(wm)
+            h_rows.append(y1[m])
+            h_los.append(x1[m])
+            h_his.append(x2[m])
+            h_ws.append(wm)
+            v_cols.append(x2[m])
+            v_los.append(y1[m])
+            v_his.append(np.maximum(y2[m], y3[m]))
+            v_ws.append(wm)
 
         if case3.any():
             m = case3
             wm = wu[m]
-            h_rows.append(y1[m]); h_los.append(x1[m]); h_his.append(x2[m]); h_ws.append(wm)
-            h_rows.append(y2[m]); h_los.append(x2[m]); h_his.append(x3[m]); h_ws.append(wm)
-            v_cols.append(x2[m]); v_los.append(np.minimum(y2[m], y1[m])); v_his.append(np.maximum(y2[m], y1[m])); v_ws.append(wm)
+            h_rows.append(y1[m])
+            h_los.append(x1[m])
+            h_his.append(x2[m])
+            h_ws.append(wm)
+            h_rows.append(y2[m])
+            h_los.append(x2[m])
+            h_his.append(x3[m])
+            h_ws.append(wm)
+            v_cols.append(x2[m])
+            v_los.append(np.minimum(y2[m], y1[m]))
+            v_his.append(np.maximum(y2[m], y1[m]))
+            v_ws.append(wm)
 
         if case4.any():
             m = case4
@@ -420,14 +445,24 @@ def _net_routing_3pin_contrib(
             order_t = np.argsort(y_t * big + x_t, axis=1, kind="stable")
             y_t = np.take_along_axis(y_t, order_t, axis=1)
             x_t = np.take_along_axis(x_t, order_t, axis=1)
-            y1t = y_t[:, 0]; y2t = y_t[:, 1]; y3t = y_t[:, 2]
-            x1t = x_t[:, 0]; x2t = x_t[:, 1]; x3t = x_t[:, 2]
+            y1t = y_t[:, 0]
+            y2t = y_t[:, 1]
+            y3t = y_t[:, 2]
+            x1t = x_t[:, 0]
+            x2t = x_t[:, 1]
+            x3t = x_t[:, 2]
             h_rows.append(y2t)
             h_los.append(np.minimum(np.minimum(x1t, x2t), x3t))
             h_his.append(np.maximum(np.maximum(x1t, x2t), x3t))
             h_ws.append(wm)
-            v_cols.append(x1t); v_los.append(np.minimum(y1t, y2t)); v_his.append(np.maximum(y1t, y2t)); v_ws.append(wm)
-            v_cols.append(x3t); v_los.append(np.minimum(y2t, y3t)); v_his.append(np.maximum(y2t, y3t)); v_ws.append(wm)
+            v_cols.append(x1t)
+            v_los.append(np.minimum(y1t, y2t))
+            v_his.append(np.maximum(y1t, y2t))
+            v_ws.append(wm)
+            v_cols.append(x3t)
+            v_los.append(np.minimum(y2t, y3t))
+            v_his.append(np.maximum(y2t, y3t))
+            v_ws.append(wm)
 
     return _sparse_from_route_strips(
         grid_col=grid_col,
@@ -566,8 +601,12 @@ def _net_routing_highfanout_contrib(
         order = np.argsort(x_all * big + y_all, axis=1, kind="stable")
         y = np.take_along_axis(y_all, order, axis=1)
         x = np.take_along_axis(x_all, order, axis=1)
-        y1 = y[:, 0]; y2 = y[:, 1]; y3 = y[:, 2]
-        x1 = x[:, 0]; x2 = x[:, 1]; x3 = x[:, 2]
+        y1 = y[:, 0]
+        y2 = y[:, 1]
+        y3 = y[:, 2]
+        x1 = x[:, 0]
+        x2 = x[:, 1]
+        x3 = x[:, 2]
         case1 = (x1 < x2) & (x2 < x3) & (np.minimum(y1, y3) < y2) & (np.maximum(y1, y3) > y2)
         case2 = (~case1) & (x2 == x3) & (x1 < x2) & (y1 < np.minimum(y2, y3))
         case3 = (~case1) & (~case2) & (y2 == y3)
@@ -575,21 +614,48 @@ def _net_routing_highfanout_contrib(
         if case1.any():
             m = case1
             wm = weights[m]
-            h_rows.append(y1[m]); h_los.append(x1[m]); h_his.append(x2[m]); h_ws.append(wm)
-            h_rows.append(y2[m]); h_los.append(x2[m]); h_his.append(x3[m]); h_ws.append(wm)
-            v_cols.append(x2[m]); v_los.append(np.minimum(y1[m], y2[m])); v_his.append(np.maximum(y1[m], y2[m])); v_ws.append(wm)
-            v_cols.append(x3[m]); v_los.append(np.minimum(y2[m], y3[m])); v_his.append(np.maximum(y2[m], y3[m])); v_ws.append(wm)
+            h_rows.append(y1[m])
+            h_los.append(x1[m])
+            h_his.append(x2[m])
+            h_ws.append(wm)
+            h_rows.append(y2[m])
+            h_los.append(x2[m])
+            h_his.append(x3[m])
+            h_ws.append(wm)
+            v_cols.append(x2[m])
+            v_los.append(np.minimum(y1[m], y2[m]))
+            v_his.append(np.maximum(y1[m], y2[m]))
+            v_ws.append(wm)
+            v_cols.append(x3[m])
+            v_los.append(np.minimum(y2[m], y3[m]))
+            v_his.append(np.maximum(y2[m], y3[m]))
+            v_ws.append(wm)
         if case2.any():
             m = case2
             wm = weights[m]
-            h_rows.append(y1[m]); h_los.append(x1[m]); h_his.append(x2[m]); h_ws.append(wm)
-            v_cols.append(x2[m]); v_los.append(y1[m]); v_his.append(np.maximum(y2[m], y3[m])); v_ws.append(wm)
+            h_rows.append(y1[m])
+            h_los.append(x1[m])
+            h_his.append(x2[m])
+            h_ws.append(wm)
+            v_cols.append(x2[m])
+            v_los.append(y1[m])
+            v_his.append(np.maximum(y2[m], y3[m]))
+            v_ws.append(wm)
         if case3.any():
             m = case3
             wm = weights[m]
-            h_rows.append(y1[m]); h_los.append(x1[m]); h_his.append(x2[m]); h_ws.append(wm)
-            h_rows.append(y2[m]); h_los.append(x2[m]); h_his.append(x3[m]); h_ws.append(wm)
-            v_cols.append(x2[m]); v_los.append(np.minimum(y2[m], y1[m])); v_his.append(np.maximum(y2[m], y1[m])); v_ws.append(wm)
+            h_rows.append(y1[m])
+            h_los.append(x1[m])
+            h_his.append(x2[m])
+            h_ws.append(wm)
+            h_rows.append(y2[m])
+            h_los.append(x2[m])
+            h_his.append(x3[m])
+            h_ws.append(wm)
+            v_cols.append(x2[m])
+            v_los.append(np.minimum(y2[m], y1[m]))
+            v_his.append(np.maximum(y2[m], y1[m]))
+            v_ws.append(wm)
         if case4.any():
             m = case4
             wm = weights[m]
@@ -598,14 +664,24 @@ def _net_routing_highfanout_contrib(
             order_t = np.argsort(y_t * big + x_t, axis=1, kind="stable")
             y_t = np.take_along_axis(y_t, order_t, axis=1)
             x_t = np.take_along_axis(x_t, order_t, axis=1)
-            y1t = y_t[:, 0]; y2t = y_t[:, 1]; y3t = y_t[:, 2]
-            x1t = x_t[:, 0]; x2t = x_t[:, 1]; x3t = x_t[:, 2]
+            y1t = y_t[:, 0]
+            y2t = y_t[:, 1]
+            y3t = y_t[:, 2]
+            x1t = x_t[:, 0]
+            x2t = x_t[:, 1]
+            x3t = x_t[:, 2]
             h_rows.append(y2t)
             h_los.append(np.minimum(np.minimum(x1t, x2t), x3t))
             h_his.append(np.maximum(np.maximum(x1t, x2t), x3t))
             h_ws.append(wm)
-            v_cols.append(x1t); v_los.append(np.minimum(y1t, y2t)); v_his.append(np.maximum(y1t, y2t)); v_ws.append(wm)
-            v_cols.append(x3t); v_los.append(np.minimum(y2t, y3t)); v_his.append(np.maximum(y2t, y3t)); v_ws.append(wm)
+            v_cols.append(x1t)
+            v_los.append(np.minimum(y1t, y2t))
+            v_his.append(np.maximum(y1t, y2t))
+            v_ws.append(wm)
+            v_cols.append(x3t)
+            v_los.append(np.minimum(y2t, y3t))
+            v_his.append(np.maximum(y2t, y3t))
+            v_ws.append(wm)
 
     return _sparse_from_route_strips(
         grid_col=grid_col,
@@ -637,11 +713,9 @@ def _smooth_routing_batch_torch(
         return grid_3d.reshape(grid_flat.shape[0], grid_row * grid_col)
     if axis_h:
         rows = torch.arange(grid_row, dtype=torch.long, device=dev)
-        cnts = (
-            torch.clamp(rows + sr, max=grid_row - 1)
-            - torch.clamp(rows - sr, min=0)
-            + 1
-        ).to(dtype)
+        cnts = (torch.clamp(rows + sr, max=grid_row - 1) - torch.clamp(rows - sr, min=0) + 1).to(
+            dtype
+        )
         weighted = grid_3d / cnts.view(1, grid_row, 1)
         zero = torch.zeros(grid_flat.shape[0], 1, grid_col, dtype=dtype, device=dev)
         cs = torch.cumsum(torch.cat([zero, weighted], dim=1), dim=1)
@@ -650,11 +724,9 @@ def _smooth_routing_batch_torch(
         smoothed = cs[:, hi, :] - cs[:, lo, :]
     else:
         cols = torch.arange(grid_col, dtype=torch.long, device=dev)
-        cnts = (
-            torch.clamp(cols + sr, max=grid_col - 1)
-            - torch.clamp(cols - sr, min=0)
-            + 1
-        ).to(dtype)
+        cnts = (torch.clamp(cols + sr, max=grid_col - 1) - torch.clamp(cols - sr, min=0) + 1).to(
+            dtype
+        )
         weighted = grid_3d / cnts.view(1, 1, grid_col)
         zero = torch.zeros(grid_flat.shape[0], grid_row, 1, dtype=dtype, device=dev)
         cs = torch.cumsum(torch.cat([zero, weighted], dim=2), dim=2)
@@ -720,7 +792,11 @@ def _relocation_hpwl_dynamic_bytes_per_proposal(
     incremental_scorer,
     proposals: "list[dict] | None",
 ) -> int:
-    if not proposals or incremental_scorer is None or not hasattr(incremental_scorer, "hard_indices"):
+    if (
+        not proposals
+        or incremental_scorer is None
+        or not hasattr(incremental_scorer, "hard_indices")
+    ):
         return 0
     int64_bytes = np.dtype(np.int64).itemsize
     float32_bytes = np.dtype(np.float32).itemsize
@@ -728,10 +804,7 @@ def _relocation_hpwl_dynamic_bytes_per_proposal(
     total = 0
     hpwl_topology = _build_hpwl_topology_cache(
         incremental_scorer,
-        module_indices={
-            int(incremental_scorer.hard_indices[int(p["i"])])
-            for p in proposals
-        },
+        module_indices={int(incremental_scorer.hard_indices[int(p["i"])]) for p in proposals},
     )
     for proposal in proposals:
         module_idx = int(incremental_scorer.hard_indices[int(proposal["i"])])
@@ -816,10 +889,7 @@ def _relocation_static_tensor_bytes_estimate(
         total += len(proposals) * 2 * np.dtype(np.float32).itemsize
     module_indices = None
     if proposals is not None and hasattr(incremental_scorer, "hard_indices"):
-        module_indices = {
-            int(incremental_scorer.hard_indices[int(p["i"])])
-            for p in proposals
-        }
+        module_indices = {int(incremental_scorer.hard_indices[int(p["i"])]) for p in proposals}
     hpwl_topology = _build_hpwl_topology_cache(
         incremental_scorer,
         module_indices=module_indices,
@@ -850,7 +920,13 @@ def _chunk_size_from_memory_budget(
     try:
         max_mb = float(max_mb_raw)
     except (TypeError, ValueError):
-        return None, None, _relocation_dynamic_bytes_per_proposal(incremental_scorer, proposals), None, None
+        return (
+            None,
+            None,
+            _relocation_dynamic_bytes_per_proposal(incremental_scorer, proposals),
+            None,
+            None,
+        )
     bytes_per = _relocation_dynamic_bytes_per_proposal(incremental_scorer, proposals)
     if bytes_per <= 0:
         return None, max_mb, bytes_per, None, None
@@ -1457,7 +1533,9 @@ def _score_relocation_proposals_cuda_delta(
             if budget_chunk is not None:
                 chunk_size = min(chunk_size, budget_chunk)
                 natural_chunk_size = min(default_chunk_size, len(proposals))
-                chunk_source = "memory_budget" if budget_chunk < natural_chunk_size else "cuda_default"
+                chunk_source = (
+                    "memory_budget" if budget_chunk < natural_chunk_size else "cuda_default"
+                )
     if chunk_raw:
         budget_mb = None
         budget_chunk = None
@@ -1513,9 +1591,7 @@ def _score_relocation_proposals_cuda_delta(
                     budget_adjusted_after_static = True
                     budget_adjustment = "grow" if adjusted_chunk > previous_chunk_size else "shrink"
                     chunk_source = (
-                        "memory_budget"
-                        if adjusted_chunk < natural_chunk_size
-                        else "cuda_default"
+                        "memory_budget" if adjusted_chunk < natural_chunk_size else "cuda_default"
                     )
         else:
             budget_static_exceeds = (
@@ -1528,8 +1604,7 @@ def _score_relocation_proposals_cuda_delta(
             raise RuntimeError(
                 "CUDA OOM while building relocation static tensors; "
                 "reducing V2_RELOC_PROPOSE_CHUNK_SIZE will not reduce this allocation "
-                "(estimated_static_bytes=%d)."
-                % static_bytes_estimate
+                "(estimated_static_bytes=%d)." % static_bytes_estimate
             ) from exc
         raise
 
@@ -1549,7 +1624,7 @@ def _score_relocation_proposals_cuda_delta(
                 _cuda_synchronize_if_needed()
                 t0_batch = time.monotonic()
                 batch_stats = _score_relocation_proposals_cuda_delta_batch(
-                    proposals[start:start + chunk_size],
+                    proposals[start : start + chunk_size],
                     proposal_start=start,
                     incremental_scorer=incremental_scorer,
                     static_tensors=static_tensors,
@@ -1632,12 +1707,19 @@ def _score_relocation_proposals_cuda_delta(
             next_chunk = max(1, chunk_size // 2)
             if next_chunk == chunk_size:
                 raise
-            if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}:
+            if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {
+                "1",
+                "true",
+                "TRUE",
+                "yes",
+                "YES",
+                "on",
+                "ON",
+            }:
                 source = "user" if user_chunked else "auto"
                 print(
                     "  R2 propose-all[cuda_delta]: CUDA OOM at chunk_size=%d "
-                    "(%s); retrying chunk_size=%d"
-                    % (chunk_size, source, next_chunk),
+                    "(%s); retrying chunk_size=%d" % (chunk_size, source, next_chunk),
                     flush=True,
                 )
             chunk_size = next_chunk
@@ -1650,8 +1732,12 @@ def _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, span2, region_bias):
     are reached only when in-region options run out. Returns the penalized d2.
     """
     rb = region_bbox[i]
-    out = ((tgt_x[cand] < rb[0]) | (tgt_x[cand] > rb[2]) |
-           (tgt_y[cand] < rb[1]) | (tgt_y[cand] > rb[3]))
+    out = (
+        (tgt_x[cand] < rb[0])
+        | (tgt_x[cand] > rb[2])
+        | (tgt_y[cand] < rb[1])
+        | (tgt_y[cand] > rb[3])
+    )
     return d2 + region_bias * span2 * out
 
 
@@ -1723,8 +1809,7 @@ def _relocation_moves_propose_all(
         for candidate_rank, t in enumerate(cand):
             nx, ny = float(tgt_x[t]), float(tgt_y[t])
             # Keep the whole macro inside the canvas.
-            if (nx - hw[i] < 0 or nx + hw[i] > cw or
-                    ny - hh[i] < 0 or ny + hh[i] > ch):
+            if nx - hw[i] < 0 or nx + hw[i] > cw or ny - hh[i] < 0 or ny + hh[i] > ch:
                 continue
             if ((np.abs(nx - ox) < sxi + eps) & (np.abs(ny - oy) < syi + eps)).any():
                 continue
@@ -1812,12 +1897,13 @@ def _relocation_moves_propose_all(
             continue
         nx, ny = p["xy"]
         # Keep the whole macro inside the canvas.
-        if (nx - hw[i] < 0 or nx + hw[i] > cw or
-                ny - hh[i] < 0 or ny + hh[i] > ch):
+        if nx - hw[i] < 0 or nx + hw[i] > cw or ny - hh[i] < 0 or ny + hh[i] > ch:
             continue
         mask = all_idx != i
-        if ((np.abs(nx - pos[mask, 0]) < sep_x_mat[i, mask] + eps) &
-                (np.abs(ny - pos[mask, 1]) < sep_y_mat[i, mask] + eps)).any():
+        if (
+            (np.abs(nx - pos[mask, 0]) < sep_x_mat[i, mask] + eps)
+            & (np.abs(ny - pos[mask, 1]) < sep_y_mat[i, mask] + eps)
+        ).any():
             continue
 
         prep = incremental_scorer._prepare_move(i)
@@ -1836,7 +1922,15 @@ def _relocation_moves_propose_all(
             incremental_scorer._revert_prep(prep)
             raise
 
-    if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}:
+    if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+        "YES",
+        "on",
+        "ON",
+    }:
         scorer_extra = ""
         if scorer_mode == "cuda_delta":
             stats = getattr(_score_relocation_proposals_cuda_delta, "last_stats", None)
@@ -1872,12 +1966,9 @@ def _relocation_moves_propose_all(
                     )
                 )
                 if "max_memory_allocated" in stats:
-                    scorer_extra += (
-                        " max_alloc=%.1fMiB max_reserved=%.1fMiB"
-                        % (
-                            stats["max_memory_allocated"] / (1024.0 * 1024.0),
-                            stats.get("max_memory_reserved", 0) / (1024.0 * 1024.0),
-                        )
+                    scorer_extra += " max_alloc=%.1fMiB max_reserved=%.1fMiB" % (
+                        stats["max_memory_allocated"] / (1024.0 * 1024.0),
+                        stats.get("max_memory_reserved", 0) / (1024.0 * 1024.0),
                     )
                 if stats.get("memory_budget_mb") is not None:
                     scorer_extra += (
@@ -1901,13 +1992,10 @@ def _relocation_moves_propose_all(
                         )
                     )
                     if stats.get("memory_budget_source") == "auto_mem_frac":
-                        scorer_extra += (
-                            " auto_frac=%.3f cuda_free=%.1fMiB cuda_total=%.1fMiB"
-                            % (
-                                stats.get("auto_memory_frac", 0.0),
-                                (stats.get("auto_cuda_free_bytes") or 0) / (1024.0 * 1024.0),
-                                (stats.get("auto_cuda_total_bytes") or 0) / (1024.0 * 1024.0),
-                            )
+                        scorer_extra += " auto_frac=%.3f cuda_free=%.1fMiB cuda_total=%.1fMiB" % (
+                            stats.get("auto_memory_frac", 0.0),
+                            (stats.get("auto_cuda_free_bytes") or 0) / (1024.0 * 1024.0),
+                            (stats.get("auto_cuda_total_bytes") or 0) / (1024.0 * 1024.0),
                         )
         print(
             "  R2 propose-all[%s]: hot=%d legal=%d frozen_scores=%d "
@@ -1963,9 +2051,6 @@ def _relocation_moves(
     `region_bbox is None` (the production pipeline never passes it).
     """
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    trace = get_candidate_trace()
-    filter_hard_relocation = is_filter_enabled("hard_relocation")
-    calibrate_hard_relocation = is_filter_calibration_enabled("hard_relocation")
     trace_field = "combined" if use_combined else ("density" if use_density else "congestion")
     if use_combined:
         # A cell is hot only when both fields are high.
@@ -1977,19 +2062,14 @@ def _relocation_moves(
         dens_max = max(float(dens_field.max()), 1e-12)
         cell_cong = np.sqrt((cong_field / cong_max) * (dens_field / dens_max))
     else:
-        cell_cong = (_density_field(incremental_scorer, nr, nc) if use_density
-                     else _congestion_field(plc, nr, nc))
+        cell_cong = (
+            _density_field(incremental_scorer, nr, nc)
+            if use_density
+            else _congestion_field(plc, nr, nc)
+        )
         if cell_cong is None:
             return pos, 0, initial_score
-    tf = None
-    if trace is not None or filter_hard_relocation:
-        tf = TraceFields(
-            cong=_congestion_field(plc, nr, nc),
-            dens=_density_field(incremental_scorer, nr, nc),
-        )
     cell_w, cell_h = cw / nc, ch / nr
-    field_max = max(float(cell_cong.max()), 1e-12)
-
     # Pick the hottest movable macros.
     ci_all = np.clip((pos[:n, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri_all = np.clip((pos[:n, 1] / cell_h).astype(np.int64), 0, nr - 1)
@@ -2015,7 +2095,7 @@ def _relocation_moves(
     EPS = 0.05
 
     # Optional path ranks all proposals before exact checking.
-    if propose_all and trace is None and not filter_hard_relocation and not calibrate_hard_relocation:
+    if propose_all:
         return _relocation_moves_propose_all(
             pos=pos,
             sizes=sizes,
@@ -2076,109 +2156,16 @@ def _relocation_moves(
         # Remove the macro once, then try several target cells.
         prep = incremental_scorer._prepare_move(i)
         best_i_xy = None
-        state_score = best_score
-        group_id = trace.next_group_id("hard_relocation") if trace is not None else None
-        rejected_bounds = 0
-        rejected_overlap = 0
-        scored = 0
-        legal_candidates = []
-        shadow_candidates = []
         try:
             for candidate_rank, t in enumerate(cand):
                 nx, ny = float(tgt_x[t]), float(tgt_y[t])
                 # Keep the whole macro inside the canvas.
-                if (nx - hw[i] < 0 or nx + hw[i] > cw or
-                        ny - hh[i] < 0 or ny + hh[i] > ch):
-                    rejected_bounds += 1
+                if nx - hw[i] < 0 or nx + hw[i] > cw or ny - hh[i] < 0 or ny + hh[i] > ch:
                     continue
                 # Hard macros cannot overlap.
                 if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
-                    rejected_overlap += 1
                     continue
-                features = None
-                if trace is not None or filter_hard_relocation:
-                    target_flat = int(pool[t])
-                    features = {
-                        **net_degree_features(
-                            incremental_scorer, incremental_scorer.hard_indices[i]
-                        ),
-                        "accepted_in_pass": accepts,
-                        "macro_w_norm": float(sizes[i, 0] / cw),
-                        "macro_h_norm": float(sizes[i, 1] / ch),
-                        "x_norm": float(pos[i, 0] / cw),
-                        "y_norm": float(pos[i, 1] / ch),
-                        "target_x_norm": float(nx / cw),
-                        "target_y_norm": float(ny / ch),
-                        "dx_norm": float((nx - pos[i, 0]) / cw),
-                        "dy_norm": float((ny - pos[i, 1]) / ch),
-                        "source_field_norm": float(local_cong[i] / field_max),
-                        "target_field_norm": float(tgt_cong[t] / field_max),
-                        "source_congestion_norm": tf.cong_at(ri_all[i], ci_all[i]),
-                        "target_congestion_norm": tf.cong_flat(target_flat),
-                        "source_density_norm": tf.dens_at(ri_all[i], ci_all[i]),
-                        "target_density_norm": tf.dens_flat(target_flat),
-                        "source_hot_rank_norm": float(
-                            np.where(hot == i)[0][0] / max(len(hot) - 1, 1)
-                        ),
-                        "target_cold_rank_norm": float(candidate_rank / max(len(cand) - 1, 1)),
-                    }
-                legal_candidates.append(
-                    {
-                        "target_index": int(t),
-                        "candidate_rank": int(candidate_rank),
-                        "nx": nx,
-                        "ny": ny,
-                        "features": features,
-                    }
-                )
-
-            candidate_views = [
-                {
-                    "operator": "hard_relocation",
-                    "features": item["features"] or {},
-                    "candidate_rank": item["candidate_rank"],
-                }
-                for item in legal_candidates
-            ]
-            selected_indices = filter_candidate_indices(
-                operator="hard_relocation",
-                candidates=candidate_views,
-                trace=trace,
-                field=trace_field,
-                group_id=group_id,
-            )
-            selected_set = set(selected_indices)
-
-            for legal_index, item in enumerate(legal_candidates):
-                if legal_index not in selected_set:
-                    continue
-                nx = item["nx"]
-                ny = item["ny"]
-                candidate_rank = item["candidate_rank"]
-                features = item["features"]
                 s = incremental_scorer._trial_at(prep, (nx, ny))
-                scored += 1
-                if trace is not None:
-                    trace.record(
-                        operator="hard_relocation",
-                        field=trace_field,
-                        group_id=group_id,
-                        state_score=state_score,
-                        trial_score=s,
-                        candidate_rank=candidate_rank,
-                        group_size=len(cand),
-                        candidate_source="cold_cell",
-                        features=features or {},
-                    )
-                if trace is not None or calibrate_hard_relocation:
-                    shadow_candidates.append(
-                        {
-                            "operator": "hard_relocation",
-                            "features": features or {},
-                            "candidate_rank": candidate_rank,
-                            "score_gain": float(state_score - s),
-                        }
-                    )
                 if s < best_score - 1e-9:
                     best_score = s
                     best_i_xy = (nx, ny)
@@ -2188,32 +2175,6 @@ def _relocation_moves(
                 accepts += 1
             else:
                 incremental_scorer._revert_prep(prep)
-            update_filter_calibration(
-                operator="hard_relocation",
-                candidates=shadow_candidates,
-                trace=trace,
-                field=trace_field,
-                group_id=group_id,
-            )
-            if trace is not None:
-                shadow_rank_group(
-                    operator="hard_relocation",
-                    candidates=shadow_candidates,
-                    trace=trace,
-                    field=trace_field,
-                    group_id=group_id,
-                )
-                trace.event(
-                    "candidate_group_summary",
-                    operator="hard_relocation",
-                    field=trace_field,
-                    group_id=group_id,
-                    generated=int(len(cand)),
-                    scored=scored,
-                    rejected_bounds=rejected_bounds,
-                    rejected_overlap=rejected_overlap,
-                    skipped_by_ml=max(0, len(legal_candidates) - scored),
-                )
         except Exception:
             # Restore committed state if a trial failed.
             incremental_scorer._revert_prep(prep)
@@ -2250,20 +2211,14 @@ def _soft_relocation_moves(
     if _env_wl not in (None, ""):
         wl_prefilter = float(_env_wl)
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    trace = get_candidate_trace()
-    trace_field = "density" if use_density else "congestion"
-    cell_field = (_density_field(incremental_scorer, nr, nc) if use_density
-                  else _congestion_field(plc, nr, nc))
+    cell_field = (
+        _density_field(incremental_scorer, nr, nc)
+        if use_density
+        else _congestion_field(plc, nr, nc)
+    )
     if cell_field is None:
         return soft_pos, 0, initial_score
-    tf = None
-    if trace is not None:
-        tf = TraceFields(
-            cong=_congestion_field(plc, nr, nc),
-            dens=_density_field(incremental_scorer, nr, nc),
-        )
     cell_w, cell_h = cw / nc, ch / nr
-    field_max = max(float(cell_field.max()), 1e-12)
 
     ci = np.clip((soft_pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((soft_pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
@@ -2303,66 +2258,17 @@ def _soft_relocation_moves(
         # Remove the soft macro once, then try several targets.
         prep = incremental_scorer._prepare_move_soft(k)
         best_k_xy = None
-        state_score = best_score
-        group_id = trace.next_group_id("soft_relocation") if trace is not None else None
-        shadow_candidates = []
         try:
-            for candidate_rank, t in enumerate(cand):
+            for t in cand:
                 nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
                 ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
                 # Cheaply skip targets with too much wirelength damage.
                 wl_d = 0.0
-                if wl_prefilter > 0.0 or trace is not None:
+                if wl_prefilter > 0.0:
                     wl_d = incremental_scorer.wl_delta_move_soft(k, (nx, ny))
                     if wl_prefilter > 0.0 and wl_d > wl_prefilter:
                         continue
                 s = incremental_scorer._trial_at_soft(prep, (nx, ny))
-                if trace is not None:
-                    target_flat = int(pool[t])
-                    features = {
-                        **net_degree_features(
-                            incremental_scorer, incremental_scorer.soft_indices[k]
-                        ),
-                        "accepted_in_pass": accepts,
-                        "macro_w_norm": float(2.0 * soft_hw[k] / cw),
-                        "macro_h_norm": float(2.0 * soft_hh[k] / ch),
-                        "x_norm": float(soft_pos[k, 0] / cw),
-                        "y_norm": float(soft_pos[k, 1] / ch),
-                        "target_x_norm": float(nx / cw),
-                        "target_y_norm": float(ny / ch),
-                        "dx_norm": float((nx - soft_pos[k, 0]) / cw),
-                        "dy_norm": float((ny - soft_pos[k, 1]) / ch),
-                        "source_field_norm": float(local_cong[k] / field_max),
-                        "target_field_norm": float(tgt_cong[t] / field_max),
-                        "source_congestion_norm": tf.cong_at(ri[k], ci[k]),
-                        "target_congestion_norm": tf.cong_flat(target_flat),
-                        "source_density_norm": tf.dens_at(ri[k], ci[k]),
-                        "target_density_norm": tf.dens_flat(target_flat),
-                        "source_hot_rank_norm": float(
-                            np.where(hot == k)[0][0] / max(len(hot) - 1, 1)
-                        ),
-                        "target_cold_rank_norm": float(candidate_rank / max(len(cand) - 1, 1)),
-                        "wl_delta": float(wl_d),
-                    }
-                    trace.record(
-                        operator="soft_relocation",
-                        field=trace_field,
-                        group_id=group_id,
-                        state_score=state_score,
-                        trial_score=s,
-                        candidate_rank=candidate_rank,
-                        group_size=len(cand),
-                        candidate_source="cold_cell",
-                        features=features,
-                    )
-                    shadow_candidates.append(
-                        {
-                            "operator": "soft_relocation",
-                            "features": features,
-                            "candidate_rank": candidate_rank,
-                            "score_gain": float(state_score - s),
-                        }
-                    )
                 if s < best_score - 1e-9:
                     best_score = s
                     best_k_xy = (nx, ny)
@@ -2372,14 +2278,6 @@ def _soft_relocation_moves(
                 accepts += 1
             else:
                 incremental_scorer._revert_prep_soft(prep)
-            if trace is not None:
-                shadow_rank_group(
-                    operator="soft_relocation",
-                    candidates=shadow_candidates,
-                    trace=trace,
-                    field=trace_field,
-                    group_id=group_id,
-                )
         except Exception:
             incremental_scorer._revert_prep_soft(prep)
             raise
