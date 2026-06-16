@@ -16,6 +16,8 @@ optionally applies coldspot tightening to compact clusters further. The exact
 proxy is still used for evaluation and local gates, but it is no longer the
 primary design objective.
 
+The placement objective note is in [docs/general/OBJECTIVES.md](docs/general/OBJECTIVES.md).
+
 Current smoke reference:
 
 ```text

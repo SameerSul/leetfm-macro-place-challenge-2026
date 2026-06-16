@@ -63,3 +63,6 @@ Grouped DREAMPlace output is not returned directly. The hierarchy pipeline:
 
 The exact proxy is still used for evaluator reports and local gates, but
 DREAMPlace's main job is to provide a hierarchy-aware global layout.
+
+For the structural placement objectives used across the hierarchy flow, see
+[docs/general/OBJECTIVES.md](../general/OBJECTIVES.md).

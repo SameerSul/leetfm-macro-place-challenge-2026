@@ -30,6 +30,9 @@ But the system now intentionally trades proxy for hierarchy. Historical
 `--all` scores around 1.12 in `PROGRESS.md` describe the deleted proxy path, not
 the current hierarchy output.
 
+The structural objectives that drive the hierarchy flow are documented in
+[OBJECTIVES.md](OBJECTIVES.md).
+
 Current verified smoke:
 
 ```text
