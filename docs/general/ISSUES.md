@@ -250,48 +250,29 @@ disproven experiments (WireMask greedy, optimize_stdcells, net-centroid hard
 bias) *forced* clustering. This only *proposes* it behind the exact gate; the
 kept moves actually *reduce* congestion (it's the term that drops in every win).
 
-**Evidence:** phase-isolation harness (`V2_LSMC_ISOLATE=1`, same incumbent /
-seed / budget) — cluster kicks beat random **6/6** benchmarks, −0.0053 avg.
-Paired multi-seed `--all` ON (p=1.0, both) vs OFF — **3/3 seeds**, mean
-1.1206→1.1183 (−0.0023), 0 regressions, all 17/17 VALID. Seed 0 was a favorable
-draw (−0.0054); steady-state ~−0.0008/seed. Shipped as default in `src/main.py`
-(`_enable_cluster_kick_defaults`), overridable via `V2_GPU_EXPLORE_CLUSTER_P`
-(0 disables), `V2_GPU_EXPLORE_CLUSTER_MODE`, `V2_GPU_EXPLORE_CLUSTER_MAXSZ`,
-`V2_GPU_EXPLORE_CLUSTER_SOFT`, `V2_CLUSTER_MAX_FANOUT`, and
-`V2_CLUSTER_MIN_EDGE`. Verified: `test/verification/_verify_cluster_kick.py`.
+**Historical evidence:** phase-isolation harness (`V2_LSMC_ISOLATE=1`, same
+incumbent / seed / budget) — cluster kicks beat random **6/6** benchmarks,
+−0.0053 avg. Paired multi-seed `--all` ON (p=1.0, both) vs OFF — **3/3
+seeds**, mean 1.1206→1.1183 (−0.0023), 0 regressions, all 17/17 VALID. This
+was briefly shipped in the deleted proxy path, then removed on 2026-06-16. The
+old `_enable_cluster_kick_defaults`, `V2_GPU_EXPLORE_CLUSTER_*`, and
+`_verify_cluster_kick.py` integration points are not active code.
 
-**Open follow-ups (higher ceiling):** cluster-outlier *relocation* move (pull a
-macro far from its cluster centroid toward a cold region, gated by proxy). A
-grouped DREAMPlace variant now exists behind `V2_DP_GROUP`; it should remain
-treated as an env-gated candidate source until paired evidence justifies any
-default change. The marginal `--all` gain from kicks alone is small.
+**Superseded follow-up:** this proxy-path cluster-kick direction was closed.
+Current hierarchy work uses grouped DREAMPlace directly inside
+`_hierarchy_floorplan()` and keeps only `_coldspot_cluster_kick()` as a narrow,
+exact-gated hierarchy-tightening helper.
 
-### S17. LSMC staged rollout — current work is generic multi-incumbent LSMC
+### S17. LSMC staged rollout — historical proxy-path work
 
-**Current state (2026-06-15):** cong-grad phases have been deleted from the
-active pipeline, and LSMC is the remaining final exploration layer. The active
-LSMC expansion is intentionally generic: it seeds from legalized baseline,
-random-noise restarts, random-order legalize trials, pre-R2 best, and post-R2
-best. It does **not** use DREAMPlace/bridge-specific placements as LSMC seeds
-and does **not** use cong-grad-derived kicks or seed sources. Normal
-`src/main.py` runs enable cluster-coherent kicks by default, with random-kick
-fallback and the same exact post-descent accept gate.
-
-**Next LSMC improvement methods:** update and gate one at a time:
-- seed-pool calibration (`V2_GPU_EXPLORE_MAX_SEEDS`, `SEED_MARGIN`, and per-seed
-  time allocation);
-- generic geometry-only kick families (area-weighted picks, displacement-window
-  kicks, edge-biased targets, group kicks);
-- soft-aware hard-kick recovery using existing soft relocation;
-- adaptive kick pre-screen based on score time and seed type;
-- a small R2-as-descent experiment where acceptance still happens after the
-  final exact score;
-- chain-local non-greedy acceptance variants that remain final-gated against the
-  global incumbent.
+**Superseded 2026-06-16:** generic multi-incumbent LSMC, random-noise restarts,
+R2 seed pools, cluster-coherent kicks, and `V2_GPU_EXPLORE_*` defaults were
+deleted with the old proxy optimizer. The current production path is
+hierarchy-only and enters `_hierarchy_floorplan()` unconditionally.
 
 Lesson from the earlier pruning gates: judge changes on full 17-benchmark paired
-runs, not prefix smokes. The final LSMC gate cannot itself accept a worse score,
-but time displaced from R2/post-soft phases can still regress the final result.
+runs, not prefix smokes. That lesson still applies, but the specific LSMC
+mechanism below is historical.
 
 ### S17-prev. Stages 2a+2b (best --all 1.1176)
 
@@ -317,7 +298,8 @@ revisit. NOT a candidate by itself: annealed acceptance (LAHC disproven). **Next
 lever:** LSMC-only seed/kick/descent improvements from the current generic pool.
 
 **Stage 2a verdict (2026-06-12 evening):** post-R2 LSMC kick/descent/accept
-(`lsmc_explore.py`) shipped default-on under CUDA, kick=0.02, 30s slice.
+(`lsmc_explore.py`) shipped default-on under CUDA in the old proxy path,
+kick=0.02, 30s slice.
 Full-stack paired gate: seed1 −0.0051 (on-arm 1.1194 = NEW BEST), seed2
 −0.0033. Design invariants discovered: the accept gate must be the final
 quality phase (earlier hooks accepted states that lost after later
@@ -348,13 +330,10 @@ speedups. Divergences vs the CPU policy are deterministic (ibm18 seed1 +0.0188
 replays bit-exact) but seed-dependent in sign — the GPU policy finds different
 basins, not better ones, when single-candidate.
 
-**Open → Stage 2 (`V2_GPU_EXPLORE`):** build the chain engine per GPU-ops.md
-§2 (kick ≈0.10 → cuda_delta descent → post-descent zero-temp accept, batched
-chains) + §3 handoff (spiral legalize → fresh `IncrementalScorer` → adaptive K
-from `t_one_score`). The Stage 1 result sharpens the thesis: single-candidate
-GPU policy is a wash, so the win must come from *many* candidates + the exact
-gate harvesting the ±0.02 per-benchmark spread. Verification checklist in
-GPU-ops.md §6 before any score run; gate vs Stage 1 via paired multi-seed.
+**Closed → Stage 2 (`V2_GPU_EXPLORE`):** this plan was not carried forward into
+the hierarchy-only system. Future GPU work should start from grouped
+DREAMPlace, region relief, or hierarchy-specific proposal evaluation rather
+than restoring the proxy LSMC stack by default.
 
 ### S16. Silent DREAMPlace ABI break — DP was dead since S13 (SHIPPED 2026-06-10 — 1.1379 → 1.1272)
 

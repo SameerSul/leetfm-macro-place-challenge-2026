@@ -40,13 +40,15 @@ Target: beat RePlAce avg of 1.4578.
 > netlists hard macros connect THROUGH standard cells, not to each other (ibm01
 > has 0 hard-to-hard nets), so "subsystems" are derived via union-find over the
 > bipartite hard↔soft graph on low-fanout nets (`local_search/clusters.py`).
-> LSMC then kicks a whole cluster as a unit — `gather` (collapse members to one
-> anchor, legalizer packs them) or `translate` (rigid relocate) — instead of
-> scattering random macros. Enabled in `src/main.py`
-> (`_enable_cluster_kick_defaults`, overridable via `V2_GPU_EXPLORE_CLUSTER_*`);
+> LSMC then kicked a whole cluster as a unit — `gather` (collapse members to one
+> anchor, legalizer packed them) or `translate` (rigid relocate) — instead of
+> scattering random macros. It was enabled in the then-current `src/main.py`
+> through `_enable_cluster_kick_defaults` and `V2_GPU_EXPLORE_CLUSTER_*`; those
+> integration points were later deleted with the proxy path.
 > isolation-harness `V2_LSMC_ISOLATE=1` confirmed cluster kicks beat random
-> 6/6 from an identical incumbent (−0.0053 avg, congestion-driven). Verified:
-> `test/verification/_verify_cluster_kick.py`.
+> 6/6 from an identical incumbent (−0.0053 avg, congestion-driven). The old
+> `test/verification/_verify_cluster_kick.py` verifier was deleted with that
+> code.
 >
 > **HEADLINE (2026-06-14, current `varrahan` 786e749): `--all` avg = 1.1203,
 > 17/17 VALID, 0 overlaps, 2806s (~47min), default seed.** This is the
@@ -129,11 +131,13 @@ Target: beat RePlAce avg of 1.4578.
 > bit-equivalent to the prior 2a default. Logs `ml_data/compare/stage2b_*`.
 > Default-path ibm01 smoke: 0.9134 VALID. Next: 2c options re-analysis.
 
-> **Status (2026-06-12 evening — Stage 2 LSMC exploration SHIPPED AS DEFAULT;
+> **Historical status (2026-06-12 evening — Stage 2 LSMC exploration shipped as
+> default in the old proxy path;
 > seed-1 on-arm avg 1.1194 is the NEW BEST `--all`):** the post-R2 LSMC
 > kick/descent/accept phase (`local_search/lsmc_explore.py`, hook as the FINAL
-> quality phase in `macro_placer.py`) is default-on under CUDA
-> (`V2_GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice —
+> quality phase in `macro_placer.py`) was default-on under CUDA
+> (`V2_GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice, in that
+> deleted proxy path —
 > exactly the measured gate config. **Full-stack paired gate (DP + ML filter
 > verified active in every log; user-authorized 2-seed bar): seed1 off 1.1245 /
 > on 1.1194 (−0.0051), seed2 1.1275 / 1.1242 (−0.0033) — 2/2 wins, mean

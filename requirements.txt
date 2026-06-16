@@ -10,7 +10,7 @@ numba>=0.59
 pytest>=7.0.0
 pytest-cov>=4.0.0
 black>=23.0.0
-flake8>=6.0.0; python_version >= "3.8.1"
+flake8>=6.0.0
 
 # ML candidate-ranker training (mirror pyproject.toml `[project.optional-dependencies].ml`)
 xgboost>=3.2.0
