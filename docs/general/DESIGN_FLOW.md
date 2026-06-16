@@ -7,11 +7,10 @@ This document describes the production flow implemented by
 
 `MacroPlacer.place()` is a budget-gated, accept-only search over macro
 placements. It legalizes the benchmark's initial hard macro positions, launches
-three standard DREAMPlace subprocesses, plus an optional grouped-DP subprocess
-when `V2_DP_GROUP` is enabled, as asynchronous candidate generators when the
-bridge is available. It then explores generic random/local restart candidates,
-runs a deep R2 local-search finisher, and uses LSMC as the final global
-exploration layer.
+three standard DREAMPlace subprocesses as asynchronous candidate generators when
+the bridge is available, explores generic random/local restart candidates, runs
+a deep R2 local-search finisher, and uses LSMC as the final global exploration
+layer.
 
 Every candidate that can affect the incumbent is judged by the exact proxy:
 
@@ -26,7 +25,10 @@ an exact proxy score is lower.
 
 ```mermaid
 flowchart TD
-    A[Input circuit and initial macro locations] --> B[Build scoring model]
+    A[Input circuit and initial macro locations] --> RL{Hierarchy / region-lock mode requested?}
+    RL -->|Yes| HR[Regional pipeline V2_HIER_FLOORPLAN or V2_REGION_LOCK: grouped DREAMPlace, then cluster-consecutive legalize, then region-locked congestion relief]
+    HR --> O
+    RL -->|No, leaderboard path| B[Build scoring model]
     B --> C[Repair hard-macro overlaps]
     C --> D{Can exact proxy score run fast enough?}
     D -->|No| E[Use the repaired initial placement]
@@ -56,13 +58,14 @@ flowchart TD
     subgraph S2[Final improvement loop]
         L[Improve the best placement locally]
         M[Move soft macros if time remains]
-        N[Final random exploration]
+        N[Final exploration: random-kick LSMC]
 
         L --> M
         M --> N
     end
 
     X --> L
+    E --> O
     N --> O[Clamp all movable macros inside the canvas]
     O --> P[Return final macro centers]
 ```
@@ -73,9 +76,6 @@ flowchart TD
 - **DREAMPlace:** when available, three async DP variants are scored as ordinary
   candidates. They may update `best_pl`, but they are not retained as special
   LSMC seed basins.
-- **Grouped DREAMPlace:** optional and env-gated by `V2_DP_GROUP`. It adds
-  synthetic cluster clique nets to the Bookshelf conversion and scores the
-  resulting DP placement as another ordinary candidate.
 - **Random restarts:** Gaussian perturbations of initial hard positions,
   legalized and exact-scored.
 - **Random-order legalization:** three alternate legalizer tie-break orders from
@@ -113,15 +113,41 @@ flowchart TD
   variant; exact incremental scoring still gates every committed move.
 - `V2_GPU_EXPLORE=auto` enables the final LSMC layer when CUDA is visible.
   `V2_GPU_EXPLORE_MULTI_INCUMBENT`, `V2_GPU_EXPLORE_MAX_SEEDS`, and
-  `V2_GPU_EXPLORE_SEED_MARGIN` control the generic seed pool.
-- `src/main.py` enables cluster-coherent LSMC kicks by default unless the caller
-  already set `V2_GPU_EXPLORE_CLUSTER_P`. The default is
-  `V2_GPU_EXPLORE_CLUSTER_P=1.0` and `V2_GPU_EXPLORE_CLUSTER_MODE=both`, with
-  random-kick fallback when no usable cluster exists. Direct imports of
-  `placer.pipeline.macro_placer` do not apply this wrapper default.
+  `V2_GPU_EXPLORE_SEED_MARGIN` control the generic seed pool. The LSMC kick is a
+  random per-macro kick; a cluster-coherent kick variant was tested and removed
+  as noise (ISSUES.md S20).
 - Every return path passes through a final in-bounds clamp for movable macros.
   Hard macros are already legalized by the normal path; the clamp mainly protects
   against soft macro coordinates inherited from input data or DREAMPlace output.
+
+## Alternate path: hierarchy-floorplan / region-lock mode (opt-in, non-proxy)
+
+The flow above optimizes the proxy, which **rewards spreading** connected macros
+apart. When the goal is instead to keep connected subsystems together (a
+hierarchical floorplan), `place()` short-circuits at entry into a separate
+regional pipeline (`_hierarchy_floorplan`). It is **off by default and never
+touches the leaderboard path**; enable with `V2_HIER_FLOORPLAN=1` (explicit
+non-proxy deliverable) or `V2_REGION_LOCK=1` (the production output should be
+region-locked) — both route here.
+
+This path trades proxy for hierarchy by design:
+
+1. Derive connectivity clusters (subsystems) and the soft macros each one drives.
+2. Run grouped DREAMPlace (synthetic per-cluster clique nets) so each subsystem
+   is pulled together in global placement.
+3. Legalize with cluster members placed back-to-back, so each subsystem keeps
+   its region instead of being scattered by the default legalize order.
+4. **Region-locked congestion relief** (`V2_HIER_REGION_RELIEF`, default on
+   here): move hard macros to less-congested cells *within their own cluster
+   region only* (a soft fence), then clean up soft macros. This lowers
+   congestion while keeping connected macros close — e.g. ibm10 proxy
+   1.82→1.68 with cluster closeness essentially preserved. The lock↔relief
+   tradeoff is tuned by `V2_HIER_REGION_DENSITY` (higher = tighter regions).
+
+Region-locking is confined to this dedicated pipeline because region-biasing the
+*main* flow's relocation alone is overridden by its spread-oriented phases
+(DREAMPlace candidates, noise restarts, LSMC kicks). See ARCHITECTURE.md §5.9
+and ISSUES.md S20.
 
 ## Entry points
 

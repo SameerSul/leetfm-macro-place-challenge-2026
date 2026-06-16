@@ -182,3 +182,103 @@ def cluster_min_edge() -> int:
         return max(1, int(os.environ.get("V2_CLUSTER_MIN_EDGE", "2")))
     except ValueError:
         return 2
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def compute_region_bbox(hard_xy, sizes, hw, hh, cw, ch, n, labels, clusters,
+                        target_density: float = 0.5, margin: float = 0.0,
+                        singleton_window: float = 0.05) -> np.ndarray:
+    """Per-macro CENTER-feasible region box [n,4] = (xlo, ylo, xhi, yhi).
+
+    A macro's center must stay within its box to keep its whole footprint inside
+    the cluster region (the box is pre-inset by the macro's half-extents, so a
+    plain `xlo <= cx <= xhi` test region-locks it). Clustered macros share a box
+    sized to give the cluster breathing room for congestion relief:
+    `region_area = member_area / target_density`, at the cluster's current aspect
+    ratio, never smaller than the current member footprint (so macros aren't
+    trapped), centered on the cluster centroid, clipped to canvas by shifting.
+    `margin>0` uses the simpler footprint+margin sizing instead. Singletons get a
+    local window (`singleton_window`; 0 => pinned at their current spot).
+    """
+    region = np.empty((n, 4), dtype=np.float64)
+    big = max(float(cw), float(ch))
+
+    for mem in clusters.values():
+        mem = np.asarray(mem, dtype=np.int64)
+        xs, ys = hard_xy[mem, 0], hard_xy[mem, 1]
+        # Center on the footprint MIDPOINT (not the mean) so a region sized to
+        # the footprint width always contains every member even when the
+        # centroid is skewed.
+        cx = float(xs.min() + xs.max()) / 2.0
+        cy = float(ys.min() + ys.max()) / 2.0
+        mhw, mhh = float(hw[mem].max()), float(hh[mem].max())
+        bw0 = max(float(xs.max() - xs.min()) + 2.0 * mhw, 1e-6)
+        bh0 = max(float(ys.max() - ys.min()) + 2.0 * mhh, 1e-6)
+        if margin > 0.0:
+            rw, rh = bw0 + 2.0 * margin * big, bh0 + 2.0 * margin * big
+        else:
+            member_area = float(np.sum(sizes[mem, 0] * sizes[mem, 1]))
+            region_area = member_area / max(target_density, 1e-3)
+            ar = bw0 / bh0
+            rh = float(np.sqrt(region_area / ar))
+            rw = ar * rh
+            rw, rh = max(rw, bw0), max(rh, bh0)  # never below current footprint
+        x0, x1 = cx - rw / 2.0, cx + rw / 2.0
+        y0, y1 = cy - rh / 2.0, cy + rh / 2.0
+        if x0 < 0.0:
+            x1 -= x0; x0 = 0.0
+        if x1 > cw:
+            x0 = max(x0 - (x1 - cw), 0.0); x1 = cw
+        if y0 < 0.0:
+            y1 -= y0; y0 = 0.0
+        if y1 > ch:
+            y0 = max(y0 - (y1 - ch), 0.0); y1 = ch
+        # Inset to center-feasible per member half-extent.
+        region[mem, 0] = x0 + hw[mem]
+        region[mem, 1] = y0 + hh[mem]
+        region[mem, 2] = x1 - hw[mem]
+        region[mem, 3] = y1 - hh[mem]
+
+    # Singletons (unclustered): local window, or pinned when window is 0.
+    sing = np.flatnonzero(labels < 0)
+    if sing.size:
+        w = singleton_window * big
+        region[sing, 0] = np.clip(hard_xy[sing, 0] - w, hw[sing], cw - hw[sing])
+        region[sing, 2] = np.clip(hard_xy[sing, 0] + w, hw[sing], cw - hw[sing])
+        region[sing, 1] = np.clip(hard_xy[sing, 1] - w, hh[sing], ch - hh[sing])
+        region[sing, 3] = np.clip(hard_xy[sing, 1] + w, hh[sing], ch - hh[sing])
+
+    # Always contain the macro's current center, so a no-op move is in-region
+    # (the macro is never forced out of its own box). This also subsumes the
+    # degenerate-box case (footprint wider than region).
+    region[:, 0] = np.minimum(region[:, 0], hard_xy[:, 0])
+    region[:, 2] = np.maximum(region[:, 2], hard_xy[:, 0])
+    region[:, 1] = np.minimum(region[:, 1], hard_xy[:, 1])
+    region[:, 3] = np.maximum(region[:, 3], hard_xy[:, 1])
+    return region
+
+
+def hier_region_density() -> float:
+    """Target packing density for area-based region sizing (V2_HIER_REGION_DENSITY).
+
+    Higher = tighter regions (more region-locked, less relief); lower = bigger
+    regions (more congestion relief, looser hierarchy). 0.65 leans toward keeping
+    macros locked while still relieving congestion.
+    """
+    return _env_float("V2_HIER_REGION_DENSITY", 0.65)
+
+
+def hier_region_margin() -> float:
+    """Fractional-margin fallback region sizing (V2_HIER_REGION_MARGIN)."""
+    return _env_float("V2_HIER_REGION_MARGIN", 0.0)
+
+
+def hier_region_singleton() -> float:
+    """Local-window half-width fraction for unclustered macros (V2_HIER_REGION_SINGLETON)."""
+    return _env_float("V2_HIER_REGION_SINGLETON", 0.05)

@@ -88,7 +88,7 @@ Congestion dominates by ~30x. Optimizing WL alone reliably increases proxy cost.
 ### Phase pipeline (per benchmark call)
 
 1. Load seed -- read `initial.plc`, legalize hard-macro overlaps.
-2. DP variants -- async DREAMPlace candidates are launched when the bridge is available; they are scored as ordinary candidates only. `V2_DP_GROUP` can add one grouped DP variant with synthetic cluster nets.
+2. DP variants -- async DREAMPlace candidates are launched when the bridge is available; they are scored as ordinary candidates only.
 3. Random restarts -- Gaussian perturbations of initial hard positions, legalize, exact-score.
 4. Phase 9 -- 3 random-order legalization trials.
 5. R2 -- multi-round local refinement:
@@ -98,7 +98,7 @@ Congestion dominates by ~30x. Optimizing WL alone reliably increases proxy cost.
    - soft-soft, hard-soft, and hard-soft-soft swaps/cycles
    - 2-opt: pairwise swap accepting proxy improvements
 6. Post-R2 soft relocation -- leftover soft congestion/density cleanup.
-7. LSMC final exploration -- cluster-coherent or random hard-macro kick, legalize, descend with hard/soft moves, accept only exact post-descent improvement.
+7. LSMC final exploration -- random hard-macro kick, legalize, descend with hard/soft moves, accept only exact post-descent improvement.
 
 The congestion-gradient spine, DP-rescue chains, TOP-K cong-grad, and multi-seed
 2-opt phase are no longer part of the active pipeline. LSMC seed collection is
@@ -182,13 +182,17 @@ With L-change, ibm15-18 each get the 110s PER_BENCH_FLOOR_S guarantee:
 The placer is invoked once per benchmark via `MacroPlacer.place(benchmark) →
 torch.Tensor[num_macros, 2]`. Internally, `place()` runs the following pipeline:
 
+> **Note — opt-in alternate path.** When `V2_HIER_FLOORPLAN=1` or
+> `V2_REGION_LOCK=1` is set, `place()` short-circuits at entry into the
+> non-proxy regional pipeline (§5.9) and **none of the proxy pipeline below
+> runs**. The diagram below is the default leaderboard/proxy path.
+
 The pipeline is **a single sequential spine** with one genuinely concurrent
-branch: DREAMPlace is launched as up to 3 subprocesses at `place()` entry, plus
-one optional grouped-DP subprocess when `V2_DP_GROUP` is enabled. DREAMPlace
-outputs are harvested before random restarts and scored as ordinary candidates;
-they are not retained as later LSMC seed basins. Everything else runs in order on
-the main thread, except Phase 9 legalization trials, which may run in a small
-thread pool before sequential exact scoring.
+branch: DREAMPlace is launched as up to 3 subprocesses at `place()` entry.
+DREAMPlace outputs are harvested before random restarts and scored as ordinary
+candidates; they are not retained as later LSMC seed basins. Everything else runs
+in order on the main thread, except Phase 9 legalization trials, which may run in
+a small thread pool before sequential exact scoring.
 
 ```
    ┌──────────────────────────────────────────────────────────────────────┐
@@ -201,7 +205,6 @@ thread pool before sequential exact scoring.
             │                          │  DREAMPlace ×3  (subprocess,          │
             │                          │  runs concurrently with the spine)    │
             │                          │  lo-fix / hi-mov / hi-fix configs     │
-            │                          │  + optional grouped-DP candidate      │
             │                          │  legalize + exact-score as candidates │
             │                          └───────────────────────────────────────┘
             ▼                                                           │
@@ -291,12 +294,12 @@ Everything above runs inside a single per-benchmark budget
 | Phase | What it does | Why |
 |---|---|---|
 | **0 Baseline** | Legalize from `initial.plc` via `_will_legalize` (vectorized greedy spiral) | Establish a valid baseline; preserve the hand-tuned spread |
-| **DREAMPlace ×3 (async)** | Launch DP at `place()` entry in 3 configs (lo-fix, hi-mov, hi-fix); `V2_DP_GROUP` can add a grouped variant with synthetic cluster nets; legalize and exact-score completed outputs | Add independent candidate placements without blocking the main spine |
+| **DREAMPlace ×3 (async)** | Launch DP at `place()` entry in 3 configs (lo-fix, hi-mov, hi-fix); legalize and exact-score completed outputs | Add independent candidate placements without blocking the main spine |
 | **Noise restarts** | Inline (sequential) random Gaussian perturbations of `initial.plc`, ~24 fracs spanning 1%–25%, accept-on-true-proxy | Broad basin-hopping around the hand-tuned seed; fills budget between the directed phases |
 | **9 random-order legalize** | N=3 trials with randomized secondary-sort key in `_will_legalize` | Different legalization arrangements from the same starting positions |
 | **R2 interleave (≤20 budget-gated rounds)** | Hard reloc ⇄ soft-cong reloc ⇄ soft-density reloc ⇄ 2-opt cleanup plus soft/hard-soft swaps and cycles | The dominant lever — see § 2.3 |
 | **Post-R2 soft relocation** | Short leftover-budget soft relocation by congestion then density | Clean up soft macro placement after the main R2 loop saturates |
-| **LSMC final exploration** | For generic seed pool, cluster-coherent or random hard kick → legalize → hard/soft descent → exact accept | Basin exploration without bridge/cong-grad coupling; final exact gate prevents accepted regressions |
+| **LSMC final exploration** | For generic seed pool, random hard kick → legalize → hard/soft descent → exact accept | Basin exploration without bridge/cong-grad coupling; final exact gate prevents accepted regressions |
 
 > **Historical phase numbers.** Some older notes refer to phases 1-8 and
 > multi-seed 2-opt. Those were experimental labels, not a required sequence.
@@ -381,15 +384,12 @@ is already locally refined:
 
 1. Select one of the generic seed placements: baseline, random-noise restart,
    random-order legalize, pre-R2 best, or post-R2 best.
-2. Apply a large-step kick. Through `src/main.py`, cluster-coherent kicks are the
-   default (`V2_GPU_EXPLORE_CLUSTER_P=1.0`, `MODE=both`) unless the caller
-   overrides them. Direct pipeline imports default to random per-macro kicks. A
-   cluster kick picks a derived connectivity cluster and moves it as a unit:
-   `gather` collapses members toward one anchor before legalization, while
-   `translate` rigidly relocates the group. Clusters are inferred from low-fanout
-   hard-macro connectivity in `local_search/clusters.py`; connected soft macros
-   can be co-moved and clipped before descent. This remains independent of LSMC
-   seed selection and the retired cong-grad machinery.
+2. Apply a large-step random kick to a small fraction of movable hard macros.
+   (A "cluster-coherent" kick variant — move a derived connectivity cluster as a
+   unit — was built and tested but **removed** as a dead-end: paired multi-seed
+   `--all` showed it was within run-to-run noise, since the late, proxy-gated kick
+   only changes the result when a clustered config beats the refined incumbent,
+   which clustering rarely does. See ISSUES.md S20.)
 3. Legalize the kicked hard placement.
 4. Build a fresh `IncrementalScorer` on the kicked state.
 5. Descend through hard relocation by congestion/density and soft relocation by
@@ -601,6 +601,17 @@ they contribute to the field but don't move. Softs co-adapt to each other
 *through the shared grid* — a later soft in the same pass sees the field
 updated by earlier commits.
 
+**Optional region soft-lock (`region_bbox` / `region_bias`).** `_relocation_moves`
+(and its propose-all variant) accept an optional per-macro center-feasible box
+`region_bbox[n,4]` plus a `region_bias` weight. When set, step 3's distance
+ranking adds a penalty `region_bias · max(cw,ch)² ` to every candidate cell
+*outside* macro `i`'s box, pushing in-region cells to the front so they fill
+`n_targets` first; out-of-region cells are reached only when in-region options
+run out. It is a **soft** lock — a macro can still exit its box on a large
+proxy win — and is **bit-identical when `region_bbox is None`**, which the
+leaderboard pipeline always leaves it. Only the hierarchy-floorplan region-relief
+pass (§5.9) currently sets it. See ISSUES.md S20.
+
 ### 5.7 IncrementalScorer internals (B3 phases + P3)
 
 The scorer is built in `IncrementalScorer.__init__` from the current
@@ -647,6 +658,63 @@ scorer's correctness. Every move-path is verified bit-exact against
 Every speedup added to the scoring path must pass these verifiers before
 shipping. This is the discipline that lets us add five mutually compounding
 speedups without ever introducing a regression.
+
+### 5.9 Hierarchy-floorplan mode + region-locked relief (non-proxy, opt-in)
+
+The main pipeline (§4) optimizes the congestion-dominated proxy, which **rewards
+spread** — connected subsystems get scattered across the chip. The
+hierarchy-floorplan mode is a separate, opt-in production path
+(`_hierarchy_floorplan` in `pipeline/macro_placer.py`) that instead keeps
+connected subsystems together, **trading proxy for hierarchy by design**. It is
+off by default and never affects the leaderboard path. Enable with
+`V2_HIER_FLOORPLAN=1` (explicit non-proxy deliverable) or `V2_REGION_LOCK=1`
+(production output should respect regions) — both route to the same path.
+
+**The regional pipeline:**
+
+1. **Derive clusters** — connectivity "subsystems" from the netlist. Hard macros
+   are grouped by a weighted hard-hard graph (each low-fanout net forms a clique
+   among its hard pins; merge edges with shared-net count ≥ `V2_CLUSTER_MIN_EDGE`,
+   default 2). `derive_cluster_softs` then attaches each soft macro to the cluster
+   it shares the most nets with. NB: macro index space A (placement order) vs
+   space B (`modules_w_pins`, ports-first) — clustering runs in B and maps back to
+   A; see ISSUES.md S20.
+2. **Grouped global placement** — run DREAMPlace with synthetic clique nets per
+   cluster (the Bookshelf grouping in `pb_to_bookshelf.py`, weight
+   `V2_HIER_GROUP_WEIGHT`, default 8), which pulls each subsystem together in the
+   analytic placement.
+3. **Cluster-consecutive legalization** — legalize with the cluster members
+   placed back-to-back (the legalizer's `order` parameter), so each subsystem
+   claims its region before others invade. This recovers ~42% of the grouping
+   that the default global-largest-first order scatters at legalize time.
+4. **Region-locked congestion relief** (`V2_HIER_REGION_RELIEF`, default on in
+   this mode) — the key lever. The dense per-cluster packing has bad local
+   congestion, and the legalized hard macros can't be moved by soft-only cleanup.
+   This pass moves **hard macros to colder cells within their own cluster region**:
+   - `compute_region_bbox` (clusters.py) sizes a per-cluster box, area =
+     member-area / `V2_HIER_REGION_DENSITY` (default 0.65; higher = tighter lock /
+     less relief), centered on the footprint midpoint, never smaller than the
+     current footprint, always containing each macro's current spot.
+   - It then runs region-biased hard `_relocation_moves` (§5.6 soft-lock) +
+     soft relocation, interleaved and true-proxy-gated, finishing with a
+     cluster-consecutive safety legalize. Knobs: `V2_REGION_BIAS` (1.0),
+     `V2_HIER_REGION_ROUNDS` (2), `V2_HIER_REGION_BUDGET_S` (40).
+
+   **Result:** proxy drops while hard↔hard and intra-cluster closeness stay
+   ~unchanged — ibm01 1.0194→0.9469 (−0.073, closeness Δ≈0), ibm10
+   1.8215→1.6809 (−0.14, closeness loosens modestly, tunable). Congestion is
+   relieved locally without sending any macro far from its cluster.
+
+**Why region-locking is confined to this dedicated path.** Region-biasing only
+the *main* pipeline's R2 relocation is ineffective: its other phases (DP
+candidates, noise restarts, LSMC kicks) generate spread placements that win on
+proxy and override the bias, and anchoring regions to the already-spread
+`initial.plc` makes the boxes too loose (measured no-op: ibm10 1.0834→1.0818).
+So `V2_REGION_LOCK` runs the dedicated regional pipeline above rather than
+trying to constrain the spread-oriented main flow. Validity is asserted by
+`test/verification/_verify_region_relief.py`; the proxy/closeness tradeoff is
+measured by `test/diagnostic/_hier_region_relief.py`. Full investigation:
+ISSUES.md S20.
 
 ---
 

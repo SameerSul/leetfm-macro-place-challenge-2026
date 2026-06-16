@@ -60,17 +60,22 @@ This is the objective, not a tuning gap. Key results:
   then hard, then soft). Filtering `ref_idx < n` clusters PORTS, not hard
   macros. Correct hard clusters need a weighted hard-hard graph with
   `min_edge>=2` (else one blob). See `local_search/clusters.py`.
-- **Cluster-coherent LSMC kick (S18): noise.** With correct clusters, paired
-  `--all` is within the ~±0.012 run-to-run noise (one run +0.0106, next −0.0145;
-  OFF alone swings 1.1201↔1.1327). Closeness effect also at noise. The kick is a
-  LATE, proxy-gated move: it only changes the result if a clustered config beats
-  the refined incumbent on proxy — which clustering rarely does. Self-defeating
-  for hierarchy. **Recommend kick default OFF** (still env-gated ON from b8d8d7c).
+- **Cluster-coherent LSMC kick (S18): noise → REMOVED.** With correct clusters,
+  paired `--all` was within the ~±0.012 run-to-run noise (one run +0.0106, next
+  −0.0145; OFF alone swings 1.1201↔1.1327). Closeness effect also at noise. The
+  kick is a LATE, proxy-gated move: it only changes the result if a clustered
+  config beats the refined incumbent on proxy — which clustering rarely does.
+  Self-defeating for hierarchy. **The kick, its soft co-move, the
+  `V2_LSMC_ISOLATE` comparison harness, the `_enable_cluster_kick_defaults`
+  wrapper, and `_verify_cluster_kick.py` were all deleted as dead-end code**
+  (LSMC reverts to the random per-macro kick; production score unchanged).
 - **DP soft grouping works structurally.** Clique-nets per cluster in Bookshelf
-  (`pb_to_bookshelf.py`, env `V2_DP_GROUP`) tighten raw DP output monotonically:
-  ibm10 hard↔hard 0.0190→0.0147, intra 0.0410→0.0250 as weight 0→16. But the
-  grouped DP candidate is competitive-not-winning (~1.38) so it doesn't shape the
-  final placement on its own.
+  (`pb_to_bookshelf.py`) tighten raw DP output monotonically: ibm10 hard↔hard
+  0.0190→0.0147, intra 0.0410→0.0250 as weight 0→16. But as a standalone MAIN-
+  pipeline candidate the grouped DP placement is competitive-not-winning (~1.38),
+  so it never shaped the final placement — the `V2_DP_GROUP` main-pipeline config
+  was **removed** as dead-end. The Bookshelf grouping itself stays (the
+  hierarchy-floorplan mode uses it via `run_dreamplace(cluster_groups=…)`).
 - **Legalization destroys grouping; order recovers ~half (free).** Making the
   grouped DP overlap-free scatters it (ibm10 hh 0.019→0.080 default order).
   **Cluster-consecutive order** (each cluster's members back-to-back) recovers
@@ -85,9 +90,38 @@ scales with hierarchy structure: ibm01 ~1.02 (+0.10), ibm10 ~1.82 (+0.74),
 ibm17 ~2.52 (+1.17, has a 351-macro cluster). Knobs: `V2_HIER_GROUP_WEIGHT` (8),
 `V2_CLUSTER_MIN_EDGE` (2), `V2_CLUSTER_MAX_FANOUT` (8). `_hierarchy_floorplan` in
 `pipeline/macro_placer.py`; verified `test/verification/_verify_hier_floorplan.py`;
-diagnostics `_cluster_closeness.py`, `_dp_group_closeness.py`, `_hier_tradeoff.py`,
+diagnostics `_cluster_stats.py`, `_dp_group_closeness.py`, `_hier_tradeoff.py`,
 `_legalize_order_probe.py`. **Use only when hierarchy is the goal, never for the
 leaderboard score.**
+
+**Region-locked congestion relief (2026-06-15, `V2_HIER_REGION_RELIEF=1`, default
+ON in hier mode).** The floorplan's soft-only cleanup can't relieve the dense
+per-cluster congestion. This adds a pass that moves HARD macros to colder cells
+**within their own cluster region** (soft bias), recovering congestion while
+keeping macros region-locked. Mechanism: `compute_region_bbox` sizes a per-cluster
+box (`region_area = member_area / V2_HIER_REGION_DENSITY`, default 0.65, centered
+on the footprint midpoint, never below the footprint); `_relocation_moves` gains
+optional `region_bbox`/`region_bias` that add a ranking penalty to out-of-region
+candidate cells (bit-identical when `region_bbox is None` — production untouched);
+the relief loop interleaves region-biased hard relocation + soft relocation, all
+true-proxy-gated, then a cluster-consecutive safety legalize. **Result:** proxy
+DROPS while hard↔hard / intra closeness stays ~unchanged — ibm01 1.0194→0.9469
+(−0.073, closeness Δ≈0), ibm10 1.8215→1.6809 (−0.14, closeness loosens modestly,
+tunable by `V2_HIER_REGION_DENSITY`). Knobs: `V2_REGION_BIAS` (1.0),
+`V2_HIER_REGION_ROUNDS` (2), `V2_HIER_REGION_BUDGET_S` (40), `V2_HIER_REGION_MARGIN`
+(0=area-based), `V2_HIER_REGION_SINGLETON` (0.05). Diagnostic
+`_hier_region_relief.py`; verified `_verify_region_relief.py`.
+
+**`V2_REGION_LOCK=1` (default OFF) = region-locked PRODUCTION output.** Routes
+`place()` to the hierarchy+relief path. **Finding:** region-biasing only the main
+pipeline's R2 relocation is INEFFECTIVE — its other phases (DP candidates, noise
+restarts, LSMC kicks) generate spread placements that win on proxy and override
+the bias, and anchoring regions to the already-spread `initial.plc` makes the
+boxes too loose anyway (measured: ibm10 1.0834→1.0818, a no-op). The only way to
+region-lock the *production* output is the dedicated regional pipeline, so
+`V2_REGION_LOCK` runs that. The `_relocation_moves` `region_bbox` capability
+remains for the relief loop; the ineffective main-pipeline R2 plumbing was removed
+(main path bit-identical to before this work).
 
 ### S19. DREAMPlace was silently dead since the restructure (FIXED 2026-06-15)
 
