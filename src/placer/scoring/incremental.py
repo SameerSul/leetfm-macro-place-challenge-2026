@@ -430,6 +430,16 @@ class IncrementalScorer:
             return parts[0]
         return np.unique(np.concatenate(parts))
 
+    def _touched_nets_many(self, modules) -> np.ndarray:
+        """Return the union of nets touched by the given modules."""
+        parts = [self._macro_nets(int(m)) for m in modules]
+        parts = [p for p in parts if p.size]
+        if not parts:
+            return np.empty(0, dtype=np.int64)
+        if len(parts) == 1:
+            return parts[0]
+        return np.unique(np.concatenate(parts))
+
     def _apply_pos(self, module_idx: int, x: float, y: float) -> None:
         """Set a module position and mark cached costs dirty."""
         self.plc.modules_w_pins[module_idx].set_pos(float(x), float(y))
@@ -701,6 +711,218 @@ class IncrementalScorer:
             )
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
+
+    def _score_multi_move(self, modules, old_xy, new_xy, hard_slots) -> float:
+        """Score a small multi-macro move, then restore committed state."""
+        modules = [int(m) for m in modules]
+        old_xy = [(float(x), float(y)) for x, y in old_xy]
+        new_xy = [(float(x), float(y)) for x, y in new_xy]
+        hard_slots = np.asarray(hard_slots, dtype=np.int64)
+
+        H_snap = self.H_flat.copy()
+        V_snap = self.V_flat.copy()
+        Hm_snap = self.H_macro_flat.copy()
+        Vm_snap = self.V_macro_flat.copy()
+
+        touched = self._touched_nets_many(modules)
+        bb_old = _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        if hard_slots.size:
+            _apply_macro_routing_subset(
+                self.plc, hard_slots, -1.0, self.V_macro_flat, self.H_macro_flat
+            )
+
+        old_occ = [self._macro_occ(m, x, y) for m, (x, y) in zip(modules, old_xy)]
+        go = self.grid_occupied
+        for idx, area in old_occ:
+            if idx.size:
+                np.subtract.at(go, idx, area)
+
+        for m, (x, y) in zip(modules, new_xy):
+            self._apply_pos(m, x, y)
+
+        bb_new = _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+        if hard_slots.size:
+            _apply_macro_routing_subset(
+                self.plc, hard_slots, +1.0, self.V_macro_flat, self.H_macro_flat
+            )
+
+        r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
+        Hs_snap = Vs_snap = None
+        if c_lo is not None:
+            Hs_snap = self.H_smoothed[:, c_lo : c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo : r_hi + 1, :].copy()
+            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
+
+        if touched.size:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
+            new_total_raw = self.total_wl_raw + delta
+        else:
+            new_total_raw = self.total_wl_raw
+        new_wl_normalized = new_total_raw / self.wl_normalizer
+        cong = self._compute_cong_cost()
+
+        new_occ = [self._macro_occ(m, x, y) for m, (x, y) in zip(modules, new_xy)]
+        for idx, area in new_occ:
+            if idx.size:
+                np.add.at(go, idx, area)
+        dens = self._compute_density_cost()
+
+        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
+
+        for idx, area in new_occ:
+            if idx.size:
+                np.subtract.at(go, idx, area)
+        for idx, area in old_occ:
+            if idx.size:
+                np.add.at(go, idx, area)
+        for m, (x, y) in zip(modules, old_xy):
+            self._apply_pos(m, x, y)
+        self.H_flat[:] = H_snap
+        self.V_flat[:] = V_snap
+        self.H_macro_flat[:] = Hm_snap
+        self.V_macro_flat[:] = Vm_snap
+        if c_lo is not None:
+            self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
+        return score
+
+    def _commit_multi_move(self, modules, old_xy, new_xy, hard_slots, hard_updates, soft_updates):
+        """Commit a small multi-macro move."""
+        modules = [int(m) for m in modules]
+        old_xy = [(float(x), float(y)) for x, y in old_xy]
+        new_xy = [(float(x), float(y)) for x, y in new_xy]
+        hard_slots = np.asarray(hard_slots, dtype=np.int64)
+        touched = self._touched_nets_many(modules)
+
+        bb_old = _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        if hard_slots.size:
+            _apply_macro_routing_subset(
+                self.plc, hard_slots, -1.0, self.V_macro_flat, self.H_macro_flat
+            )
+
+        go = self.grid_occupied
+        for m, (x, y) in zip(modules, old_xy):
+            idx, area = self._macro_occ(m, x, y)
+            if idx.size:
+                np.subtract.at(go, idx, area)
+
+        for m, (x, y) in zip(modules, new_xy):
+            self._apply_pos(m, x, y)
+            idx, area = self._macro_occ(m, x, y)
+            if idx.size:
+                np.add.at(go, idx, area)
+
+        bb_new = _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+        if hard_slots.size:
+            _apply_macro_routing_subset(
+                self.plc, hard_slots, +1.0, self.V_macro_flat, self.H_macro_flat
+            )
+        self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
+
+        for i, xy in hard_updates.items():
+            self.committed_hard_pos[int(i), 0] = float(xy[0])
+            self.committed_hard_pos[int(i), 1] = float(xy[1])
+        for k, xy in soft_updates.items():
+            self.committed_soft_pos[int(k), 0] = float(xy[0])
+            self.committed_soft_pos[int(k), 1] = float(xy[1])
+
+        if touched.size:
+            new_per_net = self._compute_per_net_hpwl_subset(touched)
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
+            self.per_net_hpwl[touched] = new_per_net
+            self.total_wl_raw += delta
+
+    def _hard_slot_array(self, *i_hard) -> np.ndarray:
+        slots = []
+        for i in i_hard:
+            slot = self._module_to_hard_slot.get(int(self.hard_indices[int(i)]))
+            if slot is not None:
+                slots.append(int(slot))
+        return np.asarray(slots, dtype=np.int64)
+
+    def score_swap_hard_hard(self, i_hard: int, j_hard: int) -> float:
+        """Score exchanging two hard macro centers."""
+        i_hard, j_hard = int(i_hard), int(j_hard)
+        im, jm = int(self.hard_indices[i_hard]), int(self.hard_indices[j_hard])
+        i_xy = tuple(self.committed_hard_pos[i_hard])
+        j_xy = tuple(self.committed_hard_pos[j_hard])
+        return self._score_multi_move(
+            [im, jm],
+            [i_xy, j_xy],
+            [j_xy, i_xy],
+            self._hard_slot_array(i_hard, j_hard),
+        )
+
+    def commit_swap_hard_hard(self, i_hard: int, j_hard: int) -> None:
+        """Commit exchanging two hard macro centers."""
+        i_hard, j_hard = int(i_hard), int(j_hard)
+        im, jm = int(self.hard_indices[i_hard]), int(self.hard_indices[j_hard])
+        i_xy = tuple(self.committed_hard_pos[i_hard])
+        j_xy = tuple(self.committed_hard_pos[j_hard])
+        self._commit_multi_move(
+            [im, jm],
+            [i_xy, j_xy],
+            [j_xy, i_xy],
+            self._hard_slot_array(i_hard, j_hard),
+            {i_hard: j_xy, j_hard: i_xy},
+            {},
+        )
+
+    def score_swap_soft_soft(self, soft_a: int, soft_b: int) -> float:
+        """Score exchanging two soft macro centers."""
+        soft_a, soft_b = int(soft_a), int(soft_b)
+        am, bm = int(self.soft_indices[soft_a]), int(self.soft_indices[soft_b])
+        a_xy = tuple(self.committed_soft_pos[soft_a])
+        b_xy = tuple(self.committed_soft_pos[soft_b])
+        return self._score_multi_move([am, bm], [a_xy, b_xy], [b_xy, a_xy], [])
+
+    def commit_swap_soft_soft(self, soft_a: int, soft_b: int) -> None:
+        """Commit exchanging two soft macro centers."""
+        soft_a, soft_b = int(soft_a), int(soft_b)
+        am, bm = int(self.soft_indices[soft_a]), int(self.soft_indices[soft_b])
+        a_xy = tuple(self.committed_soft_pos[soft_a])
+        b_xy = tuple(self.committed_soft_pos[soft_b])
+        self._commit_multi_move(
+            [am, bm],
+            [a_xy, b_xy],
+            [b_xy, a_xy],
+            [],
+            {},
+            {soft_a: b_xy, soft_b: a_xy},
+        )
+
+    def score_swap_hard_soft(self, i_hard: int, soft_k: int) -> float:
+        """Score exchanging a hard macro center with a soft macro center."""
+        i_hard, soft_k = int(i_hard), int(soft_k)
+        hm, sm = int(self.hard_indices[i_hard]), int(self.soft_indices[soft_k])
+        h_xy = tuple(self.committed_hard_pos[i_hard])
+        s_xy = tuple(self.committed_soft_pos[soft_k])
+        return self._score_multi_move(
+            [hm, sm],
+            [h_xy, s_xy],
+            [s_xy, h_xy],
+            self._hard_slot_array(i_hard),
+        )
+
+    def commit_swap_hard_soft(self, i_hard: int, soft_k: int) -> None:
+        """Commit exchanging a hard macro center with a soft macro center."""
+        i_hard, soft_k = int(i_hard), int(soft_k)
+        hm, sm = int(self.hard_indices[i_hard]), int(self.soft_indices[soft_k])
+        h_xy = tuple(self.committed_hard_pos[i_hard])
+        s_xy = tuple(self.committed_soft_pos[soft_k])
+        self._commit_multi_move(
+            [hm, sm],
+            [h_xy, s_xy],
+            [s_xy, h_xy],
+            self._hard_slot_array(i_hard),
+            {i_hard: s_xy},
+            {soft_k: h_xy},
+        )
 
     # Relocation prep removes the old macro once, then trials many targets.
 

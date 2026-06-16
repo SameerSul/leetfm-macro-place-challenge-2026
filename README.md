@@ -11,10 +11,11 @@ are no longer part of active code.
 
 The placer now deliberately preserves connected macro groups. It uses grouped
 DREAMPlace to form a hierarchical global placement, legalizes hard macros in
-cluster-consecutive order, performs bounded region-locked hard/soft relief, and
-optionally applies coldspot tightening to compact clusters further. The exact
-proxy is still used for evaluation and local gates, but it is no longer the
-primary design objective.
+cluster-consecutive order, classifies soft macros as owned or bridge, expands
+hot cluster regions by congestion, runs bounded hard/soft relief, applies
+exact-gated cluster decompression, and finishes with region-bounded swaps plus
+proxy-aware coldspot tightening. The exact proxy is still used for evaluation
+and local gates, but it is no longer the primary design objective.
 
 The placement objective note is in [docs/general/OBJECTIVES.md](docs/general/OBJECTIVES.md).
 
@@ -22,7 +23,14 @@ Current smoke reference:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.7076  VALID  [~12s locally]
+proxy=1.6759  VALID  [~34s locally]
+```
+
+Current full IBM reference:
+
+```text
+uv run evaluate src/main.py --all
+AVG 1.4452  17/17 VALID  0 overlaps  [520.08s locally]
 ```
 
 Historical proxy leaderboard numbers remain in `docs/general/PROGRESS.md` and
@@ -65,12 +73,15 @@ uv run python -m py_compile $(find src -type f -name "*.py")
 ```text
 initial.plc / benchmark
   -> derive hard clusters through low-fanout hard-soft connectivity
-  -> attach connected soft macros to clusters
+  -> classify soft macros as owned or bridge
   -> grouped DREAMPlace with synthetic cluster clique nets
   -> cluster-consecutive hard legalization
   -> soft relocation cleanup
+  -> congestion-expanded hard/soft regions
   -> region-locked hard relocation + soft relocation relief
-  -> optional coldspot cluster tightening
+  -> exact-gated cluster decompression
+  -> region-bounded hard-hard / hard-soft / soft-soft swaps
+  -> proxy-aware coldspot tightening
   -> final movable-macro in-bounds clamp
   -> return macro centers
 ```
@@ -86,9 +97,14 @@ V2_HIER_REGION_DENSITY=0.65
 V2_REGION_BIAS=1.0
 V2_HIER_REGION_ROUNDS=2
 V2_HIER_REGION_BUDGET_S=40
+V2_HIER_REGION_ESCAPE_MIN=0.002
+V2_HIER_CONG_EXPAND_REGIONS=1
+V2_HIER_DECOMPRESS=1
+V2_HIER_REGION_SWAPS=1
+V2_HIER_SOFT_SWAP_K=48
 V2_HIER_COLDSPOT_KICK=1
-V2_HIER_COLDSPOT_BUDGET=0.05
-V2_HIER_COLDSPOT_TOTAL=0.15
+V2_HIER_COLDSPOT_BUDGET=0.0
+V2_HIER_COLDSPOT_TOTAL=0.0
 V2_HIER_COLDSPOT_ROUNDS=8
 ```
 

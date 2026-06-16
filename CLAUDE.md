@@ -78,10 +78,10 @@ If `uv` is not on PATH, fall back to `pip install -e .` and replace `uv run` wit
 
 ## File modification scope
 
-**IMPORTANT - active code now lives at the repository root.** Keep normal work
-inside `src/**`, `docs/**`, `test/**`, `scripts/**`, `ml_data/**`,
-`dreamplace_build/**`, `dreamplace_src/**`, plus root `AGENTS.md`, `CLAUDE.md`,
-`README.md`, and `requirements.txt`.
+**IMPORTANT - active code now lives at the repository root.** Keep normal code
+work inside `src/**`, `test/**`, `scripts/**`, `ml_data/**`,
+`dreamplace_build/**`, and `dreamplace_src/**`. Root-level documentation,
+package-management, and tool-configuration files are also writable.
 
 Writable:
 - `src/**` - evaluator entrypoint, placer package, eda_io, DREAMPlace bridge
@@ -91,14 +91,19 @@ Writable:
 - `ml_data/**` - historical traces/models/logs and generated comparison data
 - `dreamplace_build/**` - DREAMPlace install tree (rebuilds / patches allowed)
 - `dreamplace_src/**` - DREAMPlace source (custom forks / modifications allowed)
-- `CLAUDE.md` - this file
+- Root documentation: `*.md`, including `AGENTS.md`, `CLAUDE.md`, `README.md`,
+  and other root-level docs.
+- Root package/config/ignore files: `pyproject.toml`, `requirements*.txt`,
+  `uv.lock`, `.gitignore`, `.python-version`, and similar root-level files for
+  dependency management, formatting, linting, typing, tests, or tool settings.
 
 Read-only (Claude may read but must not edit, create, move, or delete):
 - **`system/v1/**`**, if present - frozen v17 checkpoint, kept for comparison.
   Treat as if it lived under `external/`.
 - Framework, benchmark, and challenge files outside the active submission:
-  `macro_place/`, `external/`, `benchmarks/`, `pyproject.toml`, `SETUP.md`,
-  `TEAM_GUIDE.md`, `LICENSE.md`, etc.
+  `macro_place/`, `external/`, `benchmarks/`, generated benchmark inputs, and
+  challenge/evaluator assets. Root-level documentation and package/config files
+  are writable under the rules above.
 
 If a task seems to require modifying a read-only file (e.g. fixing a bug in
 `macro_place/`, correcting challenge metadata, or porting/tweaking something

@@ -17,6 +17,9 @@ always routes through `_hierarchy_floorplan()` in
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
+Current accepted hierarchy result: `uv run evaluate src/main.py --all` =
+**AVG 1.4452**, 17/17 VALID, 0 overlaps, 520.08s; `ibm10` smoke is
+`proxy=1.6759`, VALID.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](docs/general/PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
 
@@ -78,10 +81,10 @@ If `uv` is not on PATH, fall back to `pip install -e .` and replace `uv run` wit
 
 ## File modification scope
 
-**IMPORTANT - active code now lives at the repository root.** Keep normal work
-inside `src/**`, `docs/**`, `test/**`, `scripts/**`, `ml_data/**`,
-`dreamplace_build/**`, `dreamplace_src/**`, plus root `AGENTS.md`, `CLAUDE.md`,
-`README.md`, and `requirements.txt`.
+**IMPORTANT - active code now lives at the repository root.** Keep normal code
+work inside `src/**`, `test/**`, `scripts/**`, `ml_data/**`,
+`dreamplace_build/**`, and `dreamplace_src/**`. Root-level documentation,
+package-management, and tool-configuration files are also writable.
 
 Writable:
 - `src/**` - evaluator entrypoint, placer package, eda_io, DREAMPlace bridge
@@ -91,15 +94,19 @@ Writable:
 - `ml_data/**` - historical traces/models/logs and generated comparison data
 - `dreamplace_build/**` - DREAMPlace install tree (rebuilds / patches allowed)
 - `dreamplace_src/**` - DREAMPlace source (custom forks / modifications allowed)
-- `AGENTS.md` - this file
-- `CLAUDE.md` - the Claude Code instruction file
+- Root documentation: `*.md`, including `AGENTS.md`, `CLAUDE.md`, `README.md`,
+  and other root-level docs.
+- Root package/config/ignore files: `pyproject.toml`, `requirements*.txt`,
+  `uv.lock`, `.gitignore`, `.python-version`, and similar root-level files for
+  dependency management, formatting, linting, typing, tests, or tool settings.
 
 Read-only (agents may read but must not edit, create, move, or delete):
 - **`system/v1/**`**, if present - frozen v17 checkpoint, kept for comparison.
   Treat as if it lived under `external/`.
 - Framework, benchmark, and challenge files outside the active submission:
-  `macro_place/`, `external/`, `benchmarks/`, `pyproject.toml`, `SETUP.md`,
-  `TEAM_GUIDE.md`, `LICENSE.md`, etc.
+  `macro_place/`, `external/`, `benchmarks/`, generated benchmark inputs, and
+  challenge/evaluator assets. Root-level documentation and package/config files
+  are writable under the rules above.
 
 If a task seems to require modifying a read-only file (e.g. fixing a bug in
 `macro_place/`, correcting challenge metadata, or porting/tweaking something
@@ -127,9 +134,11 @@ Forbidden by the rules:
 
 The current production path optimizes for **hierarchy preservation**, not the
 lowest proxy score. It keeps connected subsystems together using grouped
-DREAMPlace, cluster-consecutive legalization, region-locked relief, and bounded
-coldspot tightening. The exact proxy is still used for evaluator reports and
-local accept gates, but the old spread-oriented proxy optimizer is gone.
+DREAMPlace, cluster-consecutive legalization, owned/bridge soft roles,
+congestion-expanded regions, region-locked hard/soft relief, exact-gated cluster
+decompression, region-bounded swaps, and proxy-aware coldspot tightening. The
+exact proxy is still used for evaluator reports and local accept gates, but the
+old spread-oriented proxy optimizer is gone.
 
 Historical proxy objective:
 
@@ -179,7 +188,7 @@ test/                     Project-level pytest smoke tests. READ-ONLY for v2 wor
 - **CPU contention slows scoring 3–5×.** ibm08 scores in 31s clean but 95–131s under load; ibm11 scored 263s under heat. Use a running-max `t_one_score` for budget estimation, not the baseline-only measurement.
 - **`docs/general/PAPERS_NOTES.md` describes the MaskRegulate regularity mask incorrectly.** The actual paper formula `min(x, X_max-x) + min(y, Y_max-y)` rewards placing macros near canvas *edges*. The notes describe distance-to-center, which is the opposite. The implementation in `_density_gradient_perturb` does neither - it is a pure occupancy-spreading gradient. If you see comments referencing "MaskRegulate centering", the comments are wrong, not the code.
 - **`initial.plc` is already a good seed.** It comes from a prior EDA flow with hand-tuned spread. The job of legalization is to resolve overlaps without destroying that spread. Restart from random or grid layouts has consistently lost to restarting from `initial.plc + small perturbation`.
-- **Soft macros must move with hierarchy.** The current path attaches soft macros to derived clusters, lets grouped DREAMPlace place them, and applies soft cleanup after hard legalization/relief.
+- **Soft macros must move with hierarchy.** The current path classifies soft macros as owned or bridge, gives them region boxes, lets grouped DREAMPlace place them, and uses soft relocation plus soft-heavy region swaps after hard legalization/relief. The accepted `V2_HIER_SOFT_SWAP_K=48` default is intentional; `24` was worse on ibm12/15/17, while `64` regressed ibm17.
 
 ## Code style
 
