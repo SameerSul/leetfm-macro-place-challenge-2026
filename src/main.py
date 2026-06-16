@@ -27,23 +27,6 @@ def _enable_ml_filter_defaults() -> None:
 
 _enable_ml_filter_defaults()
 
-
-def _enable_cluster_kick_defaults() -> None:
-    """Enable cluster-coherent LSMC kicks unless the caller set them.
-
-    Pure cluster kicks (p=1.0, both modes) won a paired multi-seed --all 3/3
-    (mean -0.0023, 0 regressions); kicks fall back to random when no cluster is
-    available, so this is safe on benchmarks with weak hierarchy. Any preset
-    V2_GPU_EXPLORE_CLUSTER_* var is left untouched (e.g. paired OFF runs).
-    """
-    if "V2_GPU_EXPLORE_CLUSTER_P" in os.environ:
-        return
-    os.environ["V2_GPU_EXPLORE_CLUSTER_P"] = "1.0"
-    os.environ.setdefault("V2_GPU_EXPLORE_CLUSTER_MODE", "both")
-
-
-_enable_cluster_kick_defaults()
-
 from placer.pipeline import macro_placer as _impl
 from placer.pipeline.macro_placer import MacroPlacer as _MacroPlacer
 

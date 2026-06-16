@@ -150,46 +150,6 @@ class MacroPlacer:
                         except Exception as exc:
                             _log(f"  DREAMPlace[{tag}] launch failed: "
                                  f"{type(exc).__name__}: {exc}")
-
-                    # Optional grouped config: inject cluster clique-nets so DP
-                    # softly keeps connected subsystems together (env-gated,
-                    # default off until validated). Scored as an ordinary gated
-                    # candidate, so it can only add a basin, never regress.
-                    if os.environ.get("V2_DP_GROUP", "0").strip() not in _FALSE_ENV:
-                        try:
-                            from placer.local_search.clusters import (
-                                cluster_max_fanout, cluster_min_edge,
-                                derive_hard_clusters,
-                            )
-                            gw = max(1, int(os.environ.get("V2_DP_GROUP_WEIGHT", "4")))
-                            _n = benchmark.num_hard_macros
-                            _ns = benchmark.num_soft_macros
-                            _, _clusters = derive_hard_clusters(
-                                plc, _n, n_soft=_ns,
-                                max_fanout=cluster_max_fanout(),
-                                min_edge=cluster_min_edge(),
-                            )
-                            hmi = plc.hard_macro_indices
-                            groups = [
-                                [plc.modules_w_pins[hmi[int(a)]].get_name()
-                                 for a in mem]
-                                for mem in _clusters.values()
-                            ]
-                            if groups:
-                                h = launch_dreamplace_async(
-                                    str(iccad_dir), plc=plc,
-                                    scratch_root="/tmp/dreamplace_v1_grp",
-                                    timeout_s=120.0, iterations=300,
-                                    num_threads=1, soft_macros_movable=False,
-                                    target_density=0.85,
-                                    cluster_groups=groups, group_weight=gw,
-                                )
-                                dp_handles.append(("grp", 0.85, h))
-                                _log(f"  DREAMPlace[grp] launched: "
-                                     f"{len(groups)} clusters, weight={gw}")
-                        except Exception as exc:
-                            _log(f"  DREAMPlace[grp] launch failed: "
-                                 f"{type(exc).__name__}: {exc}")
                     if dp_handles:
                         _log(f"  DREAMPlace launched async x{len(dp_handles)} "
                              f"(target_density="
@@ -233,10 +193,13 @@ class MacroPlacer:
         from dreamplace_bridge.bookshelf_to_pb import read_dreamplace_positions_full
         from placer.legalize.spiral import _will_legalize
         from placer.local_search.clusters import (
-            cluster_max_fanout, cluster_min_edge,
+            cluster_max_fanout, cluster_min_edge, compute_region_bbox,
             derive_cluster_softs, derive_hard_clusters,
+            hier_region_density, hier_region_margin, hier_region_singleton,
         )
-        from placer.local_search.relocation import _soft_relocation_moves
+        from placer.local_search.relocation import (
+            _relocation_moves, _soft_relocation_moves,
+        )
         from placer.scoring.incremental import IncrementalScorer
 
         if not _dp_available():
@@ -307,10 +270,47 @@ class MacroPlacer:
                 deadline=time.monotonic() + 30, top_hot=1024, n_targets=6,
                 soft_movable=soft_mov, use_density=use_density)
 
+        # Region-locked congestion relief: move HARD macros to colder cells, but
+        # only within their cluster region (soft bias), so congestion drops while
+        # hierarchy is preserved (no macro is sent far from its cluster). Reuses
+        # the field-driven relocation + exact-proxy gate; regions from the packed
+        # cluster footprints. Gate V2_HIER_REGION_RELIEF (default on in hier mode).
+        pre_relief = s_score
+        if os.environ.get("V2_HIER_REGION_RELIEF", "1").strip() not in _FALSE_ENV:
+            region = compute_region_bbox(
+                legal, sizes[:n], hw, hh, cw, ch, n, labels, clusters,
+                target_density=hier_region_density(), margin=hier_region_margin(),
+                singleton_window=hier_region_singleton())
+            bias = float(os.environ.get("V2_REGION_BIAS", "1.0"))
+            rounds = max(1, int(os.environ.get("V2_HIER_REGION_ROUNDS", "2")))
+            rdeadline = time.monotonic() + float(os.environ.get("V2_HIER_REGION_BUDGET_S", "40"))
+            h_pos = legal.copy()
+            full = np.vstack([h_pos, s_pos]).astype(np.float64)
+            r_score = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
+            rscorer = IncrementalScorer(plc, benchmark, full.copy())
+            for _ in range(rounds):
+                if time.monotonic() >= rdeadline:
+                    break
+                for use_density in (False, True):
+                    h_pos, _, r_score = _relocation_moves(
+                        h_pos, sizes[:n], hw, hh, cw, ch, movable[:n], n, plc,
+                        benchmark, rscorer, r_score, deadline=rdeadline,
+                        top_hot=128, n_targets=16, use_density=use_density,
+                        region_bbox=region, region_bias=bias)
+                for use_density in (False, True):
+                    s_pos, _, r_score = _soft_relocation_moves(
+                        s_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark, rscorer,
+                        r_score, deadline=rdeadline, top_hot=1024, n_targets=6,
+                        soft_movable=soft_mov, use_density=use_density)
+            # Safety re-legalize with the cluster-consecutive order keeps any nudge
+            # in-cluster (relief moves are already overlap-checked + in-region).
+            legal = _will_legalize(h_pos, movable[:n], sizes[:n], hw, hh, cw, ch, n,
+                                   deadline=time.monotonic() + 30, order=order)
+
         out = torch.tensor(np.vstack([legal, s_pos]).astype(np.float32), dtype=torch.float32)
         proxy = float(_exact_proxy(out, benchmark, plc))
         _log(f"  [hier] {len(clusters)} clusters, weight={gw}: proxy={proxy:.4f} "
-             f"(hierarchy-preserving, NON-proxy mode)")
+             f"(pre-relief {pre_relief:.4f}; hierarchy-preserving NON-proxy mode)")
         return out
 
     def place(self, benchmark: Benchmark) -> torch.Tensor:
@@ -325,12 +325,16 @@ class MacroPlacer:
 
         t0 = time.monotonic()
 
-        # Hierarchy-floorplan mode (env-gated, off by default): a NON-PROXY
-        # deliverable that keeps connected subsystems together rather than
-        # optimizing the congestion-dominated proxy. Grouped DREAMPlace +
-        # cluster-consecutive legalization + soft cleanup. Costs proxy by design
-        # (this objective rewards spread); use only when hierarchy is the goal.
-        if os.environ.get("V2_HIER_FLOORPLAN", "0").strip() not in _FALSE_ENV:
+        # Hierarchy-floorplan / region-lock mode (env-gated, off by default): a
+        # NON-PROXY production path that keeps connected subsystems together
+        # rather than optimizing the congestion-dominated proxy. Grouped
+        # DREAMPlace + cluster-consecutive legalization + region-locked congestion
+        # relief. Costs proxy by design (this objective rewards spread). The main
+        # pipeline's other phases (DP/noise/LSMC) generate spread placements that
+        # win on proxy, so the only way to region-lock the *production* output is
+        # this dedicated regional pipeline — hence V2_REGION_LOCK routes here too.
+        if (os.environ.get("V2_HIER_FLOORPLAN", "0").strip() not in _FALSE_ENV
+                or os.environ.get("V2_REGION_LOCK", "0").strip() not in _FALSE_ENV):
             hier = self._hierarchy_floorplan(benchmark)
             if hier is not None:
                 self._total_place_time_s += time.monotonic() - t0
@@ -1429,50 +1433,6 @@ class MacroPlacer:
                         float(_exact_proxy(best_pl, benchmark, plc))
                     except Exception:
                         pass
-
-        # LSMC phase isolation harness (diagnostic, opt-in via V2_LSMC_ISOLATE).
-        # Runs LSMC from the IDENTICAL post-R2 incumbent under several cluster-kick
-        # configs with the same seed and time budget, so the kick variants can be
-        # compared without the deadline-gated R2 timing confound. Logs per-variant
-        # deltas, keeps the best result, then skips the normal LSMC block.
-        if os.environ.get("V2_LSMC_ISOLATE"):
-            iso_s = float(os.environ.get("V2_LSMC_ISOLATE_S", "30.0"))
-            snap_pl = best_pl.detach().cpu().clone()
-            snap_score = float(best_score)
-            variants = [("off", "0.0", "gather"),
-                        ("gather", "1.0", "gather"),
-                        ("translate", "1.0", "translate")]
-            _prev_p = os.environ.get("V2_GPU_EXPLORE_CLUSTER_P")
-            _prev_m = os.environ.get("V2_GPU_EXPLORE_CLUSTER_MODE")
-            _log(f"  LSMC ISOLATE from incumbent {snap_score:.4f}  {iso_s:.0f}s/variant")
-            for _vn, _vp, _vm in variants:
-                os.environ["V2_GPU_EXPLORE_CLUSTER_P"] = _vp
-                os.environ["V2_GPU_EXPLORE_CLUSTER_MODE"] = _vm
-                float(_exact_proxy(snap_pl, benchmark, plc))  # restore plc to incumbent
-                _iso_pl, _iso_score, _iso_it, _iso_ac = _lsmc_explore(
-                    snap_pl, snap_score, benchmark, plc, _exact_proxy,
-                    sizes, hw, hh, cw, ch, movable, n,
-                    time_budget_s=iso_s, log=None,
-                    soft_hw=soft_hw, soft_hh=soft_hh,
-                    soft_movable=_soft_movable, n_soft=_n_soft,
-                )
-                _log(f"  ISOLATE[{_vn:9s}] {snap_score:.4f} -> {_iso_score:.4f} "
-                     f"(d={_iso_score - snap_score:+.4f}, {_iso_ac}/{_iso_it})")
-                if _iso_score < best_score - 1e-6:
-                    best_pl, best_score = _iso_pl, _iso_score
-            if _prev_p is None:
-                os.environ.pop("V2_GPU_EXPLORE_CLUSTER_P", None)
-            else:
-                os.environ["V2_GPU_EXPLORE_CLUSTER_P"] = _prev_p
-            if _prev_m is None:
-                os.environ.pop("V2_GPU_EXPLORE_CLUSTER_MODE", None)
-            else:
-                os.environ["V2_GPU_EXPLORE_CLUSTER_MODE"] = _prev_m
-            float(_exact_proxy(best_pl, benchmark, plc))  # leave plc on the kept result
-            _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
-            self._total_place_time_s += time.monotonic() - t0
-            self._benchmarks_done += 1
-            return best_pl
 
         # LSMC exploration (GPU-ops.md Stage 2a) - opt-in via V2_GPU_EXPLORE.
         # Final quality phase: kicks from the fully-refined optimum and accepts

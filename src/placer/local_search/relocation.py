@@ -1643,6 +1643,18 @@ def _score_relocation_proposals_cuda_delta(
             chunk_size = next_chunk
 
 
+def _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, span2, region_bias):
+    """Push out-of-region candidate cells to the back of the distance ranking.
+
+    Soft region lock: in-region cells fill `n_targets` first; out-of-region cells
+    are reached only when in-region options run out. Returns the penalized d2.
+    """
+    rb = region_bbox[i]
+    out = ((tgt_x[cand] < rb[0]) | (tgt_x[cand] > rb[2]) |
+           (tgt_y[cand] < rb[1]) | (tgt_y[cand] > rb[3]))
+    return d2 + region_bias * span2 * out
+
+
 def _relocation_moves_propose_all(
     *,
     pos: np.ndarray,
@@ -1670,11 +1682,14 @@ def _relocation_moves_propose_all(
     propose_top_m: "int | None",
     eps: float,
     field: str,
+    region_bbox: "np.ndarray | None" = None,
+    region_bias: float = 0.0,
 ) -> "tuple[np.ndarray, int, float]":
     """Rank all hard-relocation proposals, then exact-check the best ones."""
     best_score = initial_score
     accepts = 0
     all_idx = np.arange(n)
+    _span2 = float(max(cw, ch)) ** 2
     proposals = []
     t0 = time.monotonic()
     legal_count = 0
@@ -1695,6 +1710,8 @@ def _relocation_moves_propose_all(
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[i, 0]) ** 2 + (tgt_y[cand] - net_centroid[i, 1]) ** 2
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
+        if region_bbox is not None and region_bias > 0.0:
+            d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, _span2, region_bias)
         cand = cand[np.argsort(d2)][:n_targets]
 
         mask = all_idx != i
@@ -1934,8 +1951,17 @@ def _relocation_moves(
     use_combined: bool = False,
     propose_all: bool = False,
     propose_top_m: "int | None" = None,
+    region_bbox: "np.ndarray | None" = None,
+    region_bias: float = 0.0,
 ) -> "tuple[np.ndarray, int, float]":
-    """Move hot hard macros to colder legal spots."""
+    """Move hot hard macros to colder legal spots.
+
+    When `region_bbox` (per-macro center-feasible box [n,4]) and `region_bias>0`
+    are given, out-of-region candidate cells get a ranking penalty so a macro
+    strongly prefers staying within its cluster region — a SOFT region lock (it
+    can still exit when in-region cold cells run out). Bit-identical when
+    `region_bbox is None` (the production pipeline never passes it).
+    """
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     trace = get_candidate_trace()
     filter_hard_relocation = is_filter_enabled("hard_relocation")
@@ -2016,11 +2042,14 @@ def _relocation_moves(
             propose_top_m=propose_top_m,
             eps=EPS,
             field=trace_field,
+            region_bbox=region_bbox,
+            region_bias=region_bias,
         )
 
     best_score = initial_score
     accepts = 0
     all_idx = np.arange(n)
+    _span2 = float(max(cw, ch)) ** 2
     for i in hot:
         i = int(i)
         if deadline is not None and time.monotonic() > deadline:
@@ -2035,6 +2064,8 @@ def _relocation_moves(
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[i, 0]) ** 2 + (tgt_y[cand] - net_centroid[i, 1]) ** 2
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
+        if region_bbox is not None and region_bias > 0.0:
+            d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, _span2, region_bias)
         cand = cand[np.argsort(d2)][:n_targets]
 
         mask = all_idx != i
