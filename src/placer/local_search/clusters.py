@@ -5,12 +5,13 @@ from connectivity: union-find over low-fanout nets, treating each such net as
 evidence that its hard-macro pins belong to the same logical group. High-fanout
 nets (clocks, buses) connect everything and are skipped — they carry no grouping
 signal. The result is a partition of movable hard macros into clusters, cached
-on the plc and consumed by the LSMC cluster-coherent kick.
+on the plc and consumed by the hierarchy floorplan, region-relief, swap, and
+coldspot-tightening passes.
 
-This only *labels* groups; it never forces them together. Clustering connected
-macros tightly is anti-correlated with the congestion-dominated proxy (see
-PROGRESS.md). The labels are used solely to translate a subsystem as a unit
-during exploration, where the exact proxy gate still decides every accept.
+The labels intentionally preserve connected subsystems in the current
+hierarchy-only production path. Exact proxy gates still decide local relief
+moves, but the selected system no longer optimizes for the lowest proxy at the
+expense of hierarchy.
 """
 
 from __future__ import annotations

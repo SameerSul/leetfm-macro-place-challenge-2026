@@ -7,7 +7,7 @@ name = "macro-place"
 version = "0.1.0"
 description = "Macro Placement Challenge - Beat Kahng's benchmarks for $20K"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = {file = "LICENSE.md"}
 authors = [
     {name = "Partcl"},
@@ -19,8 +19,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -41,7 +39,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
-    "flake8>=6.0.0; python_version >= '3.8.1'",
+    "flake8>=6.0.0",
 ]
 ml = [
     "xgboost>=3.2.0",
@@ -68,7 +66,7 @@ macro_place = ["py.typed"]
 
 [tool.black]
 line-length = 100
-target-version = ["py38", "py39", "py310", "py311", "py312"]
+target-version = ["py310", "py311", "py312"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

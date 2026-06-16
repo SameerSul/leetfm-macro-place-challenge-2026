@@ -717,9 +717,13 @@ over greedy legalization is unclear for our use case (we're already doing many r
 
 ## How to Test the New Directed Restarts
 
+Historical proxy-path note: directed restarts are not part of the current
+hierarchy-only production system. Use this block only when intentionally
+studying the archived April/May restart experiments.
+
 ```bash
 # Quick test on ibm01 (fast, ~30s)
-python -m macro_place.evaluate system/v1/placer.py -b ibm01
+uv run evaluate src/main.py -b ibm10
 
 # Expected output with directed restarts:
 #   Restart 0 (baseline)...          proxy=1.2253
@@ -733,7 +737,7 @@ python -m macro_place.evaluate system/v1/placer.py -b ibm01
 # If directed restarts find better → update baselines above
 
 # Full 17-benchmark run (~30 min):
-python -m macro_place.evaluate system/v1/placer.py --all
+uv run evaluate src/main.py --all
 ```
 
 ---

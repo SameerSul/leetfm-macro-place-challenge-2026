@@ -24,10 +24,17 @@ uv sync
 │   ├── objective.py        # Proxy cost computation
 │   ├── utils.py            # Validation and visualization
 │   └── def_writer.py       # DEF file export
-├── system/
-│   ├── v0/                 # Example placers (greedy_row_placer.py, simple_random_placer.py)
-│   ├── v1/                 # Frozen checkpoint placer
-│   └── v2/                 # Active placer system
+├── src/                    # Active hierarchy placer and EDA I/O
+│   ├── main.py             # Evaluator-facing entrypoint
+│   ├── placer/             # Hierarchy pipeline, scoring, routing, legalization
+│   ├── dreamplace_bridge/  # ICCAD04 pb/plc <-> Bookshelf bridge
+│   └── eda_io/             # LEF/DEF/Verilog/SDC/Liberty import/export
+├── docs/                   # Active docs plus archived experiment notes
+├── test/                   # Smoke tests, diagnostics, verification scripts
+├── scripts/                # Comparison and conversion helpers
+├── ml_data/                # Historical traces/models/logs and generated data
+├── system/                 # Optional historical checkpoints if present
+│   └── v1/                 # Frozen checkpoint placer; read-only if present
 ├── external/
 │   └── MacroPlacement/     # TILOS evaluator and ICCAD04 testcases
 ├── benchmarks/
@@ -158,7 +165,9 @@ Key constraints:
 - **Zero hard macro overlaps** required (soft macros may overlap — they are standard cell cluster abstractions)
 - Moving hard macros without repositioning soft macros will degrade wirelength and density
 
-See `system/v0/greedy_row_placer.py` for a simple example and `system/v1/placer.py` for a more complete approach.
+See `src/main.py` for the current submission entrypoint. Historical examples
+under `system/` may be absent after the root-layout migration; if `system/v1/`
+exists, treat it as a frozen checkpoint rather than active code.
 
 ## Net Connectivity
 
@@ -200,14 +209,15 @@ This is what the SA baseline does between iterations. Note: this is slow in Pyth
 
 ### IBM Benchmarks (Tier 1 — Proxy Cost)
 
-The 17 IBM ICCAD04 benchmarks are in `external/MacroPlacement/Testcases/ICCAD04/`. Run a single benchmark or the full suite using the demo placer:
+The 17 IBM ICCAD04 benchmarks are in `external/MacroPlacement/Testcases/ICCAD04/`.
+Run a single benchmark or the full suite using the active hierarchy placer:
 
 ```bash
 # Single benchmark
-uv run evaluate system/v0/greedy_row_placer.py -b ibm01
+uv run evaluate src/main.py -b ibm10
 
 # All 17 benchmarks with comparison table
-uv run evaluate system/v0/greedy_row_placer.py --all
+uv run evaluate src/main.py --all
 ```
 
 To evaluate your own placer on all benchmarks, follow the same pattern — loop over the benchmark directories:

@@ -47,7 +47,7 @@ uv run evaluate src/main.py --ng45
 # Visualize a placement
 uv run evaluate src/main.py -b ibm01 --vis
 
-# Compare v2 against the v1 checkpoint
+# Compare active placer against the v1 checkpoint, if system/v1 is present
 uv run python scripts/compare_placers.py system/v1/placer.py src/main.py
 
 # Compare two placers head-to-head
@@ -87,6 +87,7 @@ work inside `src/**`, `test/**`, `scripts/**`, `ml_data/**`,
 package-management, and tool-configuration files are also writable.
 
 Writable:
+
 - `src/**` - evaluator entrypoint, placer package, eda_io, DREAMPlace bridge
 - `docs/**` - active documentation and experiment notes
 - `test/**` - diagnostics, verification scripts, synthetic benchmark tools
@@ -101,6 +102,7 @@ Writable:
   dependency management, formatting, linting, typing, tests, or tool settings.
 
 Read-only (agents may read but must not edit, create, move, or delete):
+
 - **`system/v1/**`**, if present - frozen v17 checkpoint, kept for comparison.
   Treat as if it lived under `external/`.
 - Framework, benchmark, and challenge files outside the active submission:
@@ -120,12 +122,14 @@ This rule is documented here so agents follow it. If local tool settings are nee
 A placer is a Python file exposing a class with `place(benchmark) -> torch.Tensor` of shape `[num_macros, 2]`, returning **center coordinates** (not corners) for both hard and soft macros. The class name does not need to be `MacroPlacer` - the harness instantiates the first placer-shaped class it finds - but callers in this repo may import by name, so prefer `MacroPlacer`.
 
 Hard requirements enforced by the evaluator:
+
 - **Zero hard-macro overlaps.** Soft macros may overlap; they are stand-ins for standard-cell clusters.
 - **Fixed macros stay put** (`benchmark.macro_fixed`). Do not move them.
 - **All macros within canvas bounds.**
 - **<1 hour total** for all 17 IBM benchmarks combined (hard timeout in the harness).
 
 Forbidden by the rules:
+
 - Modifying the TILOS evaluator (`external/MacroPlacement/`).
 - Hardcoding per-benchmark solutions or branching on `benchmark.name` to apply benchmark-specific tweaks.
 - Calling external proprietary placement tools.
@@ -142,7 +146,7 @@ old spread-oriented proxy optimizer is gone.
 
 Historical proxy objective:
 
-```
+```python
 proxy_cost = 1.0 × wirelength + 0.5 × density + 0.5 × congestion
 ```
 
@@ -154,30 +158,23 @@ hierarchy output.
 
 ## Repo layout
 
-```
-macro_place/        Core framework - benchmark loader, evaluator wrapper, utilities. Don't modify lightly.
-system/             Varrahan system implementations and local DREAMPlace build.
-  v0/               Reference/simple early placers.
-  v1/               Frozen v17 checkpoint - multi-DP + multi-iter Phase 7 + 2-opt-on-winner. READ-ONLY.
-  v2/               Active system slot - writable.
-    src/main.py         Evaluator-facing entrypoint - exposes MacroPlacer (imports from src/placer/).
-    src/placer/           The placer package: hierarchy pipeline, scoring, routing, plc, legalize, local_search.
-    src/dreamplace_bridge/  pb.txt ↔ Bookshelf converters + async launcher.
-    src/eda_io/           Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR-report out
-                          (converts to ICCAD04 pb+plc, so the placer + exact scorer run unchanged).
-    src/place_design.py   CLI tying eda_io together - see src/eda_io/README.md.
-    docs/general/         ARCHITECTURE.md / ISSUES.md / PROGRESS.md / DESIGN_FLOW.md.
-    docs/gpu/             Archived CUDA/GPU proxy-path notes.
-    docs/ml_nn/           Archived learned-ranker and GNN-surrogate notes.
-    test/                 v2-specific tests / diagnostics / probes - put ALL new v2 test files here.
-      benchmarks/         Synthetic anti-overfitting suite: generator, runner, impact analyzer.
-      diagnostic/         Maintained smoke tests plus current profiling/recall probes.
-      eda_io/             eda_io pytest suite + LEF/DEF/Verilog/SDC/Liberty fixture design.
-      verification/       Correctness checks vs scalar references.
+```md
+src/main.py         Evaluator-facing entrypoint - exposes MacroPlacer.
+src/placer/        Active hierarchy placer package: pipeline, scoring, routing, legalize, local_search.
+src/dreamplace_bridge/  pb.txt <-> Bookshelf converters + DREAMPlace launcher.
+src/eda_io/        Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR-report out.
+src/place_design.py CLI tying eda_io together - see src/eda_io/README.md.
+docs/general/      ARCHITECTURE.md / ISSUES.md / PROGRESS.md / DESIGN_FLOW.md.
+docs/gpu/          Archived CUDA/GPU proxy-path notes.
+docs/ml_nn/        Archived learned-ranker and GNN-surrogate notes.
+test/benchmarks/   Synthetic anti-overfitting suite: generator, runner, impact analyzer.
+test/diagnostic/   Maintained smoke tests plus current profiling/recall probes.
+test/eda_io/       eda_io pytest suite + LEF/DEF/Verilog/SDC/Liberty fixture design.
+test/verification/ Correctness checks vs scalar references.
+system/v1/         Frozen v17 checkpoint if present. READ-ONLY.
 external/MacroPlacement/  TILOS submodule - evaluator + ICCAD04 testcases. Read-only.
 benchmarks/processed/     Pre-processed .pt files for fast loading.
 scripts/                  Comparison + benchmark-conversion utilities.
-test/                     Project-level pytest smoke tests. READ-ONLY for v2 work - do not add v2 tests here.
 ```
 
 ## Things that have already burned us (read before debugging)

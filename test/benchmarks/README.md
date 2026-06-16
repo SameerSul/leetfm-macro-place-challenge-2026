@@ -44,7 +44,7 @@ uv run python test/benchmarks/run_synthetic.py
 
 # single benchmark, custom placer or budget
 uv run python .../run_synthetic.py -b syn02_fixed
-uv run python .../run_synthetic.py --placer system/v1/placer.py --budget 60
+uv run python .../run_synthetic.py --placer src/main.py --budget 60
 
 # just look at the benchmarks themselves (seed scoring + vis, no placer)
 uv run python .../run_synthetic.py --initial-only
