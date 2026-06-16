@@ -3,7 +3,17 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **HEADLINE (2026-06-14 — cluster-coherent LSMC kicks SHIPPED as default):
+> **CURRENT SYSTEM (2026-06-16): hierarchy-only.** The active code no longer
+> ships the proxy-optimized production path. `MacroPlacer.place()` always routes
+> through `_hierarchy_floorplan()` and raises if grouped DREAMPlace is
+> unavailable. Deleted proxy-only pieces include candidate restarts, R2/2-opt,
+> hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
+> ranker defaults, and their verifiers. Current smoke: `ibm10` hierarchy output
+> `proxy=1.7076`, VALID, ~12s locally. The proxy-score history below is retained
+> as historical experiment context, not the current production output.
+
+> **HISTORICAL HEADLINE (2026-06-14 — cluster-coherent LSMC kicks were shipped
+> in the then-current proxy path, then deleted on 2026-06-16):
 > paired multi-seed `--all` ON vs OFF, ON wins 3/3.** OFF (random kicks) means
 > 1.1206 → ON (pure cluster kicks, p=1.0, both modes) means **1.1183**
 > (Δ = **−0.0023**), all six runs 17/17 VALID / 0 overlaps. Per-seed:

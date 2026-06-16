@@ -88,6 +88,11 @@ which mirrors how v2 would behave on any unseen benchmark.
 
 ## Findings log
 
+The first entries below refer to proxy-path modules that were later deleted
+(`soft_moves.py`, `two_opt.py`, `hard_soft.py`). They are retained as historical
+overfitting findings; the current hierarchy-only placer no longer contains those
+passes.
+
 - **2026-06-09, v2 @ 90s budget, first full run:** 9 of 10 benchmarks INVALID
   with small out-of-bounds overhangs (0.15-0.52um, 1-15 macros each; only
   `syn05_sparse` survived). Initial hypothesis was a square-canvas assumption

@@ -1,27 +1,32 @@
 # DREAMPlace
 
+## Current Role
+
+DREAMPlace is required by the current hierarchy-only production path. It is no
+longer an async candidate generator feeding a proxy search. `_hierarchy_floorplan()`
+calls grouped DREAMPlace once, reads back hard and soft macro positions, then
+legalizes and refines that placement while preserving derived macro clusters.
+
+If DREAMPlace is unavailable, `MacroPlacer.place()` raises because the old proxy
+fallback has been removed.
+
 ## What The Algorithm Is
 
-DREAMPlace is a GPU-accelerated analytical global placer. It formulates placement as a
-continuous optimization problem over cell and macro coordinates. The objective combines a
-smooth wirelength model with a density penalty, then optimizes that objective with a
-Nesterov-style gradient method. In this repo we use DREAMPlace as an external subprocess,
-not as the owner of the final placement flow.
-
-The important distinction for this system is that DREAMPlace optimizes a different objective
-from the challenge proxy. DREAMPlace is strong at wirelength and density spreading, while our
-exact proxy is:
+DREAMPlace is an analytical global placer. It optimizes continuous macro and
+cell coordinates with a smooth wirelength model and a density penalty. That
+objective is not the same as the TILOS proxy:
 
 ```text
-wirelength + 0.5 * density + 0.5 * congestion
+proxy_cost = wirelength + 0.5 * density + 0.5 * congestion
 ```
 
-Congestion dominates the normalized proxy on the IBM benchmarks, so a DREAMPlace placement
-is not automatically accepted just because DREAMPlace converged.
+The hierarchy path uses DREAMPlace primarily for structure, not for final proxy
+optimality. Cluster grouping adds synthetic clique nets so connected subsystems
+are pulled together during global placement.
 
-## How It Works
+## Bridge Flow
 
-The bridge converts the TILOS/ICCAD04 benchmark into Bookshelf files:
+The bridge converts the ICCAD04 benchmark into Bookshelf files:
 
 - `.nodes` for movable/fixed macros and soft macros
 - `.nets` for net connectivity and pin offsets
@@ -29,45 +34,32 @@ The bridge converts the TILOS/ICCAD04 benchmark into Bookshelf files:
 - `.scl` for a row structure DREAMPlace can consume
 - `.aux` as the Bookshelf entry file
 
-The subprocess then runs DREAMPlace global placement with:
+The hierarchy path calls:
 
-- weighted-average wirelength
-- Nesterov optimizer
-- `macro_place_flag=1`
-- `use_bb=1`
-- configurable target density
-- deterministic settings
-- CPU thread caps to avoid oversubscribing the main placer
+```python
+run_dreamplace(
+    iccad_dir,
+    plc=plc,
+    soft_macros_movable=True,
+    cluster_groups=groups,
+    group_weight=V2_HIER_GROUP_WEIGHT,
+)
+```
 
-The active async variants are:
+The bridge writes synthetic per-cluster clique nets into Bookshelf before
+launching DREAMPlace. `read_dreamplace_positions_full()` then reads hard and
+soft macro centers back into placement order.
 
-- `lo-fix`: target density `0.65`, soft macros fixed
-- `hi-mov`: target density `0.85`, soft macros movable
-- `hi-fix`: target density `0.85`, soft macros fixed
+## After DREAMPlace
 
-An optional grouped variant is gated by `V2_DP_GROUP`. It derives hard-macro clusters and
-adds synthetic clique nets during Bookshelf conversion. Those nets bias DREAMPlace to keep
-connected macro groups closer together. The grouped output is still just another candidate;
-it does not alter the final accept rule.
+Grouped DREAMPlace output is not returned directly. The hierarchy pipeline:
 
-After DREAMPlace exits, the bridge reads back hard and soft macro centers. Hard macros are
-clipped to the canvas, legalized with the same spiral legalizer used by the main pipeline,
-and then exact-scored with the PLC proxy. Soft positions from DREAMPlace are copied when
-available and protected by the final in-bounds clamp.
+1. Legalizes hard macros in cluster-consecutive order.
+2. Runs a default-order safety legalization pass.
+3. Runs soft relocation cleanup.
+4. Runs region-locked hard/soft relief.
+5. Optionally runs bounded coldspot tightening.
+6. Clamps movable macros in bounds.
 
-## How We Use It
-
-In `MacroPlacer.place()`, DREAMPlace is launched at the start of a benchmark call so it can
-run concurrently with baseline legalization and early scoring. The main pipeline later polls
-the async handles, legalizes any completed hard placements, exact-scores the full hard+soft
-candidate, and updates `best_pl` only if the exact proxy strictly improves.
-
-DREAMPlace is therefore a candidate generator, not a replacement for R2 or LSMC. Its role is
-to provide independent basins that the hand-tuned initial placement, random restarts, and
-random-order legalization may not reach. It is intentionally not used as a special LSMC seed
-source. If a DREAMPlace candidate wins, it becomes the ordinary incumbent by exact score; if
-it loses, it is discarded.
-
-This keeps the system robust against objective mismatch. DREAMPlace can contribute when its
-wirelength/density basin also has acceptable congestion, but the exact proxy gate prevents a
-congestion-worse placement from being returned.
+The exact proxy is still used for evaluator reports and local gates, but
+DREAMPlace's main job is to provide a hierarchy-aware global layout.

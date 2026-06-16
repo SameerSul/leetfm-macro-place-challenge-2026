@@ -15,11 +15,12 @@ from placer.routing.apply import (
 from placer.scoring.density import _build_density_cache, _vectorized_get_grid_cells_density
 from placer.scoring.wirelength import _build_wl_cache
 
-
 if HAS_NUMBA:
+
     @_numba_njit(cache=True, fastmath=False)
-    def _hpwl_subset_jit(net_indices, net_starts, net_lengths, ref_inv, x_off, y_off,
-                         node_x, node_y):
+    def _hpwl_subset_jit(
+        net_indices, net_starts, net_lengths, ref_inv, x_off, y_off, node_x, node_y
+    ):
         """Compute HPWL for selected nets with numba."""
         n = net_indices.shape[0]
         out = np.empty(n, dtype=np.float64)
@@ -32,7 +33,10 @@ if HAS_NUMBA:
                 continue
             px = node_x[ref_inv[s]] + x_off[s]
             py = node_y[ref_inv[s]] + y_off[s]
-            minx = px; maxx = px; miny = py; maxy = py
+            minx = px
+            maxx = px
+            miny = py
+            maxy = py
             for j in range(1, L):
                 p = s + j
                 qx = node_x[ref_inv[p]] + x_off[p]
@@ -49,8 +53,7 @@ if HAS_NUMBA:
         return out
 
     @_numba_njit(cache=True, fastmath=False)
-    def _macro_occ_jit(bl_row, bl_col, ur_row, ur_col,
-                       x_min, x_max, y_min, y_max, gw, gh, gcol):
+    def _macro_occ_jit(bl_row, bl_col, ur_row, ur_col, x_min, x_max, y_min, y_max, gw, gh, gcol):
         """Return grid cells and overlap area for one macro."""
         nr = ur_row - bl_row + 1
         nc = ur_col - bl_col + 1
@@ -109,14 +112,15 @@ class IncrementalScorer:
         self.per_net_hpwl = self._compute_per_net_hpwl_full()
         self.total_wl_raw = float(np.sum(self.per_net_hpwl * self.net_weights))
 
-        self.committed_hard_pos = current_placement_np[:self.n_hard].astype(np.float64).copy()
+        self.committed_hard_pos = current_placement_np[: self.n_hard].astype(np.float64).copy()
 
         # Soft macros affect WL, net routing, and density, but not blockage.
         self.soft_indices = list(benchmark.soft_macro_indices)
         self.num_soft = len(self.soft_indices)
         self.committed_soft_pos = (
-            current_placement_np[self.n_hard:self.n_hard + self.num_soft]
-            .astype(np.float64).copy()
+            current_placement_np[self.n_hard : self.n_hard + self.num_soft]
+            .astype(np.float64)
+            .copy()
         )
 
         # Congestion state.
@@ -138,14 +142,20 @@ class IncrementalScorer:
         self.V_macro_flat = np.zeros(n_cells, dtype=np.float64)
         if self.n_nets > 0:
             _apply_net_routing_subset(
-                plc, np.arange(self.n_nets, dtype=np.int64), +1.0,
-                self.H_flat, self.V_flat,
+                plc,
+                np.arange(self.n_nets, dtype=np.int64),
+                +1.0,
+                self.H_flat,
+                self.V_flat,
             )
         n_hard_cache = cong_cache["n_hard"]
         if n_hard_cache > 0:
             _apply_macro_routing_subset(
-                plc, np.arange(n_hard_cache, dtype=np.int64), +1.0,
-                self.V_macro_flat, self.H_macro_flat,
+                plc,
+                np.arange(n_hard_cache, dtype=np.int64),
+                +1.0,
+                self.V_macro_flat,
+                self.H_macro_flat,
             )
 
         # Cache smoothed routing so moves only re-smooth touched rows/columns.
@@ -160,19 +170,27 @@ class IncrementalScorer:
             self._sm_col_up = np.minimum(_cols + sr, self.grid_col - 1)
             self._sm_col_cnt = (self._sm_col_up - self._sm_col_lp + 1).astype(np.float64)
             self.H_smoothed = _smooth_routing_cong_vec(
-                self.H_flat / self.grid_h_routes, self.grid_row, self.grid_col,
-                sr, axis_h=True,
+                self.H_flat / self.grid_h_routes,
+                self.grid_row,
+                self.grid_col,
+                sr,
+                axis_h=True,
             ).reshape(self.grid_row, self.grid_col)
             self.V_smoothed = _smooth_routing_cong_vec(
-                self.V_flat / self.grid_v_routes, self.grid_row, self.grid_col,
-                sr, axis_h=False,
+                self.V_flat / self.grid_v_routes,
+                self.grid_row,
+                self.grid_col,
+                sr,
+                axis_h=False,
             ).reshape(self.grid_row, self.grid_col)
         else:
             # No smoothing: normalized flats are the cache.
             self.H_smoothed = (self.H_flat / self.grid_h_routes).reshape(
-                self.grid_row, self.grid_col)
+                self.grid_row, self.grid_col
+            )
             self.V_smoothed = (self.V_flat / self.grid_v_routes).reshape(
-                self.grid_row, self.grid_col)
+                self.grid_row, self.grid_col
+            )
 
         # Map module id to its hard-macro slot.
         self._module_to_hard_slot: "dict[int, int]" = {
@@ -223,8 +241,9 @@ class IncrementalScorer:
         bl_row = min(max(bl_row, 0), grow - 1)
         ur_row = min(max(ur_row, 0), grow - 1)
         if HAS_NUMBA:
-            return _macro_occ_jit(bl_row, bl_col, ur_row, ur_col,
-                                  x_min, x_max, y_min, y_max, gw, gh, gcol)
+            return _macro_occ_jit(
+                bl_row, bl_col, ur_row, ur_col, x_min, x_max, y_min, y_max, gw, gh, gcol
+            )
         cols = np.arange(bl_col, ur_col + 1)
         rows = np.arange(bl_row, ur_row + 1)
         ox = np.minimum(gw * (cols + 1), x_max) - np.maximum(gw * cols, x_min)
@@ -246,7 +265,7 @@ class IncrementalScorer:
             return 0.5 * float(nz.mean() / self.dens_grid_area)
         k = min(cnt, nz.size)
         # CPU partition is faster than GPU topk for these small grids.
-        top = np.partition(nz, nz.size - k)[nz.size - k:]
+        top = np.partition(nz, nz.size - k)[nz.size - k :]
         return 0.5 * float(top.sum()) / self.dens_grid_area / cnt
 
     def _compute_cong_cost(self) -> float:
@@ -258,7 +277,7 @@ class IncrementalScorer:
         cnt = int(n * 0.05)
         if cnt == 0:
             return float(xx.max())
-        top = np.partition(xx, n - cnt)[n - cnt:]
+        top = np.partition(xx, n - cnt)[n - cnt :]
         return float(top.sum() / cnt)
 
     @staticmethod
@@ -267,36 +286,40 @@ class IncrementalScorer:
         bbs = [b for b in bbs if b is not None]
         if not bbs:
             return None, None, None, None
-        return (min(b[0] for b in bbs), max(b[1] for b in bbs),
-                min(b[2] for b in bbs), max(b[3] for b in bbs))
+        return (
+            min(b[0] for b in bbs),
+            max(b[1] for b in bbs),
+            min(b[2] for b in bbs),
+            max(b[3] for b in bbs),
+        )
 
     def _resmooth_h_cols(self, c_lo: int, c_hi: int) -> None:
         """Re-smooth affected H columns from raw routing."""
         H2d = self.H_flat.reshape(self.grid_row, self.grid_col)
-        sub = H2d[:, c_lo:c_hi + 1] / self.grid_h_routes
+        sub = H2d[:, c_lo : c_hi + 1] / self.grid_h_routes
         if self.smooth_range <= 0:
-            self.H_smoothed[:, c_lo:c_hi + 1] = sub
+            self.H_smoothed[:, c_lo : c_hi + 1] = sub
             return
         weighted = sub / self._sm_row_cnt[:, None]
         ncols = sub.shape[1]
         cs = np.empty((self.grid_row + 1, ncols), dtype=np.float64)
         cs[0, :] = 0.0
         np.cumsum(weighted, axis=0, out=cs[1:, :])
-        self.H_smoothed[:, c_lo:c_hi + 1] = cs[self._sm_row_up + 1] - cs[self._sm_row_lp]
+        self.H_smoothed[:, c_lo : c_hi + 1] = cs[self._sm_row_up + 1] - cs[self._sm_row_lp]
 
     def _resmooth_v_rows(self, r_lo: int, r_hi: int) -> None:
         """Re-smooth affected V rows from raw routing."""
         V2d = self.V_flat.reshape(self.grid_row, self.grid_col)
-        sub = V2d[r_lo:r_hi + 1, :] / self.grid_v_routes
+        sub = V2d[r_lo : r_hi + 1, :] / self.grid_v_routes
         if self.smooth_range <= 0:
-            self.V_smoothed[r_lo:r_hi + 1, :] = sub
+            self.V_smoothed[r_lo : r_hi + 1, :] = sub
             return
         nrows = sub.shape[0]
         weighted = sub / self._sm_col_cnt[None, :]
         cs = np.empty((nrows, self.grid_col + 1), dtype=np.float64)
         cs[:, 0] = 0.0
         np.cumsum(weighted, axis=1, out=cs[:, 1:])
-        self.V_smoothed[r_lo:r_hi + 1, :] = cs[:, self._sm_col_up + 1] - cs[:, self._sm_col_lp]
+        self.V_smoothed[r_lo : r_hi + 1, :] = cs[:, self._sm_col_up + 1] - cs[:, self._sm_col_lp]
 
     def _resmooth_bbox(self, r_lo, r_hi, c_lo, c_hi) -> None:
         """Re-smooth rows and columns touched by a move."""
@@ -315,7 +338,11 @@ class IncrementalScorer:
         sorted_nets = pin_to_net[order]
         boundaries = np.flatnonzero(np.diff(sorted_macros) != 0) + 1
         macro_segments = np.split(sorted_nets, boundaries)
-        macro_keys = sorted_macros[np.concatenate([[0], boundaries])] if len(sorted_macros) else np.array([], dtype=ref_idx.dtype)
+        macro_keys = (
+            sorted_macros[np.concatenate([[0], boundaries])]
+            if len(sorted_macros)
+            else np.array([], dtype=ref_idx.dtype)
+        )
         self.macro_to_nets: "dict[int, np.ndarray]" = {}
         for k, nets_for_macro in zip(macro_keys, macro_segments):
             uniq = np.unique(nets_for_macro)
@@ -346,8 +373,11 @@ class IncrementalScorer:
             pos_cache = _ensure_pos_cache(self.plc)
             return _hpwl_subset_jit(
                 np.ascontiguousarray(net_indices),
-                self.net_starts, self.net_lengths, self.ref_inv,
-                self.x_off, self.y_off,
+                self.net_starts,
+                self.net_lengths,
+                self.ref_inv,
+                self.x_off,
+                self.y_off,
                 np.ascontiguousarray(pos_cache[self.unique_ref, 0]),
                 np.ascontiguousarray(pos_cache[self.unique_ref, 1]),
             )
@@ -360,7 +390,8 @@ class IncrementalScorer:
 
         # Gather pins from the selected nets only.
         pin_indices = np.repeat(starts_t, lengths_t) + (
-            np.arange(total) - np.repeat(np.concatenate([[0], np.cumsum(lengths_t)[:-1]]), lengths_t)
+            np.arange(total)
+            - np.repeat(np.concatenate([[0], np.cumsum(lengths_t)[:-1]]), lengths_t)
         )
 
         pos_cache = _ensure_pos_cache(self.plc)
@@ -408,204 +439,6 @@ class IncrementalScorer:
         # We compute WL here; plc must recompute density/congestion if asked.
         self.plc.FLAG_UPDATE_DENSITY = True
         self.plc.FLAG_UPDATE_CONGESTION = True
-
-    def wl_delta_swap(self, i_hard: int, new_i_xy, j_hard: int, new_j_xy) -> float:
-        """Return the wirelength-only delta for a hard swap."""
-        i_module = self.hard_indices[i_hard]
-        j_module = self.hard_indices[j_hard]
-        touched = self._touched_nets(i_module, j_module)
-        if len(touched) == 0:
-            return 0.0
-        pos_cache = _ensure_pos_cache(self.plc)
-        ix = float(pos_cache[i_module, 0]); iy = float(pos_cache[i_module, 1])
-        jx = float(pos_cache[j_module, 0]); jy = float(pos_cache[j_module, 1])
-        pos_cache[i_module, 0] = float(new_i_xy[0]); pos_cache[i_module, 1] = float(new_i_xy[1])
-        pos_cache[j_module, 0] = float(new_j_xy[0]); pos_cache[j_module, 1] = float(new_j_xy[1])
-        new_per_net = self._compute_per_net_hpwl_subset(touched)
-        delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-        pos_cache[i_module, 0] = ix; pos_cache[i_module, 1] = iy
-        pos_cache[j_module, 0] = jx; pos_cache[j_module, 1] = jy
-        return delta / self.wl_normalizer
-
-    def score_swap(self, i_hard: int, new_i_xy, j_hard: int, new_j_xy) -> float:
-        """Score a hard swap, then restore the old state."""
-        i_module = self.hard_indices[i_hard]
-        j_module = self.hard_indices[j_hard]
-        i_slot = self._module_to_hard_slot.get(int(i_module))
-        j_slot = self._module_to_hard_slot.get(int(j_module))
-
-        # Save committed positions for revert.
-        old_ix, old_iy = float(self.committed_hard_pos[i_hard, 0]), float(self.committed_hard_pos[i_hard, 1])
-        old_jx, old_jy = float(self.committed_hard_pos[j_hard, 0]), float(self.committed_hard_pos[j_hard, 1])
-
-        # Snapshot routing grids for revert.
-        H_snap = self.H_flat.copy()
-        V_snap = self.V_flat.copy()
-        Hm_snap = self.H_macro_flat.copy()
-        Vm_snap = self.V_macro_flat.copy()
-
-        touched = self._touched_nets(i_module, j_module)
-        macro_subset = np.array(
-            [s for s in (i_slot, j_slot) if s is not None], dtype=np.int64
-        )
-
-        # Remove old routing and blockage.
-        struct = _build_net_routing_struct(self.plc, touched)
-        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, -1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        # Apply trial positions.
-        new_ix, new_iy = float(new_i_xy[0]), float(new_i_xy[1])
-        new_jx, new_jy = float(new_j_xy[0]), float(new_j_xy[1])
-        self._apply_pos(i_module, new_ix, new_iy)
-        self._apply_pos(j_module, new_jx, new_jy)
-
-        # Add new routing and blockage.
-        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, +1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        # Re-smooth touched rows/columns.
-        r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
-        if c_lo is not None:
-            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
-            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
-            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
-
-        # Update wirelength for touched nets.
-        if len(touched) > 0:
-            new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-            new_total_raw = self.total_wl_raw + delta
-        else:
-            new_total_raw = self.total_wl_raw
-        new_wl_normalized = new_total_raw / self.wl_normalizer
-
-        # Compute congestion from maintained grids.
-        cong = self._compute_cong_cost()
-
-        # Update density for the trial.
-        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
-        oj_idx, oj_area = self._macro_occ(j_module, old_jx, old_jy)
-        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
-        nj_idx, nj_area = self._macro_occ(j_module, new_jx, new_jy)
-        go = self.grid_occupied
-        if oi_idx.size:
-            np.subtract.at(go, oi_idx, oi_area)
-        if oj_idx.size:
-            np.subtract.at(go, oj_idx, oj_area)
-        if ni_idx.size:
-            np.add.at(go, ni_idx, ni_area)
-        if nj_idx.size:
-            np.add.at(go, nj_idx, nj_area)
-        dens = self._compute_density_cost()
-
-        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
-
-        # Revert trial state.
-        if ni_idx.size:
-            np.subtract.at(go, ni_idx, ni_area)
-        if nj_idx.size:
-            np.subtract.at(go, nj_idx, nj_area)
-        if oi_idx.size:
-            np.add.at(go, oi_idx, oi_area)
-        if oj_idx.size:
-            np.add.at(go, oj_idx, oj_area)
-        self._apply_pos(i_module, old_ix, old_iy)
-        self._apply_pos(j_module, old_jx, old_jy)
-        self.H_flat[:] = H_snap
-        self.V_flat[:] = V_snap
-        self.H_macro_flat[:] = Hm_snap
-        self.V_macro_flat[:] = Vm_snap
-        if c_lo is not None:
-            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
-            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
-
-        return score
-
-    def commit_swap(self, i_hard: int, new_i_xy, j_hard: int, new_j_xy) -> None:
-        """Commit a previously-trialed swap: persist positions, update
-        per_net_hpwl AND routing flats (so subsequent score_swap calls see
-        the new committed state).
-        """
-        i_module = self.hard_indices[i_hard]
-        j_module = self.hard_indices[j_hard]
-        i_slot = self._module_to_hard_slot.get(int(i_module))
-        j_slot = self._module_to_hard_slot.get(int(j_module))
-
-        # OLD committed positions (needed for the persistent density delta below,
-        # read before committed_hard_pos is overwritten).
-        old_ix = float(self.committed_hard_pos[i_hard, 0])
-        old_iy = float(self.committed_hard_pos[i_hard, 1])
-        old_jx = float(self.committed_hard_pos[j_hard, 0])
-        old_jy = float(self.committed_hard_pos[j_hard, 1])
-
-        touched = self._touched_nets(i_module, j_module)
-        macro_subset = np.array(
-            [s for s in (i_slot, j_slot) if s is not None], dtype=np.int64
-        )
-
-        # Subtract OLD routing contributions. Build the topology struct once for
-        # this swap (idea 2) and reuse it for the −1/+1 applies.
-        struct = _build_net_routing_struct(self.plc, touched)
-        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, -1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        # Apply new positions.
-        new_ix, new_iy = float(new_i_xy[0]), float(new_i_xy[1])
-        new_jx, new_jy = float(new_j_xy[0]), float(new_j_xy[1])
-        self._apply_pos(i_module, new_ix, new_iy)
-        self._apply_pos(j_module, new_jx, new_jy)
-
-        # P3: persist the density occupancy delta (subtract old footprints,
-        # add new) so subsequent score_swap calls see the committed grid.
-        go = self.grid_occupied
-        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
-        oj_idx, oj_area = self._macro_occ(j_module, old_jx, old_jy)
-        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
-        nj_idx, nj_area = self._macro_occ(j_module, new_jx, new_jy)
-        if oi_idx.size:
-            np.subtract.at(go, oi_idx, oi_area)
-        if oj_idx.size:
-            np.subtract.at(go, oj_idx, oj_area)
-        if ni_idx.size:
-            np.add.at(go, ni_idx, ni_area)
-        if nj_idx.size:
-            np.add.at(go, nj_idx, nj_area)
-
-        # Add NEW routing contributions.
-        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, +1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        # Persist the smoothed-cost cache for the touched bbox.
-        self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
-
-        # Persist position state on the scorer.
-        self.committed_hard_pos[i_hard, 0] = new_ix
-        self.committed_hard_pos[i_hard, 1] = new_iy
-        self.committed_hard_pos[j_hard, 0] = new_jx
-        self.committed_hard_pos[j_hard, 1] = new_jy
-
-        if len(touched) > 0:
-            new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-            self.per_net_hpwl[touched] = new_per_net
-            self.total_wl_raw += delta
 
     def _macro_nets(self, i_module: int) -> np.ndarray:
         a = self.macro_to_nets.get(i_module)
@@ -666,29 +499,36 @@ class IncrementalScorer:
 
         touched = self._macro_nets(i_module)
         struct = self._route_struct(i_module)
-        macro_subset = (np.array([i_slot], dtype=np.int64)
-                        if i_slot is not None else np.empty(0, dtype=np.int64))
+        macro_subset = (
+            np.array([i_slot], dtype=np.int64)
+            if i_slot is not None
+            else np.empty(0, dtype=np.int64)
+        )
 
         bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
-            _apply_macro_routing_subset(self.plc, macro_subset, -1.0,
-                                        self.V_macro_flat, self.H_macro_flat)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, -1.0, self.V_macro_flat, self.H_macro_flat
+            )
         self._apply_pos(i_module, new_ix, new_iy)
         bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
-            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
-                                        self.V_macro_flat, self.H_macro_flat)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, +1.0, self.V_macro_flat, self.H_macro_flat
+            )
 
         # Re-smooth touched rows/columns.
         r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
         if c_lo is not None:
-            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
-            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            Hs_snap = self.H_smoothed[:, c_lo : c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo : r_hi + 1, :].copy()
             self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
 
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
             new_total_raw = self.total_wl_raw + delta
         else:
             new_total_raw = self.total_wl_raw
@@ -717,8 +557,8 @@ class IncrementalScorer:
         self.H_macro_flat[:] = Hm_snap
         self.V_macro_flat[:] = Vm_snap
         if c_lo is not None:
-            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
-            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
+            self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
         return score
 
     def commit_move(self, i_hard: int, new_xy) -> None:
@@ -731,13 +571,17 @@ class IncrementalScorer:
 
         touched = self._macro_nets(i_module)
         struct = self._route_struct(i_module)
-        macro_subset = (np.array([i_slot], dtype=np.int64)
-                        if i_slot is not None else np.empty(0, dtype=np.int64))
+        macro_subset = (
+            np.array([i_slot], dtype=np.int64)
+            if i_slot is not None
+            else np.empty(0, dtype=np.int64)
+        )
 
         bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
-            _apply_macro_routing_subset(self.plc, macro_subset, -1.0,
-                                        self.V_macro_flat, self.H_macro_flat)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, -1.0, self.V_macro_flat, self.H_macro_flat
+            )
         self._apply_pos(i_module, new_ix, new_iy)
 
         go = self.grid_occupied
@@ -750,8 +594,9 @@ class IncrementalScorer:
 
         bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
-            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
-                                        self.V_macro_flat, self.H_macro_flat)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, +1.0, self.V_macro_flat, self.H_macro_flat
+            )
 
         self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
 
@@ -759,7 +604,9 @@ class IncrementalScorer:
         self.committed_hard_pos[i_hard, 1] = new_iy
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
 
@@ -782,13 +629,15 @@ class IncrementalScorer:
         # Re-smooth touched rows/columns.
         r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
         if c_lo is not None:
-            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
-            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            Hs_snap = self.H_smoothed[:, c_lo : c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo : r_hi + 1, :].copy()
             self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
 
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
             new_total_raw = self.total_wl_raw + delta
         else:
             new_total_raw = self.total_wl_raw
@@ -815,8 +664,8 @@ class IncrementalScorer:
         self.H_flat[:] = H_snap
         self.V_flat[:] = V_snap
         if c_lo is not None:
-            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
-            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
+            self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
         return score
 
     def commit_move_soft(self, soft_k: int, new_xy) -> None:
@@ -847,7 +696,9 @@ class IncrementalScorer:
         self.committed_soft_pos[soft_k, 1] = new_y
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
 
@@ -860,13 +711,17 @@ class IncrementalScorer:
         old_ix = float(self.committed_hard_pos[i_hard, 0])
         old_iy = float(self.committed_hard_pos[i_hard, 1])
         struct = self._route_struct(i_module)
-        macro_subset = (np.array([i_slot], dtype=np.int64)
-                        if i_slot is not None else np.empty(0, dtype=np.int64))
+        macro_subset = (
+            np.array([i_slot], dtype=np.int64)
+            if i_slot is not None
+            else np.empty(0, dtype=np.int64)
+        )
 
         bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
-            _apply_macro_routing_subset(self.plc, macro_subset, -1.0,
-                                        self.V_macro_flat, self.H_macro_flat)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, -1.0, self.V_macro_flat, self.H_macro_flat
+            )
         o_idx, o_area = self._macro_occ(i_module, old_ix, old_iy)
         if o_idx.size:
             np.subtract.at(self.grid_occupied, o_idx, o_area)
@@ -903,21 +758,24 @@ class IncrementalScorer:
         self._apply_pos(i_module, new_ix, new_iy)
         bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
-            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
-                                        self.V_macro_flat, self.H_macro_flat)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, +1.0, self.V_macro_flat, self.H_macro_flat
+            )
 
         Hs_snap = Vs_snap = None
         r_lo = r_hi = c_lo = c_hi = None
         if bb_new is not None:
             r_lo, r_hi, c_lo, c_hi = bb_new
-            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
-            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            Hs_snap = self.H_smoothed[:, c_lo : c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo : r_hi + 1, :].copy()
             self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
 
         touched = self._macro_nets(i_module)
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
             new_total_raw = self.total_wl_raw + delta
         else:
             new_total_raw = self.total_wl_raw
@@ -935,8 +793,8 @@ class IncrementalScorer:
         score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
 
         if bb_new is not None:
-            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
-            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
+            self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
         self._apply_pos(i_module, old_ix, old_iy)
         self.H_flat[:] = H_snap
         self.V_flat[:] = V_snap
@@ -956,8 +814,9 @@ class IncrementalScorer:
         self._apply_pos(i_module, new_ix, new_iy)
         bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
-            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
-                                        self.V_macro_flat, self.H_macro_flat)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, +1.0, self.V_macro_flat, self.H_macro_flat
+            )
 
         n_idx, n_area = self._macro_occ(i_module, new_ix, new_iy)
         if n_idx.size:
@@ -971,7 +830,9 @@ class IncrementalScorer:
         touched = self._macro_nets(i_module)
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
 
@@ -982,8 +843,9 @@ class IncrementalScorer:
 
         bb_old = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
-            _apply_macro_routing_subset(self.plc, macro_subset, +1.0,
-                                        self.V_macro_flat, self.H_macro_flat)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, +1.0, self.V_macro_flat, self.H_macro_flat
+            )
         o_idx = prep["old_dens_idx"]
         o_area = prep["old_dens_area"]
         if o_idx.size:
@@ -1036,14 +898,16 @@ class IncrementalScorer:
         r_lo = r_hi = c_lo = c_hi = None
         if bb_new is not None:
             r_lo, r_hi, c_lo, c_hi = bb_new
-            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
-            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
+            Hs_snap = self.H_smoothed[:, c_lo : c_hi + 1].copy()
+            Vs_snap = self.V_smoothed[r_lo : r_hi + 1, :].copy()
             self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
 
         touched = self._macro_nets(s_module)
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
             new_total_raw = self.total_wl_raw + delta
         else:
             new_total_raw = self.total_wl_raw
@@ -1061,8 +925,8 @@ class IncrementalScorer:
         score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
 
         if bb_new is not None:
-            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
-            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
+            self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
+            self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
         self._apply_pos(s_module, old_x, old_y)
         self.H_flat[:] = H_snap
         self.V_flat[:] = V_snap
@@ -1091,7 +955,9 @@ class IncrementalScorer:
         touched = self._macro_nets(s_module)
         if len(touched) > 0:
             new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
+            delta = float(
+                np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+            )
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
 
@@ -1113,473 +979,14 @@ class IncrementalScorer:
         if len(touched) == 0:
             return 0.0
         pos_cache = _ensure_pos_cache(self.plc)
-        sx = float(pos_cache[s_module, 0]); sy = float(pos_cache[s_module, 1])
-        pos_cache[s_module, 0] = float(new_xy[0]); pos_cache[s_module, 1] = float(new_xy[1])
+        sx = float(pos_cache[s_module, 0])
+        sy = float(pos_cache[s_module, 1])
+        pos_cache[s_module, 0] = float(new_xy[0])
+        pos_cache[s_module, 1] = float(new_xy[1])
         new_per_net = self._compute_per_net_hpwl_subset(touched)
-        delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-        pos_cache[s_module, 0] = sx; pos_cache[s_module, 1] = sy
+        delta = float(
+            np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched])
+        )
+        pos_cache[s_module, 0] = sx
+        pos_cache[s_module, 1] = sy
         return delta / self.wl_normalizer
-
-    # Soft-soft swaps exchange two soft macro positions.
-
-    def wl_delta_swap_soft(self, k1: int, new_xy1, k2: int, new_xy2) -> float:
-        """Return the wirelength-only delta for a soft swap."""
-        s_mod1 = self.soft_indices[k1]
-        s_mod2 = self.soft_indices[k2]
-        touched = self._touched_nets(s_mod1, s_mod2)
-        if len(touched) == 0:
-            return 0.0
-        pos_cache = _ensure_pos_cache(self.plc)
-        sx1 = float(pos_cache[s_mod1, 0]); sy1 = float(pos_cache[s_mod1, 1])
-        sx2 = float(pos_cache[s_mod2, 0]); sy2 = float(pos_cache[s_mod2, 1])
-        pos_cache[s_mod1, 0] = float(new_xy1[0]); pos_cache[s_mod1, 1] = float(new_xy1[1])
-        pos_cache[s_mod2, 0] = float(new_xy2[0]); pos_cache[s_mod2, 1] = float(new_xy2[1])
-        new_per_net = self._compute_per_net_hpwl_subset(touched)
-        delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-        pos_cache[s_mod1, 0] = sx1; pos_cache[s_mod1, 1] = sy1
-        pos_cache[s_mod2, 0] = sx2; pos_cache[s_mod2, 1] = sy2
-        return delta / self.wl_normalizer
-
-    def score_swap_soft(self, k1: int, new_xy1, k2: int, new_xy2) -> float:
-        """Score a soft-soft swap, then restore the old state."""
-        s_mod1 = self.soft_indices[k1]
-        s_mod2 = self.soft_indices[k2]
-
-        old_x1 = float(self.committed_soft_pos[k1, 0])
-        old_y1 = float(self.committed_soft_pos[k1, 1])
-        old_x2 = float(self.committed_soft_pos[k2, 0])
-        old_y2 = float(self.committed_soft_pos[k2, 1])
-
-        H_snap = self.H_flat.copy()
-        V_snap = self.V_flat.copy()
-
-        touched = self._touched_nets(s_mod1, s_mod2)
-        struct = _build_net_routing_struct(self.plc, touched)
-        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
-
-        new_x1, new_y1 = float(new_xy1[0]), float(new_xy1[1])
-        new_x2, new_y2 = float(new_xy2[0]), float(new_xy2[1])
-        self._apply_pos(s_mod1, new_x1, new_y1)
-        self._apply_pos(s_mod2, new_x2, new_y2)
-
-        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
-
-        r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
-        if c_lo is not None:
-            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
-            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
-            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
-
-        if len(touched) > 0:
-            new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-            new_total_raw = self.total_wl_raw + delta
-        else:
-            new_total_raw = self.total_wl_raw
-        new_wl_normalized = new_total_raw / self.wl_normalizer
-        cong = self._compute_cong_cost()
-
-        o1_idx, o1_area = self._macro_occ(s_mod1, old_x1, old_y1)
-        o2_idx, o2_area = self._macro_occ(s_mod2, old_x2, old_y2)
-        n1_idx, n1_area = self._macro_occ(s_mod1, new_x1, new_y1)
-        n2_idx, n2_area = self._macro_occ(s_mod2, new_x2, new_y2)
-        go = self.grid_occupied
-        if o1_idx.size:
-            np.subtract.at(go, o1_idx, o1_area)
-        if o2_idx.size:
-            np.subtract.at(go, o2_idx, o2_area)
-        if n1_idx.size:
-            np.add.at(go, n1_idx, n1_area)
-        if n2_idx.size:
-            np.add.at(go, n2_idx, n2_area)
-        dens = self._compute_density_cost()
-
-        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
-
-        # Revert trial state.
-        if n1_idx.size:
-            np.subtract.at(go, n1_idx, n1_area)
-        if n2_idx.size:
-            np.subtract.at(go, n2_idx, n2_area)
-        if o1_idx.size:
-            np.add.at(go, o1_idx, o1_area)
-        if o2_idx.size:
-            np.add.at(go, o2_idx, o2_area)
-        self._apply_pos(s_mod1, old_x1, old_y1)
-        self._apply_pos(s_mod2, old_x2, old_y2)
-        self.H_flat[:] = H_snap
-        self.V_flat[:] = V_snap
-        if c_lo is not None:
-            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
-            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
-
-        return score
-
-    def commit_swap_soft(self, k1: int, new_xy1, k2: int, new_xy2) -> None:
-        """Commit a soft-soft swap."""
-        s_mod1 = self.soft_indices[k1]
-        s_mod2 = self.soft_indices[k2]
-        old_x1 = float(self.committed_soft_pos[k1, 0])
-        old_y1 = float(self.committed_soft_pos[k1, 1])
-        old_x2 = float(self.committed_soft_pos[k2, 0])
-        old_y2 = float(self.committed_soft_pos[k2, 1])
-
-        touched = self._touched_nets(s_mod1, s_mod2)
-        struct = _build_net_routing_struct(self.plc, touched)
-        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
-
-        new_x1, new_y1 = float(new_xy1[0]), float(new_xy1[1])
-        new_x2, new_y2 = float(new_xy2[0]), float(new_xy2[1])
-        self._apply_pos(s_mod1, new_x1, new_y1)
-        self._apply_pos(s_mod2, new_x2, new_y2)
-
-        go = self.grid_occupied
-        o1_idx, o1_area = self._macro_occ(s_mod1, old_x1, old_y1)
-        o2_idx, o2_area = self._macro_occ(s_mod2, old_x2, old_y2)
-        n1_idx, n1_area = self._macro_occ(s_mod1, new_x1, new_y1)
-        n2_idx, n2_area = self._macro_occ(s_mod2, new_x2, new_y2)
-        if o1_idx.size:
-            np.subtract.at(go, o1_idx, o1_area)
-        if o2_idx.size:
-            np.subtract.at(go, o2_idx, o2_area)
-        if n1_idx.size:
-            np.add.at(go, n1_idx, n1_area)
-        if n2_idx.size:
-            np.add.at(go, n2_idx, n2_area)
-
-        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
-        self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
-
-        self.committed_soft_pos[k1, 0] = new_x1
-        self.committed_soft_pos[k1, 1] = new_y1
-        self.committed_soft_pos[k2, 0] = new_x2
-        self.committed_soft_pos[k2, 1] = new_y2
-        if len(touched) > 0:
-            new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-            self.per_net_hpwl[touched] = new_per_net
-            self.total_wl_raw += delta
-
-    def score_swap_hard_soft(self, i_hard: int, new_hard_xy, k_soft: int, new_soft_xy) -> float:
-        """Score a hard-soft swap, then restore the old state."""
-        i_module = self.hard_indices[i_hard]
-        s_module = self.soft_indices[k_soft]
-        i_slot = self._module_to_hard_slot.get(int(i_module))
-
-        old_ix = float(self.committed_hard_pos[i_hard, 0])
-        old_iy = float(self.committed_hard_pos[i_hard, 1])
-        old_sx = float(self.committed_soft_pos[k_soft, 0])
-        old_sy = float(self.committed_soft_pos[k_soft, 1])
-
-        H_snap = self.H_flat.copy()
-        V_snap = self.V_flat.copy()
-        Hm_snap = self.H_macro_flat.copy()
-        Vm_snap = self.V_macro_flat.copy()
-
-        touched = self._touched_nets(i_module, s_module)
-        macro_subset = (np.array([i_slot], dtype=np.int64)
-                        if i_slot is not None else np.empty(0, dtype=np.int64))
-
-        struct = _build_net_routing_struct(self.plc, touched)
-        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, -1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        new_ix, new_iy = float(new_hard_xy[0]), float(new_hard_xy[1])
-        new_sx, new_sy = float(new_soft_xy[0]), float(new_soft_xy[1])
-        self._apply_pos(i_module, new_ix, new_iy)
-        self._apply_pos(s_module, new_sx, new_sy)
-
-        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, +1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
-        if c_lo is not None:
-            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
-            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
-            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
-
-        if len(touched) > 0:
-            new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-            new_total_raw = self.total_wl_raw + delta
-        else:
-            new_total_raw = self.total_wl_raw
-        new_wl_normalized = new_total_raw / self.wl_normalizer
-        cong = self._compute_cong_cost()
-
-        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
-        os_idx, os_area = self._macro_occ(s_module, old_sx, old_sy)
-        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
-        ns_idx, ns_area = self._macro_occ(s_module, new_sx, new_sy)
-        go = self.grid_occupied
-        if oi_idx.size:
-            np.subtract.at(go, oi_idx, oi_area)
-        if os_idx.size:
-            np.subtract.at(go, os_idx, os_area)
-        if ni_idx.size:
-            np.add.at(go, ni_idx, ni_area)
-        if ns_idx.size:
-            np.add.at(go, ns_idx, ns_area)
-        dens = self._compute_density_cost()
-
-        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
-
-        # Revert trial state.
-        if ni_idx.size:
-            np.subtract.at(go, ni_idx, ni_area)
-        if ns_idx.size:
-            np.subtract.at(go, ns_idx, ns_area)
-        if oi_idx.size:
-            np.add.at(go, oi_idx, oi_area)
-        if os_idx.size:
-            np.add.at(go, os_idx, os_area)
-        self._apply_pos(i_module, old_ix, old_iy)
-        self._apply_pos(s_module, old_sx, old_sy)
-        self.H_flat[:] = H_snap
-        self.V_flat[:] = V_snap
-        self.H_macro_flat[:] = Hm_snap
-        self.V_macro_flat[:] = Vm_snap
-        if c_lo is not None:
-            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
-            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
-
-        return score
-
-    def commit_swap_hard_soft(self, i_hard: int, new_hard_xy, k_soft: int, new_soft_xy) -> None:
-        """Commit a hard-soft swap."""
-        i_module = self.hard_indices[i_hard]
-        s_module = self.soft_indices[k_soft]
-        i_slot = self._module_to_hard_slot.get(int(i_module))
-
-        old_ix = float(self.committed_hard_pos[i_hard, 0])
-        old_iy = float(self.committed_hard_pos[i_hard, 1])
-        old_sx = float(self.committed_soft_pos[k_soft, 0])
-        old_sy = float(self.committed_soft_pos[k_soft, 1])
-
-        touched = self._touched_nets(i_module, s_module)
-        macro_subset = (np.array([i_slot], dtype=np.int64)
-                        if i_slot is not None else np.empty(0, dtype=np.int64))
-
-        struct = _build_net_routing_struct(self.plc, touched)
-        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, -1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        new_ix, new_iy = float(new_hard_xy[0]), float(new_hard_xy[1])
-        new_sx, new_sy = float(new_soft_xy[0]), float(new_soft_xy[1])
-        self._apply_pos(i_module, new_ix, new_iy)
-        self._apply_pos(s_module, new_sx, new_sy)
-
-        go = self.grid_occupied
-        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
-        os_idx, os_area = self._macro_occ(s_module, old_sx, old_sy)
-        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
-        ns_idx, ns_area = self._macro_occ(s_module, new_sx, new_sy)
-        if oi_idx.size:
-            np.subtract.at(go, oi_idx, oi_area)
-        if os_idx.size:
-            np.subtract.at(go, os_idx, os_area)
-        if ni_idx.size:
-            np.add.at(go, ni_idx, ni_area)
-        if ns_idx.size:
-            np.add.at(go, ns_idx, ns_area)
-
-        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, +1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
-
-        self.committed_hard_pos[i_hard, 0] = new_ix
-        self.committed_hard_pos[i_hard, 1] = new_iy
-        self.committed_soft_pos[k_soft, 0] = new_sx
-        self.committed_soft_pos[k_soft, 1] = new_sy
-        if len(touched) > 0:
-            new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-            self.per_net_hpwl[touched] = new_per_net
-            self.total_wl_raw += delta
-
-    def score_cycle_hard_soft_soft(self, i_hard: int, new_hard_xy,
-                                     k1_soft: int, new_k1_xy,
-                                     k2_soft: int, new_k2_xy) -> float:
-        """Score a hard-soft-soft rotation, then restore the old state."""
-        i_module = self.hard_indices[i_hard]
-        s_mod1 = self.soft_indices[k1_soft]
-        s_mod2 = self.soft_indices[k2_soft]
-        i_slot = self._module_to_hard_slot.get(int(i_module))
-
-        old_ix = float(self.committed_hard_pos[i_hard, 0])
-        old_iy = float(self.committed_hard_pos[i_hard, 1])
-        old_s1x = float(self.committed_soft_pos[k1_soft, 0])
-        old_s1y = float(self.committed_soft_pos[k1_soft, 1])
-        old_s2x = float(self.committed_soft_pos[k2_soft, 0])
-        old_s2y = float(self.committed_soft_pos[k2_soft, 1])
-
-        H_snap = self.H_flat.copy()
-        V_snap = self.V_flat.copy()
-        Hm_snap = self.H_macro_flat.copy()
-        Vm_snap = self.V_macro_flat.copy()
-
-        touched = self._touched_nets3(i_module, s_mod1, s_mod2)
-        macro_subset = (np.array([i_slot], dtype=np.int64)
-                        if i_slot is not None else np.empty(0, dtype=np.int64))
-
-        struct = _build_net_routing_struct(self.plc, touched)
-        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, -1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        new_ix, new_iy = float(new_hard_xy[0]), float(new_hard_xy[1])
-        new_s1x, new_s1y = float(new_k1_xy[0]), float(new_k1_xy[1])
-        new_s2x, new_s2y = float(new_k2_xy[0]), float(new_k2_xy[1])
-        self._apply_pos(i_module, new_ix, new_iy)
-        self._apply_pos(s_mod1, new_s1x, new_s1y)
-        self._apply_pos(s_mod2, new_s2x, new_s2y)
-
-        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, +1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
-        if c_lo is not None:
-            Hs_snap = self.H_smoothed[:, c_lo:c_hi + 1].copy()
-            Vs_snap = self.V_smoothed[r_lo:r_hi + 1, :].copy()
-            self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
-
-        if len(touched) > 0:
-            new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-            new_total_raw = self.total_wl_raw + delta
-        else:
-            new_total_raw = self.total_wl_raw
-        new_wl_normalized = new_total_raw / self.wl_normalizer
-        cong = self._compute_cong_cost()
-
-        # Trial density update.
-        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
-        o1_idx, o1_area = self._macro_occ(s_mod1, old_s1x, old_s1y)
-        o2_idx, o2_area = self._macro_occ(s_mod2, old_s2x, old_s2y)
-        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
-        n1_idx, n1_area = self._macro_occ(s_mod1, new_s1x, new_s1y)
-        n2_idx, n2_area = self._macro_occ(s_mod2, new_s2x, new_s2y)
-        go = self.grid_occupied
-        if oi_idx.size: np.subtract.at(go, oi_idx, oi_area)
-        if o1_idx.size: np.subtract.at(go, o1_idx, o1_area)
-        if o2_idx.size: np.subtract.at(go, o2_idx, o2_area)
-        if ni_idx.size: np.add.at(go, ni_idx, ni_area)
-        if n1_idx.size: np.add.at(go, n1_idx, n1_area)
-        if n2_idx.size: np.add.at(go, n2_idx, n2_area)
-        dens = self._compute_density_cost()
-
-        score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
-
-        # Revert trial state.
-        if ni_idx.size: np.subtract.at(go, ni_idx, ni_area)
-        if n1_idx.size: np.subtract.at(go, n1_idx, n1_area)
-        if n2_idx.size: np.subtract.at(go, n2_idx, n2_area)
-        if oi_idx.size: np.add.at(go, oi_idx, oi_area)
-        if o1_idx.size: np.add.at(go, o1_idx, o1_area)
-        if o2_idx.size: np.add.at(go, o2_idx, o2_area)
-        self._apply_pos(i_module, old_ix, old_iy)
-        self._apply_pos(s_mod1, old_s1x, old_s1y)
-        self._apply_pos(s_mod2, old_s2x, old_s2y)
-        self.H_flat[:] = H_snap
-        self.V_flat[:] = V_snap
-        self.H_macro_flat[:] = Hm_snap
-        self.V_macro_flat[:] = Vm_snap
-        if c_lo is not None:
-            self.H_smoothed[:, c_lo:c_hi + 1] = Hs_snap
-            self.V_smoothed[r_lo:r_hi + 1, :] = Vs_snap
-
-        return score
-
-    def commit_cycle_hard_soft_soft(self, i_hard: int, new_hard_xy,
-                                      k1_soft: int, new_k1_xy,
-                                      k2_soft: int, new_k2_xy) -> None:
-        """Commit a hard-soft-soft rotation."""
-        i_module = self.hard_indices[i_hard]
-        s_mod1 = self.soft_indices[k1_soft]
-        s_mod2 = self.soft_indices[k2_soft]
-        i_slot = self._module_to_hard_slot.get(int(i_module))
-
-        old_ix = float(self.committed_hard_pos[i_hard, 0])
-        old_iy = float(self.committed_hard_pos[i_hard, 1])
-        old_s1x = float(self.committed_soft_pos[k1_soft, 0])
-        old_s1y = float(self.committed_soft_pos[k1_soft, 1])
-        old_s2x = float(self.committed_soft_pos[k2_soft, 0])
-        old_s2y = float(self.committed_soft_pos[k2_soft, 1])
-
-        touched = self._touched_nets3(i_module, s_mod1, s_mod2)
-        macro_subset = (np.array([i_slot], dtype=np.int64)
-                        if i_slot is not None else np.empty(0, dtype=np.int64))
-
-        struct = _build_net_routing_struct(self.plc, touched)
-        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, -1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        new_ix, new_iy = float(new_hard_xy[0]), float(new_hard_xy[1])
-        new_s1x, new_s1y = float(new_k1_xy[0]), float(new_k1_xy[1])
-        new_s2x, new_s2y = float(new_k2_xy[0]), float(new_k2_xy[1])
-        self._apply_pos(i_module, new_ix, new_iy)
-        self._apply_pos(s_mod1, new_s1x, new_s1y)
-        self._apply_pos(s_mod2, new_s2x, new_s2y)
-
-        go = self.grid_occupied
-        oi_idx, oi_area = self._macro_occ(i_module, old_ix, old_iy)
-        o1_idx, o1_area = self._macro_occ(s_mod1, old_s1x, old_s1y)
-        o2_idx, o2_area = self._macro_occ(s_mod2, old_s2x, old_s2y)
-        ni_idx, ni_area = self._macro_occ(i_module, new_ix, new_iy)
-        n1_idx, n1_area = self._macro_occ(s_mod1, new_s1x, new_s1y)
-        n2_idx, n2_area = self._macro_occ(s_mod2, new_s2x, new_s2y)
-        if oi_idx.size: np.subtract.at(go, oi_idx, oi_area)
-        if o1_idx.size: np.subtract.at(go, o1_idx, o1_area)
-        if o2_idx.size: np.subtract.at(go, o2_idx, o2_area)
-        if ni_idx.size: np.add.at(go, ni_idx, ni_area)
-        if n1_idx.size: np.add.at(go, n1_idx, n1_area)
-        if n2_idx.size: np.add.at(go, n2_idx, n2_area)
-
-        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
-        if macro_subset.size > 0:
-            _apply_macro_routing_subset(
-                self.plc, macro_subset, +1.0,
-                self.V_macro_flat, self.H_macro_flat,
-            )
-
-        self._resmooth_bbox(*self._union_bbox(bb_old, bb_new))
-
-        self.committed_hard_pos[i_hard, 0] = new_ix
-        self.committed_hard_pos[i_hard, 1] = new_iy
-        self.committed_soft_pos[k1_soft, 0] = new_s1x
-        self.committed_soft_pos[k1_soft, 1] = new_s1y
-        self.committed_soft_pos[k2_soft, 0] = new_s2x
-        self.committed_soft_pos[k2_soft, 1] = new_s2y
-        if len(touched) > 0:
-            new_per_net = self._compute_per_net_hpwl_subset(touched)
-            delta = float(np.sum((new_per_net - self.per_net_hpwl[touched]) * self.net_weights[touched]))
-            self.per_net_hpwl[touched] = new_per_net
-            self.total_wl_raw += delta

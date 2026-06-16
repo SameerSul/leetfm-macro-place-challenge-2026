@@ -1,25 +1,25 @@
 # Research Papers: Code Analysis and Implementation Notes
 
-> Historical research log. Some implementation notes describe code that was later
-> retired; use `ARCHITECTURE.md`, `DESIGN_FLOW.md`, and `docs/theory/` for the
-> active system.
-> Updated: 2026-06-15
+> Historical research log. Most implementation notes describe the retired
+> proxy-optimized path. The active system is hierarchy-only; use
+> `ARCHITECTURE.md`, `DESIGN_FLOW.md`, and `docs/theory/` for the current flow.
+> Updated: 2026-06-16
 
 ---
 
-## Priority Ranking
+## Historical Priority Ranking
 
 | # | Paper | Venue | Code Applied? | Where |
 |---|-------|-------|--------------|-------|
-| 1 | **WireMask-BBO** | NeurIPS 2023 | ✅ Yes | `_wire_pull_perturb()` in placer.py |
-| 2 | **MaskRegulate** | NeurIPS 2024 | ✅ Yes | `_density_gradient_perturb()` in placer.py |
-| 3 | **TILOS SA Assessment** | TCAD 2024 | ✅ Partial | Macro-swap Phase 4 implemented in v16 |
+| 1 | **WireMask-BBO** | NeurIPS 2023 | Historical | retired proxy perturbation notes |
+| 2 | **MaskRegulate** | NeurIPS 2024 | Historical | retired proxy perturbation notes |
+| 3 | **TILOS SA Assessment** | TCAD 2024 | Historical | retired macro-swap proxy path |
 | 4 | **Hybro / WireMask Sweep** | arXiv 2024 | 🔲 Next | Per-macro greedy congestion-move sweep |
 | 5 | **IncreMacro** | TCAD 2025 | 🔲 Next | Hill-climbing local search after restarts |
 | 6 | **RUDY Demand Map** | ePlace-MS (TCAD 2015) | 🔲 Next | Fast in-loop congestion estimation |
 | 7 | **Congestion-aware legalization** | UCSD/general | 🔲 Next | Weight displacement by congestion in legalize |
 | 8 | **ChiPFormer** | ICML 2023 | 🔲 Future | `system/ml_placer/` (Role B) |
-| 9 | DREAMPlace | DAC 2019 | ✅ Yes | `src/dreamplace_bridge/` async candidate generator |
+| 9 | DREAMPlace | DAC 2019 | ✅ Yes | `src/dreamplace_bridge/` grouped hierarchy placement |
 | 10 | MaskPlace | NeurIPS 2022 | 🔲 Future | Foundation for ChiPFormer |
 
 ---
