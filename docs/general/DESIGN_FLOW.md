@@ -17,6 +17,16 @@ The deleted proxy path included random candidate restarts, R2/2-opt/swap/cycle
 search, generic LSMC exploration, generic cluster kicks, CUDA propose-all
 integration in the main loop, and ML ranker defaults.
 
+Current accepted result:
+
+```text
+uv run evaluate src/main.py -b ibm10
+proxy=1.6759  VALID
+
+uv run evaluate src/main.py --all
+AVG 1.4452  17/17 VALID  0 overlaps  520.08s
+```
+
 ## Flow
 
 ```mermaid
@@ -160,7 +170,7 @@ V2_HIER_REGION_SWAPS=1
 V2_HIER_REGION_SWAP_ROUNDS=2
 V2_HIER_REGION_SWAP_BUDGET_S=20
 V2_HIER_HARD_SWAP_K=16
-V2_HIER_SOFT_SWAP_K=24
+V2_HIER_SOFT_SWAP_K=48
 V2_HIER_SWAP_MIN_GAIN=0.00001
 V2_HIER_SWAP_MIN_FIELD_RELIEF=0.0
 V2_HIER_SWAP_HH=1

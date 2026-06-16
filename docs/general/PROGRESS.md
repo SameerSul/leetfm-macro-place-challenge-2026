@@ -9,8 +9,23 @@ Target: beat RePlAce avg of 1.4578.
 > unavailable. Deleted proxy-only pieces include candidate restarts, R2/2-opt,
 > hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 > ranker defaults, and their verifiers. Current smoke: `ibm10` hierarchy output
-> `proxy=1.7076`, VALID, ~12s locally. The proxy-score history below is retained
+> `proxy=1.6759`, VALID, ~34s locally. The proxy-score history below is retained
 > as historical experiment context, not the current production output.
+
+> **Status (2026-06-16 — soft-swap breadth tuning accepted, `--all`
+> avg = 1.4452):** kept owned/bridge soft classification, congestion-expanded
+> regions, exact-gated cluster decompression, proxy-aware coldspot tightening,
+> per-operator region-swap controls, strict hard-swap legality, and best-state
+> rollback; then raised the default soft swap candidate count
+> `V2_HIER_SOFT_SWAP_K` from 24 to 48. Full
+> `uv run evaluate src/main.py --all`: **AVG 1.4452**, 17/17 VALID, 0 overlaps,
+> 520.08s; beats RePlAce avg 1.4578 (+0.9% vs RePlAce). Net gain vs the prior
+> tuned region-swap `--all` 1.4471 is -0.0019, led by the intended congestion
+> targets: ibm12 2.3454→2.3297, ibm17 2.2481→2.2374, ibm15 1.9555→1.9494, plus
+> ibm10 1.6836→1.6759 and ibm16 1.7376→1.7322. Main regressions to watch next:
+> ibm18 1.7761→1.7869, ibm14 1.6931→1.6991, and ibm11 1.1305→1.1326. Current
+> bottlenecks remain congestion-heavy: ibm12 2.3297 (cong 2.983), ibm17 2.2374
+> (cong 2.897), ibm15 1.9494 (cong 2.390).
 
 > **HISTORICAL HEADLINE (2026-06-14 — cluster-coherent LSMC kicks were shipped
 > in the then-current proxy path, then deleted on 2026-06-16):

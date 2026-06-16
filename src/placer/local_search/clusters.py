@@ -36,8 +36,7 @@ def _find(parents: np.ndarray, i: int) -> int:
     return root
 
 
-def derive_hard_clusters(plc, n: int, n_soft: int = 0, max_fanout: int = 8,
-                         min_edge: int = 2):
+def derive_hard_clusters(plc, n: int, n_soft: int = 0, max_fanout: int = 8, min_edge: int = 2):
     """Partition movable hard macros [0, n) into connectivity clusters.
 
     Returns (labels, clusters):
@@ -79,7 +78,7 @@ def derive_hard_clusters(plc, n: int, n_soft: int = 0, max_fanout: int = 8,
         if length < 2 or length > max_fanout:
             continue
         start = int(net_starts[net_i])
-        pin_refs = ref_idx[start:start + length]
+        pin_refs = ref_idx[start : start + length]
         hard_a = sorted({b_to_a[int(r)] for r in pin_refs if int(r) in b_to_a})
         if len(hard_a) < 2:
             continue
@@ -112,8 +111,7 @@ def derive_hard_clusters(plc, n: int, n_soft: int = 0, max_fanout: int = 8,
     return labels, clusters
 
 
-def derive_cluster_softs(plc, n: int, n_soft: int, labels: np.ndarray,
-                         max_fanout: int = 8):
+def derive_cluster_softs(plc, n: int, n_soft: int, labels: np.ndarray, max_fanout: int = 8):
     """Map each hard cluster to the soft macros it drives.
 
     For every low-fanout net, the soft pins are attributed to the cluster(s) of
@@ -144,9 +142,8 @@ def derive_cluster_softs(plc, n: int, n_soft: int, labels: np.ndarray,
         if length < 2 or length > max_fanout:
             continue
         start = int(net_starts[net_i])
-        refs = [int(r) for r in ref_idx[start:start + length]]
-        cids = {int(labels[hb2a[r]]) for r in refs
-                if r in hb2a and labels[hb2a[r]] >= 0}
+        refs = [int(r) for r in ref_idx[start : start + length]]
+        cids = {int(labels[hb2a[r]]) for r in refs if r in hb2a and labels[hb2a[r]] >= 0}
         if not cids:
             continue
         softs = [sb2p[r] for r in refs if r in sb2p]
@@ -166,6 +163,67 @@ def derive_cluster_softs(plc, n: int, n_soft: int, labels: np.ndarray,
 
     plc._cluster_softs = (key, out)
     return out
+
+
+def derive_soft_cluster_roles(
+    plc,
+    n: int,
+    n_soft: int,
+    labels: np.ndarray,
+    max_fanout: int = 8,
+    bridge_ratio: float = 0.6,
+):
+    """Split soft macros into owned and bridge roles.
+
+    Owned softs have one dominant cluster affinity. Bridge softs connect two or
+    more clusters with comparable strength and should live in a corridor between
+    those clusters instead of being pulled fully inside one cluster.
+    """
+    key = (int(n), int(n_soft), int(max_fanout), id(labels), float(bridge_ratio))
+    cached = getattr(plc, "_soft_cluster_roles", None)
+    if cached is not None and cached[0] == key:
+        return cached[1], cached[2]
+
+    cache = _build_wl_cache(plc)
+    ref_idx = cache["ref_idx"]
+    net_starts = cache["net_starts"]
+    net_lengths = cache["net_lengths"]
+    hb2a = {int(b): a for a, b in enumerate(plc.hard_macro_indices)}
+    sb2s = {int(b): a for a, b in enumerate(plc.soft_macro_indices)}
+
+    counts: "dict[tuple[int, int], int]" = {}
+    for net_i in range(len(net_starts)):
+        length = int(net_lengths[net_i])
+        if length < 2 or length > max_fanout:
+            continue
+        start = int(net_starts[net_i])
+        refs = [int(r) for r in ref_idx[start : start + length]]
+        cids = {int(labels[hb2a[r]]) for r in refs if r in hb2a and labels[hb2a[r]] >= 0}
+        if not cids:
+            continue
+        softs = [sb2s[r] for r in refs if r in sb2s]
+        for s in softs:
+            for cid in cids:
+                counts[(s, cid)] = counts.get((s, cid), 0) + 1
+
+    by_soft: "dict[int, list[tuple[int, int]]]" = {}
+    for (s, cid), c in counts.items():
+        by_soft.setdefault(int(s), []).append((int(cid), int(c)))
+
+    owned: "dict[int, list[int]]" = {}
+    bridge: "dict[int, np.ndarray]" = {}
+    for s, vals in by_soft.items():
+        vals.sort(key=lambda x: (-x[1], x[0]))
+        best_cid, best_count = vals[0]
+        tied = [cid for cid, c in vals if c >= max(1.0, bridge_ratio * best_count)]
+        if len(tied) >= 2:
+            bridge[s] = np.array(tied, dtype=np.int64)
+        else:
+            owned.setdefault(best_cid, []).append(n + s)
+
+    owned_out = {cid: np.array(sorted(v), dtype=np.int64) for cid, v in owned.items()}
+    plc._soft_cluster_roles = (key, owned_out, bridge)
+    return owned_out, bridge
 
 
 def cluster_max_fanout() -> int:
@@ -191,9 +249,20 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def compute_region_bbox(hard_xy, sizes, hw, hh, cw, ch, n, labels, clusters,
-                        target_density: float = 0.5, margin: float = 0.0,
-                        singleton_window: float = 0.05) -> np.ndarray:
+def compute_region_bbox(
+    hard_xy,
+    sizes,
+    hw,
+    hh,
+    cw,
+    ch,
+    n,
+    labels,
+    clusters,
+    target_density: float = 0.5,
+    margin: float = 0.0,
+    singleton_window: float = 0.05,
+) -> np.ndarray:
     """Per-macro CENTER-feasible region box [n,4] = (xlo, ylo, xhi, yhi).
 
     A macro's center must stay within its box to keep its whole footprint inside
@@ -232,13 +301,17 @@ def compute_region_bbox(hard_xy, sizes, hw, hh, cw, ch, n, labels, clusters,
         x0, x1 = cx - rw / 2.0, cx + rw / 2.0
         y0, y1 = cy - rh / 2.0, cy + rh / 2.0
         if x0 < 0.0:
-            x1 -= x0; x0 = 0.0
+            x1 -= x0
+            x0 = 0.0
         if x1 > cw:
-            x0 = max(x0 - (x1 - cw), 0.0); x1 = cw
+            x0 = max(x0 - (x1 - cw), 0.0)
+            x1 = cw
         if y0 < 0.0:
-            y1 -= y0; y0 = 0.0
+            y1 -= y0
+            y0 = 0.0
         if y1 > ch:
-            y0 = max(y0 - (y1 - ch), 0.0); y1 = ch
+            y0 = max(y0 - (y1 - ch), 0.0)
+            y1 = ch
         # Inset to center-feasible per member half-extent.
         region[mem, 0] = x0 + hw[mem]
         region[mem, 1] = y0 + hh[mem]
@@ -261,6 +334,157 @@ def compute_region_bbox(hard_xy, sizes, hw, hh, cw, ch, n, labels, clusters,
     region[:, 2] = np.maximum(region[:, 2], hard_xy[:, 0])
     region[:, 1] = np.minimum(region[:, 1], hard_xy[:, 1])
     region[:, 3] = np.maximum(region[:, 3], hard_xy[:, 1])
+    return region
+
+
+def _cluster_outer_region(
+    hard_xy,
+    sizes,
+    hw,
+    hh,
+    cw,
+    ch,
+    mem,
+    target_density: float,
+    margin: float,
+) -> tuple[float, float, float, float]:
+    """Return the unclipped-footprint cluster region as an outer canvas box."""
+    mem = np.asarray(mem, dtype=np.int64)
+    xs, ys = hard_xy[mem, 0], hard_xy[mem, 1]
+    cx = float(xs.min() + xs.max()) / 2.0
+    cy = float(ys.min() + ys.max()) / 2.0
+    mhw, mhh = float(hw[mem].max()), float(hh[mem].max())
+    bw0 = max(float(xs.max() - xs.min()) + 2.0 * mhw, 1e-6)
+    bh0 = max(float(ys.max() - ys.min()) + 2.0 * mhh, 1e-6)
+    big = max(float(cw), float(ch))
+    if margin > 0.0:
+        rw, rh = bw0 + 2.0 * margin * big, bh0 + 2.0 * margin * big
+    else:
+        member_area = float(np.sum(sizes[mem, 0] * sizes[mem, 1]))
+        region_area = member_area / max(target_density, 1e-3)
+        ar = bw0 / bh0
+        rh = float(np.sqrt(region_area / ar))
+        rw = ar * rh
+        rw, rh = max(rw, bw0), max(rh, bh0)
+    x0, x1 = cx - rw / 2.0, cx + rw / 2.0
+    y0, y1 = cy - rh / 2.0, cy + rh / 2.0
+    if x0 < 0.0:
+        x1 -= x0
+        x0 = 0.0
+    if x1 > cw:
+        x0 = max(x0 - (x1 - cw), 0.0)
+        x1 = cw
+    if y0 < 0.0:
+        y1 -= y0
+        y0 = 0.0
+    if y1 > ch:
+        y0 = max(y0 - (y1 - ch), 0.0)
+        y1 = ch
+    return x0, y0, x1, y1
+
+
+def compute_soft_region_bbox(
+    hard_xy,
+    soft_xy,
+    hard_sizes,
+    hard_hw,
+    hard_hh,
+    soft_hw,
+    soft_hh,
+    cw,
+    ch,
+    n,
+    clusters,
+    cluster_softs,
+    bridge_softs=None,
+    target_density: float = 0.5,
+    margin: float = 0.0,
+    singleton_window: float = 0.05,
+) -> np.ndarray:
+    """Per-soft center-feasible region box [num_soft,4]."""
+    num_soft = int(soft_xy.shape[0])
+    region = np.empty((num_soft, 4), dtype=np.float64)
+    assigned = np.zeros(num_soft, dtype=bool)
+
+    for cid, soft_pidx in cluster_softs.items():
+        mem = clusters.get(int(cid))
+        if mem is None or len(mem) == 0:
+            continue
+        x0, y0, x1, y1 = _cluster_outer_region(
+            hard_xy,
+            hard_sizes,
+            hard_hw,
+            hard_hh,
+            cw,
+            ch,
+            mem,
+            target_density,
+            margin,
+        )
+        for p in np.asarray(soft_pidx, dtype=np.int64):
+            k = int(p) - int(n)
+            if k < 0 or k >= num_soft:
+                continue
+            region[k, 0] = x0 + soft_hw[k]
+            region[k, 1] = y0 + soft_hh[k]
+            region[k, 2] = x1 - soft_hw[k]
+            region[k, 3] = y1 - soft_hh[k]
+            assigned[k] = True
+
+    if bridge_softs:
+        cluster_boxes = {}
+        for cid, mem in clusters.items():
+            cluster_boxes[int(cid)] = _cluster_outer_region(
+                hard_xy,
+                hard_sizes,
+                hard_hw,
+                hard_hh,
+                cw,
+                ch,
+                mem,
+                target_density,
+                margin,
+            )
+        big = max(float(cw), float(ch))
+        pad = max(singleton_window * big, 0.02 * big)
+        for k, cids in bridge_softs.items():
+            k = int(k)
+            if k < 0 or k >= num_soft:
+                continue
+            boxes = [cluster_boxes[int(cid)] for cid in cids if int(cid) in cluster_boxes]
+            if not boxes:
+                continue
+            x0 = max(0.0, min(b[0] for b in boxes) - pad)
+            y0 = max(0.0, min(b[1] for b in boxes) - pad)
+            x1 = min(float(cw), max(b[2] for b in boxes) + pad)
+            y1 = min(float(ch), max(b[3] for b in boxes) + pad)
+            region[k, 0] = x0 + soft_hw[k]
+            region[k, 1] = y0 + soft_hh[k]
+            region[k, 2] = x1 - soft_hw[k]
+            region[k, 3] = y1 - soft_hh[k]
+            assigned[k] = True
+
+    unassigned = np.flatnonzero(~assigned)
+    if unassigned.size:
+        big = max(float(cw), float(ch))
+        w = singleton_window * big
+        region[unassigned, 0] = np.clip(
+            soft_xy[unassigned, 0] - w, soft_hw[unassigned], cw - soft_hw[unassigned]
+        )
+        region[unassigned, 2] = np.clip(
+            soft_xy[unassigned, 0] + w, soft_hw[unassigned], cw - soft_hw[unassigned]
+        )
+        region[unassigned, 1] = np.clip(
+            soft_xy[unassigned, 1] - w, soft_hh[unassigned], ch - soft_hh[unassigned]
+        )
+        region[unassigned, 3] = np.clip(
+            soft_xy[unassigned, 1] + w, soft_hh[unassigned], ch - soft_hh[unassigned]
+        )
+
+    region[:, 0] = np.minimum(region[:, 0], soft_xy[:, 0])
+    region[:, 2] = np.maximum(region[:, 2], soft_xy[:, 0])
+    region[:, 1] = np.minimum(region[:, 1], soft_xy[:, 1])
+    region[:, 3] = np.maximum(region[:, 3], soft_xy[:, 1])
     return region
 
 

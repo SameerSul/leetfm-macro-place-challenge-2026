@@ -1,4 +1,4 @@
-# Open issues and recent shipped items — v2 placer (last revised 2026-06-15)
+# Open issues and recent shipped items — v2 placer (last revised 2026-06-16)
 
 This file tracks current gaps, speculative score ideas, follow-up work, and a
 small number of recent shipped items that still explain active knobs. Older
@@ -13,20 +13,24 @@ resolved or rejected findings are primarily captured in commit messages and
 proxy-optimized production path (candidate restarts, R2/2-opt/LSMC, ML ranker
 defaults, and generic LSMC cluster kicks) has been deleted from active code.
 `MacroPlacer.place()` now always routes through `_hierarchy_floorplan()` and
-raises if that path is unavailable. Current smoke: `ibm10` proxy `1.7076`,
-VALID, ~12s locally. The score table below is historical context for the
+raises if that path is unavailable. Current smoke: `ibm10` proxy `1.6759`,
+VALID, ~34s locally. Current full IBM run:
+`uv run evaluate src/main.py --all` = **AVG 1.4452**, 17/17 VALID, 0 overlaps,
+520.08s. The historical proxy table below is retained as context for the
 removed proxy path, not the current hierarchy-preserving output.
 
 | Metric | Value |
 |---|---|
+| Current hierarchy `--all` avg | **1.4452** (2026-06-16 — soft-swap breadth tuning; 17/17 VALID, 0 overlaps, 520.08s). |
+| Current hierarchy gap to RePlAce | **+0.9% vs RePlAce** (1.4452 vs 1.4578). |
 | Best `--all` avg | **1.1252** (2026-06-11 — S10 ML hard-relocation ranker connected as production default; 17/17 VALID, 0 overlaps, **2337s ~39min**). |
 | Prior `--all` avg | 1.1272 (S16, DP basins restored) → 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−22.8% (beat by 0.333 — beats on every benchmark)** |
+| Historical proxy-path gap to RePlAce | **−22.8% (beat by 0.333 — beats on every benchmark)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−20.1% (BEATS by 0.282)** |
+| Historical proxy-path gap to leaderboard | **−20.1% (BEATS by 0.282)** |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | 2337s (~39 min) in the 2026-06-11 re-baseline |
+| Historical proxy-path `--all` wall-clock | 2337s (~39 min) in the 2026-06-11 re-baseline |
 
 All 17 IBM benchmarks improved vs v12 baseline. The **relocation family** is the
 dominant lever (R1 −0.0096, R2 −0.0083, R2b −0.0027, R3 −0.0452, **R5 −0.0965**
@@ -55,6 +59,55 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 ---
 
 ## Current issues and shipped context
+
+### S21. Congestion-aware hierarchy relief and region-bounded swaps (SHIPPED 2026-06-16)
+
+Goal: reduce the congestion-dominated proxy while preserving usable macro
+hierarchy. Outcome: shipped the current hierarchy system:
+
+- owned vs bridge soft classification;
+- congestion-expanded hard and soft regions;
+- exact-gated cluster decompression with hierarchy-quality limits;
+- region-bounded hard-hard, hard-soft, and soft-soft swaps;
+- strict hard-swap legality and best-state rollback;
+- proxy-aware coldspot tightening, no bounded proxy-worsening compaction;
+- wider soft swap candidate breadth (`V2_HIER_SOFT_SWAP_K=48`).
+
+Accepted full run:
+
+```text
+uv run evaluate src/main.py --all
+AVG 1.4452  17/17 VALID  0 overlaps  520.08s
+```
+
+Key deltas vs the prior tuned region-swap run (`1.4471`):
+
+| Bench | Before | After | Note |
+|---|---:|---:|---|
+| ibm12 | 2.3454 | **2.3297** | target congestion case; cong 3.015→2.983 |
+| ibm17 | 2.2481 | **2.2374** | target congestion case; cong 2.910→2.897 |
+| ibm15 | 1.9555 | **1.9494** | target congestion case; cong 2.400→2.390 |
+| ibm10 | 1.6836 | **1.6759** | smoke improved |
+| ibm16 | 1.7376 | **1.7322** | secondary improvement |
+| ibm18 | **1.7761** | 1.7869 | main regression to inspect |
+| ibm14 | **1.6931** | 1.6991 | regression to inspect |
+
+Verdict: the remaining proxy bottleneck is still congestion inside large
+hierarchy regions, but the best current lever is soft placement around the hard
+hierarchy, not hard-hard swaps alone. Operator sweeps showed:
+
+- `swaps_off` is much worse on ibm12/15/17;
+- `ss_only` accounts for most of the gain on ibm15/17, but mixed swaps remain
+  best;
+- disabling density-field swaps regresses target cases;
+- stricter escape thresholds help one case but hurt others;
+- `soft_k=48` improves all three target bottlenecks, while `soft_k=64`
+  regresses ibm17.
+
+GPU status: CUDA is available and DREAMPlace uses it. The dormant
+`cuda_delta` hard-relocation diagnostic passes, but the current hierarchy swap
+and decompression passes are still sequential CPU/NumPy exact-gated searches;
+cuGenOpt-style batched GPU proposal evaluation is not yet active here.
 
 ### S20. Macro-hierarchy awareness — full investigation (2026-06-15)
 
@@ -134,27 +187,19 @@ GPU note reaffirmed: per-macro GPU batching loses on IBM's ~2000-cell grids (§6
 S2); only cross-macro batching on large grids (NG45) could win — out of scope for
 the leaderboard. Diagnostic `_coldspot_kick.py`, verified `_verify_coldspot_kick.py`.
 
-**Coldspot tightening pass in hier mode (`V2_HIER_COLDSPOT_KICK`, default ON in the
-floorplan/region-lock mode).** Since the kick keeps clusters tighter (just not
-proxy-free), it is wired into `_hierarchy_floorplan` AFTER region relief as a
-closeness-objective pass: accept a coldspot kick only if intra-cluster spread DROPS
-AND proxy rises < `V2_HIER_COLDSPOT_BUDGET` (0.05/kick) and total <
-`V2_HIER_COLDSPOT_TOTAL` (0.15). Deliberately trades a bounded proxy increase for
-tighter hierarchy. ibm10: 7 accepts, proxy 1.6809→1.7076 (+0.027, within caps),
-clusters tighter, VALID. Knob `V2_HIER_COLDSPOT_ROUNDS` (8). The standalone kick is
-also usable in the normal LSMC via `V2_LSMC_COLDSPOT_CLUSTER` (default OFF;
-production path bit-identical when off).
+**Superseded by S21:** the first hierarchy coldspot pass accepted tighter
+clusters with bounded proxy worsening. The current production coldspot pass is
+proxy-aware: it accepts only exact proxy improvements that stay within the
+hierarchy-quality budget (`V2_HIER_COLDSPOT_BUDGET=0.0`,
+`V2_HIER_COLDSPOT_TOTAL=0.0`, `V2_HIER_COLDSPOT_MIN_GAIN=0.0001`,
+`V2_HIER_COLDSPOT_QUALITY_BUDGET=0.01`). This keeps coldspot tightening from
+undoing region-relief congestion gains for compactness alone.
 
-**`V2_REGION_LOCK=1` (default OFF) = region-locked PRODUCTION output.** Routes
-`place()` to the hierarchy+relief path. **Finding:** region-biasing only the main
-pipeline's R2 relocation is INEFFECTIVE — its other phases (DP candidates, noise
-restarts, LSMC kicks) generate spread placements that win on proxy and override
-the bias, and anchoring regions to the already-spread `initial.plc` makes the
-boxes too loose anyway (measured: ibm10 1.0834→1.0818, a no-op). The only way to
-region-lock the *production* output is the dedicated regional pipeline, so
-`V2_REGION_LOCK` runs that. The `_relocation_moves` `region_bbox` capability
-remains for the relief loop; the ineffective main-pipeline R2 plumbing was removed
-(main path bit-identical to before this work).
+**Superseded by current hierarchy-only production:** `V2_REGION_LOCK` is no
+longer the mechanism that selects a regional output. `MacroPlacer.place()`
+always routes through the dedicated hierarchy path. The finding remains useful:
+region-biasing only the old proxy pipeline's R2 relocation was ineffective
+because later spread-oriented phases overrode the bias.
 
 ### S19. DREAMPlace was silently dead since the restructure (FIXED 2026-06-15)
 

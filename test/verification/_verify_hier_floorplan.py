@@ -7,13 +7,14 @@ to the normal pipeline in that case.
 
     uv run python test/verification/_verify_hier_floorplan.py [ibm01]
 """
+
 import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "system" / "v2" / "src"))
+sys.path.insert(0, str(ROOT / "src"))
 
 import numpy as np
 
@@ -30,6 +31,7 @@ def main(bench):
     os.environ["V2_HIER_FLOORPLAN"] = "1"
     import importlib
     import placer.pipeline.macro_placer as mp
+
     importlib.reload(mp)
 
     src = ROOT / "external" / "MacroPlacement" / "Testcases" / "ICCAD04" / bench

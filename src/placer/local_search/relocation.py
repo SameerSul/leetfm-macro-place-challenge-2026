@@ -10,6 +10,7 @@ import torch
 from placer.config import _CUDA_DEVICE_REQUESTED, _GPU_BACKEND, _GPU_DEVICE, _GPU_DEVICE_NAME
 from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
+from placer.local_search.region_rules import accepts_region_score, point_in_region
 from placer.plc.placement import _ensure_pos_cache
 
 if TYPE_CHECKING:
@@ -802,12 +803,21 @@ def _relocation_hpwl_dynamic_bytes_per_proposal(
     float32_bytes = np.dtype(np.float32).itemsize
     bool_bytes = np.dtype(np.bool_).itemsize
     total = 0
+    module_indices = {
+        int(p["module_idx"])
+        if "module_idx" in p
+        else int(incremental_scorer.hard_indices[int(p["i"])])
+        for p in proposals
+    }
     hpwl_topology = _build_hpwl_topology_cache(
         incremental_scorer,
-        module_indices={int(incremental_scorer.hard_indices[int(p["i"])]) for p in proposals},
+        module_indices=module_indices,
     )
     for proposal in proposals:
-        module_idx = int(incremental_scorer.hard_indices[int(proposal["i"])])
+        if "module_idx" in proposal:
+            module_idx = int(proposal["module_idx"])
+        else:
+            module_idx = int(incremental_scorer.hard_indices[int(proposal["i"])])
         topo = hpwl_topology.get(module_idx)
         if topo is None:
             continue
@@ -889,7 +899,12 @@ def _relocation_static_tensor_bytes_estimate(
         total += len(proposals) * 2 * np.dtype(np.float32).itemsize
     module_indices = None
     if proposals is not None and hasattr(incremental_scorer, "hard_indices"):
-        module_indices = {int(incremental_scorer.hard_indices[int(p["i"])]) for p in proposals}
+        module_indices = {
+            int(p["module_idx"])
+            if "module_idx" in p
+            else int(incremental_scorer.hard_indices[int(p["i"])])
+            for p in proposals
+        }
     hpwl_topology = _build_hpwl_topology_cache(
         incremental_scorer,
         module_indices=module_indices,
@@ -1042,26 +1057,42 @@ def _build_relocation_cuda_static_tensors(
     pos_cache_np = _ensure_pos_cache(incremental_scorer.plc)
     proposal_xy_np = np.asarray([p["xy"] for p in proposals], dtype=np.float32)
     proposal_i_np = np.asarray([p["i"] for p in proposals], dtype=np.int64)
-    proposal_module_idx_np = np.asarray(
-        [incremental_scorer.hard_indices[int(i)] for i in proposal_i_np],
-        dtype=np.int64,
-    )
+    proposal_modules = []
+    for p, i in zip(proposals, proposal_i_np):
+        if "module_idx" in p:
+            proposal_modules.append(int(p["module_idx"]))
+        else:
+            proposal_modules.append(int(incremental_scorer.hard_indices[int(i)]))
+    proposal_module_idx_np = np.asarray(proposal_modules, dtype=np.int64)
     old_density: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     old_macro_route: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     old_net_route: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     module_indices: set[int] = set()
-    for i in sorted({int(i) for i in proposal_i_np}):
-        module_idx = int(incremental_scorer.hard_indices[i])
+    for p, i_raw, module_idx_raw in zip(proposals, proposal_i_np, proposal_module_idx_np):
+        i = int(i_raw)
+        module_idx = int(module_idx_raw)
+        if i in old_density:
+            continue
         module_indices.add(module_idx)
-        old_x = float(pos[i, 0])
-        old_y = float(pos[i, 1])
+        old_xy = p.get("old_xy")
+        if old_xy is None:
+            old_x = float(pos[i, 0])
+            old_y = float(pos[i, 1])
+        else:
+            old_x = float(old_xy[0])
+            old_y = float(old_xy[1])
         old_density[i] = incremental_scorer._macro_occ(module_idx, old_x, old_y)
-        old_macro_route[i] = _macro_routing_contrib(
-            incremental_scorer,
-            module_idx,
-            old_x,
-            old_y,
-        )
+        if p.get("macro_route", True):
+            old_macro_route[i] = _macro_routing_contrib(
+                incremental_scorer,
+                module_idx,
+                old_x,
+                old_y,
+            )
+        else:
+            empty_i = np.empty(0, dtype=np.int64)
+            empty_v = np.empty(0, dtype=np.float32)
+            old_macro_route[i] = (empty_i, empty_v, empty_v)
         old_net_route[i] = _net_routing_all_contrib(
             incremental_scorer,
             module_idx,
@@ -1269,7 +1300,9 @@ def _score_relocation_proposals_cuda_delta_batch(
     net_route_col_parts = []
     net_route_v_parts = []
     net_route_h_parts = []
-    for row, (i_raw, module_idx_raw) in enumerate(zip(hard_i_np, module_idx_np)):
+    for row, (proposal, i_raw, module_idx_raw) in enumerate(
+        zip(proposals, hard_i_np, module_idx_np)
+    ):
         i = int(i_raw)
         module_idx = int(module_idx_raw)
         nx = float(xy_np[row, 0])
@@ -1290,12 +1323,17 @@ def _score_relocation_proposals_cuda_delta_batch(
             val_parts.append(new_area.astype(np.float32, copy=False))
 
         old_route_idx, old_v, old_h = static_tensors["old_macro_route"][i]
-        new_route_idx, new_v, new_h = _macro_routing_contrib(
-            incremental_scorer,
-            module_idx,
-            nx,
-            ny,
-        )
+        if proposal.get("macro_route", True):
+            new_route_idx, new_v, new_h = _macro_routing_contrib(
+                incremental_scorer,
+                module_idx,
+                nx,
+                ny,
+            )
+        else:
+            new_route_idx = np.empty(0, dtype=np.int64)
+            new_v = np.empty(0, dtype=np.float32)
+            new_h = np.empty(0, dtype=np.float32)
         if old_route_idx.size:
             macro_route_row_parts.append(np.full(old_route_idx.size, row, dtype=np.int64))
             macro_route_col_parts.append(old_route_idx)
@@ -1770,6 +1808,7 @@ def _relocation_moves_propose_all(
     field: str,
     region_bbox: "np.ndarray | None" = None,
     region_bias: float = 0.0,
+    region_escape_min: float = 0.0,
 ) -> "tuple[np.ndarray, int, float]":
     """Rank all hard-relocation proposals, then exact-check the best ones."""
     best_score = initial_score
@@ -1910,7 +1949,8 @@ def _relocation_moves_propose_all(
         try:
             score = incremental_scorer._trial_at(prep, (nx, ny))
             verify_scores += 1
-            if score < best_score - 1e-9:
+            outside = not point_in_region(region_bbox, i, nx, ny)
+            if accepts_region_score(score, best_score, outside, region_escape_min):
                 incremental_scorer._commit_after_prep(prep, (nx, ny))
                 pos[i, 0], pos[i, 1] = nx, ny
                 best_score = float(score)
@@ -2041,6 +2081,7 @@ def _relocation_moves(
     propose_top_m: "int | None" = None,
     region_bbox: "np.ndarray | None" = None,
     region_bias: float = 0.0,
+    region_escape_min: float = 0.0,
 ) -> "tuple[np.ndarray, int, float]":
     """Move hot hard macros to colder legal spots.
 
@@ -2124,6 +2165,7 @@ def _relocation_moves(
             field=trace_field,
             region_bbox=region_bbox,
             region_bias=region_bias,
+            region_escape_min=region_escape_min,
         )
 
     best_score = initial_score
@@ -2166,7 +2208,8 @@ def _relocation_moves(
                 if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
                     continue
                 s = incremental_scorer._trial_at(prep, (nx, ny))
-                if s < best_score - 1e-9:
+                outside = not point_in_region(region_bbox, i, nx, ny)
+                if accepts_region_score(s, best_score, outside, region_escape_min):
                     best_score = s
                     best_i_xy = (nx, ny)
             if best_i_xy is not None:
@@ -2180,6 +2223,220 @@ def _relocation_moves(
             incremental_scorer._revert_prep(prep)
             raise
     return pos, accepts, best_score
+
+
+def _soft_relocation_moves_propose_all(
+    *,
+    soft_pos: np.ndarray,
+    soft_hw: np.ndarray,
+    soft_hh: np.ndarray,
+    cw: float,
+    ch: float,
+    incremental_scorer,
+    initial_score: float,
+    deadline: "float | None",
+    n_targets: int,
+    soft_movable: "np.ndarray | None",
+    net_centroid: "np.ndarray | None",
+    wl_blend: float,
+    wl_prefilter: float,
+    hot: np.ndarray,
+    pool: np.ndarray,
+    tgt_x: np.ndarray,
+    tgt_y: np.ndarray,
+    tgt_cong: np.ndarray,
+    local_cong: np.ndarray,
+    propose_top_m: "int | None",
+    field: str,
+    region_bbox: "np.ndarray | None" = None,
+    region_bias: float = 0.0,
+    region_escape_min: float = 0.0,
+) -> "tuple[np.ndarray, int, float]":
+    """Rank all soft-relocation proposals, then exact-check the best ones."""
+    best_score = initial_score
+    accepts = 0
+    proposals = []
+    t0 = time.monotonic()
+    legal_count = 0
+    frozen_scores = 0
+    verify_scores = 0
+    scorer_mode = _proposal_scorer_mode()
+    _span2 = float(max(cw, ch)) ** 2
+
+    sm = None if soft_movable is None else np.asarray(soft_movable, dtype=bool)
+    for hot_rank, k_raw in enumerate(hot):
+        if deadline is not None and time.monotonic() > deadline:
+            break
+        k = int(k_raw)
+        if sm is not None and not sm[k]:
+            continue
+        cand = np.where(tgt_cong < local_cong[k] - 1e-9)[0]
+        if cand.size == 0:
+            continue
+        d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
+        if wl_blend > 0.0 and net_centroid is not None:
+            d2c = (tgt_x[cand] - net_centroid[k, 0]) ** 2 + (
+                tgt_y[cand] - net_centroid[k, 1]
+            ) ** 2
+            d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
+        if region_bbox is not None and region_bias > 0.0:
+            d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, k, _span2, region_bias)
+        cand = cand[np.argsort(d2)][:n_targets]
+
+        legal = []
+        for candidate_rank, t in enumerate(cand):
+            nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
+            ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
+            if wl_prefilter > 0.0:
+                wl_d = incremental_scorer.wl_delta_move_soft(k, (nx, ny))
+                if wl_d > wl_prefilter:
+                    continue
+            legal.append((int(candidate_rank), int(t), nx, ny))
+        if not legal:
+            continue
+        legal_count += len(legal)
+
+        if scorer_mode == "exact":
+            prep = incremental_scorer._prepare_move_soft(k)
+            try:
+                for candidate_rank, target_index, nx, ny in legal:
+                    if deadline is not None and time.monotonic() > deadline:
+                        break
+                    score = incremental_scorer._trial_at_soft(prep, (nx, ny))
+                    frozen_scores += 1
+                    proposals.append(
+                        {
+                            "score": float(score),
+                            "i": k,
+                            "hot_rank": int(hot_rank),
+                            "candidate_rank": int(candidate_rank),
+                            "target_index": int(target_index),
+                            "xy": (nx, ny),
+                        }
+                    )
+            finally:
+                incremental_scorer._revert_prep_soft(prep)
+        else:
+            module_idx = int(incremental_scorer.soft_indices[k])
+            old_xy = (float(soft_pos[k, 0]), float(soft_pos[k, 1]))
+            for candidate_rank, target_index, nx, ny in legal:
+                proposals.append(
+                    {
+                        "score": 0.0,
+                        "i": k,
+                        "module_idx": module_idx,
+                        "old_xy": old_xy,
+                        "macro_route": False,
+                        "hot_rank": int(hot_rank),
+                        "candidate_rank": int(candidate_rank),
+                        "target_index": int(target_index),
+                        "xy": (nx, ny),
+                    }
+                )
+
+    if scorer_mode == "tensor" and proposals:
+        _score_relocation_proposals_tensor(
+            proposals,
+            pos=soft_pos,
+            cw=cw,
+            ch=ch,
+            local_cong=local_cong,
+            tgt_cong=tgt_cong,
+        )
+        frozen_scores = len(proposals)
+    elif scorer_mode == "cuda_delta" and proposals:
+        _score_relocation_proposals_cuda_delta(
+            proposals,
+            pos=soft_pos,
+            cw=cw,
+            ch=ch,
+            local_cong=local_cong,
+            tgt_cong=tgt_cong,
+            incremental_scorer=incremental_scorer,
+        )
+        frozen_scores = len(proposals)
+
+    if not proposals:
+        return soft_pos, 0, best_score
+
+    proposals.sort(
+        key=lambda p: (
+            p["score"],
+            p["hot_rank"],
+            p["candidate_rank"],
+            p["i"],
+            p["target_index"],
+        )
+    )
+    if propose_top_m is not None and propose_top_m > 0:
+        proposals = proposals[:propose_top_m]
+
+    moved = set()
+    for p in proposals:
+        if deadline is not None and time.monotonic() > deadline:
+            break
+        k = int(p["i"])
+        if k in moved:
+            continue
+        if sm is not None and not sm[k]:
+            continue
+        nx, ny = p["xy"]
+        prep = incremental_scorer._prepare_move_soft(k)
+        try:
+            score = incremental_scorer._trial_at_soft(prep, (nx, ny))
+            verify_scores += 1
+            outside = not point_in_region(region_bbox, k, nx, ny)
+            if accepts_region_score(score, best_score, outside, region_escape_min):
+                incremental_scorer._commit_after_prep_soft(prep, (nx, ny))
+                soft_pos[k, 0], soft_pos[k, 1] = nx, ny
+                best_score = float(score)
+                accepts += 1
+                moved.add(k)
+            else:
+                incremental_scorer._revert_prep_soft(prep)
+        except Exception:
+            incremental_scorer._revert_prep_soft(prep)
+            raise
+
+    if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+        "YES",
+        "on",
+        "ON",
+    }:
+        scorer_extra = ""
+        if scorer_mode == "cuda_delta":
+            stats = getattr(_score_relocation_proposals_cuda_delta, "last_stats", None)
+            if stats:
+                scorer_extra = " device=%s chunk=%d->%d batches=%d retries=%d ms_per_prop=%.3f" % (
+                    stats["device"],
+                    stats["initial_chunk_size"],
+                    stats["final_chunk_size"],
+                    stats["batches"],
+                    stats["retries"],
+                    stats.get("ms_per_proposal", 0.0),
+                )
+        print(
+            "  soft relocate propose-all[%s]: hot=%d legal=%d frozen_scores=%d "
+            "selected=%d verify_scores=%d accepts=%d scorer=%s%s elapsed=%.3fs"
+            % (
+                field,
+                len(hot),
+                legal_count,
+                frozen_scores,
+                len(proposals),
+                verify_scores,
+                accepts,
+                scorer_mode,
+                scorer_extra,
+                time.monotonic() - t0,
+            ),
+            flush=True,
+        )
+    return soft_pos, accepts, best_score
 
 
 def _soft_relocation_moves(
@@ -2201,6 +2458,11 @@ def _soft_relocation_moves(
     net_centroid: "np.ndarray | None" = None,
     wl_blend: float = 0.0,
     wl_prefilter: float = 1e-4,
+    propose_all: bool = False,
+    propose_top_m: "int | None" = None,
+    region_bbox: "np.ndarray | None" = None,
+    region_bias: float = 0.0,
+    region_escape_min: float = 0.0,
 ) -> "tuple[np.ndarray, int, float]":
     """Move hot soft macros to colder cells."""
     num_soft = incremental_scorer.num_soft
@@ -2240,6 +2502,34 @@ def _soft_relocation_moves(
     tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
     tgt_cong = flat[pool]
 
+    if propose_all:
+        return _soft_relocation_moves_propose_all(
+            soft_pos=soft_pos,
+            soft_hw=soft_hw,
+            soft_hh=soft_hh,
+            cw=cw,
+            ch=ch,
+            incremental_scorer=incremental_scorer,
+            initial_score=initial_score,
+            deadline=deadline,
+            n_targets=n_targets,
+            soft_movable=soft_movable,
+            net_centroid=net_centroid,
+            wl_blend=wl_blend,
+            wl_prefilter=wl_prefilter,
+            hot=hot,
+            pool=pool,
+            tgt_x=tgt_x,
+            tgt_y=tgt_y,
+            tgt_cong=tgt_cong,
+            local_cong=local_cong,
+            propose_top_m=propose_top_m,
+            field="density" if use_density else "congestion",
+            region_bbox=region_bbox,
+            region_bias=region_bias,
+            region_escape_min=region_escape_min,
+        )
+
     best_score = initial_score
     accepts = 0
     for k in hot:
@@ -2254,6 +2544,9 @@ def _soft_relocation_moves(
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[k, 0]) ** 2 + (tgt_y[cand] - net_centroid[k, 1]) ** 2
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
+        if region_bbox is not None and region_bias > 0.0:
+            _span2 = float(max(cw, ch)) ** 2
+            d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, k, _span2, region_bias)
         cand = cand[np.argsort(d2)][:n_targets]
         # Remove the soft macro once, then try several targets.
         prep = incremental_scorer._prepare_move_soft(k)
@@ -2269,7 +2562,8 @@ def _soft_relocation_moves(
                     if wl_prefilter > 0.0 and wl_d > wl_prefilter:
                         continue
                 s = incremental_scorer._trial_at_soft(prep, (nx, ny))
-                if s < best_score - 1e-9:
+                outside = not point_in_region(region_bbox, k, nx, ny)
+                if accepts_region_score(s, best_score, outside, region_escape_min):
                     best_score = s
                     best_k_xy = (nx, ny)
             if best_k_xy is not None:
