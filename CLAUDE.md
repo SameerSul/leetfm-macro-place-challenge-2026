@@ -57,7 +57,6 @@ uv run python scripts/compare_placers.py path/to/placer_a.py path/to/placer_b.py
 uv run pytest test/
 
 # Run a diagnostic or verification script
-uv run python test/diagnostic/_profile_score.py
 uv run python test/verification/_verify_coldspot_kick.py ibm10
 
 # Bytecode sanity after edits
