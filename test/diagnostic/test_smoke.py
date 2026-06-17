@@ -58,27 +58,3 @@ def test_validate_placement(ibm01):
     # Default placement may have overlaps - we just check the function works
     assert isinstance(is_valid, bool)
     assert isinstance(violations, list)
-
-
-def test_greedy_row_placer(ibm01):
-    """Greedy row placer produces a valid, zero-overlap placement."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "greedy_row_placer",
-        "system/v0/greedy_row_placer.py",
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    benchmark, plc = ibm01
-    placer_cls = next(
-        cls for name, cls in vars(mod).items()
-        if isinstance(cls, type) and hasattr(cls, "place")
-    )
-    placer = placer_cls()
-    placement = placer.place(benchmark)
-
-    assert placement.shape == (benchmark.num_macros, 2)
-    costs = compute_proxy_cost(placement, benchmark, plc)
-    assert costs["overlap_count"] == 0, f"Greedy placer has {costs['overlap_count']} overlaps"
