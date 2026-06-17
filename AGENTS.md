@@ -18,8 +18,8 @@ available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 Current accepted hierarchy result: `uv run evaluate src/main.py --all` =
-**AVG 1.4452**, 17/17 VALID, 0 overlaps, 520.08s; `ibm10` smoke is
-`proxy=1.6759`, VALID.
+**AVG 1.3974**, 17/17 VALID, 0 overlaps, 526.21s; `ibm10` smoke is
+`proxy=1.6486`, VALID.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](docs/general/PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
 
@@ -29,10 +29,9 @@ For the full problem statement see [`README.md`](README.md). For the API contrac
 # Setup (run once - submodule is required, no-op evaluator otherwise)
 git submodule update --init external/MacroPlacement
 uv sync
-# REQUIRED for full speed: numba JITs the routing-apply (~half the runtime). It's
-# in requirements.txt but NOT pyproject.toml, so `uv sync` alone does NOT install
-# it — the placer then silently falls back to numpy (~25% slower, --all ~58min near
-# the 1h cap, avg 1.1403 vs 1.1380 with JIT). See docs/general/ISSUES.md S13.
+# Optional mirror install if the environment was not created by uv sync. Numba is
+# a first-class pyproject dependency; missing numba now raises unless
+# V2_ALLOW_NUMBA_FALLBACK=1 is set for slow diagnostic-only runs.
 uv pip install -r requirements.txt
 
 # Single benchmark - fastest feedback loop, use this while iterating
@@ -57,7 +56,6 @@ uv run python scripts/compare_placers.py path/to/placer_a.py path/to/placer_b.py
 uv run pytest test/
 
 # Run a diagnostic or verification script
-uv run python test/diagnostic/_profile_score.py
 uv run python test/verification/_verify_coldspot_kick.py ibm10
 
 # Bytecode sanity after edits
