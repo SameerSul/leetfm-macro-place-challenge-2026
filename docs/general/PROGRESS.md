@@ -9,8 +9,38 @@ Target: beat RePlAce avg of 1.4578.
 > unavailable. Deleted proxy-only pieces include candidate restarts, R2/2-opt,
 > hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 > ranker defaults, and their verifiers. Current smoke: `ibm10` hierarchy output
-> `proxy=1.6759`, VALID, ~34s locally. The proxy-score history below is retained
+> `proxy=1.6486`, VALID, ~37s locally. The proxy-score history below is retained
 > as historical experiment context, not the current production output.
+
+> **Status (2026-06-16 — post-swap hard propose-all polish accepted, `--all`
+> avg = 1.3974):** kept `V2_HIER_RELOC_PROPOSE_ALL=0` for the pre-swap hard
+> relocation loop, but promoted CUDA-only
+> `V2_HIER_POST_RELOC_PROPOSE_ALL=auto` after region swaps with footprint-averaged
+> hard-macro field ranking, `V2_HIER_POST_RELOC_PROPOSE_TOP_M=16`, and
+> `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.001`. Full
+> `uv run evaluate src/main.py --all`: **AVG 1.3974**, 17/17 VALID, 0 overlaps,
+> 526.21s. Accepted post-swap hard moves were sparse and helped the congestion
+> cases without reintroducing the earlier pre-swap basin regression: ibm10
+> 1.6506→1.6485 and ibm12 2.2535→2.2514; other cases were neutral or within
+> run noise.
+
+> **Status (2026-06-16 — connectivity legalize order accepted, `--all`
+> avg = 1.3978):** promoted `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=1`, which keeps
+> cluster-consecutive legalization but orders members by connectivity-pressure x
+> area instead of area alone. Full
+> `uv run evaluate src/main.py --all`: **AVG 1.3978**, 17/17 VALID, 0 overlaps,
+> 518.68s; beats RePlAce avg 1.4578 by +4.1%. Key gains vs the prior hierarchy
+> result 1.4452 are broad and congestion-led: ibm12 2.3297→2.2535, ibm17
+> 2.2374→2.2109, ibm15 1.9494→1.8894, ibm14 1.6991→1.6790, ibm18
+> 1.7869→1.7832, and ibm10 1.6759→1.6506. The rejected Stage-1 bundle
+> (`V2_HIER_RELOC_PROPOSE_ALL=auto`, `V2_HIER_SOFT_RELOC_PROPOSE_ALL=auto`,
+> connectivity order, and `V2_HIER_SS_SWAP_MAX_SCORES=12000`) regressed badly:
+> **AVG 1.6000**, 17/17 VALID, 0 overlaps, 1029.78s. Follow-up full ablations:
+> hard propose-all only **AVG 1.4019** / 546.26s; hard top-M 16 **AVG 1.4066** /
+> 545.26s; hard congestion-pass top-32 hot macros **AVG 1.4030** / 526.26s; soft
+> propose-all only **AVG 1.5650** / 996.04s. Soft propose-all and the score-cap
+> experiment were removed. Pre-swap hard propose-all remains diagnostic-only and
+> default off.
 
 > **Status (2026-06-16 — soft-swap breadth tuning accepted, `--all`
 > avg = 1.4452):** kept owned/bridge soft classification, congestion-expanded

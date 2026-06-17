@@ -13,16 +13,16 @@ resolved or rejected findings are primarily captured in commit messages and
 proxy-optimized production path (candidate restarts, R2/2-opt/LSMC, ML ranker
 defaults, and generic LSMC cluster kicks) has been deleted from active code.
 `MacroPlacer.place()` now always routes through `_hierarchy_floorplan()` and
-raises if that path is unavailable. Current smoke: `ibm10` proxy `1.6759`,
-VALID, ~34s locally. Current full IBM run:
-`uv run evaluate src/main.py --all` = **AVG 1.4452**, 17/17 VALID, 0 overlaps,
-520.08s. The historical proxy table below is retained as context for the
+raises if that path is unavailable. Current smoke: `ibm10` proxy `1.6486`,
+VALID, ~37s locally. Current full IBM run:
+`uv run evaluate src/main.py --all` = **AVG 1.3974**, 17/17 VALID, 0 overlaps,
+526.21s. The historical proxy table below is retained as context for the
 removed proxy path, not the current hierarchy-preserving output.
 
 | Metric | Value |
 |---|---|
-| Current hierarchy `--all` avg | **1.4452** (2026-06-16 — soft-swap breadth tuning; 17/17 VALID, 0 overlaps, 520.08s). |
-| Current hierarchy gap to RePlAce | **+0.9% vs RePlAce** (1.4452 vs 1.4578). |
+| Current hierarchy `--all` avg | **1.3974** (2026-06-16 — post-swap hard propose-all polish; 17/17 VALID, 0 overlaps, 526.21s). |
+| Current hierarchy gap to RePlAce | **+4.1% vs RePlAce** (1.3974 vs 1.4578). |
 | Best `--all` avg | **1.1252** (2026-06-11 — S10 ML hard-relocation ranker connected as production default; 17/17 VALID, 0 overlaps, **2337s ~39min**). |
 | Prior `--all` avg | 1.1272 (S16, DP basins restored) → 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |
@@ -62,6 +62,31 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ### S21. Congestion-aware hierarchy relief and region-bounded swaps (SHIPPED 2026-06-16)
 
+2026-06-16 update: post-swap hard propose-all polish is now the CUDA default.
+The pre-swap hard relocation loop still keeps `V2_HIER_RELOC_PROPOSE_ALL=0`,
+but after region swaps the flow runs `V2_HIER_POST_RELOC_PROPOSE_ALL=auto` with
+footprint-averaged hard-macro field ranking, `V2_HIER_POST_RELOC_PROPOSE_TOP_M=16`,
+and `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.001`. Full `--all`: **AVG 1.3974**,
+17/17 VALID, 0 overlaps, 526.21s. It improved ibm10 1.6506→1.6485 and ibm12
+2.2535→2.2514 while keeping the former regression guards neutral.
+
+Earlier on 2026-06-16, `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=1` became the
+default. It keeps cluster-consecutive legalization but orders cluster members by
+connectivity-pressure x area. Full `--all`: **AVG 1.3978**, 17/17 VALID,
+0 overlaps, 518.68s. A rejected Stage-1 bundle with hierarchy CUDA
+`propose_all=auto` and a soft-soft score cap produced **AVG 1.6000** and
+1029.78s. Follow-up ablations found:
+
+- hard propose-all only: **AVG 1.4019**, 17/17 VALID, 0 overlaps, 546.26s;
+- hard propose-all top-M 16: **AVG 1.4066**, 17/17 VALID, 0 overlaps, 545.26s;
+- hard propose-all restricted to congestion-pass top-32 hot macros: **AVG 1.4030**,
+  17/17 VALID, 0 overlaps, 526.26s;
+- soft propose-all only: **AVG 1.5650**, 17/17 VALID, 0 overlaps, 996.04s.
+
+Soft propose-all was a dead end and its code/env gate was removed. Pre-swap
+hard proposal-all remains diagnostic-only and default off; top-M and
+congestion-hot restrictions did not recover the average.
+
 Goal: reduce the congestion-dominated proxy while preserving usable macro
 hierarchy. Outcome: shipped the current hierarchy system:
 
@@ -69,6 +94,8 @@ hierarchy. Outcome: shipped the current hierarchy system:
 - congestion-expanded hard and soft regions;
 - exact-gated cluster decompression with hierarchy-quality limits;
 - region-bounded hard-hard, hard-soft, and soft-soft swaps;
+- post-swap hard propose-all polish with footprint field ranking and a stronger
+  exact-gain margin;
 - strict hard-swap legality and best-state rollback;
 - proxy-aware coldspot tightening, no bounded proxy-worsening compaction;
 - wider soft swap candidate breadth (`V2_HIER_SOFT_SWAP_K=48`).
@@ -77,20 +104,19 @@ Accepted full run:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.4452  17/17 VALID  0 overlaps  520.08s
+AVG 1.3974  17/17 VALID  0 overlaps  526.21s
 ```
 
-Key deltas vs the prior tuned region-swap run (`1.4471`):
+Key deltas vs the prior hierarchy result (`1.4452`):
 
 | Bench | Before | After | Note |
 |---|---:|---:|---|
-| ibm12 | 2.3454 | **2.3297** | target congestion case; cong 3.015→2.983 |
-| ibm17 | 2.2481 | **2.2374** | target congestion case; cong 2.910→2.897 |
-| ibm15 | 1.9555 | **1.9494** | target congestion case; cong 2.400→2.390 |
-| ibm10 | 1.6836 | **1.6759** | smoke improved |
-| ibm16 | 1.7376 | **1.7322** | secondary improvement |
-| ibm18 | **1.7761** | 1.7869 | main regression to inspect |
-| ibm14 | **1.6931** | 1.6991 | regression to inspect |
+| ibm12 | 2.3297 | **2.2514** | target congestion case; cong 2.983→2.858 |
+| ibm17 | 2.2374 | **2.2109** | target congestion case; cong 2.897→2.855 |
+| ibm15 | 1.9494 | **1.8894** | target congestion case; cong 2.390→2.321 |
+| ibm10 | 1.6759 | **1.6485** | smoke improved |
+| ibm14 | 1.6991 | **1.6790** | prior regression recovered |
+| ibm18 | 1.7869 | **1.7832** | prior regression slightly recovered |
 
 Verdict: the remaining proxy bottleneck is still congestion inside large
 hierarchy regions, but the best current lever is soft placement around the hard
@@ -104,10 +130,11 @@ hierarchy, not hard-hard swaps alone. Operator sweeps showed:
 - `soft_k=48` improves all three target bottlenecks, while `soft_k=64`
   regresses ibm17.
 
-GPU status: CUDA is available and DREAMPlace uses it. The dormant
-`cuda_delta` hard-relocation diagnostic passes, but the current hierarchy swap
-and decompression passes are still sequential CPU/NumPy exact-gated searches;
-cuGenOpt-style batched GPU proposal evaluation is not yet active here.
+GPU status: CUDA is available and DREAMPlace uses it. The `cuda_delta`
+hard-relocation proposal scorer is active only in the post-swap hard polish by
+default; pre-swap hierarchy relocation `propose_all=auto` should stay off. The
+2026-06-16 Stage-1 bundle regressed to AVG 1.6000, hard-only pre-swap was still
+worse at AVG 1.4019, and soft-only was a dead end at AVG 1.5650.
 
 ### S20. Macro-hierarchy awareness — full investigation (2026-06-15)
 
@@ -152,7 +179,7 @@ ibm17 ~2.52 (+1.17, has a 351-macro cluster). Knobs: `V2_HIER_GROUP_WEIGHT` (8),
 `V2_CLUSTER_MIN_EDGE` (2), `V2_CLUSTER_MAX_FANOUT` (8). `_hierarchy_floorplan` in
 `pipeline/macro_placer.py`; verified `test/verification/_verify_hier_floorplan.py`;
 diagnostics `_cluster_stats.py`, `_dp_group_closeness.py`, `_hier_tradeoff.py`,
-`_legalize_order_probe.py`. **Use only when hierarchy is the goal, never for the
+`_hier_tradeoff.py`. **Use only when hierarchy is the goal, never for the
 leaderboard score.**
 
 **Region-locked congestion relief (2026-06-15, `V2_HIER_REGION_RELIEF=1`, default
@@ -890,13 +917,15 @@ Fix: install numba (0.65.1 resolves on py3.14). `--all` then drops **3486 s → 
 converts to more rounds on the deadline-bound benchmarks). Per-move the routing-apply
 JIT is ~3–5× the numpy path (`ARCHITECTURE.md` §5.3).
 
-**Impact + risk.** Without numba the placer still runs (graceful fallback) but ~25 %
-slower → `--all` ~58 min, *near the 1 h cap*, and avg 1.1403. So numba is both a
-score lever (−0.0023) and a cap-safety margin. `config.py` now emits a warning when
-numba is missing. **The eval environment must install `v2/requirements.txt`** (or
-numba must reach the `uv sync` path) to realize 1.1380. Other post-JIT hot spots
-(cProfile): `np.unique`/`_unique1d` (~10 s, 1.5 M calls in the subset-cumsum
-strip-batch) and `get_ref_node_id` (TILOS plc_client, ~8 s) — next CPU candidates.
+**Impact + risk.** Without numba the old fallback was ~25 % slower → `--all` ~58 min,
+*near the 1 h cap*, and avg 1.1403. So numba is both a score lever (−0.0023) and a
+cap-safety margin. Other post-JIT hot spots (cProfile): `np.unique`/`_unique1d`
+(~10 s, 1.5 M calls in the subset-cumsum strip-batch) and `get_ref_node_id`
+(TILOS plc_client, ~8 s) — next CPU candidates.
+
+2026-06-16 root-layout update: `numba>=0.59` is now in `pyproject.toml`,
+`requirements.txt`, and `uv.lock`. Missing numba now raises by default; set
+`V2_ALLOW_NUMBA_FALLBACK=1` only for slow diagnostic-only runs.
 
 ### S12. Spend the S11 freed budget + adaptive budget control (2026-06-07, avg 1.1403)
 
