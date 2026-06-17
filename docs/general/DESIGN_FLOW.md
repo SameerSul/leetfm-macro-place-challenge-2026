@@ -21,10 +21,10 @@ Current accepted result:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.6759  VALID
+proxy=1.6486  VALID
 
 uv run evaluate src/main.py --all
-AVG 1.4452  17/17 VALID  0 overlaps  520.08s
+AVG 1.3974  17/17 VALID  0 overlaps  526.21s
 ```
 
 ## Flow
@@ -47,8 +47,11 @@ flowchart TD
     U -->|No| S
     V --> S{V2_HIER_REGION_SWAPS enabled?}
     S -->|Yes| T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
-    S -->|No| K
-    T --> K{V2_HIER_COLDSPOT_KICK enabled?}
+    S -->|No| P
+    T --> P{V2_HIER_POST_RELOC_PROPOSE_ALL enabled?}
+    P -->|Yes| Q[Post-swap hard propose-all polish]
+    P -->|No| K
+    Q --> K{V2_HIER_COLDSPOT_KICK enabled?}
     K -->|Yes| L[Coldspot cluster tightening with bounded proxy budget]
     K -->|No| M[Clamp movable macros in bounds]
     L --> M
@@ -95,8 +98,9 @@ could run without it has been removed.
 Hard macros are legalized with a cluster-consecutive order:
 
 1. Larger clusters first.
-2. Larger macros first within each cluster.
-3. Unclustered macros last, also larger first.
+2. Connectivity-pressure x area first within each cluster by default; set
+   `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=0` to restore larger-macro-first order.
+3. Unclustered macros last, with the same member ordering.
 
 A second default-order legalization pass is kept as a safety pass for validity.
 Soft macros may overlap by challenge rules, so they are not hard-legalized.
@@ -198,13 +202,16 @@ V2_HIER_COLDSPOT_BUDGET=0.0
 V2_HIER_COLDSPOT_TOTAL=0.0
 V2_HIER_COLDSPOT_MIN_GAIN=0.0001
 V2_HIER_COLDSPOT_QUALITY_BUDGET=0.01
+V2_HIER_COLDSPOT_MIN_FIELD_GAP=0.02
 V2_HIER_COLDSPOT_ROUNDS=8
 V2_HIER_COLDSPOT_BUDGET_S=30
 ```
 
-A kick is accepted only when exact proxy improves and the hierarchy-quality
-metric stays within budget. This keeps the pass from undoing congestion relief
-for compactness alone.
+A round first requires a cheap congestion-field opportunity: an eligible cluster
+must be at least `V2_HIER_COLDSPOT_MIN_FIELD_GAP` hotter than its best matching
+cold window. A kick is then accepted only when exact proxy improves and the
+hierarchy-quality metric stays within budget. This keeps the pass from undoing
+congestion relief for compactness alone.
 
 ## Entry Points
 

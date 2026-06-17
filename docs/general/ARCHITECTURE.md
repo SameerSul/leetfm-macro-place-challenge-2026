@@ -14,6 +14,7 @@ derive clusters
   -> region-locked hard/soft relief
   -> exact-gated cluster decompression
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
+  -> post-swap hard propose-all polish
   -> proxy-aware coldspot tightening
   -> clamp in bounds
 ```
@@ -40,14 +41,14 @@ Current verified smoke:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.6759  VALID
+proxy=1.6486  VALID
 ```
 
 Current verified full sweep:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.4452  17/17 VALID  0 overlaps  520.08s
+AVG 1.3974  17/17 VALID  0 overlaps  526.21s
 ```
 
 ## Main Components
@@ -117,8 +118,11 @@ Grouped DP output can overlap. The hard legalizer runs with an order that keeps
 cluster members adjacent:
 
 ```text
-largest clusters -> larger macros inside each cluster -> unclustered macros
+largest clusters -> connectivity-pressure x area inside each cluster -> unclustered macros
 ```
+
+Set `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=0` to restore the prior larger-macro-first
+ordering inside each cluster.
 
 A default-order safety pass follows to guarantee hard legality.
 
@@ -192,7 +196,23 @@ V2_HIER_SWAP_MIN_GAIN=0.00001
 V2_HIER_SWAP_DENSITY_FIELD=1
 ```
 
-### 8. Coldspot Tightening
+### 8. Post-Swap Hard Polish
+
+`_relocation_moves(..., propose_all=True)` runs once after swaps on CUDA
+systems. Unlike the rejected pre-swap hard propose-all variants, this pass sees
+the final swap-relieved state and uses footprint-averaged field ranking plus a
+stronger exact-gain margin, so it only accepts sparse cleanup moves.
+
+Controls:
+
+```text
+V2_HIER_POST_RELOC_PROPOSE_ALL=auto
+V2_HIER_POST_RELOC_PROPOSE_TOP_M=16
+V2_HIER_RELOC_PROPOSE_FOOTPRINT=1
+V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.001
+```
+
+### 9. Coldspot Tightening
 
 `_coldspot_cluster_kick()` gathers a selected cluster into a low-congestion
 window, co-moves connected soft macros, and legalizes the hard macros. The
@@ -207,9 +227,13 @@ V2_HIER_COLDSPOT_BUDGET=0.0
 V2_HIER_COLDSPOT_TOTAL=0.0
 V2_HIER_COLDSPOT_MIN_GAIN=0.0001
 V2_HIER_COLDSPOT_QUALITY_BUDGET=0.01
+V2_HIER_COLDSPOT_MIN_FIELD_GAP=0.02
 V2_HIER_COLDSPOT_ROUNDS=8
 V2_HIER_COLDSPOT_BUDGET_S=30
 ```
+
+Rounds with no cheap hot-cluster to cold-window field gap are skipped before
+candidate generation and exact candidate scoring.
 
 This is not the old generic LSMC path. It is a narrow hierarchy-tightening
 helper.
