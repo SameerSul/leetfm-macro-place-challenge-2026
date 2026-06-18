@@ -42,20 +42,27 @@ else:
     _GPU_BACKEND = "cpu"
     _GPU_DEVICE_NAME = "CPU"
 
-# Use numba for routing hot loops when available; numpy fallbacks still work.
+# Use numba for routing hot loops. Production runs should fail visibly if the
+# JIT path is missing because the numpy fallback can miss deadline-bound rounds.
 try:
     from numba import njit as _numba_njit
+
     HAS_NUMBA = True
 except ImportError:
-    import warnings as _warnings
-    _warnings.warn(
-        "numba not installed — routing-apply runs the slow numpy fallback "
-        "and may miss deadline-bound search rounds. Install "
-        "requirements.txt for the JIT path.",
-        stacklevel=2,
-    )
     _numba_njit = None
     HAS_NUMBA = False
+    if not _env_enabled("V2_ALLOW_NUMBA_FALLBACK"):
+        raise RuntimeError(
+            "numba is required for production hierarchy placement. Install the "
+            "project dependencies (`uv sync` or `uv pip install -r requirements.txt`), "
+            "or set V2_ALLOW_NUMBA_FALLBACK=1 for slow diagnostic-only runs."
+        )
+    import warnings as _warnings
+
+    _warnings.warn(
+        "numba not installed; using the slow numpy fallback because " "V2_ALLOW_NUMBA_FALLBACK=1.",
+        stacklevel=2,
+    )
 
 
 def _log(msg: str) -> None:

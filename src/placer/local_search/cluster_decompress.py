@@ -46,6 +46,50 @@ def _cell_values(pos: np.ndarray, field: np.ndarray, cw: float, ch: float) -> np
     return field[ri, ci]
 
 
+def _axis_room_scale(
+    hard_xy: np.ndarray,
+    members: np.ndarray,
+    field: np.ndarray,
+    cw: float,
+    ch: float,
+    band: int = 3,
+) -> tuple[float, float]:
+    """Return x/y expansion weights based on colder neighboring grid bands."""
+    nr, nc = field.shape
+    cell_w, cell_h = cw / nc, ch / nr
+    x0, x1 = float(hard_xy[members, 0].min()), float(hard_xy[members, 0].max())
+    y0, y1 = float(hard_xy[members, 1].min()), float(hard_xy[members, 1].max())
+    c0 = int(np.clip(np.floor(x0 / cell_w), 0, nc - 1))
+    c1 = int(np.clip(np.floor(x1 / cell_w), 0, nc - 1))
+    r0 = int(np.clip(np.floor(y0 / cell_h), 0, nr - 1))
+    r1 = int(np.clip(np.floor(y1 / cell_h), 0, nr - 1))
+
+    def _mean(vals):
+        return float(vals.mean()) if vals.size else float("inf")
+
+    left = _mean(field[max(0, r0) : min(nr, r1 + 1), max(0, c0 - band) : max(0, c0)])
+    right = _mean(
+        field[
+            max(0, r0) : min(nr, r1 + 1),
+            min(nc, c1 + 1) : min(nc, c1 + 1 + band),
+        ]
+    )
+    down = _mean(field[max(0, r0 - band) : max(0, r0), max(0, c0) : min(nc, c1 + 1)])
+    up = _mean(
+        field[
+            min(nr, r1 + 1) : min(nr, r1 + 1 + band),
+            max(0, c0) : min(nc, c1 + 1),
+        ]
+    )
+    x_room = min(left, right)
+    y_room = min(down, up)
+    if not np.isfinite(x_room) and not np.isfinite(y_room):
+        return 1.0, 1.0
+    if x_room <= y_room:
+        return 1.0, 0.25
+    return 0.25, 1.0
+
+
 def _clip_to_region(xy, region, idx, hw, hh, cw, ch):
     if region is None:
         xy[:, 0] = np.clip(xy[:, 0], hw[idx], cw - hw[idx])
@@ -95,6 +139,9 @@ def _cluster_decompression_relief(
     quality_budget: float = 0.03,
     min_proxy_gain: float = 1e-4,
     use_density: bool = False,
+    anisotropic: bool = False,
+    anisotropic_band: int = 3,
+    anisotropic_secondary: float = 0.25,
 ) -> tuple[np.ndarray, np.ndarray, int, float, float]:
     """Try group decompression candidates and accept exact proxy improvements."""
     if not clusters:
@@ -145,13 +192,29 @@ def _cluster_decompression_relief(
             if mem.size < 2:
                 continue
             center = centroids[cid]
+            axis_x, axis_y = (1.0, 1.0)
+            if anisotropic:
+                axis_x, axis_y = _axis_room_scale(
+                    cur_h,
+                    mem_all,
+                    field,
+                    cw,
+                    ch,
+                    band=max(1, int(anisotropic_band)),
+                )
+                axis_x = max(float(anisotropic_secondary), float(axis_x))
+                axis_y = max(float(anisotropic_secondary), float(axis_y))
             for factor in factors:
                 cand_h = cur_h.copy()
                 cand_s = cur_s.copy()
                 vec = cand_h[mem] - center
-                cand_h[mem] = center + vec * factor
+                scale = np.array(
+                    [1.0 + (factor - 1.0) * axis_x, 1.0 + (factor - 1.0) * axis_y],
+                    dtype=np.float64,
+                )
+                cand_h[mem] = center + vec * scale
                 cand_h[mem] = _clip_to_region(cand_h[mem], hard_region, mem, hw, hh, cw, ch)
-                order = list(mem[np.argsort(-sizes[mem, 0] * sizes[mem, 1])])
+                order = list(mem_all[np.argsort(-sizes[mem_all, 0] * sizes[mem_all, 1])])
                 cand_h = _will_legalize(
                     cand_h, movable_h, sizes, hw, hh, cw, ch, n, deadline=deadline, order=order
                 )
@@ -163,7 +226,7 @@ def _cluster_decompression_relief(
                         sidx = sidx[soft_movable[sidx]]
                     if sidx.size:
                         svec = cand_s[sidx] - center
-                        cand_s[sidx] = center + svec * factor
+                        cand_s[sidx] = center + svec * scale
                         cand_s[sidx] = _clip_to_region(
                             cand_s[sidx], soft_region, sidx, soft_hw, soft_hh, cw, ch
                         )

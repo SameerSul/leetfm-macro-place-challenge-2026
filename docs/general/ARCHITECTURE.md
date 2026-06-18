@@ -14,8 +14,11 @@ derive clusters
   -> region-locked hard/soft relief
   -> exact-gated cluster decompression
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
+  -> post-swap micro-shift replay
   -> post-swap hard propose-all polish
+  -> post-swap soft relocation polish
   -> proxy-aware coldspot tightening
+  -> post-coldspot micro-shift replay
   -> clamp in bounds
 ```
 
@@ -41,14 +44,14 @@ Current verified smoke:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.6486  VALID
+proxy=1.6133  VALID
 ```
 
 Current verified full sweep:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.3974  17/17 VALID  0 overlaps  526.21s
+AVG 1.3631  17/17 VALID  0 overlaps  602.76s
 ```
 
 ## Main Components
@@ -196,20 +199,32 @@ V2_HIER_SWAP_MIN_GAIN=0.00001
 V2_HIER_SWAP_DENSITY_FIELD=1
 ```
 
-### 8. Post-Swap Hard Polish
+### 8. Post-Swap Polish
 
 `_relocation_moves(..., propose_all=True)` runs once after swaps on CUDA
 systems. Unlike the rejected pre-swap hard propose-all variants, this pass sees
-the final swap-relieved state and uses footprint-averaged field ranking plus a
-stronger exact-gain margin, so it only accepts sparse cleanup moves.
+the final swap-relieved state and uses a stronger exact-gain margin, so it only
+accepts sparse cleanup moves.
+
+`_soft_relocation_moves()` then runs as an ordinary post-swap soft polish pass
+with a small exact-gain margin. This is not the rejected soft propose-all path;
+it keeps sequential exact-gated soft relocation and only cleans up the final
+swap-relieved state.
+
+The accepted Stage-3 flow also reruns `_micro_shift_polish()` after swaps. This
+exact-gated replay is default-on and uses the same tiny one/two-cell moves as
+the earlier in-region micro-shift pass.
 
 Controls:
 
 ```text
+V2_HIER_POST_SWAP_MICRO_SHIFT=1
 V2_HIER_POST_RELOC_PROPOSE_ALL=auto
 V2_HIER_POST_RELOC_PROPOSE_TOP_M=16
-V2_HIER_RELOC_PROPOSE_FOOTPRINT=1
-V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.001
+V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
+V2_HIER_POST_SOFT_RELOC=1
+V2_HIER_POST_SOFT_RELOC_TOP_K=256
+V2_HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005
 ```
 
 ### 9. Coldspot Tightening
@@ -236,7 +251,9 @@ Rounds with no cheap hot-cluster to cold-window field gap are skipped before
 candidate generation and exact candidate scoring.
 
 This is not the old generic LSMC path. It is a narrow hierarchy-tightening
-helper.
+helper. Production then reruns `_micro_shift_polish()` once more with
+`V2_HIER_POST_COLDSPOT_MICRO_SHIFT=1`; deterministic hot-cluster coldspot
+selection was tested and removed after regressing the full sweep.
 
 ## Scoring And Legality
 

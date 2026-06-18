@@ -127,10 +127,12 @@ class MacroPlacer:
         from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
         from placer.local_search.region_expand import expand_regions_by_congestion
         from placer.local_search.relocation import (
+            _micro_shift_polish,
             _relocation_moves,
             _soft_relocation_moves,
         )
         from placer.scoring.incremental import IncrementalScorer
+        from placer.scoring.wirelength import _build_wl_cache
 
         if not _dp_available():
             return None
@@ -144,12 +146,40 @@ class MacroPlacer:
                 return _GPU_BACKEND == "cuda"
             return raw not in _FALSE_ENV
 
-        hier_reloc_propose_all = _auto_cuda_flag("V2_HIER_RELOC_PROPOSE_ALL", "0")
-        hier_soft_propose_all = _auto_cuda_flag("V2_HIER_SOFT_RELOC_PROPOSE_ALL", "0")
-        hier_reloc_top_m_raw = os.environ.get("V2_HIER_RELOC_PROPOSE_TOP_M", "64").strip()
-        hier_soft_top_m_raw = os.environ.get("V2_HIER_SOFT_RELOC_PROPOSE_TOP_M", "96").strip()
-        hier_reloc_top_m = int(hier_reloc_top_m_raw) if hier_reloc_top_m_raw else None
-        hier_soft_top_m = int(hier_soft_top_m_raw) if hier_soft_top_m_raw else None
+        hier_post_reloc_top_m_raw = os.environ.get("V2_HIER_POST_RELOC_PROPOSE_TOP_M", "16").strip()
+        hier_post_reloc_top_m = (
+            int(hier_post_reloc_top_m_raw) if hier_post_reloc_top_m_raw else None
+        )
+        hier_reloc_propose_hot_k = max(1, int(os.environ.get("V2_HIER_RELOC_PROPOSE_HOT_K", "32")))
+        hier_post_reloc_propose = _auto_cuda_flag("V2_HIER_POST_RELOC_PROPOSE_ALL", "auto")
+        hier_post_soft_reloc = (
+            os.environ.get("V2_HIER_POST_SOFT_RELOC", "1").strip() not in _FALSE_ENV
+        )
+        hier_post_soft_reloc_top_k = max(
+            1, int(os.environ.get("V2_HIER_POST_SOFT_RELOC_TOP_K", "256"))
+        )
+        hier_post_soft_reloc_min_gain = float(
+            os.environ.get("V2_HIER_POST_SOFT_RELOC_MIN_GAIN", "0.0005")
+        )
+        hier_reloc_propose_min_gain = float(
+            os.environ.get("V2_HIER_RELOC_PROPOSE_MIN_GAIN", "0.0005")
+        )
+        hier_region_heat_frac = float(os.environ.get("V2_HIER_REGION_HEAT_FRAC", "0.04"))
+        hier_region_heat_pct = float(os.environ.get("V2_HIER_REGION_HEAT_HOT_PCT", "70"))
+        hier_region_heat_escape = float(os.environ.get("V2_HIER_REGION_HEAT_ESCAPE_MIN", "0.25"))
+        hier_micro_shift = os.environ.get("V2_HIER_MICRO_SHIFT", "1").strip() not in _FALSE_ENV
+        hier_micro_shift_radius = max(1, int(os.environ.get("V2_HIER_MICRO_SHIFT_RADIUS", "2")))
+        hier_micro_shift_top = max(1, int(os.environ.get("V2_HIER_MICRO_SHIFT_TOP", "96")))
+        hier_micro_shift_min_gain = float(os.environ.get("V2_HIER_MICRO_SHIFT_MIN_GAIN", "0.00001"))
+        hier_post_swap_micro = (
+            os.environ.get("V2_HIER_POST_SWAP_MICRO_SHIFT", "1").strip() not in _FALSE_ENV
+        )
+        hier_post_coldspot_micro = (
+            os.environ.get("V2_HIER_POST_COLDSPOT_MICRO_SHIFT", "1").strip() not in _FALSE_ENV
+        )
+        hier_decompress_aniso = (
+            os.environ.get("V2_HIER_DECOMPRESS_ANISO", "1").strip() not in _FALSE_ENV
+        )
 
         from placer.plc.loader import _load_plc
 
@@ -191,83 +221,171 @@ class MacroPlacer:
                 names.append(plc.modules_w_pins[smi[int(p) - n]].get_name())
             groups.append(names)
 
-        try:
+        def _full_tensor(hard_xy, soft_xy):
+            return torch.tensor(
+                np.vstack([hard_xy, soft_xy]).astype(np.float32), dtype=torch.float32
+            )
+
+        def _hard_connectivity_pressure() -> np.ndarray:
+            pressure = np.zeros(n, dtype=np.float64)
+            cache = _build_wl_cache(plc)
+            ref_idx = cache["ref_idx"]
+            net_starts = cache["net_starts"]
+            net_lengths = cache["net_lengths"]
+            net_weights = cache["net_weights"]
+            b_to_a = {int(b): a for a, b in enumerate(plc.hard_macro_indices)}
+            max_fanout = cluster_max_fanout()
+            for net_i in range(len(net_starts)):
+                length = int(net_lengths[net_i])
+                if length < 2 or length > max_fanout:
+                    continue
+                start = int(net_starts[net_i])
+                hard_a = [
+                    b_to_a[int(r)] for r in ref_idx[start : start + length] if int(r) in b_to_a
+                ]
+                if not hard_a:
+                    continue
+                add = float(net_weights[net_i]) / max(1.0, float(len(hard_a) - 1))
+                for i in hard_a:
+                    pressure[int(i)] += add
+            return pressure
+
+        use_conn_order = os.environ.get("V2_HIER_LEGALIZE_CONNECTIVITY_ORDER", "1").strip()
+        if use_conn_order not in _FALSE_ENV:
+            area = sizes[:n, 0] * sizes[:n, 1]
+            pressure = _hard_connectivity_pressure()
+
+            def _member_key(i: int) -> tuple[float, float]:
+                return (-(pressure[i] * area[i]), -area[i])
+
+            def _cluster_key(mem: np.ndarray) -> tuple[float, int]:
+                return (-float(np.sum(pressure[mem] * area[mem])), -int(mem.size))
+
+            order = []
+            for mem in sorted(clusters.values(), key=_cluster_key):
+                order += sorted((int(x) for x in mem), key=_member_key)
+            order += sorted([i for i in range(n) if labels[i] < 0], key=_member_key)
+        else:
+            order = []
+            for mem in sorted(clusters.values(), key=lambda m: -m.size):
+                order += sorted((int(x) for x in mem), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
+            order += sorted(
+                [i for i in range(n) if labels[i] < 0],
+                key=lambda i: -(sizes[i, 0] * sizes[i, 1]),
+            )
+
+        def _prepare_dreamplace_candidate(
+            *,
+            group_weight: int,
+            random_seed: int,
+            scratch_root: str,
+        ):
             run_dreamplace(
                 str(iccad),
                 plc=plc,
-                scratch_root="/tmp/dreamplace_v1_hier",
+                scratch_root=scratch_root,
                 iterations=300,
                 num_threads=2,
+                random_seed=random_seed,
                 soft_macros_movable=True,
                 cluster_groups=(groups or None),
-                group_weight=gw,
+                group_weight=group_weight,
             )
-            hard, soft = read_dreamplace_positions_full(
-                plc, f"/tmp/dreamplace_v1_hier/{benchmark.name}", benchmark.name
+            raw_hard, raw_soft = read_dreamplace_positions_full(
+                plc, f"{scratch_root}/{benchmark.name}", benchmark.name
+            )
+            legal_hard = _will_legalize(
+                raw_hard.copy(),
+                movable[:n],
+                sizes[:n],
+                hw,
+                hh,
+                cw,
+                ch,
+                n,
+                deadline=time.monotonic() + 120,
+                order=order,
+            )
+            legal_hard = _will_legalize(
+                legal_hard,
+                movable[:n],
+                sizes[:n],
+                hw,
+                hh,
+                cw,
+                ch,
+                n,
+                deadline=time.monotonic() + 120,
+                order=None,
+            )
+
+            cand_pos = np.vstack([legal_hard, raw_soft]).astype(np.float64)
+            cand_soft = raw_soft.copy()
+            cand_score = float(
+                _exact_proxy(torch.tensor(cand_pos, dtype=torch.float32), benchmark, plc)
+            )
+            cand_scorer = IncrementalScorer(plc, benchmark, cand_pos.copy())
+            soft_mov_local = movable[n : n + n_soft]
+            for use_density in (False, True):
+                cand_soft, _, cand_score = _soft_relocation_moves(
+                    cand_soft,
+                    soft_hw,
+                    soft_hh,
+                    cw,
+                    ch,
+                    n,
+                    plc,
+                    benchmark,
+                    cand_scorer,
+                    cand_score,
+                    deadline=time.monotonic() + 30,
+                    top_hot=1024,
+                    n_targets=6,
+                    soft_movable=soft_mov_local,
+                    use_density=use_density,
+                )
+            return legal_hard, cand_soft, cand_score
+
+        try:
+            hard, soft, s_score = _prepare_dreamplace_candidate(
+                group_weight=gw,
+                random_seed=1000,
+                scratch_root="/tmp/dreamplace_v1_hier",
             )
         except Exception as exc:
             _log(f"  [hier] DREAMPlace failed: {type(exc).__name__}: {exc}")
             return None
 
-        order = []
-        for mem in sorted(clusters.values(), key=lambda m: -m.size):
-            order += sorted((int(x) for x in mem), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
-        order += sorted(
-            [i for i in range(n) if labels[i] < 0], key=lambda i: -(sizes[i, 0] * sizes[i, 1])
-        )
-        legal = _will_legalize(
-            hard.copy(),
-            movable[:n],
-            sizes[:n],
-            hw,
-            hh,
-            cw,
-            ch,
-            n,
-            deadline=time.monotonic() + 120,
-            order=order,
-        )
-        legal = _will_legalize(
-            legal,
-            movable[:n],
-            sizes[:n],
-            hw,
-            hh,
-            cw,
-            ch,
-            n,
-            deadline=time.monotonic() + 120,
-            order=None,
-        )
-
-        pos = np.vstack([legal, soft]).astype(np.float64)
+        legal = hard
         s_pos = soft.copy()
-        s_score = float(_exact_proxy(torch.tensor(pos, dtype=torch.float32), benchmark, plc))
+        pos = np.vstack([legal, s_pos]).astype(np.float64)
         scorer = IncrementalScorer(plc, benchmark, pos.copy())
         soft_mov = movable[n : n + n_soft]
-        for use_density in (False, True):
-            s_pos, _, s_score = _soft_relocation_moves(
-                s_pos,
-                soft_hw,
-                soft_hh,
-                cw,
-                ch,
-                n,
-                plc,
-                benchmark,
-                scorer,
-                s_score,
-                deadline=time.monotonic() + 30,
-                top_hot=1024,
-                n_targets=6,
-                soft_movable=soft_mov,
-                use_density=use_density,
-                propose_all=hier_soft_propose_all,
-                propose_top_m=hier_soft_top_m,
-            )
 
         pre_relief = s_score
+        region = None
+        soft_region = None
         if os.environ.get("V2_HIER_REGION_RELIEF", "1").strip() not in _FALSE_ENV:
+            nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
+            base_heat_field = _congestion_field(plc, nr, nc)
+            cluster_heat = None
+
+            def _cluster_heat(field):
+                if field is None or not clusters:
+                    return None
+                cell_w, cell_h = float(cw) / nc, float(ch) / nr
+                out = {}
+                for cid, mem in clusters.items():
+                    mem = np.asarray(mem, dtype=np.int64)
+                    if mem.size == 0:
+                        continue
+                    ci = np.clip((legal[mem, 0] / cell_w).astype(np.int64), 0, nc - 1)
+                    ri = np.clip((legal[mem, 1] / cell_h).astype(np.int64), 0, nr - 1)
+                    out[int(cid)] = float(field[ri, ci].mean())
+                return out
+
+            if hier_region_heat_frac > 0.0:
+                cluster_heat = _cluster_heat(base_heat_field)
             region = compute_region_bbox(
                 legal,
                 sizes[:n],
@@ -281,6 +399,10 @@ class MacroPlacer:
                 target_density=hier_region_density(),
                 margin=hier_region_margin(),
                 singleton_window=hier_region_singleton(),
+                cluster_heat=cluster_heat,
+                heat_expand_frac=hier_region_heat_frac,
+                heat_hot_percentile=hier_region_heat_pct,
+                heat_escape_min=hier_region_heat_escape,
             )
             soft_region = compute_soft_region_bbox(
                 legal,
@@ -299,10 +421,13 @@ class MacroPlacer:
                 target_density=hier_region_density(),
                 margin=hier_region_margin(),
                 singleton_window=hier_region_singleton(),
+                cluster_heat=cluster_heat,
+                heat_expand_frac=hier_region_heat_frac,
+                heat_hot_percentile=hier_region_heat_pct,
+                heat_escape_min=hier_region_heat_escape,
             )
             if os.environ.get("V2_HIER_CONG_EXPAND_REGIONS", "1").strip() not in _FALSE_ENV:
-                nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
-                expand_field = _congestion_field(plc, nr, nc)
+                expand_field = base_heat_field
                 region, soft_region, n_expanded = expand_regions_by_congestion(
                     region,
                     soft_region,
@@ -352,8 +477,44 @@ class MacroPlacer:
             for _ in range(rounds):
                 if time.monotonic() >= rdeadline:
                     break
+                if hier_micro_shift:
+                    before_micro = r_score
+                    micro_acc = 0
+                    for use_density in (False, True):
+                        h_pos, s_pos, got, r_score = _micro_shift_polish(
+                            h_pos,
+                            s_pos,
+                            sizes[:n],
+                            hw,
+                            hh,
+                            soft_hw,
+                            soft_hh,
+                            cw,
+                            ch,
+                            movable[:n],
+                            soft_mov,
+                            n,
+                            plc,
+                            benchmark,
+                            rscorer,
+                            r_score,
+                            hard_region=region,
+                            soft_region=soft_region,
+                            deadline=rdeadline,
+                            radius_cells=hier_micro_shift_radius,
+                            top_hot=hier_micro_shift_top,
+                            min_gain=hier_micro_shift_min_gain,
+                            use_density=use_density,
+                        )
+                        micro_acc += got
+                    if micro_acc:
+                        _log(
+                            f"  [hier] micro-shift polish: {micro_acc} accepts, "
+                            f"proxy {before_micro:.4f}->{r_score:.4f}"
+                        )
+                reloc_acc = 0
                 for use_density in (False, True):
-                    h_pos, _, r_score = _relocation_moves(
+                    h_pos, got, r_score = _relocation_moves(
                         h_pos,
                         sizes[:n],
                         hw,
@@ -370,14 +531,16 @@ class MacroPlacer:
                         top_hot=128,
                         n_targets=16,
                         use_density=use_density,
-                        propose_all=hier_reloc_propose_all,
-                        propose_top_m=hier_reloc_top_m,
+                        propose_all=False,
+                        propose_top_m=None,
                         region_bbox=region,
                         region_bias=bias,
                         region_escape_min=escape_min,
                     )
+                    reloc_acc += got
+                soft_reloc_acc = 0
                 for use_density in (False, True):
-                    s_pos, _, r_score = _soft_relocation_moves(
+                    s_pos, got, r_score = _soft_relocation_moves(
                         s_pos,
                         soft_hw,
                         soft_hh,
@@ -393,12 +556,11 @@ class MacroPlacer:
                         n_targets=6,
                         soft_movable=soft_mov,
                         use_density=use_density,
-                        propose_all=hier_soft_propose_all,
-                        propose_top_m=hier_soft_top_m,
                         region_bbox=soft_region,
                         region_bias=bias,
                         region_escape_min=escape_min,
                     )
+                    soft_reloc_acc += got
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
             if os.environ.get("V2_HIER_DECOMPRESS", "1").strip() not in _FALSE_ENV:
@@ -433,6 +595,13 @@ class MacroPlacer:
                     hot_percentile=float(os.environ.get("V2_HIER_DECOMPRESS_HOT_PCT", "65")),
                     quality_budget=float(os.environ.get("V2_HIER_QUALITY_BUDGET", "0.03")),
                     min_proxy_gain=float(os.environ.get("V2_HIER_DECOMPRESS_MIN_GAIN", "0.0001")),
+                    anisotropic=hier_decompress_aniso,
+                    anisotropic_band=max(
+                        1, int(os.environ.get("V2_HIER_DECOMPRESS_ANISO_BAND", "3"))
+                    ),
+                    anisotropic_secondary=float(
+                        os.environ.get("V2_HIER_DECOMPRESS_ANISO_SECONDARY", "0.25")
+                    ),
                 )
                 invalid_decomp = not _hard_valid(h_pos)
                 weak_decomp = (
@@ -533,6 +702,131 @@ class MacroPlacer:
                     f"esc {swap_stats['hh_escape_accepts'] + swap_stats['hs_escape_accepts'] + swap_stats['ss_escape_accepts']}, "
                     f"gain {swap_stats['proxy_gain']:.4f}), proxy={r_score:.4f}"
                 )
+            if hier_post_swap_micro:
+                post_micro_deadline = min(
+                    rdeadline,
+                    time.monotonic()
+                    + float(os.environ.get("V2_HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S", "8")),
+                )
+                pre_post_micro_score = r_score
+                post_micro_acc = 0
+                for use_density in (False, True):
+                    h_pos, s_pos, got, r_score = _micro_shift_polish(
+                        h_pos,
+                        s_pos,
+                        sizes[:n],
+                        hw,
+                        hh,
+                        soft_hw,
+                        soft_hh,
+                        cw,
+                        ch,
+                        movable[:n],
+                        soft_mov,
+                        n,
+                        plc,
+                        benchmark,
+                        rscorer,
+                        r_score,
+                        hard_region=region,
+                        soft_region=soft_region,
+                        deadline=post_micro_deadline,
+                        radius_cells=hier_micro_shift_radius,
+                        top_hot=hier_micro_shift_top,
+                        min_gain=hier_micro_shift_min_gain,
+                        use_density=use_density,
+                    )
+                    post_micro_acc += got
+                if not _hard_valid(h_pos):
+                    h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
+                    full = np.vstack([h_pos, s_pos]).astype(np.float64)
+                    rscorer = IncrementalScorer(plc, benchmark, full.copy())
+                    post_micro_acc = 0
+                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                _log(
+                    f"  [hier] post-swap micro-shift replay: {post_micro_acc} accepts, "
+                    f"proxy {pre_post_micro_score:.4f}->{r_score:.4f}"
+                )
+            if hier_post_reloc_propose:
+                post_deadline = min(
+                    rdeadline,
+                    time.monotonic()
+                    + float(os.environ.get("V2_HIER_POST_RELOC_PROPOSE_BUDGET_S", "8")),
+                )
+                pre_post_score = r_score
+                h_pos, post_acc, r_score = _relocation_moves(
+                    h_pos,
+                    sizes[:n],
+                    hw,
+                    hh,
+                    cw,
+                    ch,
+                    movable[:n],
+                    n,
+                    plc,
+                    benchmark,
+                    rscorer,
+                    r_score,
+                    deadline=post_deadline,
+                    top_hot=hier_reloc_propose_hot_k,
+                    n_targets=16,
+                    use_density=False,
+                    propose_all=True,
+                    propose_top_m=hier_post_reloc_top_m,
+                    region_bbox=region,
+                    region_bias=bias,
+                    region_escape_min=escape_min,
+                    propose_accept_min_gain=hier_reloc_propose_min_gain,
+                )
+                if not _hard_valid(h_pos):
+                    h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
+                    full = np.vstack([h_pos, s_pos]).astype(np.float64)
+                    rscorer = IncrementalScorer(plc, benchmark, full.copy())
+                    post_acc = 0
+                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                _log(
+                    f"  [hier] post-swap hard propose-all: {post_acc} accepts, "
+                    f"proxy {pre_post_score:.4f}->{r_score:.4f}"
+                )
+            if hier_post_soft_reloc:
+                post_soft_deadline = min(
+                    rdeadline,
+                    time.monotonic()
+                    + float(os.environ.get("V2_HIER_POST_SOFT_RELOC_BUDGET_S", "8")),
+                )
+                pre_post_soft_score = r_score
+                post_soft_acc = 0
+                for use_density in (False, True):
+                    s_pos, got, r_score = _soft_relocation_moves(
+                        s_pos,
+                        soft_hw,
+                        soft_hh,
+                        cw,
+                        ch,
+                        n,
+                        plc,
+                        benchmark,
+                        rscorer,
+                        r_score,
+                        deadline=post_soft_deadline,
+                        top_hot=hier_post_soft_reloc_top_k,
+                        n_targets=6,
+                        soft_movable=soft_mov,
+                        use_density=use_density,
+                        region_bbox=soft_region,
+                        region_bias=bias,
+                        region_escape_min=escape_min,
+                        accept_min_gain=hier_post_soft_reloc_min_gain,
+                    )
+                    post_soft_acc += got
+                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                _log(
+                    f"  [hier] post-swap soft relocation: {post_soft_acc} accepts, "
+                    f"proxy {pre_post_soft_score:.4f}->{r_score:.4f}"
+                )
             legal_candidate = _will_legalize(
                 h_pos,
                 movable[:n],
@@ -571,6 +865,7 @@ class MacroPlacer:
             ck_min_gain = float(os.environ.get("V2_HIER_COLDSPOT_MIN_GAIN", "0.0001"))
             ck_quality_budget = float(os.environ.get("V2_HIER_COLDSPOT_QUALITY_BUDGET", "0.01"))
             ck_rounds = max(1, int(os.environ.get("V2_HIER_COLDSPOT_ROUNDS", "8")))
+            ck_min_field_gap = float(os.environ.get("V2_HIER_COLDSPOT_MIN_FIELD_GAP", "0.02"))
             ck_deadline = time.monotonic() + float(
                 os.environ.get("V2_HIER_COLDSPOT_BUDGET_S", "30")
             )
@@ -579,6 +874,39 @@ class MacroPlacer:
 
             def _full(h, sft):
                 return torch.tensor(np.vstack([h, sft]).astype(np.float32), dtype=torch.float32)
+
+            def _min_window_avg(field: np.ndarray, win_cells: int) -> float:
+                w = int(max(1, min(win_cells, nr, nc)))
+                rows, cols = nr - w + 1, nc - w + 1
+                if rows <= 0 or cols <= 0:
+                    return float(np.min(field))
+                integ = np.zeros((nr + 1, nc + 1), dtype=np.float64)
+                integ[1:, 1:] = np.cumsum(np.cumsum(field, axis=0), axis=1)
+                win_sum = (
+                    integ[w : w + rows, w : w + cols]
+                    - integ[0:rows, w : w + cols]
+                    - integ[w : w + rows, 0:cols]
+                    + integ[0:rows, 0:cols]
+                )
+                return float(np.min(win_sum) / float(w * w))
+
+            def _coldspot_field_gap(field: np.ndarray) -> float:
+                cell_w, cell_h = cw / nc, ch / nr
+                mcol = np.clip((cur_h[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
+                mrow = np.clip((cur_h[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
+                macro_cong = field[mrow, mcol]
+                best_gap = -np.inf
+                for members in clusters.values():
+                    members = members[movable[:n][members]]
+                    if members.size < 2 or members.size > 64:
+                        continue
+                    member_area = float(np.sum(sizes[members, 0] * sizes[members, 1]))
+                    win_microns = float(np.sqrt(member_area / 0.65))
+                    win_cells = max(1, int(np.ceil(win_microns / min(cell_w, cell_h))))
+                    gap = float(np.mean(macro_cong[members])) - _min_window_avg(field, win_cells)
+                    if gap > best_gap:
+                        best_gap = gap
+                return best_gap
 
             cur_h, cur_s = legal.copy(), s_pos.copy()
             base_proxy = float(_exact_proxy(_full(cur_h, cur_s), benchmark, plc))
@@ -591,6 +919,13 @@ class MacroPlacer:
                 float(_exact_proxy(_full(cur_h, cur_s), benchmark, plc))
                 field = _congestion_field(plc, nr, nc)
                 if field is None:
+                    break
+                field_gap = _coldspot_field_gap(field)
+                if field_gap < ck_min_field_gap:
+                    _log(
+                        f"  [hier] coldspot tightening: skipped, "
+                        f"field_gap={field_gap:.4f} < {ck_min_field_gap:.4f}"
+                    )
                     break
                 res = _coldspot_cluster_kick(
                     cur_h,
@@ -633,6 +968,48 @@ class MacroPlacer:
                 f"  [hier] coldspot tightening: {ck_acc} accepts, "
                 f"quality={cur_quality:.4f}, proxy {base_proxy:.4f}->{cur_proxy:.4f}"
             )
+
+            if hier_post_coldspot_micro and region is not None and soft_region is not None:
+                post_ck_micro_deadline = min(
+                    ck_deadline,
+                    time.monotonic()
+                    + float(os.environ.get("V2_HIER_POST_COLDSPOT_MICRO_SHIFT_BUDGET_S", "8")),
+                )
+                post_ck_micro_acc = 0
+                pre_post_ck_micro_score = cur_proxy
+                full = np.vstack([legal, s_pos]).astype(np.float64)
+                ck_scorer = IncrementalScorer(plc, benchmark, full.copy())
+                for use_density in (False, True):
+                    legal, s_pos, got, cur_proxy = _micro_shift_polish(
+                        legal,
+                        s_pos,
+                        sizes[:n],
+                        hw,
+                        hh,
+                        soft_hw,
+                        soft_hh,
+                        cw,
+                        ch,
+                        movable[:n],
+                        soft_mov,
+                        n,
+                        plc,
+                        benchmark,
+                        ck_scorer,
+                        cur_proxy,
+                        hard_region=region,
+                        soft_region=soft_region,
+                        deadline=post_ck_micro_deadline,
+                        radius_cells=hier_micro_shift_radius,
+                        top_hot=hier_micro_shift_top,
+                        min_gain=hier_micro_shift_min_gain,
+                        use_density=use_density,
+                    )
+                    post_ck_micro_acc += got
+                _log(
+                    f"  [hier] post-coldspot micro-shift replay: {post_ck_micro_acc} accepts, "
+                    f"proxy {pre_post_ck_micro_score:.4f}->{cur_proxy:.4f}"
+                )
 
         out = torch.tensor(np.vstack([legal, s_pos]).astype(np.float32), dtype=torch.float32)
         proxy = float(_exact_proxy(out, benchmark, plc))

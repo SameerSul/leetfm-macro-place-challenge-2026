@@ -3,14 +3,71 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **CURRENT SYSTEM (2026-06-16): hierarchy-only.** The active code no longer
+> **CURRENT SYSTEM (2026-06-18): hierarchy-only.** The active code no longer
 > ships the proxy-optimized production path. `MacroPlacer.place()` always routes
 > through `_hierarchy_floorplan()` and raises if grouped DREAMPlace is
 > unavailable. Deleted proxy-only pieces include candidate restarts, R2/2-opt,
 > hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
-> ranker defaults, and their verifiers. Current smoke: `ibm10` hierarchy output
-> `proxy=1.6486`, VALID, ~37s locally. The proxy-score history below is retained
-> as historical experiment context, not the current production output.
+> ranker defaults, and their verifiers. Current accepted Stage-3 full run:
+> **AVG 1.3631**, 17/17 VALID, 0 overlaps, 602.76s, with post-swap and
+> post-coldspot micro-shift replay. The proxy-score history below is retained as
+> historical experiment context, not the current production output.
+
+> **Status (2026-06-18 — Stage 3 micro-shift replay stack accepted,
+> `--all` avg = 1.3631):** promoted two exact-gated replay passes that rerun
+> `_micro_shift_polish()` after region swaps and again after coldspot tightening.
+> Full `uv run evaluate src/main.py --all`: **AVG 1.3631**, 17/17 VALID,
+> 0 overlaps, 602.76s. Individual gates were: post-swap replay alone
+> **AVG 1.3650**, post-coldspot replay alone **AVG 1.3645**, and both together
+> **AVG 1.3631**. The stack wins on average and improves the largest late cases
+> (`ibm15=1.8355`, `ibm17=2.0977`, `ibm18=1.7162`), with a small `ibm14`
+> tradeoff (`1.6272` vs post-swap alone `1.6256`). Rejected companion gates:
+> combined congestion-density hard relocation was only **AVG 1.3704** and
+> emitted an invalid-sqrt warning on `ibm01`; deterministic hot coldspot
+> selection regressed to **AVG 1.3714**. Both rejected gates were removed from
+> the production pipeline.
+
+> **Status (2026-06-18 — Stage 3 DREAMPlace selector rejected at smoke):**
+> implemented a bounded grouped-DREAMPlace selector that tried candidate
+> `(group_weight, seed)` variants before relief, legalizing and scoring each
+> with exact proxy plus hierarchy-quality blend. `ibm10` group-weight variants
+> `(8,1000),(6,1000),(10,1000)` selected the existing `(8,1000)` baseline:
+> candidate proxies `1.7942`, `1.9100`, `1.9177`; final smoke **1.6179** VALID
+> versus default **1.6165** VALID. Seed variants `(8,1000),(8,1001),(8,1002)`
+> also selected the baseline: candidate proxies `1.7942`, `1.9114`, `1.9396`;
+> final smoke **1.6168** VALID. Because the selector added runtime and found no
+> better `ibm10` candidate, the selector code path was removed and no `--all`
+> was run.
+
+> **Status (2026-06-18 — Stage 2 micro-shift + anisotropic decompression
+> accepted, `--all` avg = 1.3707):** promoted exact-gated one/two-grid-cell
+> micro-shift polish for hot hard and soft macros inside their hierarchy regions
+> (`V2_HIER_MICRO_SHIFT=1`, radius 2, top 96, min gain `1e-5`) and promoted
+> anisotropic cluster decompression (`V2_HIER_DECOMPRESS_ANISO=1`). Full
+> `uv run evaluate src/main.py --all`: **AVG 1.3707**, 17/17 VALID, 0 overlaps,
+> 563.00s. Micro-shift alone was **AVG 1.3718**, 17/17 VALID, 0 overlaps,
+> 591.59s, so anisotropic decompression adds a small but real full-suite gain.
+> Micro-shift + fused swap prescreen was **AVG 1.3780**, 17/17 VALID,
+> 0 overlaps, 568.20s, so the fused prescreen code path was removed. Prior
+> individual checks: fused swap prescreen alone **AVG 1.3997** (regression),
+> anisotropic decompression alone **AVG 1.3932** (small heat-baseline win but
+> worse than micro-shift), and all three together **AVG 1.3777**. Pre-swap hard
+> propose-all relocation on top of the accepted combo regressed the `ibm10`
+> smoke to **1.6405** VALID, so that pre-swap propose-all plumbing was removed;
+> accepted post-swap propose-all relocation remains active.
+
+> **Status (2026-06-16 — post-swap soft polish accepted, `--all`
+> avg = 1.3947):** promoted ordinary post-swap soft relocation with
+> `V2_HIER_POST_SOFT_RELOC=1`, `V2_HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005`, and
+> lowered the post-swap hard propose-all margin to
+> `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005`. This is not the rejected soft
+> propose-all path; it is sequential exact-gated `_soft_relocation_moves()` after
+> swaps. Full `uv run evaluate src/main.py --all`: **AVG 1.3947**, 17/17 VALID,
+> 0 overlaps, 534.30s. Margin comparison on ibm10/12/15/17/14/18 favored
+> `0.0005` over `0.00075` on every targeted case. Main full-run gains vs the
+> prior accepted 1.3974: ibm15 1.8894→1.8743, ibm17 2.2096→2.2045, ibm18
+> 1.7832→1.7772, ibm14 1.6784→1.6733, ibm12 2.2514→2.2496, plus smaller wins on
+> ibm01/06/07/09/11/16.
 
 > **Status (2026-06-16 — post-swap hard propose-all polish accepted, `--all`
 > avg = 1.3974):** kept `V2_HIER_RELOC_PROPOSE_ALL=0` for the pre-swap hard

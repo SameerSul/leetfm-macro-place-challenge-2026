@@ -2,6 +2,7 @@
 
 import numpy as np
 
+
 def _congestion_field(plc, nr: int, nc: int):
     """max(H, V) routing congestion as an (nr, nc) grid, or None if unavailable."""
     try:
@@ -22,8 +23,9 @@ def _density_field(incremental_scorer, nr: int, nc: int):
     return (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
 
 
-def coldest_window_anchor(field, nr: int, nc: int, cw: float, ch: float,
-                          win_cells: int) -> "tuple[float, float]":
+def coldest_window_anchor(
+    field, nr: int, nc: int, cw: float, ch: float, win_cells: int
+) -> "tuple[float, float]":
     """Center (in microns) of the lowest-average `win_cells`-square window.
 
     Finds the grid window with the least congestion/density (the coldspot with
@@ -38,8 +40,12 @@ def coldest_window_anchor(field, nr: int, nc: int, cw: float, ch: float,
     else:
         integ = np.zeros((nr + 1, nc + 1), dtype=np.float64)
         integ[1:, 1:] = np.cumsum(np.cumsum(field, axis=0), axis=1)
-        win_sum = (integ[w:w + R, w:w + C] - integ[0:R, w:w + C]
-                   - integ[w:w + R, 0:C] + integ[0:R, 0:C])
+        win_sum = (
+            integ[w : w + R, w : w + C]
+            - integ[0:R, w : w + C]
+            - integ[w : w + R, 0:C]
+            + integ[0:R, 0:C]
+        )
         r0, c0 = divmod(int(np.argmin(win_sum)), C)
         r, c = r0 + w // 2, c0 + w // 2
     return (c + 0.5) * (cw / nc), (r + 0.5) * (ch / nr)
