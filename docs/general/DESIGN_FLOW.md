@@ -21,10 +21,10 @@ Current accepted result:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.6486  VALID
+proxy=1.6133  VALID
 
 uv run evaluate src/main.py --all
-AVG 1.3974  17/17 VALID  0 overlaps  526.21s
+AVG 1.3631  17/17 VALID  0 overlaps  602.76s
 ```
 
 ## Flow
@@ -48,13 +48,18 @@ flowchart TD
     V --> S{V2_HIER_REGION_SWAPS enabled?}
     S -->|Yes| T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
     S -->|No| P
-    T --> P{V2_HIER_POST_RELOC_PROPOSE_ALL enabled?}
+    T --> Y[Post-swap micro-shift replay]
+    Y --> P{V2_HIER_POST_RELOC_PROPOSE_ALL enabled?}
     P -->|Yes| Q[Post-swap hard propose-all polish]
-    P -->|No| K
-    Q --> K{V2_HIER_COLDSPOT_KICK enabled?}
+    P -->|No| W
+    Q --> W{V2_HIER_POST_SOFT_RELOC enabled?}
+    W -->|Yes| X[Post-swap soft relocation polish]
+    W -->|No| K
+    X --> K{V2_HIER_COLDSPOT_KICK enabled?}
     K -->|Yes| L[Coldspot cluster tightening with bounded proxy budget]
     K -->|No| M[Clamp movable macros in bounds]
-    L --> M
+    L --> Z[Post-coldspot micro-shift replay]
+    Z --> M
     M --> N[Return macro centers]
 ```
 
@@ -187,6 +192,11 @@ The pass logs per-operator score/accept counts. Use
 `test/diagnostic/_sweep_region_swaps.py` for targeted operator and threshold
 sweeps on regression benchmarks.
 
+The accepted Stage-3 flow replays `_micro_shift_polish()` immediately after
+region swaps. This exact-gated one/two-grid-cell pass is enabled by default
+with `V2_HIER_POST_SWAP_MICRO_SHIFT=1` and recovers small hard and soft
+congestion improvements left behind by swaps.
+
 ## Coldspot Tightening
 
 The retained LSMC helper is `_coldspot_cluster_kick()`. It gathers one hot
@@ -212,6 +222,11 @@ must be at least `V2_HIER_COLDSPOT_MIN_FIELD_GAP` hotter than its best matching
 cold window. A kick is then accepted only when exact proxy improves and the
 hierarchy-quality metric stays within budget. This keeps the pass from undoing
 congestion relief for compactness alone.
+
+Production then replays `_micro_shift_polish()` once more with
+`V2_HIER_POST_COLDSPOT_MICRO_SHIFT=1`. The paired post-swap and post-coldspot
+replays are the current accepted stack. Deterministic hot-cluster coldspot
+selection was tested separately and removed after regressing the full sweep.
 
 ## Entry Points
 

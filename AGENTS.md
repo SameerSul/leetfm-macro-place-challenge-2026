@@ -18,8 +18,8 @@ available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 Current accepted hierarchy result: `uv run evaluate src/main.py --all` =
-**AVG 1.3974**, 17/17 VALID, 0 overlaps, 526.21s; `ibm10` smoke is
-`proxy=1.6486`, VALID.
+**AVG 1.3631**, 17/17 VALID, 0 overlaps, 602.76s; `ibm10` smoke is
+`proxy=1.6133`, VALID.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](docs/general/PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
 

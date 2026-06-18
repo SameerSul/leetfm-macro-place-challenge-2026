@@ -14,9 +14,9 @@ DREAMPlace to form a hierarchical global placement, legalizes hard macros in
 cluster-consecutive order, classifies soft macros as owned or bridge, expands
 hot cluster regions by congestion, runs bounded hard/soft relief, applies
 exact-gated cluster decompression, and finishes with region-bounded swaps plus
-post-swap hard propose-all polish and proxy-aware coldspot tightening. The exact
-proxy is still used for evaluation and local gates, but it is no longer the
-primary design objective.
+post-swap hard and soft polish passes, proxy-aware coldspot tightening, and two
+micro-shift replay passes. The exact proxy is still used for evaluation and
+local gates, but it is no longer the primary design objective.
 
 The placement objective note is in [docs/general/OBJECTIVES.md](docs/general/OBJECTIVES.md).
 
@@ -24,14 +24,14 @@ Current smoke reference:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.6486  VALID  [~37s locally]
+proxy=1.6133  VALID  [~41s locally]
 ```
 
 Current full IBM reference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.3974  17/17 VALID  0 overlaps  [526.21s locally]
+AVG 1.3631  17/17 VALID  0 overlaps  [602.76s locally]
 ```
 
 Historical proxy leaderboard numbers remain in `docs/general/PROGRESS.md` and
@@ -83,6 +83,7 @@ initial.plc / benchmark
   -> exact-gated cluster decompression
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
   -> post-swap hard propose-all polish
+  -> post-swap soft relocation polish
   -> proxy-aware coldspot tightening
   -> final movable-macro in-bounds clamp
   -> return macro centers
@@ -101,8 +102,10 @@ V2_HIER_RELOC_PROPOSE_HOT_K=32
 V2_HIER_RELOC_PROPOSE_DENSITY=0
 V2_HIER_POST_RELOC_PROPOSE_ALL=auto
 V2_HIER_POST_RELOC_PROPOSE_TOP_M=16
-V2_HIER_RELOC_PROPOSE_FOOTPRINT=1
-V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.001
+V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
+V2_HIER_POST_SOFT_RELOC=1
+V2_HIER_POST_SOFT_RELOC_TOP_K=256
+V2_HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005
 V2_HIER_REGION_RELIEF=1
 V2_HIER_REGION_DENSITY=0.65
 V2_REGION_BIAS=1.0

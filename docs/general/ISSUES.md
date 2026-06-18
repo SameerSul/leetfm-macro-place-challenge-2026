@@ -13,16 +13,16 @@ resolved or rejected findings are primarily captured in commit messages and
 proxy-optimized production path (candidate restarts, R2/2-opt/LSMC, ML ranker
 defaults, and generic LSMC cluster kicks) has been deleted from active code.
 `MacroPlacer.place()` now always routes through `_hierarchy_floorplan()` and
-raises if that path is unavailable. Current smoke: `ibm10` proxy `1.6486`,
-VALID, ~37s locally. Current full IBM run:
-`uv run evaluate src/main.py --all` = **AVG 1.3974**, 17/17 VALID, 0 overlaps,
-526.21s. The historical proxy table below is retained as context for the
+raises if that path is unavailable. Current smoke: `ibm10` proxy `1.6133`,
+VALID, ~41s locally. Current full IBM run:
+`uv run evaluate src/main.py --all` = **AVG 1.3631**, 17/17 VALID, 0 overlaps,
+602.76s. The historical proxy table below is retained as context for the
 removed proxy path, not the current hierarchy-preserving output.
 
 | Metric | Value |
 |---|---|
-| Current hierarchy `--all` avg | **1.3974** (2026-06-16 — post-swap hard propose-all polish; 17/17 VALID, 0 overlaps, 526.21s). |
-| Current hierarchy gap to RePlAce | **+4.1% vs RePlAce** (1.3974 vs 1.4578). |
+| Current hierarchy `--all` avg | **1.3631** (2026-06-18 — post-swap and post-coldspot micro-shift replay; 17/17 VALID, 0 overlaps, 602.76s). |
+| Current hierarchy gap to RePlAce | **+6.5% vs RePlAce** (1.3631 vs 1.4578). |
 | Best `--all` avg | **1.1252** (2026-06-11 — S10 ML hard-relocation ranker connected as production default; 17/17 VALID, 0 overlaps, **2337s ~39min**). |
 | Prior `--all` avg | 1.1272 (S16, DP basins restored) → 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |
@@ -43,6 +43,22 @@ and density terms and were frozen at initial.plc by every prior placer;
 relocating them (cong-targeted then density-targeted, interleaved with hard
 reloc + 2-opt) is where the win lives.
 
+**Research sweep summary (2026-06-18).** Four research-only probes were tested
+and then removed from active code after full `--all` sweeps:
+
+| Probe | Flag | AVG | Outcome |
+|---|---|---:|---|
+| Channel-carving decompression | `V2_RESEARCH_CHANNEL_DECOMPRESS=1` | 1.3629 | no direct promotion |
+| Route-weighted bridge relief | `V2_RESEARCH_BRIDGE_WEIGHTED=1` | 1.3629 | no direct promotion |
+| Footprint heat ranking | `V2_RESEARCH_FOOTPRINT_RANK=1` | 1.3656 | rejected |
+| Batched candidate prefilter | `V2_RESEARCH_BATCHED_PREFILTER=1` | 1.3632 | no direct promotion |
+
+None of the probes beat the accepted 1.3631 hierarchy stack by a margin worth
+keeping, so their code was deleted.
+
+After the cleanup, a verification `--all` run stayed in-family at **AVG 1.3633**,
+17/17 VALID, 0 overlaps, 614.97s.
+
 **Budget margin (CLOSED 2026-05-29).** The `--all` 2026-05-29 #1+#2 run starved
 ibm18 (cumulative monotonic reached 3228s of the 3300 internal cap by benchmark
 16; the old guard's blunt `cumulative > 95%·3300` test returned baseline for
@@ -62,13 +78,55 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ### S21. Congestion-aware hierarchy relief and region-bounded swaps (SHIPPED 2026-06-16)
 
-2026-06-16 update: post-swap hard propose-all polish is now the CUDA default.
+2026-06-18 Stage-3 update: post-swap and post-coldspot micro-shift replay are
+now default-on. Full `uv run evaluate src/main.py --all`: **AVG 1.3631**,
+17/17 VALID, 0 overlaps, 602.76s. Individual gates were post-swap replay
+**1.3650**, post-coldspot replay **1.3645**, and both together **1.3631**.
+Rejected during the same sweep: combined congestion-density relocation
+(`1.3704`, plus an invalid-sqrt warning) and deterministic hot coldspot
+selection (`1.3714`).
+
+2026-06-18 update: heat-adaptive hierarchy region sizing is now the default with
+`V2_HIER_REGION_HEAT_FRAC=0.04`. This modestly expands the initial hard/soft
+cluster regions for hot clusters before exact-gated region relief. Full
+`uv run evaluate src/main.py --all`: **AVG 1.3943**, 17/17 VALID, 0 overlaps,
+509.84s. This is a small improvement over the previous accepted 1.3947 and the
+same code with heat sizing disabled (1.3982 in the local sweep).
+
+Stage-1 sweep evidence:
+
+| Variant | AVG | Result |
+|---|---:|---|
+| heat sizing only, `V2_HIER_REGION_HEAT_FRAC=0.04` | **1.3943** | accepted |
+| adaptive directional expansion only, `V2_HIER_REGION_EXPAND_ESCAPE_MIN=0.35` | 1.3964 | rejected; weaker and conflicted with heat sizing |
+| heat `0.04` + expansion escape `0.35` | 1.3973 | rejected; gains did not stack |
+| heat `0.04` + expansion escape `0.7` | 1.3995 | rejected |
+| heat `0.03` | 1.3973 | rejected |
+| heat `0.05` | 1.3985 | rejected |
+| soft footprint ranking, all soft relocation passes | 1.4031 | rejected |
+| soft footprint ranking, early pass only and soft area <= P75 | 1.3989 | rejected |
+| RUDY ordering blend, `V2_HIER_RUDY_ALPHA=0.1` | 1.3994 | rejected |
+
+Rejected code paths from this sweep were removed: RUDY candidate ordering,
+soft-footprint soft relocation ranking, and adaptive expansion escape-min
+scaling. The retained default is heat-only region sizing plus the prior
+fixed-strength congestion region expansion.
+
+2026-06-16 update: post-swap hard/soft polish is now the default.
 The pre-swap hard relocation loop still keeps `V2_HIER_RELOC_PROPOSE_ALL=0`,
 but after region swaps the flow runs `V2_HIER_POST_RELOC_PROPOSE_ALL=auto` with
-footprint-averaged hard-macro field ranking, `V2_HIER_POST_RELOC_PROPOSE_TOP_M=16`,
-and `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.001`. Full `--all`: **AVG 1.3974**,
-17/17 VALID, 0 overlaps, 526.21s. It improved ibm10 1.6506→1.6485 and ibm12
-2.2535→2.2514 while keeping the former regression guards neutral.
+`V2_HIER_POST_RELOC_PROPOSE_TOP_M=16`, and `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005`.
+It then runs ordinary
+post-swap soft relocation with `V2_HIER_POST_SOFT_RELOC=1` and
+`V2_HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005`. Full `--all`: **AVG 1.3947**,
+17/17 VALID, 0 overlaps, 534.30s. The margin comparison on
+ibm10/12/15/17/14/18 favored `0.0005` over `0.00075`; the largest wins were
+ibm15 1.8894→1.8743, ibm17 2.2096→2.2045, ibm18 1.7832→1.7772, and ibm14
+1.6784→1.6733.
+
+Earlier post-swap hard-only polish produced **AVG 1.3974**, 17/17 VALID,
+0 overlaps, 526.21s. It improved ibm10 1.6506→1.6485 and ibm12 2.2535→2.2514
+while keeping the former regression guards neutral.
 
 Earlier on 2026-06-16, `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=1` became the
 default. It keeps cluster-consecutive legalization but orders cluster members by
@@ -94,8 +152,8 @@ hierarchy. Outcome: shipped the current hierarchy system:
 - congestion-expanded hard and soft regions;
 - exact-gated cluster decompression with hierarchy-quality limits;
 - region-bounded hard-hard, hard-soft, and soft-soft swaps;
-- post-swap hard propose-all polish with footprint field ranking and a stronger
-  exact-gain margin;
+- post-swap hard propose-all polish with a stronger exact-gain margin;
+- post-swap ordinary soft relocation polish with a small exact-gain margin;
 - strict hard-swap legality and best-state rollback;
 - proxy-aware coldspot tightening, no bounded proxy-worsening compaction;
 - wider soft swap candidate breadth (`V2_HIER_SOFT_SWAP_K=48`).
@@ -104,19 +162,19 @@ Accepted full run:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.3974  17/17 VALID  0 overlaps  526.21s
+AVG 1.3947  17/17 VALID  0 overlaps  534.30s
 ```
 
 Key deltas vs the prior hierarchy result (`1.4452`):
 
 | Bench | Before | After | Note |
 |---|---:|---:|---|
-| ibm12 | 2.3297 | **2.2514** | target congestion case; cong 2.983→2.858 |
-| ibm17 | 2.2374 | **2.2109** | target congestion case; cong 2.897→2.855 |
-| ibm15 | 1.9494 | **1.8894** | target congestion case; cong 2.390→2.321 |
+| ibm12 | 2.3297 | **2.2496** | target congestion case; cong 2.983→2.856 |
+| ibm17 | 2.2374 | **2.2045** | target congestion case; cong 2.897→2.855 |
+| ibm15 | 1.9494 | **1.8743** | target congestion case; cong 2.390→2.315 |
 | ibm10 | 1.6759 | **1.6485** | smoke improved |
-| ibm14 | 1.6991 | **1.6790** | prior regression recovered |
-| ibm18 | 1.7869 | **1.7832** | prior regression slightly recovered |
+| ibm14 | 1.6991 | **1.6733** | prior regression recovered |
+| ibm18 | 1.7869 | **1.7772** | prior regression recovered |
 
 Verdict: the remaining proxy bottleneck is still congestion inside large
 hierarchy regions, but the best current lever is soft placement around the hard
@@ -132,9 +190,11 @@ hierarchy, not hard-hard swaps alone. Operator sweeps showed:
 
 GPU status: CUDA is available and DREAMPlace uses it. The `cuda_delta`
 hard-relocation proposal scorer is active only in the post-swap hard polish by
-default; pre-swap hierarchy relocation `propose_all=auto` should stay off. The
-2026-06-16 Stage-1 bundle regressed to AVG 1.6000, hard-only pre-swap was still
-worse at AVG 1.4019, and soft-only was a dead end at AVG 1.5650.
+default; post-swap soft polish uses ordinary sequential exact-gated soft
+relocation. Pre-swap hierarchy relocation `propose_all=auto` should stay off.
+The 2026-06-16 Stage-1 bundle regressed to AVG 1.6000, hard-only pre-swap was
+still worse at AVG 1.4019, and soft-only propose-all was a dead end at AVG
+1.5650.
 
 ### S20. Macro-hierarchy awareness — full investigation (2026-06-15)
 

@@ -23,6 +23,7 @@ if _PROFILE_EXACT:
         )
     )
 
+
 def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
     """Score placement with the fast wirelength, density, and congestion paths."""
     _t0 = time.perf_counter() if _PROFILE_EXACT else 0.0
@@ -39,3 +40,4 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
         _exact_stats["calls"] += 1
         _exact_stats["total_s"] += time.perf_counter() - _t0
     return float(wl + 0.5 * dens + 0.5 * cong)
+

@@ -23,6 +23,34 @@ import numpy as np
 from placer.scoring.wirelength import _build_wl_cache
 
 
+def _heat_thresholds(cluster_heat, hot_percentile: float):
+    if not cluster_heat:
+        return None, None
+    vals = np.asarray([float(v) for v in cluster_heat.values()], dtype=np.float64)
+    if vals.size == 0:
+        return None, None
+    return float(np.percentile(vals, hot_percentile)), max(float(vals.max()), 1e-12)
+
+
+def _heat_room_factor(
+    cid: int,
+    cluster_heat,
+    heat_threshold,
+    heat_max,
+    heat_expand_frac: float,
+    heat_escape_min: float,
+) -> float:
+    if not cluster_heat or heat_threshold is None or heat_expand_frac <= 0.0:
+        return 1.0
+    heat = float(cluster_heat.get(int(cid), 0.0))
+    if heat < heat_threshold:
+        return 1.0
+    denom = max(float(heat_max) - float(heat_threshold), 1e-12)
+    scale = np.clip((heat - float(heat_threshold)) / denom, 0.0, 1.0)
+    scale = max(float(scale), float(heat_escape_min))
+    return 1.0 + float(heat_expand_frac) * scale
+
+
 def _union_find_parents(n: int) -> np.ndarray:
     return np.arange(n, dtype=np.int64)
 
@@ -227,6 +255,8 @@ def derive_soft_cluster_roles(
     return owned_out, bridge
 
 
+
+
 def cluster_max_fanout() -> int:
     """Net pin-count ceiling for cluster unioning (V2_CLUSTER_MAX_FANOUT)."""
     try:
@@ -263,6 +293,10 @@ def compute_region_bbox(
     target_density: float = 0.5,
     margin: float = 0.0,
     singleton_window: float = 0.05,
+    cluster_heat=None,
+    heat_expand_frac: float = 0.0,
+    heat_hot_percentile: float = 70.0,
+    heat_escape_min: float = 0.25,
 ) -> np.ndarray:
     """Per-macro CENTER-feasible region box [n,4] = (xlo, ylo, xhi, yhi).
 
@@ -278,8 +312,9 @@ def compute_region_bbox(
     """
     region = np.empty((n, 4), dtype=np.float64)
     big = max(float(cw), float(ch))
+    heat_threshold, heat_max = _heat_thresholds(cluster_heat, heat_hot_percentile)
 
-    for mem in clusters.values():
+    for cid, mem in clusters.items():
         mem = np.asarray(mem, dtype=np.int64)
         xs, ys = hard_xy[mem, 0], hard_xy[mem, 1]
         # Center on the footprint MIDPOINT (not the mean) so a region sized to
@@ -299,6 +334,16 @@ def compute_region_bbox(
             rh = float(np.sqrt(region_area / ar))
             rw = ar * rh
             rw, rh = max(rw, bw0), max(rh, bh0)  # never below current footprint
+        room_factor = _heat_room_factor(
+            int(cid),
+            cluster_heat,
+            heat_threshold,
+            heat_max,
+            heat_expand_frac,
+            heat_escape_min,
+        )
+        rw *= room_factor
+        rh *= room_factor
         x0, x1 = cx - rw / 2.0, cx + rw / 2.0
         y0, y1 = cy - rh / 2.0, cy + rh / 2.0
         if x0 < 0.0:
@@ -348,6 +393,12 @@ def _cluster_outer_region(
     mem,
     target_density: float,
     margin: float,
+    cid: int | None = None,
+    cluster_heat=None,
+    heat_threshold=None,
+    heat_max=None,
+    heat_expand_frac: float = 0.0,
+    heat_escape_min: float = 0.25,
 ) -> tuple[float, float, float, float]:
     """Return the unclipped-footprint cluster region as an outer canvas box."""
     mem = np.asarray(mem, dtype=np.int64)
@@ -367,6 +418,17 @@ def _cluster_outer_region(
         rh = float(np.sqrt(region_area / ar))
         rw = ar * rh
         rw, rh = max(rw, bw0), max(rh, bh0)
+    if cid is not None:
+        room_factor = _heat_room_factor(
+            int(cid),
+            cluster_heat,
+            heat_threshold,
+            heat_max,
+            heat_expand_frac,
+            heat_escape_min,
+        )
+        rw *= room_factor
+        rh *= room_factor
     x0, x1 = cx - rw / 2.0, cx + rw / 2.0
     y0, y1 = cy - rh / 2.0, cy + rh / 2.0
     if x0 < 0.0:
@@ -401,11 +463,16 @@ def compute_soft_region_bbox(
     target_density: float = 0.5,
     margin: float = 0.0,
     singleton_window: float = 0.05,
+    cluster_heat=None,
+    heat_expand_frac: float = 0.0,
+    heat_hot_percentile: float = 70.0,
+    heat_escape_min: float = 0.25,
 ) -> np.ndarray:
     """Per-soft center-feasible region box [num_soft,4]."""
     num_soft = int(soft_xy.shape[0])
     region = np.empty((num_soft, 4), dtype=np.float64)
     assigned = np.zeros(num_soft, dtype=bool)
+    heat_threshold, heat_max = _heat_thresholds(cluster_heat, heat_hot_percentile)
 
     for cid, soft_pidx in cluster_softs.items():
         mem = clusters.get(int(cid))
@@ -421,6 +488,12 @@ def compute_soft_region_bbox(
             mem,
             target_density,
             margin,
+            cid=int(cid),
+            cluster_heat=cluster_heat,
+            heat_threshold=heat_threshold,
+            heat_max=heat_max,
+            heat_expand_frac=heat_expand_frac,
+            heat_escape_min=heat_escape_min,
         )
         for p in np.asarray(soft_pidx, dtype=np.int64):
             k = int(p) - int(n)
@@ -445,6 +518,12 @@ def compute_soft_region_bbox(
                 mem,
                 target_density,
                 margin,
+                cid=int(cid),
+                cluster_heat=cluster_heat,
+                heat_threshold=heat_threshold,
+                heat_max=heat_max,
+                heat_expand_frac=heat_expand_frac,
+                heat_escape_min=heat_escape_min,
             )
         big = max(float(cw), float(ch))
         pad = max(singleton_window * big, 0.02 * big)
