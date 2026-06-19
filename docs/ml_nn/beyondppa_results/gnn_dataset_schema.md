@@ -51,6 +51,12 @@ cluster. Graph edges include:
 - bidirectional macro-cluster membership edges;
 - local spatial-neighbor edges.
 
+This is the current Stage-G2 graph. Before the first G4 GNN model, the graph
+should be extended toward the MacroDiff+-inspired design in
+`docs/ml_nn/gnn/macrodiff_plus_notes.md`: net nodes, macro-net edges, pin-offset
+edge features, net degree/fanout, and dynamic net HPWL or wirelength-pressure
+features.
+
 ## Examples
 
 `examples` contains:
@@ -77,5 +83,6 @@ uv run python test/verification/_verify_gnn_dataset_builder.py
 
 ## Scope
 
-This is Stage G2 only. The dataset is training input for later baseline and GNN
-rankers; it does not enable inference or change placement behavior.
+This is Stage G2 only. The dataset is training input for later baseline rankers,
+GNN rankers, and expanded hierarchy-flow assistant roles. It does not enable
+inference or change placement behavior.

@@ -264,8 +264,9 @@ The current BeyondPPA integration is deterministic and hierarchy-integrated:
 - structural candidate ordering lives inside existing relocation ranking;
 - production defaults keep structural ranking disabled.
 
-The current GNN implementation is trace-only. It is controlled by runtime
-environment variables, not `src/utils/constants.py`. Enable it with:
+The current production GNN behavior is still non-mutating. Trace logging is
+controlled by runtime environment variables, not `src/utils/constants.py`.
+Enable it with:
 
 ```bash
 HIER_GNN_TRACE=1 HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b ibm10
@@ -273,7 +274,16 @@ HIER_GNN_TRACE=1 HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b i
 
 Trace JSONL files are written under `ml_data/beyondppa_gnn/` unless
 `HIER_GNN_TRACE_PATH` is supplied. Logging does not change placement output.
-The full GNN roadmap is in
+Schema-v1 traces can be converted into graph datasets with
+`scripts/build_gnn_dataset.py`.
+
+The next implementation stage is G3 baseline non-GNN rankers. The long-term
+target is a default-off hierarchy-flow assistant that may rank, propose,
+select, budget, and diagnose work inside existing hierarchy operators while
+leaving legality, fixed-macro, bounds, hierarchy-region, hierarchy-quality, and
+exact-proxy gates authoritative. The dedicated GNN project plan is in
+[../ml_nn/gnn/README.md](../ml_nn/gnn/README.md), and the implementation record
+is in
 [../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md](../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md).
 
 ## Entry Points
