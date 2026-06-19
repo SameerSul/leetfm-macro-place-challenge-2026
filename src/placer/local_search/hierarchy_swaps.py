@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
@@ -23,6 +24,18 @@ def _new_stats() -> dict:
         "ss_accepts": 0,
         "ss_escape_accepts": 0,
         "proxy_gain": 0.0,
+    }
+
+
+def _batch_swap_scores() -> bool:
+    return os.environ.get("V2_HIER_BATCH_SWAP_SCORES", "0").strip() in {
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+        "YES",
+        "on",
+        "ON",
     }
 
 
@@ -49,6 +62,128 @@ def _cell_values(pos: np.ndarray, field: np.ndarray, cw: float, ch: float) -> np
 
 def _in_bounds(x: float, y: float, hw: float, hh: float, cw: float, ch: float) -> bool:
     return bool(hw <= x <= cw - hw and hh <= y <= ch - hh)
+
+
+def _legal_hard_hard_candidates(
+    h_pos: np.ndarray,
+    sep_x_mat: np.ndarray,
+    sep_y_mat: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    cw: float,
+    ch: float,
+    i: int,
+    cand: np.ndarray,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    """Return legality mask for swapping hard macro `i` with each `cand` candidate."""
+    cand = np.asarray(cand, dtype=np.int64)
+    if cand.size == 0:
+        return np.zeros(0, dtype=np.bool_)
+
+    n = h_pos.shape[0]
+    all_idx = np.arange(n, dtype=np.int64)
+    cand_i_x = h_pos[cand, 0]
+    cand_i_y = h_pos[cand, 1]
+    cand_j_x = h_pos[i, 0]
+    cand_j_y = h_pos[i, 1]
+    hw_i = float(hw[i])
+    hh_i = float(hh[i])
+    hw_j = hw[cand].astype(np.float64, copy=False)
+    hh_j = hh[cand].astype(np.float64, copy=False)
+
+    in_bounds_i = (
+        (cand_i_x - hw_i >= 0.0)
+        & (cand_i_x + hw_i <= cw)
+        & (cand_i_y - hh_i >= 0.0)
+        & (cand_i_y + hh_i <= ch)
+    )
+    in_bounds_j = (
+        (cand_j_x - hw_j >= 0.0)
+        & (cand_j_x + hw_j <= cw)
+        & (cand_j_y - hh_j >= 0.0)
+        & (cand_j_y + hh_j <= ch)
+    )
+
+    # Move i to cand position: check overlap with all existing hards (except i and cand).
+    sep_x_i = sep_x_mat[i, :][None, :]
+    sep_y_i = sep_y_mat[i, :][None, :]
+    x_block = h_pos[:, 0][None, :]
+    y_block = h_pos[:, 1][None, :]
+    overlap_i = (np.abs(cand_i_x[:, None] - x_block) < (sep_x_i + eps)) & (
+        np.abs(cand_i_y[:, None] - y_block) < (sep_y_i + eps)
+    )
+    overlap_i[:, i] = False
+    overlap_i[np.arange(cand.size), cand] = False
+    legal_i = ~np.any(overlap_i, axis=1)
+
+    # Move cand to old i position: check overlap with all existing hards (except cand and i).
+    sep_x_j = sep_x_mat[cand][:, all_idx]
+    sep_y_j = sep_y_mat[cand][:, all_idx]
+    overlap_j = (np.abs(cand_j_x - h_pos[:, 0][None, :]) < (sep_x_j + eps)) & (
+        np.abs(cand_j_y - h_pos[:, 1][None, :]) < (sep_y_j + eps)
+    )
+    overlap_j[:, i] = False
+    overlap_j[np.arange(cand.size), cand] = False
+    legal_j = ~np.any(overlap_j, axis=1)
+
+    return in_bounds_i & in_bounds_j & legal_i & legal_j
+
+
+def _legal_hard_soft_candidates(
+    h_pos: np.ndarray,
+    s_pos: np.ndarray,
+    sep_x_mat: np.ndarray,
+    sep_y_mat: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    soft_hw: np.ndarray,
+    soft_hh: np.ndarray,
+    cw: float,
+    ch: float,
+    i: int,
+    cand: np.ndarray,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    """Return legality mask for swapping hard `i` with each soft candidate."""
+    cand = np.asarray(cand, dtype=np.int64)
+    if cand.size == 0:
+        return np.zeros(0, dtype=np.bool_)
+
+    x_i = float(h_pos[i, 0])
+    y_i = float(h_pos[i, 1])
+    k_x = s_pos[cand, 0]
+    k_y = s_pos[cand, 1]
+    hw_i = float(hw[i])
+    hh_i = float(hh[i])
+    hw_k = soft_hw[cand].astype(np.float64, copy=False)
+    hh_k = soft_hh[cand].astype(np.float64, copy=False)
+
+    in_bounds_i = (
+        (k_x - hw_i >= 0.0)
+        & (k_x + hw_i <= cw)
+        & (k_y - hh_i >= 0.0)
+        & (k_y + hh_i <= ch)
+    )
+    in_bounds_k = (
+        (x_i - hw_k >= 0.0)
+        & (x_i + hw_k <= cw)
+        & (y_i - hh_k >= 0.0)
+        & (y_i + hh_k <= ch)
+    )
+
+    # Hard move (i -> soft slot): reject overlaps with all other hards except i.
+    sep_x_i = sep_x_mat[i, :][None, :]
+    sep_y_i = sep_y_mat[i, :][None, :]
+    x_block = h_pos[:, 0][None, :]
+    y_block = h_pos[:, 1][None, :]
+    overlap_i = (np.abs(k_x[:, None] - x_block) < (sep_x_i + eps)) & (
+        np.abs(k_y[:, None] - y_block) < (sep_y_i + eps)
+    )
+    overlap_i[:, i] = False
+    legal_i = ~np.any(overlap_i, axis=1)
+
+    return in_bounds_i & in_bounds_k & legal_i
 
 
 def _hard_at_legal(
@@ -138,6 +273,18 @@ def _try_hard_hard(
         cand = cand[(local[i] - local[cand]) > min_field_relief * span]
         if cand.size == 0:
             continue
+        legal_mask = _legal_hard_hard_candidates(
+            h_pos,
+            sep_x_mat,
+            sep_y_mat,
+            hw,
+            hh,
+            cw,
+            ch,
+            i,
+            cand,
+            1e-6,
+        )
         outside = np.array(
             [
                 any_outside_region(
@@ -151,11 +298,16 @@ def _try_hard_hard(
             dtype=np.float64,
         )
         rank = local[cand] + region_bias * span * outside
-        for j_raw in cand[np.argsort(rank)[:k_neighbors]]:
+        ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked = cand[ranked_idx]
+        ranked_legal = legal_mask[ranked_idx]
+        scored = []
+        for j_raw, is_legal in zip(ranked, ranked_legal):
+            # ranked_legal is the legality mask in ranked candidate order.
             if deadline is not None and time.monotonic() > deadline:
                 break
             j = int(j_raw)
-            if not _hard_swap_legal(h_pos, sep_x_mat, sep_y_mat, hw, hh, cw, ch, i, j):
+            if not bool(is_legal):
                 continue
             outside_move = any_outside_region(
                 [
@@ -163,7 +315,18 @@ def _try_hard_hard(
                     (hard_region, j, h_pos[i, 0], h_pos[i, 1]),
                 ]
             )
-            score = scorer.score_swap_hard_hard(i, j)
+            scored.append((j, outside_move))
+        if scored and _batch_swap_scores():
+            scores = scorer.score_swap_hard_hard_many(
+                i, np.asarray([j for j, _ in scored], dtype=np.int64)
+            )
+            scored_iter = zip(scored, scores)
+        else:
+            scored_iter = (
+                ((j, outside_move), scorer.score_swap_hard_hard(i, j))
+                for j, outside_move in scored
+            )
+        for (j, outside_move), score in scored_iter:
             stats["hh_scores"] += 1
             if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
                 scorer.commit_swap_hard_hard(i, j)
@@ -229,6 +392,7 @@ def _try_soft_soft(
             dtype=np.float64,
         )
         rank = local[cand] + region_bias * span * outside
+        scored = []
         for b_raw in cand[np.argsort(rank)[:k_neighbors]]:
             if deadline is not None and time.monotonic() > deadline:
                 break
@@ -240,7 +404,18 @@ def _try_soft_soft(
             if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
                 continue
             outside_move = any_outside_region([(soft_region, a, ax, ay), (soft_region, b, bx, by)])
-            score = scorer.score_swap_soft_soft(a, b)
+            scored.append((b, outside_move))
+        if scored and _batch_swap_scores():
+            scores = scorer.score_swap_soft_soft_many(
+                a, np.asarray([b for b, _ in scored], dtype=np.int64)
+            )
+            scored_iter = zip(scored, scores)
+        else:
+            scored_iter = (
+                ((b, outside_move), scorer.score_swap_soft_soft(a, b))
+                for b, outside_move in scored
+            )
+        for (b, outside_move), score in scored_iter:
             stats["ss_scores"] += 1
             if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
                 scorer.commit_swap_soft_soft(a, b)
@@ -313,20 +488,49 @@ def _try_hard_soft(
             dtype=np.float64,
         )
         rank = soft_local[cand] + region_bias * span * outside
-        for k_raw in cand[np.argsort(rank)[:k_neighbors]]:
+        legal_mask = _legal_hard_soft_candidates(
+            h_pos,
+            s_pos,
+            sep_x_mat,
+            sep_y_mat,
+            hw,
+            hh,
+            soft_hw,
+            soft_hh,
+            cw,
+            ch,
+            i,
+            cand,
+            1e-6,
+        )
+        ranked_idx = np.argsort(rank)[:k_neighbors]
+        scored = []
+        for k_raw, is_legal in zip(cand[ranked_idx], legal_mask[ranked_idx]):
+            # legal_mask is aligned with `cand`; `ranked_idx` preserves ranking order.
             if deadline is not None and time.monotonic() > deadline:
                 break
             k = int(k_raw)
+            if not bool(is_legal):
+                continue
             hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
             sx, sy = float(h_pos[i, 0]), float(h_pos[i, 1])
             if not _in_bounds(hx, hy, hw[i], hh[i], cw, ch):
                 continue
             if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
                 continue
-            if not _hard_at_legal(h_pos, sep_x_mat, sep_y_mat, i, hx, hy):
-                continue
             outside_move = any_outside_region([(hard_region, i, hx, hy), (soft_region, k, sx, sy)])
-            score = scorer.score_swap_hard_soft(i, k)
+            scored.append((k, hx, hy, sx, sy, outside_move))
+        if scored and _batch_swap_scores():
+            scores = scorer.score_swap_hard_soft_many(
+                i, np.asarray([k for k, *_ in scored], dtype=np.int64)
+            )
+            scored_iter = zip(scored, scores)
+        else:
+            scored_iter = (
+                ((k, hx, hy, sx, sy, outside_move), scorer.score_swap_hard_soft(i, k))
+                for k, hx, hy, sx, sy, outside_move in scored
+            )
+        for (k, hx, hy, sx, sy, outside_move), score in scored_iter:
             stats["hs_scores"] += 1
             if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
                 scorer.commit_swap_hard_soft(i, k)
@@ -382,7 +586,7 @@ def _region_bounded_swap_relief(
         field = (
             _density_field(incremental_scorer, nr, nc)
             if use_density
-            else _congestion_field(incremental_scorer.plc, nr, nc)
+            else _congestion_field(incremental_scorer, nr, nc)
         )
         if field is None:
             break

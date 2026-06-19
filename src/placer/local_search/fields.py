@@ -1,10 +1,34 @@
 """Hot/cold cell fields shared by the relocation and swap move passes."""
 
+import os
 import numpy as np
 
 
-def _congestion_field(plc, nr: int, nc: int):
+def _env_enabled(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip() in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+
+
+def _congestion_field(source, nr: int, nc: int):
     """max(H, V) routing congestion as an (nr, nc) grid, or None if unavailable."""
+    if _env_enabled("V2_USE_SCORER_CONGESTION_FIELD", "1"):
+        scorer_field = getattr(source, "congestion_field", None)
+        if scorer_field is not None:
+            try:
+                field = scorer_field()
+            except Exception:
+                field = None
+            if field is not None and field.shape == (nr, nc):
+                return field
+    else:
+        scorer_field = None
+    if scorer_field is not None:
+        try:
+            field = scorer_field()
+        except Exception:
+            field = None
+        if field is not None and field.shape == (nr, nc):
+            return field
+    plc = getattr(source, "plc", source)
     try:
         h_arr = np.asarray(plc.get_horizontal_routing_congestion(), dtype=np.float64)
         v_arr = np.asarray(plc.get_vertical_routing_congestion(), dtype=np.float64)

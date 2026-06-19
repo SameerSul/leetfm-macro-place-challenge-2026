@@ -2,7 +2,7 @@
 
 ## Current Production System
 
-As of 2026-06-16, v2 is a hierarchy-preserving placer. The active
+As of 2026-06-18, v2 is a hierarchy-preserving placer. The active
 `MacroPlacer.place()` path is:
 
 ```text
@@ -12,6 +12,7 @@ derive clusters
   -> soft cleanup
   -> congestion-expanded hard/soft regions
   -> region-locked hard/soft relief
+  -> exact-gated in-region micro-shift polish
   -> exact-gated cluster decompression
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
   -> post-swap micro-shift replay
@@ -38,7 +39,9 @@ But the system now intentionally trades proxy for hierarchy. Historical
 the current hierarchy output.
 
 The structural objectives that drive the hierarchy flow are documented in
-[OBJECTIVES.md](OBJECTIVES.md).
+[OBJECTIVES.md](OBJECTIVES.md). BeyondPPA-style deterministic structural
+ranking and GNN trace logging are documented in
+[../ml_nn/beyondppa_results/](../ml_nn/beyondppa_results/).
 
 Current verified smoke:
 
@@ -64,6 +67,8 @@ AVG 1.3631  17/17 VALID  0 overlaps  602.76s
 | `src/placer/local_search/clusters.py` | Derives hard clusters, owned/bridge soft memberships, and region boxes. |
 | `src/placer/legalize/spiral.py` | Legalizes hard macros, including cluster-consecutive order support. |
 | `src/placer/local_search/relocation.py` | Hard and soft relocation used by region-locked relief. |
+| `src/placer/local_search/structural_fields.py` | Deterministic BeyondPPA-style structural metrics used for diagnostics and opt-in hierarchy candidate ordering. |
+| `src/placer/local_search/gnn_trace.py` | Opt-in JSONL trace writer for future hierarchy-aware GNN ranker training. |
 | `src/placer/local_search/region_expand.py` | Expands hot cluster regions toward colder neighboring congestion bands. |
 | `src/placer/local_search/cluster_decompress.py` | Exact-gated decompression of hot hierarchy blobs with hierarchy-quality checks. |
 | `src/placer/local_search/hierarchy_swaps.py` | Region-bounded hard-hard, hard-soft, and soft-soft swap relief. |
@@ -164,6 +169,31 @@ When no `region_bbox` is supplied, relocation remains the ordinary exact-gated
 move primitive. The current production caller always uses it through the
 hierarchy relief loop.
 
+### 5a. BeyondPPA Structural Candidate Ordering
+
+`src/placer/local_search/structural_fields.py` implements deterministic
+structural penalties for edge keepout, grid alignment, and notch avoidance.
+When enabled, `src/placer/local_search/relocation.py` adds the local structural
+delta into existing hard and soft relocation candidate ordering.
+
+Controls:
+
+```text
+V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
+V2_HIER_KEEP_OUT_WEIGHT=0.2
+V2_HIER_GRID_ALIGN_WEIGHT=0.2
+V2_HIER_NOTCH_WEIGHT=0.6
+```
+
+`V2_HIER_STRUCTURAL_RANK=1` is kept as a backward-compatible alias for
+structural weight `1.0`.
+
+This is not a separate BeyondPPA placement path. The structural term only
+changes proposal order. Fixed macros, bounds, hard legality, hierarchy-region
+constraints, hierarchy-quality gates, and exact-proxy accept gates remain the
+authority for every committed move. The production default is
+`V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0`, so default behavior is unchanged.
+
 ### 6. Cluster Decompression
 
 `_cluster_decompression_relief()` expands hot clusters inside their expanded
@@ -219,6 +249,7 @@ Controls:
 
 ```text
 V2_HIER_POST_SWAP_MICRO_SHIFT=1
+V2_HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S=8
 V2_HIER_POST_RELOC_PROPOSE_ALL=auto
 V2_HIER_POST_RELOC_PROPOSE_TOP_M=16
 V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
@@ -255,6 +286,24 @@ helper. Production then reruns `_micro_shift_polish()` once more with
 `V2_HIER_POST_COLDSPOT_MICRO_SHIFT=1`; deterministic hot-cluster coldspot
 selection was tested and removed after regressing the full sweep.
 
+### 10. GNN Trace Logging
+
+No GNN model is active in production. The current GNN-related implementation is
+opt-in trace logging attached to the hierarchy flow:
+
+```text
+V2_HIER_GNN_TRACE=0
+V2_HIER_GNN_TRACE_DIR=ml_data/beyondppa_gnn
+V2_HIER_GNN_TRACE_RUN=<timestamp-derived by default>
+V2_HIER_GNN_TRACE_MAX_CANDIDATES=512
+```
+
+When enabled, the logger records hierarchy relocation candidate pools,
+accepted relocation labels, pass summaries, and final placement summaries as
+JSONL. It does not change candidate ordering or acceptance. The next required
+GNN work is trace completeness for swaps, decompression, and coldspot
+candidates before building a dataset or model.
+
 ## Scoring And Legality
 
 Hard requirements remain unchanged:
@@ -283,6 +332,7 @@ uv run python -m py_compile $(find src -type f -name "*.py")
 uv run python test/verification/_verify_region_escape_gate.py
 uv run python test/verification/_verify_score_region_swaps.py
 uv run python test/verification/_verify_coldspot_kick.py ibm10
+uv run pytest test/verification/test_structural_fields.py -q
 uv run evaluate src/main.py -b ibm10
 uv run evaluate src/main.py --all
 ```

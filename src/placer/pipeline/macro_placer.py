@@ -124,6 +124,7 @@ class MacroPlacer:
             hierarchy_quality_metric,
         )
         from placer.local_search.fields import _congestion_field
+        from placer.local_search.gnn_trace import log_gnn_event
         from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
         from placer.local_search.region_expand import expand_regions_by_congestion
         from placer.local_search.relocation import (
@@ -180,7 +181,6 @@ class MacroPlacer:
         hier_decompress_aniso = (
             os.environ.get("V2_HIER_DECOMPRESS_ANISO", "1").strip() not in _FALSE_ENV
         )
-
         from placer.plc.loader import _load_plc
 
         plc = _load_plc(benchmark.name, benchmark)
@@ -200,6 +200,19 @@ class MacroPlacer:
             max_fanout=cluster_max_fanout(),
             min_edge=cluster_min_edge(),
         )
+
+        def _trace_pass(pass_name: str, before: float, after: float, accepts: int, **extra) -> None:
+            log_gnn_event(
+                "hier_pass_result",
+                benchmark=benchmark.name,
+                hierarchy_pass=pass_name,
+                proxy_before=float(before),
+                proxy_after=float(after),
+                proxy_delta=float(after) - float(before),
+                accepts=int(accepts),
+                **extra,
+            )
+
         bridge_ratio = float(os.environ.get("V2_HIER_BRIDGE_SOFT_RATIO", "0.6"))
         if os.environ.get("V2_HIER_BRIDGE_SOFTS", "1").strip() not in _FALSE_ENV:
             csofts, bridge_softs = derive_soft_cluster_roles(
@@ -367,7 +380,7 @@ class MacroPlacer:
         soft_region = None
         if os.environ.get("V2_HIER_REGION_RELIEF", "1").strip() not in _FALSE_ENV:
             nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
-            base_heat_field = _congestion_field(plc, nr, nc)
+            base_heat_field = _congestion_field(scorer, nr, nc)
             cluster_heat = None
 
             def _cluster_heat(field):
@@ -512,6 +525,13 @@ class MacroPlacer:
                             f"  [hier] micro-shift polish: {micro_acc} accepts, "
                             f"proxy {before_micro:.4f}->{r_score:.4f}"
                         )
+                    _trace_pass(
+                        "micro_shift",
+                        before_micro,
+                        r_score,
+                        micro_acc,
+                        quality=hierarchy_quality_metric(h_pos, clusters),
+                    )
                 reloc_acc = 0
                 for use_density in (False, True):
                     h_pos, got, r_score = _relocation_moves(
@@ -624,6 +644,14 @@ class MacroPlacer:
                     f"  [hier] cluster decompression: {d_acc} accepts, "
                     f"quality={hq:.4f}, proxy={r_score:.4f}"
                 )
+                _trace_pass(
+                    "cluster_decompression",
+                    pre_decomp_score,
+                    r_score,
+                    d_acc,
+                    quality=float(hq),
+                    rolled_back=bool(invalid_decomp or weak_decomp),
+                )
             if os.environ.get("V2_HIER_REGION_SWAPS", "1").strip() not in _FALSE_ENV:
                 swap_rounds = max(1, int(os.environ.get("V2_HIER_REGION_SWAP_ROUNDS", "2")))
                 swap_deadline = min(
@@ -653,6 +681,7 @@ class MacroPlacer:
                     "proxy_gain": 0.0,
                 }
                 swap_acc = 0
+                pre_swap_score = r_score
                 fields = (False, True) if use_density_swaps else (False,)
                 for use_density in fields:
                     h_pos, s_pos, got, r_score, stats = _region_bounded_swap_relief(
@@ -702,6 +731,14 @@ class MacroPlacer:
                     f"esc {swap_stats['hh_escape_accepts'] + swap_stats['hs_escape_accepts'] + swap_stats['ss_escape_accepts']}, "
                     f"gain {swap_stats['proxy_gain']:.4f}), proxy={r_score:.4f}"
                 )
+                _trace_pass(
+                    "region_swaps",
+                    pre_swap_score,
+                    r_score,
+                    swap_acc,
+                    stats=swap_stats,
+                    quality=hierarchy_quality_metric(h_pos, clusters),
+                )
             if hier_post_swap_micro:
                 post_micro_deadline = min(
                     rdeadline,
@@ -748,6 +785,13 @@ class MacroPlacer:
                     f"  [hier] post-swap micro-shift replay: {post_micro_acc} accepts, "
                     f"proxy {pre_post_micro_score:.4f}->{r_score:.4f}"
                 )
+                _trace_pass(
+                    "post_swap_micro_shift",
+                    pre_post_micro_score,
+                    r_score,
+                    post_micro_acc,
+                    quality=hierarchy_quality_metric(h_pos, clusters),
+                )
             if hier_post_reloc_propose:
                 post_deadline = min(
                     rdeadline,
@@ -790,6 +834,13 @@ class MacroPlacer:
                     f"  [hier] post-swap hard propose-all: {post_acc} accepts, "
                     f"proxy {pre_post_score:.4f}->{r_score:.4f}"
                 )
+                _trace_pass(
+                    "post_swap_hard_propose_all",
+                    pre_post_score,
+                    r_score,
+                    post_acc,
+                    quality=hierarchy_quality_metric(h_pos, clusters),
+                )
             if hier_post_soft_reloc:
                 post_soft_deadline = min(
                     rdeadline,
@@ -826,6 +877,13 @@ class MacroPlacer:
                 _log(
                     f"  [hier] post-swap soft relocation: {post_soft_acc} accepts, "
                     f"proxy {pre_post_soft_score:.4f}->{r_score:.4f}"
+                )
+                _trace_pass(
+                    "post_swap_soft_relocation",
+                    pre_post_soft_score,
+                    r_score,
+                    post_soft_acc,
+                    quality=hierarchy_quality_metric(h_pos, clusters),
                 )
             legal_candidate = _will_legalize(
                 h_pos,
@@ -911,13 +969,17 @@ class MacroPlacer:
             cur_h, cur_s = legal.copy(), s_pos.copy()
             base_proxy = float(_exact_proxy(_full(cur_h, cur_s), benchmark, plc))
             cur_proxy, cur_quality = base_proxy, hierarchy_quality_metric(cur_h, clusters)
+            ck_scorer = IncrementalScorer(
+                plc,
+                benchmark,
+                np.vstack([cur_h, cur_s]).astype(np.float64),
+            )
             ck_rng = np.random.default_rng(0)
             ck_acc = 0
             for _ in range(ck_rounds):
                 if time.monotonic() >= ck_deadline:
                     break
-                float(_exact_proxy(_full(cur_h, cur_s), benchmark, plc))
-                field = _congestion_field(plc, nr, nc)
+                field = _congestion_field(ck_scorer, nr, nc)
                 if field is None:
                     break
                 field_gap = _coldspot_field_gap(field)
@@ -962,11 +1024,23 @@ class MacroPlacer:
                     and kproxy < cur_proxy - ck_min_gain
                 ):
                     cur_h, cur_s, cur_proxy, cur_quality = kh, ks, kproxy, kquality
+                    ck_scorer = IncrementalScorer(
+                        plc,
+                        benchmark,
+                        np.vstack([cur_h, cur_s]).astype(np.float64),
+                    )
                     ck_acc += 1
             legal, s_pos = cur_h, cur_s
             _log(
                 f"  [hier] coldspot tightening: {ck_acc} accepts, "
                 f"quality={cur_quality:.4f}, proxy {base_proxy:.4f}->{cur_proxy:.4f}"
+            )
+            _trace_pass(
+                "coldspot_tightening",
+                base_proxy,
+                cur_proxy,
+                ck_acc,
+                quality=float(cur_quality),
             )
 
             if hier_post_coldspot_micro and region is not None and soft_region is not None:
@@ -1010,9 +1084,25 @@ class MacroPlacer:
                     f"  [hier] post-coldspot micro-shift replay: {post_ck_micro_acc} accepts, "
                     f"proxy {pre_post_ck_micro_score:.4f}->{cur_proxy:.4f}"
                 )
+                _trace_pass(
+                    "post_coldspot_micro_shift",
+                    pre_post_ck_micro_score,
+                    cur_proxy,
+                    post_ck_micro_acc,
+                    quality=hierarchy_quality_metric(legal, clusters),
+                )
 
         out = torch.tensor(np.vstack([legal, s_pos]).astype(np.float32), dtype=torch.float32)
         proxy = float(_exact_proxy(out, benchmark, plc))
+        log_gnn_event(
+            "hier_final",
+            benchmark=benchmark.name,
+            proxy=float(proxy),
+            pre_relief_proxy=float(pre_relief),
+            hierarchy_quality=float(hierarchy_quality_metric(legal, clusters)),
+            clusters=int(len(clusters)),
+            group_weight=int(gw),
+        )
         _log(
             f"  [hier] {len(clusters)} clusters, weight={gw}: proxy={proxy:.4f} "
             f"(pre-relief {pre_relief:.4f}; hierarchy-preserving NON-proxy mode)"

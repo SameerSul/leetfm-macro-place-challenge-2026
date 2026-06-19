@@ -1,5 +1,6 @@
 """Vectorized routing demand and smoothing helpers."""
 
+import os
 import numpy as np
 import torch
 from macro_place.benchmark import Benchmark
@@ -144,7 +145,15 @@ def _apply_h_strips_batch(H_flat: np.ndarray, row: np.ndarray,
     """Add a batch of horizontal routing strips."""
     if row.size == 0:
         return
-    if HAS_NUMBA:
+    if HAS_NUMBA and os.environ.get("V2_ROUTE_STRUCT_JIT", "0").strip() in {
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+        "YES",
+        "on",
+        "ON",
+    }:
         _apply_h_strips_batch_jit(
             H_flat,
             np.ascontiguousarray(row, dtype=np.int64),
@@ -438,6 +447,198 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
         nz = rlos != rhis
         if nz.any():
             _apply_v_strips_batch(V_flat, cols[nz], rlos[nz], rhis[nz], ws_v[nz], grid_row, grid_col)
+
+
+if HAS_NUMBA:
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _apply_route_struct_l2_l3_jit(
+        H_flat,
+        V_flat,
+        pin_gcell,
+        starts2,
+        weights2,
+        starts3,
+        weights3,
+        grid_col,
+    ):
+        """Apply 2/3-pin prepared route-struct nets without Python buckets."""
+        for k in range(starts2.shape[0]):
+            s = starts2[k]
+            src = pin_gcell[s]
+            snk = pin_gcell[s + 1]
+            if src == snk:
+                continue
+            src_row = src // grid_col
+            src_col = src % grid_col
+            snk_row = snk // grid_col
+            snk_col = snk % grid_col
+            w = weights2[k]
+            c_lo = src_col if src_col < snk_col else snk_col
+            c_hi = src_col if src_col > snk_col else snk_col
+            base = src_row * grid_col
+            for c in range(c_lo, c_hi):
+                H_flat[base + c] += w
+            r_lo = src_row if src_row < snk_row else snk_row
+            r_hi = src_row if src_row > snk_row else snk_row
+            for r in range(r_lo, r_hi):
+                V_flat[r * grid_col + snk_col] += w
+
+        for k in range(starts3.shape[0]):
+            s = starts3[k]
+            g0 = pin_gcell[s]
+            g1 = pin_gcell[s + 1]
+            g2 = pin_gcell[s + 2]
+            eq01 = g0 == g1
+            eq02 = g0 == g2
+            eq12 = g1 == g2
+            eq_count = 0
+            if eq01:
+                eq_count += 1
+            if eq02:
+                eq_count += 1
+            if eq12:
+                eq_count += 1
+            if eq_count == 3:
+                continue
+            w = weights3[k]
+            if eq_count == 1:
+                src = g0
+                snk = g2 if eq01 else g1
+                src_row = src // grid_col
+                src_col = src % grid_col
+                snk_row = snk // grid_col
+                snk_col = snk % grid_col
+                c_lo = src_col if src_col < snk_col else snk_col
+                c_hi = src_col if src_col > snk_col else snk_col
+                base = src_row * grid_col
+                for c in range(c_lo, c_hi):
+                    H_flat[base + c] += w
+                r_lo = src_row if src_row < snk_row else snk_row
+                r_hi = src_row if src_row > snk_row else snk_row
+                for r in range(r_lo, r_hi):
+                    V_flat[r * grid_col + snk_col] += w
+                continue
+
+            ya = g0 // grid_col
+            xa = g0 % grid_col
+            yb = g1 // grid_col
+            xb = g1 % grid_col
+            yc = g2 // grid_col
+            xc = g2 % grid_col
+
+            x1 = xa
+            y1 = ya
+            x2 = xb
+            y2 = yb
+            x3 = xc
+            y3 = yc
+            if x1 > x2 or (x1 == x2 and y1 > y2):
+                tx = x1
+                x1 = x2
+                x2 = tx
+                ty = y1
+                y1 = y2
+                y2 = ty
+            if x2 > x3 or (x2 == x3 and y2 > y3):
+                tx = x2
+                x2 = x3
+                x3 = tx
+                ty = y2
+                y2 = y3
+                y3 = ty
+            if x1 > x2 or (x1 == x2 and y1 > y2):
+                tx = x1
+                x1 = x2
+                x2 = tx
+                ty = y1
+                y1 = y2
+                y2 = ty
+
+            if x1 < x2 and x2 < x3:
+                ymn13 = y1 if y1 < y3 else y3
+                ymx13 = y1 if y1 > y3 else y3
+                if ymn13 < y2 and ymx13 > y2:
+                    base1 = y1 * grid_col
+                    for c in range(x1, x2):
+                        H_flat[base1 + c] += w
+                    base2 = y2 * grid_col
+                    for c in range(x2, x3):
+                        H_flat[base2 + c] += w
+                    r_lo = y1 if y1 < y2 else y2
+                    r_hi = y1 if y1 > y2 else y2
+                    for r in range(r_lo, r_hi):
+                        V_flat[r * grid_col + x2] += w
+                    r_lo = y2 if y2 < y3 else y3
+                    r_hi = y2 if y2 > y3 else y3
+                    for r in range(r_lo, r_hi):
+                        V_flat[r * grid_col + x3] += w
+                    continue
+
+            mny23 = y2 if y2 < y3 else y3
+            if x2 == x3 and x1 < x2 and y1 < mny23:
+                base1 = y1 * grid_col
+                for c in range(x1, x2):
+                    H_flat[base1 + c] += w
+                mxy23 = y2 if y2 > y3 else y3
+                for r in range(y1, mxy23):
+                    V_flat[r * grid_col + x2] += w
+                continue
+
+            if y2 == y3:
+                base1 = y1 * grid_col
+                for c in range(x1, x2):
+                    H_flat[base1 + c] += w
+                base2 = y2 * grid_col
+                for c in range(x2, x3):
+                    H_flat[base2 + c] += w
+                r_lo = y2 if y2 < y1 else y1
+                r_hi = y2 if y2 > y1 else y1
+                for r in range(r_lo, r_hi):
+                    V_flat[r * grid_col + x2] += w
+                continue
+
+            x1t = xa
+            y1t = ya
+            x2t = xb
+            y2t = yb
+            x3t = xc
+            y3t = yc
+            if y1t > y2t or (y1t == y2t and x1t > x2t):
+                tx = x1t
+                x1t = x2t
+                x2t = tx
+                ty = y1t
+                y1t = y2t
+                y2t = ty
+            if y2t > y3t or (y2t == y3t and x2t > x3t):
+                tx = x2t
+                x2t = x3t
+                x3t = tx
+                ty = y2t
+                y2t = y3t
+                y3t = ty
+            if y1t > y2t or (y1t == y2t and x1t > x2t):
+                tx = x1t
+                x1t = x2t
+                x2t = tx
+                ty = y1t
+                y1t = y2t
+                y2t = ty
+
+            xmin = x1t if x1t < x2t else x2t
+            if x3t < xmin:
+                xmin = x3t
+            xmax = x1t if x1t > x2t else x2t
+            if x3t > xmax:
+                xmax = x3t
+            base = y2t * grid_col
+            for c in range(xmin, xmax):
+                H_flat[base + c] += w
+            for r in range(y1t, y2t):
+                V_flat[r * grid_col + x1t] += w
+            for r in range(y2t, y3t):
+                V_flat[r * grid_col + x3t] += w
 
 
 def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
@@ -783,10 +984,35 @@ def _apply_net_routing_struct(plc, struct, weight_mult: float,
     bucket_3_g1: list = []
     bucket_3_g2: list = []
     bucket_3_w: list = []
+    used_l2_l3_jit = False
+
+    if HAS_NUMBA:
+        starts2_jit = (
+            struct["local_starts_l2"]
+            if struct["local_starts_l2"] is not None
+            else np.empty(0, dtype=np.int64)
+        )
+        starts3_jit = (
+            struct["local_starts_l3"]
+            if struct["local_starts_l3"] is not None
+            else np.empty(0, dtype=np.int64)
+        )
+        if starts2_jit.size or starts3_jit.size:
+            _apply_route_struct_l2_l3_jit(
+                H_flat,
+                V_flat,
+                np.ascontiguousarray(pin_gcell, dtype=np.int64),
+                np.ascontiguousarray(starts2_jit, dtype=np.int64),
+                np.ascontiguousarray(weights_sub[struct["mask_l2"]], dtype=np.float64),
+                np.ascontiguousarray(starts3_jit, dtype=np.int64),
+                np.ascontiguousarray(weights_sub[struct["mask_l3"]], dtype=np.float64),
+                int(grid_col),
+            )
+            used_l2_l3_jit = True
 
     mask_l2 = struct["mask_l2"]
     local_starts_l2 = struct["local_starts_l2"]
-    if local_starts_l2 is not None:
+    if local_starts_l2 is not None and not used_l2_l3_jit:
         src2 = pin_gcell[local_starts_l2]
         snk2 = pin_gcell[local_starts_l2 + 1]
         sub_mask = src2 != snk2
@@ -797,7 +1023,7 @@ def _apply_net_routing_struct(plc, struct, weight_mult: float,
 
     mask_l3 = struct["mask_l3"]
     local_starts_l3 = struct["local_starts_l3"]
-    if local_starts_l3 is not None:
+    if local_starts_l3 is not None and not used_l2_l3_jit:
         g0 = pin_gcell[local_starts_l3]
         g1 = pin_gcell[local_starts_l3 + 1]
         g2 = pin_gcell[local_starts_l3 + 2]
