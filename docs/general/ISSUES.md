@@ -1,4 +1,4 @@
-# Open issues and recent shipped items — v2 placer (last revised 2026-06-15)
+# Open issues and recent shipped items — v2 placer (last revised 2026-06-18)
 
 This file tracks current gaps, speculative score ideas, follow-up work, and a
 small number of recent shipped items that still explain active knobs. Older
@@ -9,16 +9,34 @@ resolved or rejected findings are primarily captured in commit messages and
 
 ## Current state (headline)
 
+**Current production mode (2026-06-18): hierarchy-only.** The old
+proxy-optimized production path (candidate restarts, R2/2-opt/LSMC, ML ranker
+defaults, and generic LSMC cluster kicks) has been deleted from active code.
+`MacroPlacer.place()` now always routes through `_hierarchy_floorplan()` and
+raises if that path is unavailable. Current smoke: `ibm10` proxy `1.6133`,
+VALID, ~41s locally. Current full IBM run:
+`uv run evaluate src/main.py --all` = **AVG 1.3631**, 17/17 VALID, 0 overlaps,
+602.76s. The historical proxy table below is retained as context for the
+removed proxy path, not the current hierarchy-preserving output.
+
+BeyondPPA-style structural guidance is now integrated only as hierarchy
+candidate-ordering signal. Production defaults remain unchanged:
+`V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` and `V2_HIER_GNN_TRACE=0`. The current
+GNN work is opt-in JSONL trace logging for future hierarchy-aware ranker
+training, not a model or second placement path.
+
 | Metric | Value |
 |---|---|
+| Current hierarchy `--all` avg | **1.3631** (2026-06-18 — post-swap and post-coldspot micro-shift replay; 17/17 VALID, 0 overlaps, 602.76s). |
+| Current hierarchy gap to RePlAce | **+6.5% vs RePlAce** (1.3631 vs 1.4578). |
 | Best `--all` avg | **1.1252** (2026-06-11 — S10 ML hard-relocation ranker connected as production default; 17/17 VALID, 0 overlaps, **2337s ~39min**). |
 | Prior `--all` avg | 1.1272 (S16, DP basins restored) → 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |
-| **Gap to RePlAce** | **−22.8% (beat by 0.333 — beats on every benchmark)** |
+| Historical proxy-path gap to RePlAce | **−22.8% (beat by 0.333 — beats on every benchmark)** |
 | DREAMPlace leaderboard | 1.4076 (UT Austin) |
-| **Gap to leaderboard** | **−20.1% (BEATS by 0.282)** |
+| Historical proxy-path gap to leaderboard | **−20.1% (BEATS by 0.282)** |
 | NG45 (Tier 2) avg | 0.7830 |
-| `--all` wall-clock | 2337s (~39 min) in the 2026-06-11 re-baseline |
+| Historical proxy-path `--all` wall-clock | 2337s (~39 min) in the 2026-06-11 re-baseline |
 
 All 17 IBM benchmarks improved vs v12 baseline. The **relocation family** is the
 dominant lever (R1 −0.0096, R2 −0.0083, R2b −0.0027, R3 −0.0452, **R5 −0.0965**
@@ -30,6 +48,22 @@ throughline of the relocation family: softs are the bulk of BOTH the congestion
 and density terms and were frozen at initial.plc by every prior placer;
 relocating them (cong-targeted then density-targeted, interleaved with hard
 reloc + 2-opt) is where the win lives.
+
+**Research sweep summary (2026-06-18).** Four research-only probes were tested
+and then removed from active code after full `--all` sweeps:
+
+| Probe | Flag | AVG | Outcome |
+|---|---|---:|---|
+| Channel-carving decompression | `V2_RESEARCH_CHANNEL_DECOMPRESS=1` | 1.3629 | no direct promotion |
+| Route-weighted bridge relief | `V2_RESEARCH_BRIDGE_WEIGHTED=1` | 1.3629 | no direct promotion |
+| Footprint heat ranking | `V2_RESEARCH_FOOTPRINT_RANK=1` | 1.3656 | rejected |
+| Batched candidate prefilter | `V2_RESEARCH_BATCHED_PREFILTER=1` | 1.3632 | no direct promotion |
+
+None of the probes beat the accepted 1.3631 hierarchy stack by a margin worth
+keeping, so their code was deleted.
+
+After the cleanup, a verification `--all` run stayed in-family at **AVG 1.3633**,
+17/17 VALID, 0 overlaps, 614.97s.
 
 **Budget margin (CLOSED 2026-05-29).** The `--all` 2026-05-29 #1+#2 run starved
 ibm18 (cumulative monotonic reached 3228s of the 3300 internal cap by benchmark
@@ -48,6 +82,156 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ## Current issues and shipped context
 
+### S22. BeyondPPA structural signal and GNN trace logging (SHIPPED 2026-06-18)
+
+The BeyondPPA work is integrated into the hierarchy flow rather than branching
+into a separate placer. Shipped pieces:
+
+- deterministic structural metrics in
+  `src/placer/local_search/structural_fields.py`;
+- structural diagnostics in `test/diagnostic/_structural_metrics.py`;
+- opt-in structural relocation candidate ordering through
+  `V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT`;
+- opt-in GNN JSONL traces through `V2_HIER_GNN_TRACE=1`.
+
+The structural term only reorders candidates. Hard legality, fixed macros,
+bounds, hierarchy regions, hierarchy-quality gates, and exact-proxy gates still
+decide accepted moves. Standalone structural polish and bounded structural
+acceptance were deliberately not kept, because they created a second path
+instead of integrating with hierarchy.
+
+Verification: `py_compile` passed; `test/verification/test_structural_fields.py`
+passed; `ibm01` GNN trace smoke was VALID and wrote relocation candidate,
+relocation result, pass summary, and final summary events. A default-off
+`--all` verification stayed in-family at **AVG 1.3626**, 17/17 VALID,
+0 overlaps, 595.52s. The small difference from the accepted 1.3631 result is
+not isolated from unrelated worktree changes.
+
+Open follow-up: implement GNN trace completeness for region swap, cluster
+decompression, and coldspot candidates before building a dataset or model. The
+full roadmap lives in
+`docs/ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md`.
+
+### S21. Congestion-aware hierarchy relief and region-bounded swaps (SHIPPED 2026-06-16)
+
+2026-06-18 Stage-3 update: post-swap and post-coldspot micro-shift replay are
+now default-on. Full `uv run evaluate src/main.py --all`: **AVG 1.3631**,
+17/17 VALID, 0 overlaps, 602.76s. Individual gates were post-swap replay
+**1.3650**, post-coldspot replay **1.3645**, and both together **1.3631**.
+Rejected during the same sweep: combined congestion-density relocation
+(`1.3704`, plus an invalid-sqrt warning) and deterministic hot coldspot
+selection (`1.3714`).
+
+2026-06-18 update: heat-adaptive hierarchy region sizing is now the default with
+`V2_HIER_REGION_HEAT_FRAC=0.04`. This modestly expands the initial hard/soft
+cluster regions for hot clusters before exact-gated region relief. Full
+`uv run evaluate src/main.py --all`: **AVG 1.3943**, 17/17 VALID, 0 overlaps,
+509.84s. This is a small improvement over the previous accepted 1.3947 and the
+same code with heat sizing disabled (1.3982 in the local sweep).
+
+Stage-1 sweep evidence:
+
+| Variant | AVG | Result |
+|---|---:|---|
+| heat sizing only, `V2_HIER_REGION_HEAT_FRAC=0.04` | **1.3943** | accepted |
+| adaptive directional expansion only, `V2_HIER_REGION_EXPAND_ESCAPE_MIN=0.35` | 1.3964 | rejected; weaker and conflicted with heat sizing |
+| heat `0.04` + expansion escape `0.35` | 1.3973 | rejected; gains did not stack |
+| heat `0.04` + expansion escape `0.7` | 1.3995 | rejected |
+| heat `0.03` | 1.3973 | rejected |
+| heat `0.05` | 1.3985 | rejected |
+| soft footprint ranking, all soft relocation passes | 1.4031 | rejected |
+| soft footprint ranking, early pass only and soft area <= P75 | 1.3989 | rejected |
+| RUDY ordering blend, `V2_HIER_RUDY_ALPHA=0.1` | 1.3994 | rejected |
+
+Rejected code paths from this sweep were removed: RUDY candidate ordering,
+soft-footprint soft relocation ranking, and adaptive expansion escape-min
+scaling. The retained default is heat-only region sizing plus the prior
+fixed-strength congestion region expansion.
+
+2026-06-16 update: post-swap hard/soft polish is now the default.
+The pre-swap hard relocation loop still keeps `V2_HIER_RELOC_PROPOSE_ALL=0`,
+but after region swaps the flow runs `V2_HIER_POST_RELOC_PROPOSE_ALL=auto` with
+`V2_HIER_POST_RELOC_PROPOSE_TOP_M=16`, and `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005`.
+It then runs ordinary
+post-swap soft relocation with `V2_HIER_POST_SOFT_RELOC=1` and
+`V2_HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005`. Full `--all`: **AVG 1.3947**,
+17/17 VALID, 0 overlaps, 534.30s. The margin comparison on
+ibm10/12/15/17/14/18 favored `0.0005` over `0.00075`; the largest wins were
+ibm15 1.8894→1.8743, ibm17 2.2096→2.2045, ibm18 1.7832→1.7772, and ibm14
+1.6784→1.6733.
+
+Earlier post-swap hard-only polish produced **AVG 1.3974**, 17/17 VALID,
+0 overlaps, 526.21s. It improved ibm10 1.6506→1.6485 and ibm12 2.2535→2.2514
+while keeping the former regression guards neutral.
+
+Earlier on 2026-06-16, `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=1` became the
+default. It keeps cluster-consecutive legalization but orders cluster members by
+connectivity-pressure x area. Full `--all`: **AVG 1.3978**, 17/17 VALID,
+0 overlaps, 518.68s. A rejected Stage-1 bundle with hierarchy CUDA
+`propose_all=auto` and a soft-soft score cap produced **AVG 1.6000** and
+1029.78s. Follow-up ablations found:
+
+- hard propose-all only: **AVG 1.4019**, 17/17 VALID, 0 overlaps, 546.26s;
+- hard propose-all top-M 16: **AVG 1.4066**, 17/17 VALID, 0 overlaps, 545.26s;
+- hard propose-all restricted to congestion-pass top-32 hot macros: **AVG 1.4030**,
+  17/17 VALID, 0 overlaps, 526.26s;
+- soft propose-all only: **AVG 1.5650**, 17/17 VALID, 0 overlaps, 996.04s.
+
+Soft propose-all was a dead end and its code/env gate was removed. Pre-swap
+hard proposal-all remains diagnostic-only and default off; top-M and
+congestion-hot restrictions did not recover the average.
+
+Goal: reduce the congestion-dominated proxy while preserving usable macro
+hierarchy. Outcome: shipped the current hierarchy system:
+
+- owned vs bridge soft classification;
+- congestion-expanded hard and soft regions;
+- exact-gated cluster decompression with hierarchy-quality limits;
+- region-bounded hard-hard, hard-soft, and soft-soft swaps;
+- post-swap hard propose-all polish with a stronger exact-gain margin;
+- post-swap ordinary soft relocation polish with a small exact-gain margin;
+- strict hard-swap legality and best-state rollback;
+- proxy-aware coldspot tightening, no bounded proxy-worsening compaction;
+- wider soft swap candidate breadth (`V2_HIER_SOFT_SWAP_K=48`).
+
+Accepted full run:
+
+```text
+uv run evaluate src/main.py --all
+AVG 1.3947  17/17 VALID  0 overlaps  534.30s
+```
+
+Key deltas vs the prior hierarchy result (`1.4452`):
+
+| Bench | Before | After | Note |
+|---|---:|---:|---|
+| ibm12 | 2.3297 | **2.2496** | target congestion case; cong 2.983→2.856 |
+| ibm17 | 2.2374 | **2.2045** | target congestion case; cong 2.897→2.855 |
+| ibm15 | 1.9494 | **1.8743** | target congestion case; cong 2.390→2.315 |
+| ibm10 | 1.6759 | **1.6485** | smoke improved |
+| ibm14 | 1.6991 | **1.6733** | prior regression recovered |
+| ibm18 | 1.7869 | **1.7772** | prior regression recovered |
+
+Verdict: the remaining proxy bottleneck is still congestion inside large
+hierarchy regions, but the best current lever is soft placement around the hard
+hierarchy, not hard-hard swaps alone. Operator sweeps showed:
+
+- `swaps_off` is much worse on ibm12/15/17;
+- `ss_only` accounts for most of the gain on ibm15/17, but mixed swaps remain
+  best;
+- disabling density-field swaps regresses target cases;
+- stricter escape thresholds help one case but hurt others;
+- `soft_k=48` improves all three target bottlenecks, while `soft_k=64`
+  regresses ibm17.
+
+GPU status: CUDA is available and DREAMPlace uses it. The `cuda_delta`
+hard-relocation proposal scorer is active only in the post-swap hard polish by
+default; post-swap soft polish uses ordinary sequential exact-gated soft
+relocation. Pre-swap hierarchy relocation `propose_all=auto` should stay off.
+The 2026-06-16 Stage-1 bundle regressed to AVG 1.6000, hard-only pre-swap was
+still worse at AVG 1.4019, and soft-only propose-all was a dead end at AVG
+1.5650.
+
 ### S20. Macro-hierarchy awareness — full investigation (2026-06-15)
 
 Goal: keep connected subsystems together rather than sprayed out. Outcome:
@@ -60,17 +244,22 @@ This is the objective, not a tuning gap. Key results:
   then hard, then soft). Filtering `ref_idx < n` clusters PORTS, not hard
   macros. Correct hard clusters need a weighted hard-hard graph with
   `min_edge>=2` (else one blob). See `local_search/clusters.py`.
-- **Cluster-coherent LSMC kick (S18): noise.** With correct clusters, paired
-  `--all` is within the ~±0.012 run-to-run noise (one run +0.0106, next −0.0145;
-  OFF alone swings 1.1201↔1.1327). Closeness effect also at noise. The kick is a
-  LATE, proxy-gated move: it only changes the result if a clustered config beats
-  the refined incumbent on proxy — which clustering rarely does. Self-defeating
-  for hierarchy. **Recommend kick default OFF** (still env-gated ON from b8d8d7c).
+- **Cluster-coherent LSMC kick (S18): noise → REMOVED.** With correct clusters,
+  paired `--all` was within the ~±0.012 run-to-run noise (one run +0.0106, next
+  −0.0145; OFF alone swings 1.1201↔1.1327). Closeness effect also at noise. The
+  kick is a LATE, proxy-gated move: it only changes the result if a clustered
+  config beats the refined incumbent on proxy — which clustering rarely does.
+  Self-defeating for hierarchy. **The kick, its soft co-move, the
+  `V2_LSMC_ISOLATE` comparison harness, the `_enable_cluster_kick_defaults`
+  wrapper, and `_verify_cluster_kick.py` were all deleted as dead-end code**
+  (LSMC reverts to the random per-macro kick; production score unchanged).
 - **DP soft grouping works structurally.** Clique-nets per cluster in Bookshelf
-  (`pb_to_bookshelf.py`, env `V2_DP_GROUP`) tighten raw DP output monotonically:
-  ibm10 hard↔hard 0.0190→0.0147, intra 0.0410→0.0250 as weight 0→16. But the
-  grouped DP candidate is competitive-not-winning (~1.38) so it doesn't shape the
-  final placement on its own.
+  (`pb_to_bookshelf.py`) tighten raw DP output monotonically: ibm10 hard↔hard
+  0.0190→0.0147, intra 0.0410→0.0250 as weight 0→16. But as a standalone MAIN-
+  pipeline candidate the grouped DP placement is competitive-not-winning (~1.38),
+  so it never shaped the final placement — the `V2_DP_GROUP` main-pipeline config
+  was **removed** as dead-end. The Bookshelf grouping itself stays (the
+  hierarchy-floorplan mode uses it via `run_dreamplace(cluster_groups=…)`).
 - **Legalization destroys grouping; order recovers ~half (free).** Making the
   grouped DP overlap-free scatters it (ibm10 hh 0.019→0.080 default order).
   **Cluster-consecutive order** (each cluster's members back-to-back) recovers
@@ -85,9 +274,55 @@ scales with hierarchy structure: ibm01 ~1.02 (+0.10), ibm10 ~1.82 (+0.74),
 ibm17 ~2.52 (+1.17, has a 351-macro cluster). Knobs: `V2_HIER_GROUP_WEIGHT` (8),
 `V2_CLUSTER_MIN_EDGE` (2), `V2_CLUSTER_MAX_FANOUT` (8). `_hierarchy_floorplan` in
 `pipeline/macro_placer.py`; verified `test/verification/_verify_hier_floorplan.py`;
-diagnostics `_cluster_closeness.py`, `_dp_group_closeness.py`, `_hier_tradeoff.py`,
-`_legalize_order_probe.py`. **Use only when hierarchy is the goal, never for the
+diagnostics `_cluster_stats.py`, `_dp_group_closeness.py`, `_hier_tradeoff.py`,
+`_hier_tradeoff.py`. **Use only when hierarchy is the goal, never for the
 leaderboard score.**
+
+**Region-locked congestion relief (2026-06-15, `V2_HIER_REGION_RELIEF=1`, default
+ON in hier mode).** The floorplan's soft-only cleanup can't relieve the dense
+per-cluster congestion. This adds a pass that moves HARD macros to colder cells
+**within their own cluster region** (soft bias), recovering congestion while
+keeping macros region-locked. Mechanism: `compute_region_bbox` sizes a per-cluster
+box (`region_area = member_area / V2_HIER_REGION_DENSITY`, default 0.65, centered
+on the footprint midpoint, never below the footprint); `_relocation_moves` gains
+optional `region_bbox`/`region_bias` that add a ranking penalty to out-of-region
+candidate cells (bit-identical when `region_bbox is None` — production untouched);
+the relief loop interleaves region-biased hard relocation + soft relocation, all
+true-proxy-gated, then a cluster-consecutive safety legalize. **Result:** proxy
+DROPS while hard↔hard / intra closeness stays ~unchanged — ibm01 1.0194→0.9469
+(−0.073, closeness Δ≈0), ibm10 1.8215→1.6809 (−0.14, closeness loosens modestly,
+tunable by `V2_HIER_REGION_DENSITY`). Knobs: `V2_REGION_BIAS` (1.0),
+`V2_HIER_REGION_ROUNDS` (2), `V2_HIER_REGION_BUDGET_S` (40), `V2_HIER_REGION_MARGIN`
+(0=area-based), `V2_HIER_REGION_SINGLETON` (0.05). Diagnostic
+`_hier_region_relief.py`; verified `_verify_region_relief.py`.
+
+**Coldspot-aware cluster kick (2026-06-16).** Tested as a prototype for a
+proposed regional/GPU pipeline: gather a HOT cluster into a COLDSPOT of the
+congestion field (`coldest_window_anchor` in `fields.py`, `_coldspot_cluster_kick`
+in `lsmc_explore.py`, env `V2_LSMC_COLDSPOT_CLUSTER`). Hypothesis: a low-congestion
+destination with routing headroom would absorb the compaction (unlike the old
+random-anchor gather kick removed as noise). **Result (isolation, fixed incumbent):
+NO — it keeps clusters tighter on every closeness metric but still COSTS proxy**
+(ibm04 +0.0055; ibm10 produced 0 LSMC accepts vs the random kick's −0.10 win).
+Concentrating a subsystem spikes local congestion the exact-proxy gate rejects even
+at a coldspot. So the regional/GPU pipeline (Stages 2/3) was NOT pursued for proxy.
+GPU note reaffirmed: per-macro GPU batching loses on IBM's ~2000-cell grids (§6.1
+S2); only cross-macro batching on large grids (NG45) could win — out of scope for
+the leaderboard. Diagnostic `_coldspot_kick.py`, verified `_verify_coldspot_kick.py`.
+
+**Superseded by S21:** the first hierarchy coldspot pass accepted tighter
+clusters with bounded proxy worsening. The current production coldspot pass is
+proxy-aware: it accepts only exact proxy improvements that stay within the
+hierarchy-quality budget (`V2_HIER_COLDSPOT_BUDGET=0.0`,
+`V2_HIER_COLDSPOT_TOTAL=0.0`, `V2_HIER_COLDSPOT_MIN_GAIN=0.0001`,
+`V2_HIER_COLDSPOT_QUALITY_BUDGET=0.01`). This keeps coldspot tightening from
+undoing region-relief congestion gains for compactness alone.
+
+**Superseded by current hierarchy-only production:** `V2_REGION_LOCK` is no
+longer the mechanism that selects a regional output. `MacroPlacer.place()`
+always routes through the dedicated hierarchy path. The finding remains useful:
+region-biasing only the old proxy pipeline's R2 relocation was ineffective
+because later spread-oriented phases overrode the bias.
 
 ### S19. DREAMPlace was silently dead since the restructure (FIXED 2026-06-15)
 
@@ -108,7 +343,12 @@ DREAMPlace build. **When touching DP, always confirm a "ready in Ns ... testing
 as candidate" line; a "not ready; killing" line for ALL configs means DP is
 dead, not slow — check `tail dreamplace.log` in the scratch dir.**
 
-### S18. Cluster-coherent LSMC kicks — macro-hierarchy awareness (SHIPPED 2026-06-14)
+### S18. Cluster-coherent LSMC kicks — macro-hierarchy awareness (HISTORICAL; deleted 2026-06-16)
+
+**Superseded 2026-06-16:** this section is historical. The shipped generic
+cluster-kick path was later removed with the rest of the proxy optimizer. The
+hierarchy system keeps only `_coldspot_cluster_kick()` as a bounded tightening
+helper inside `_hierarchy_floorplan()`.
 
 **What:** the LSMC kick now optionally moves a derived connectivity *cluster*
 as a unit instead of scattering random hard macros. Communities are inferred
@@ -133,48 +373,29 @@ disproven experiments (WireMask greedy, optimize_stdcells, net-centroid hard
 bias) *forced* clustering. This only *proposes* it behind the exact gate; the
 kept moves actually *reduce* congestion (it's the term that drops in every win).
 
-**Evidence:** phase-isolation harness (`V2_LSMC_ISOLATE=1`, same incumbent /
-seed / budget) — cluster kicks beat random **6/6** benchmarks, −0.0053 avg.
-Paired multi-seed `--all` ON (p=1.0, both) vs OFF — **3/3 seeds**, mean
-1.1206→1.1183 (−0.0023), 0 regressions, all 17/17 VALID. Seed 0 was a favorable
-draw (−0.0054); steady-state ~−0.0008/seed. Shipped as default in `src/main.py`
-(`_enable_cluster_kick_defaults`), overridable via `V2_GPU_EXPLORE_CLUSTER_P`
-(0 disables), `V2_GPU_EXPLORE_CLUSTER_MODE`, `V2_GPU_EXPLORE_CLUSTER_MAXSZ`,
-`V2_GPU_EXPLORE_CLUSTER_SOFT`, `V2_CLUSTER_MAX_FANOUT`, and
-`V2_CLUSTER_MIN_EDGE`. Verified: `test/verification/_verify_cluster_kick.py`.
+**Historical evidence:** phase-isolation harness (`V2_LSMC_ISOLATE=1`, same
+incumbent / seed / budget) — cluster kicks beat random **6/6** benchmarks,
+−0.0053 avg. Paired multi-seed `--all` ON (p=1.0, both) vs OFF — **3/3
+seeds**, mean 1.1206→1.1183 (−0.0023), 0 regressions, all 17/17 VALID. This
+was briefly shipped in the deleted proxy path, then removed on 2026-06-16. The
+old `_enable_cluster_kick_defaults`, `V2_GPU_EXPLORE_CLUSTER_*`, and
+`_verify_cluster_kick.py` integration points are not active code.
 
-**Open follow-ups (higher ceiling):** cluster-outlier *relocation* move (pull a
-macro far from its cluster centroid toward a cold region, gated by proxy). A
-grouped DREAMPlace variant now exists behind `V2_DP_GROUP`; it should remain
-treated as an env-gated candidate source until paired evidence justifies any
-default change. The marginal `--all` gain from kicks alone is small.
+**Superseded follow-up:** this proxy-path cluster-kick direction was closed.
+Current hierarchy work uses grouped DREAMPlace directly inside
+`_hierarchy_floorplan()` and keeps only `_coldspot_cluster_kick()` as a narrow,
+exact-gated hierarchy-tightening helper.
 
-### S17. LSMC staged rollout — current work is generic multi-incumbent LSMC
+### S17. LSMC staged rollout — historical proxy-path work
 
-**Current state (2026-06-15):** cong-grad phases have been deleted from the
-active pipeline, and LSMC is the remaining final exploration layer. The active
-LSMC expansion is intentionally generic: it seeds from legalized baseline,
-random-noise restarts, random-order legalize trials, pre-R2 best, and post-R2
-best. It does **not** use DREAMPlace/bridge-specific placements as LSMC seeds
-and does **not** use cong-grad-derived kicks or seed sources. Normal
-`src/main.py` runs enable cluster-coherent kicks by default, with random-kick
-fallback and the same exact post-descent accept gate.
-
-**Next LSMC improvement methods:** update and gate one at a time:
-- seed-pool calibration (`V2_GPU_EXPLORE_MAX_SEEDS`, `SEED_MARGIN`, and per-seed
-  time allocation);
-- generic geometry-only kick families (area-weighted picks, displacement-window
-  kicks, edge-biased targets, group kicks);
-- soft-aware hard-kick recovery using existing soft relocation;
-- adaptive kick pre-screen based on score time and seed type;
-- a small R2-as-descent experiment where acceptance still happens after the
-  final exact score;
-- chain-local non-greedy acceptance variants that remain final-gated against the
-  global incumbent.
+**Superseded 2026-06-16:** generic multi-incumbent LSMC, random-noise restarts,
+R2 seed pools, cluster-coherent kicks, and `V2_GPU_EXPLORE_*` defaults were
+deleted with the old proxy optimizer. The current production path is
+hierarchy-only and enters `_hierarchy_floorplan()` unconditionally.
 
 Lesson from the earlier pruning gates: judge changes on full 17-benchmark paired
-runs, not prefix smokes. The final LSMC gate cannot itself accept a worse score,
-but time displaced from R2/post-soft phases can still regress the final result.
+runs, not prefix smokes. That lesson still applies, but the specific LSMC
+mechanism below is historical.
 
 ### S17-prev. Stages 2a+2b (best --all 1.1176)
 
@@ -200,7 +421,8 @@ revisit. NOT a candidate by itself: annealed acceptance (LAHC disproven). **Next
 lever:** LSMC-only seed/kick/descent improvements from the current generic pool.
 
 **Stage 2a verdict (2026-06-12 evening):** post-R2 LSMC kick/descent/accept
-(`lsmc_explore.py`) shipped default-on under CUDA, kick=0.02, 30s slice.
+(`lsmc_explore.py`) shipped default-on under CUDA in the old proxy path,
+kick=0.02, 30s slice.
 Full-stack paired gate: seed1 −0.0051 (on-arm 1.1194 = NEW BEST), seed2
 −0.0033. Design invariants discovered: the accept gate must be the final
 quality phase (earlier hooks accepted states that lost after later
@@ -231,13 +453,10 @@ speedups. Divergences vs the CPU policy are deterministic (ibm18 seed1 +0.0188
 replays bit-exact) but seed-dependent in sign — the GPU policy finds different
 basins, not better ones, when single-candidate.
 
-**Open → Stage 2 (`V2_GPU_EXPLORE`):** build the chain engine per GPU-ops.md
-§2 (kick ≈0.10 → cuda_delta descent → post-descent zero-temp accept, batched
-chains) + §3 handoff (spiral legalize → fresh `IncrementalScorer` → adaptive K
-from `t_one_score`). The Stage 1 result sharpens the thesis: single-candidate
-GPU policy is a wash, so the win must come from *many* candidates + the exact
-gate harvesting the ±0.02 per-benchmark spread. Verification checklist in
-GPU-ops.md §6 before any score run; gate vs Stage 1 via paired multi-seed.
+**Closed → Stage 2 (`V2_GPU_EXPLORE`):** this plan was not carried forward into
+the hierarchy-only system. Future GPU work should start from grouped
+DREAMPlace, region relief, or hierarchy-specific proposal evaluation rather
+than restoring the proxy LSMC stack by default.
 
 ### S16. Silent DREAMPlace ABI break — DP was dead since S13 (SHIPPED 2026-06-10 — 1.1379 → 1.1272)
 
@@ -794,13 +1013,15 @@ Fix: install numba (0.65.1 resolves on py3.14). `--all` then drops **3486 s → 
 converts to more rounds on the deadline-bound benchmarks). Per-move the routing-apply
 JIT is ~3–5× the numpy path (`ARCHITECTURE.md` §5.3).
 
-**Impact + risk.** Without numba the placer still runs (graceful fallback) but ~25 %
-slower → `--all` ~58 min, *near the 1 h cap*, and avg 1.1403. So numba is both a
-score lever (−0.0023) and a cap-safety margin. `config.py` now emits a warning when
-numba is missing. **The eval environment must install `v2/requirements.txt`** (or
-numba must reach the `uv sync` path) to realize 1.1380. Other post-JIT hot spots
-(cProfile): `np.unique`/`_unique1d` (~10 s, 1.5 M calls in the subset-cumsum
-strip-batch) and `get_ref_node_id` (TILOS plc_client, ~8 s) — next CPU candidates.
+**Impact + risk.** Without numba the old fallback was ~25 % slower → `--all` ~58 min,
+*near the 1 h cap*, and avg 1.1403. So numba is both a score lever (−0.0023) and a
+cap-safety margin. Other post-JIT hot spots (cProfile): `np.unique`/`_unique1d`
+(~10 s, 1.5 M calls in the subset-cumsum strip-batch) and `get_ref_node_id`
+(TILOS plc_client, ~8 s) — next CPU candidates.
+
+2026-06-16 root-layout update: `numba>=0.59` is now in `pyproject.toml`,
+`requirements.txt`, and `uv.lock`. Missing numba now raises by default; set
+`V2_ALLOW_NUMBA_FALLBACK=1` only for slow diagnostic-only runs.
 
 ### S12. Spend the S11 freed budget + adaptive budget control (2026-06-07, avg 1.1403)
 

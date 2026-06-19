@@ -3,7 +3,142 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **HEADLINE (2026-06-14 — cluster-coherent LSMC kicks SHIPPED as default):
+> **CURRENT SYSTEM (2026-06-18): hierarchy-only.** The active code no longer
+> ships the proxy-optimized production path. `MacroPlacer.place()` always routes
+> through `_hierarchy_floorplan()` and raises if grouped DREAMPlace is
+> unavailable. Deleted proxy-only pieces include candidate restarts, R2/2-opt,
+> hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
+> ranker defaults, and their verifiers. Current accepted Stage-3 full run:
+> **AVG 1.3631**, 17/17 VALID, 0 overlaps, 602.76s, with post-swap and
+> post-coldspot micro-shift replay. BeyondPPA-style structural metrics,
+> optional hierarchy candidate ordering, and opt-in GNN trace logging are now
+> integrated into the hierarchy flow with production defaults disabled. The
+> proxy-score history below is retained as historical experiment context, not
+> the current production output.
+
+> **Status (2026-06-18 — BeyondPPA structural objective and GNN trace logging
+> integrated, defaults unchanged):** added deterministic edge-keepout,
+> grid-alignment, notch, and combined structural metrics in
+> `src/placer/local_search/structural_fields.py`; added
+> `test/diagnostic/_structural_metrics.py`; and integrated the structural term
+> into existing hierarchy relocation candidate ordering behind
+> `V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0`
+> (`V2_HIER_STRUCTURAL_RANK=1` remains an alias for weight `1.0`). This is not a
+> second BeyondPPA path: legality, fixed-macro immobility, bounds,
+> hierarchy-region constraints, hierarchy-quality gates, and exact-proxy gates
+> still decide accepted moves. Added opt-in GNN JSONL tracing through
+> `src/placer/local_search/gnn_trace.py` with events for relocation candidates,
+> accepted relocation labels, hierarchy pass summaries, and final placement
+> summaries. Verification: `py_compile` passed; focused structural tests passed
+> (`4 passed`); GNN trace smoke on `ibm01` was VALID with proxy `0.9435` and
+> wrote 24 trace events. A later default-off full sweep produced **AVG 1.3626**,
+> 17/17 VALID, 0 overlaps, 595.52s, in-family with the accepted 1.3631 result.
+> Because the worktree also contains unrelated local changes, do not attribute
+> the small delta solely to the structural/GNN logging work without a clean A/B.
+
+> **Status (2026-06-18 — Stage 3 micro-shift replay stack accepted,
+> `--all` avg = 1.3631):** promoted two exact-gated replay passes that rerun
+> `_micro_shift_polish()` after region swaps and again after coldspot tightening.
+> Full `uv run evaluate src/main.py --all`: **AVG 1.3631**, 17/17 VALID,
+> 0 overlaps, 602.76s. Individual gates were: post-swap replay alone
+> **AVG 1.3650**, post-coldspot replay alone **AVG 1.3645**, and both together
+> **AVG 1.3631**. The stack wins on average and improves the largest late cases
+> (`ibm15=1.8355`, `ibm17=2.0977`, `ibm18=1.7162`), with a small `ibm14`
+> tradeoff (`1.6272` vs post-swap alone `1.6256`). Rejected companion gates:
+> combined congestion-density hard relocation was only **AVG 1.3704** and
+> emitted an invalid-sqrt warning on `ibm01`; deterministic hot coldspot
+> selection regressed to **AVG 1.3714**. Both rejected gates were removed from
+> the production pipeline.
+
+> **Status (2026-06-18 — Stage 3 DREAMPlace selector rejected at smoke):**
+> implemented a bounded grouped-DREAMPlace selector that tried candidate
+> `(group_weight, seed)` variants before relief, legalizing and scoring each
+> with exact proxy plus hierarchy-quality blend. `ibm10` group-weight variants
+> `(8,1000),(6,1000),(10,1000)` selected the existing `(8,1000)` baseline:
+> candidate proxies `1.7942`, `1.9100`, `1.9177`; final smoke **1.6179** VALID
+> versus default **1.6165** VALID. Seed variants `(8,1000),(8,1001),(8,1002)`
+> also selected the baseline: candidate proxies `1.7942`, `1.9114`, `1.9396`;
+> final smoke **1.6168** VALID. Because the selector added runtime and found no
+> better `ibm10` candidate, the selector code path was removed and no `--all`
+> was run.
+
+> **Status (2026-06-18 — Stage 2 micro-shift + anisotropic decompression
+> accepted, `--all` avg = 1.3707):** promoted exact-gated one/two-grid-cell
+> micro-shift polish for hot hard and soft macros inside their hierarchy regions
+> (`V2_HIER_MICRO_SHIFT=1`, radius 2, top 96, min gain `1e-5`) and promoted
+> anisotropic cluster decompression (`V2_HIER_DECOMPRESS_ANISO=1`). Full
+> `uv run evaluate src/main.py --all`: **AVG 1.3707**, 17/17 VALID, 0 overlaps,
+> 563.00s. Micro-shift alone was **AVG 1.3718**, 17/17 VALID, 0 overlaps,
+> 591.59s, so anisotropic decompression adds a small but real full-suite gain.
+> Micro-shift + fused swap prescreen was **AVG 1.3780**, 17/17 VALID,
+> 0 overlaps, 568.20s, so the fused prescreen code path was removed. Prior
+> individual checks: fused swap prescreen alone **AVG 1.3997** (regression),
+> anisotropic decompression alone **AVG 1.3932** (small heat-baseline win but
+> worse than micro-shift), and all three together **AVG 1.3777**. Pre-swap hard
+> propose-all relocation on top of the accepted combo regressed the `ibm10`
+> smoke to **1.6405** VALID, so that pre-swap propose-all plumbing was removed;
+> accepted post-swap propose-all relocation remains active.
+
+> **Status (2026-06-16 — post-swap soft polish accepted, `--all`
+> avg = 1.3947):** promoted ordinary post-swap soft relocation with
+> `V2_HIER_POST_SOFT_RELOC=1`, `V2_HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005`, and
+> lowered the post-swap hard propose-all margin to
+> `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005`. This is not the rejected soft
+> propose-all path; it is sequential exact-gated `_soft_relocation_moves()` after
+> swaps. Full `uv run evaluate src/main.py --all`: **AVG 1.3947**, 17/17 VALID,
+> 0 overlaps, 534.30s. Margin comparison on ibm10/12/15/17/14/18 favored
+> `0.0005` over `0.00075` on every targeted case. Main full-run gains vs the
+> prior accepted 1.3974: ibm15 1.8894→1.8743, ibm17 2.2096→2.2045, ibm18
+> 1.7832→1.7772, ibm14 1.6784→1.6733, ibm12 2.2514→2.2496, plus smaller wins on
+> ibm01/06/07/09/11/16.
+
+> **Status (2026-06-16 — post-swap hard propose-all polish accepted, `--all`
+> avg = 1.3974):** kept `V2_HIER_RELOC_PROPOSE_ALL=0` for the pre-swap hard
+> relocation loop, but promoted CUDA-only
+> `V2_HIER_POST_RELOC_PROPOSE_ALL=auto` after region swaps with footprint-averaged
+> hard-macro field ranking, `V2_HIER_POST_RELOC_PROPOSE_TOP_M=16`, and
+> `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.001`. Full
+> `uv run evaluate src/main.py --all`: **AVG 1.3974**, 17/17 VALID, 0 overlaps,
+> 526.21s. Accepted post-swap hard moves were sparse and helped the congestion
+> cases without reintroducing the earlier pre-swap basin regression: ibm10
+> 1.6506→1.6485 and ibm12 2.2535→2.2514; other cases were neutral or within
+> run noise.
+
+> **Status (2026-06-16 — connectivity legalize order accepted, `--all`
+> avg = 1.3978):** promoted `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=1`, which keeps
+> cluster-consecutive legalization but orders members by connectivity-pressure x
+> area instead of area alone. Full
+> `uv run evaluate src/main.py --all`: **AVG 1.3978**, 17/17 VALID, 0 overlaps,
+> 518.68s; beats RePlAce avg 1.4578 by +4.1%. Key gains vs the prior hierarchy
+> result 1.4452 are broad and congestion-led: ibm12 2.3297→2.2535, ibm17
+> 2.2374→2.2109, ibm15 1.9494→1.8894, ibm14 1.6991→1.6790, ibm18
+> 1.7869→1.7832, and ibm10 1.6759→1.6506. The rejected Stage-1 bundle
+> (`V2_HIER_RELOC_PROPOSE_ALL=auto`, `V2_HIER_SOFT_RELOC_PROPOSE_ALL=auto`,
+> connectivity order, and `V2_HIER_SS_SWAP_MAX_SCORES=12000`) regressed badly:
+> **AVG 1.6000**, 17/17 VALID, 0 overlaps, 1029.78s. Follow-up full ablations:
+> hard propose-all only **AVG 1.4019** / 546.26s; hard top-M 16 **AVG 1.4066** /
+> 545.26s; hard congestion-pass top-32 hot macros **AVG 1.4030** / 526.26s; soft
+> propose-all only **AVG 1.5650** / 996.04s. Soft propose-all and the score-cap
+> experiment were removed. Pre-swap hard propose-all remains diagnostic-only and
+> default off.
+
+> **Status (2026-06-16 — soft-swap breadth tuning accepted, `--all`
+> avg = 1.4452):** kept owned/bridge soft classification, congestion-expanded
+> regions, exact-gated cluster decompression, proxy-aware coldspot tightening,
+> per-operator region-swap controls, strict hard-swap legality, and best-state
+> rollback; then raised the default soft swap candidate count
+> `V2_HIER_SOFT_SWAP_K` from 24 to 48. Full
+> `uv run evaluate src/main.py --all`: **AVG 1.4452**, 17/17 VALID, 0 overlaps,
+> 520.08s; beats RePlAce avg 1.4578 (+0.9% vs RePlAce). Net gain vs the prior
+> tuned region-swap `--all` 1.4471 is -0.0019, led by the intended congestion
+> targets: ibm12 2.3454→2.3297, ibm17 2.2481→2.2374, ibm15 1.9555→1.9494, plus
+> ibm10 1.6836→1.6759 and ibm16 1.7376→1.7322. Main regressions to watch next:
+> ibm18 1.7761→1.7869, ibm14 1.6931→1.6991, and ibm11 1.1305→1.1326. Current
+> bottlenecks remain congestion-heavy: ibm12 2.3297 (cong 2.983), ibm17 2.2374
+> (cong 2.897), ibm15 1.9494 (cong 2.390).
+
+> **HISTORICAL HEADLINE (2026-06-14 — cluster-coherent LSMC kicks were shipped
+> in the then-current proxy path, then deleted on 2026-06-16):
 > paired multi-seed `--all` ON vs OFF, ON wins 3/3.** OFF (random kicks) means
 > 1.1206 → ON (pure cluster kicks, p=1.0, both modes) means **1.1183**
 > (Δ = **−0.0023**), all six runs 17/17 VALID / 0 overlaps. Per-seed:
@@ -15,13 +150,15 @@ Target: beat RePlAce avg of 1.4578.
 > netlists hard macros connect THROUGH standard cells, not to each other (ibm01
 > has 0 hard-to-hard nets), so "subsystems" are derived via union-find over the
 > bipartite hard↔soft graph on low-fanout nets (`local_search/clusters.py`).
-> LSMC then kicks a whole cluster as a unit — `gather` (collapse members to one
-> anchor, legalizer packs them) or `translate` (rigid relocate) — instead of
-> scattering random macros. Enabled in `src/main.py`
-> (`_enable_cluster_kick_defaults`, overridable via `V2_GPU_EXPLORE_CLUSTER_*`);
+> LSMC then kicked a whole cluster as a unit — `gather` (collapse members to one
+> anchor, legalizer packed them) or `translate` (rigid relocate) — instead of
+> scattering random macros. It was enabled in the then-current `src/main.py`
+> through `_enable_cluster_kick_defaults` and `V2_GPU_EXPLORE_CLUSTER_*`; those
+> integration points were later deleted with the proxy path.
 > isolation-harness `V2_LSMC_ISOLATE=1` confirmed cluster kicks beat random
-> 6/6 from an identical incumbent (−0.0053 avg, congestion-driven). Verified:
-> `test/verification/_verify_cluster_kick.py`.
+> 6/6 from an identical incumbent (−0.0053 avg, congestion-driven). The old
+> `test/verification/_verify_cluster_kick.py` verifier was deleted with that
+> code.
 >
 > **HEADLINE (2026-06-14, current `varrahan` 786e749): `--all` avg = 1.1203,
 > 17/17 VALID, 0 overlaps, 2806s (~47min), default seed.** This is the
@@ -104,11 +241,13 @@ Target: beat RePlAce avg of 1.4578.
 > bit-equivalent to the prior 2a default. Logs `ml_data/compare/stage2b_*`.
 > Default-path ibm01 smoke: 0.9134 VALID. Next: 2c options re-analysis.
 
-> **Status (2026-06-12 evening — Stage 2 LSMC exploration SHIPPED AS DEFAULT;
+> **Historical status (2026-06-12 evening — Stage 2 LSMC exploration shipped as
+> default in the old proxy path;
 > seed-1 on-arm avg 1.1194 is the NEW BEST `--all`):** the post-R2 LSMC
 > kick/descent/accept phase (`local_search/lsmc_explore.py`, hook as the FINAL
-> quality phase in `macro_placer.py`) is default-on under CUDA
-> (`V2_GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice —
+> quality phase in `macro_placer.py`) was default-on under CUDA
+> (`V2_GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice, in that
+> deleted proxy path —
 > exactly the measured gate config. **Full-stack paired gate (DP + ML filter
 > verified active in every log; user-authorized 2-seed bar): seed1 off 1.1245 /
 > on 1.1194 (−0.0051), seed2 1.1275 / 1.1242 (−0.0033) — 2/2 wins, mean

@@ -7,17 +7,17 @@ table showing proxy cost, improvement over SA/RePlAce baselines, and timing.
 Results are saved to results/comparison_<timestamp>.json for tracking.
 
 Usage:
-    # Compare sameer_v1 vs will_seed on ibm01
-    uv run python scripts/compare_placers.py system/v1/placer.py system/v0/greedy_row_placer.py
+    # Compare another placer against the active hierarchy placer on ibm10
+    uv run python scripts/compare_placers.py -b ibm10 path/to/placer.py src/main.py
 
     # Compare on all 17 benchmarks
-    uv run python scripts/compare_placers.py --all system/v1/placer.py system/v0/greedy_row_placer.py
+    uv run python scripts/compare_placers.py --all path/to/placer.py src/main.py
 
     # Compare on specific benchmarks
-    uv run python scripts/compare_placers.py -b ibm01 ibm02 ibm03 system/v1/placer.py system/v0/greedy_row_placer.py
+    uv run python scripts/compare_placers.py -b ibm01 ibm02 ibm03 path/to/placer.py src/main.py
 
     # Quick mode: one benchmark, suppress verbose output
-    uv run python scripts/compare_placers.py -b ibm01 --quiet system/v1/placer.py
+    uv run python scripts/compare_placers.py -b ibm10 --quiet src/main.py
 """
 
 import argparse

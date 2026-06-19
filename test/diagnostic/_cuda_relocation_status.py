@@ -25,6 +25,9 @@ import numpy as np
 import torch
 from macro_place.loader import load_benchmark_from_dir
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src"))
+
 from placer.config import _CUDA_DEVICE_REQUESTED, _GPU_BACKEND, _GPU_DEVICE, _GPU_DEVICE_NAME
 from placer.local_search.relocation import _score_relocation_proposals_cuda_delta
 from placer.scoring.congestion import _patch_plc_congestion
@@ -62,9 +65,7 @@ def _nvidia_smi_status() -> dict[str, str | int]:
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "returncode": 124, "output": "nvidia-smi timed out"}
     output = "\n".join(
-        line
-        for line in (result.stdout + result.stderr).splitlines()
-        if line.strip()
+        line for line in (result.stdout + result.stderr).splitlines() if line.strip()
     )
     status = "ok" if result.returncode == 0 else "error"
     return {"status": status, "returncode": int(result.returncode), "output": output[:500]}

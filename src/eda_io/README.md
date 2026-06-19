@@ -1,9 +1,9 @@
 # eda_io - plug-and-play EDA file I/O for the v2 placer
 
 Makes the v2 macro placer usable in any physical-design flow: it accepts the
-standard EDA input formats, runs the unchanged placer, and emits the standard
-output formats the rest of a toolchain expects. No challenge-specific files
-are needed.
+standard EDA input formats, runs the current hierarchy-only placer, and emits
+the standard output formats the rest of a toolchain expects. No
+challenge-specific files are needed.
 
 ## How it works
 
@@ -20,9 +20,9 @@ SDC ─┤   (merge)   pb + plc  ├─> QoR report .rpt   (report.write_report)
 Rather than teaching the placer a second native format, every input
 combination is merged into one neutral `Design` (design.py) and converted to
 the ICCAD04 `netlist.pb.txt` + `initial.plc` pair the whole stack already
-understands (build.py). The standard loader and the exact TILOS scorer then
-work unchanged - external designs are scored and placed exactly like the
-challenge benchmarks.
+understands (build.py). The standard loader and exact TILOS scorer still work
+unchanged. The placement algorithm itself is the hierarchy path described in
+`docs/general/DESIGN_FLOW.md`.
 
 ## Supported inputs (mix freely)
 

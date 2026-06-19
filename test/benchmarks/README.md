@@ -44,7 +44,7 @@ uv run python test/benchmarks/run_synthetic.py
 
 # single benchmark, custom placer or budget
 uv run python .../run_synthetic.py -b syn02_fixed
-uv run python .../run_synthetic.py --placer system/v1/placer.py --budget 60
+uv run python .../run_synthetic.py --placer src/main.py --budget 60
 
 # just look at the benchmarks themselves (seed scoring + vis, no placer)
 uv run python .../run_synthetic.py --initial-only
@@ -79,14 +79,20 @@ hard failures (invalid placements, score regressions on a specific axis).
 
 ## How the runner wires into v2
 
-`benchmark.name` for synthetic cases doesn't resolve under
-`external/MacroPlacement/Testcases/ICCAD04/`, so v2's `_load_plc` would
-return None and bail to baseline. The runner sets `benchmark._cached_plc`
-(the cache attribute `_load_plc` already honors) so v2 gets exact scoring.
-DREAMPlace seeding is skipped automatically (its ICCAD04 path check fails),
-which mirrors how v2 would behave on any unseen benchmark.
+`benchmark.name` for synthetic cases does not resolve under
+`external/MacroPlacement/Testcases/ICCAD04/`. The runner sets
+`benchmark._cached_plc` (the cache attribute `_load_plc` already honors) so v2
+gets exact scoring from the generated seed. The current production placer is
+hierarchy-only and requires grouped DREAMPlace for normal challenge runs, so
+synthetic use should be treated as a diagnostic compatibility path rather than
+a substitute for the IBM acceptance sequence.
 
 ## Findings log
+
+The first entries below refer to proxy-path modules that were later deleted
+(`soft_moves.py`, `two_opt.py`, `hard_soft.py`). They are retained as historical
+overfitting findings; the current hierarchy-only placer no longer contains those
+passes.
 
 - **2026-06-09, v2 @ 90s budget, first full run:** 9 of 10 benchmarks INVALID
   with small out-of-bounds overhangs (0.15-0.52um, 1-15 macros each; only
