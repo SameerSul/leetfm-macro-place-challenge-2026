@@ -1,139 +1,306 @@
 # v2 Design Flow
 
-This document describes the production flow implemented by
+This document describes the current production flow implemented by
 `src/placer/pipeline/macro_placer.py`.
 
-## TLDR
+## Current Mode
 
-`MacroPlacer.place()` is a budget-gated, accept-only search over macro
-placements. It legalizes the benchmark's initial hard macro positions, launches
-three standard DREAMPlace subprocesses, plus an optional grouped-DP subprocess
-when `V2_DP_GROUP` is enabled, as asynchronous candidate generators when the
-bridge is available. It then explores generic random/local restart candidates,
-runs a deep R2 local-search finisher, and uses LSMC as the final global
-exploration layer.
-
-Every candidate that can affect the incumbent is judged by the exact proxy:
+`MacroPlacer.place()` is hierarchy-only. It no longer branches between a
+leaderboard/proxy path and a hierarchy path. If grouped DREAMPlace is unavailable,
+the placer raises:
 
 ```text
-proxy = wirelength + 0.5 * density + 0.5 * congestion
+hierarchy floorplan path unavailable; proxy fallback has been removed
 ```
 
-`best_pl` and `best_score` are the main incumbent state. They update only when
-an exact proxy score is lower.
+The deleted proxy path included random candidate restarts, R2/2-opt/swap/cycle
+search, generic LSMC exploration, generic cluster kicks, CUDA propose-all
+integration in the main loop, and ML ranker defaults.
+
+Current accepted result:
+
+```text
+uv run evaluate src/main.py -b ibm10
+proxy=1.6133  VALID
+
+uv run evaluate src/main.py --all
+AVG 1.3631  17/17 VALID  0 overlaps  602.76s
+```
 
 ## Flow
 
 ```mermaid
 flowchart TD
-    A[Input circuit and initial macro locations] --> B[Build scoring model]
-    B --> C[Repair hard-macro overlaps]
-    C --> D{Can exact proxy score run fast enough?}
-    D -->|No| E[Use the repaired initial placement]
-    D -->|Yes| F[Set baseline as the current best placement]
-
-    subgraph S1[Candidate search loop]
-        H[Try alternative placements]
-        I[Make each alternative legal]
-        J[Measure wirelength, density, congestion]
-        K{Lower proxy cost?}
-        U[Set it as the current best placement]
-
-        H -->|more candidates| I
-        I --> J
-        J --> K
-        K -->|Yes| U
-        U --> H
-        K -->|No| H
-    end
-
-    B -. optional .-> G[DREAMPlace global-placement seeds]
-    F --> H
-    G --> H
-
-    H -->|candidate budget finished| X[Enter final improvement loop]
-
-    subgraph S2[Final improvement loop]
-        L[Improve the best placement locally]
-        M[Move soft macros if time remains]
-        N[Final random exploration]
-
-        L --> M
-        M --> N
-    end
-
-    X --> L
-    N --> O[Clamp all movable macros inside the canvas]
-    O --> P[Return final macro centers]
+    A[Benchmark + initial macro locations] --> B[Load PLC]
+    B --> C[Derive hard clusters from low-fanout connectivity]
+    C --> D[Classify soft macros as owned or bridge]
+    D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
+    E --> F[Cluster-consecutive hard legalization]
+    F --> G[Default-order safety legalization]
+    G --> H[Soft relocation cleanup]
+    H --> I{V2_HIER_REGION_RELIEF enabled?}
+    I -->|Yes| R[Congestion-expanded hard/soft regions]
+    R --> J[Region-locked hard relocation + soft cleanup]
+    I -->|No| K
+    J --> A1[In-region micro-shift polish]
+    A1 --> U{V2_HIER_DECOMPRESS enabled?}
+    U -->|Yes| V[Exact-gated cluster decompression]
+    U -->|No| S
+    V --> S{V2_HIER_REGION_SWAPS enabled?}
+    S -->|Yes| T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
+    S -->|No| P
+    T --> Y[Post-swap micro-shift replay]
+    Y --> P{V2_HIER_POST_RELOC_PROPOSE_ALL enabled?}
+    P -->|Yes| Q[Post-swap hard propose-all polish]
+    P -->|No| W
+    Q --> W{V2_HIER_POST_SOFT_RELOC enabled?}
+    W -->|Yes| X[Post-swap soft relocation polish]
+    W -->|No| K
+    X --> K{V2_HIER_COLDSPOT_KICK enabled?}
+    K -->|Yes| L[Coldspot cluster tightening with bounded proxy budget]
+    K -->|No| M[Clamp movable macros in bounds]
+    L --> Z[Post-coldspot micro-shift replay]
+    Z --> M
+    M --> N[Return macro centers]
 ```
 
-## Active Candidate Sources
+## Cluster Derivation
 
-- **Baseline:** legalize hard macros from `initial.plc`.
-- **DREAMPlace:** when available, three async DP variants are scored as ordinary
-  candidates. They may update `best_pl`, but they are not retained as special
-  LSMC seed basins.
-- **Grouped DREAMPlace:** optional and env-gated by `V2_DP_GROUP`. It adds
-  synthetic cluster clique nets to the Bookshelf conversion and scores the
-  resulting DP placement as another ordinary candidate.
-- **Random restarts:** Gaussian perturbations of initial hard positions,
-  legalized and exact-scored.
-- **Random-order legalization:** three alternate legalizer tie-break orders from
-  the initial placement.
-- **R2:** the main local-search finisher.
-- **Post-R2 soft relocation:** short leftover-budget soft cleanup.
-- **LSMC:** final generic multi-incumbent exploration over baseline/random/P9/
-  pre-R2/post-R2 seeds.
+Clusters are inferred from the flat ICCAD04-style netlist. The benchmarks do
+not provide hierarchy directly, and direct hard-to-hard nets are sparse, so the
+cluster builder uses low-fanout connectivity through soft macros.
 
-## Important Details
+Controls:
 
-- Hard and soft macro labels come from the benchmark API. The placer does not
-  infer them.
-- Congestion-gradient phases are no longer part of the active flow. Historical
-  notes may mention phases 1/2/3/5b/5c/7/8; those labels refer to retired
-  experiments.
-- Non-DREAMPlace candidates leave soft macro positions as they are in the source
-  placement until R2/post-R2/LSMC soft moves operate on them. DREAMPlace
-  candidates can carry DREAMPlace-produced soft positions.
-- Random-noise and random-order phases restart from the initial hard positions,
-  not from `best_pl`.
-- LSMC seed collection is intentionally generic. It does not use
-  DREAMPlace/bridge-specific seed pools and does not use cong-grad-derived
-  state.
-- R2 is richer than "relocation plus 2-opt": each round can run hard relocation,
-  soft relocation, soft-soft swaps, hard-soft swaps, hard-soft-soft 3-cycles, and
-  hard 2-opt cleanup.
-- By default, `src/main.py` enables the shipped hard-relocation ML filter when no
-  `ML_*` env var is preset and the model artifact plus `xgboost` are available.
-  It widens the hard-relocation pool to 32 and exact-scores the ranked top 16;
-  any preset `ML_*` var, missing model, or missing `xgboost` falls back to the
-  pure-heuristic path.
-- `V2_RELOC_PROPOSE_ALL=auto` can enable the CUDA propose-all hard-relocation
-  ranking path only when the runtime backend is CUDA. It is an opt-in search
-  variant; exact incremental scoring still gates every committed move.
-- `V2_GPU_EXPLORE=auto` enables the final LSMC layer when CUDA is visible.
-  `V2_GPU_EXPLORE_MULTI_INCUMBENT`, `V2_GPU_EXPLORE_MAX_SEEDS`, and
-  `V2_GPU_EXPLORE_SEED_MARGIN` control the generic seed pool.
-- `src/main.py` enables cluster-coherent LSMC kicks by default unless the caller
-  already set `V2_GPU_EXPLORE_CLUSTER_P`. The default is
-  `V2_GPU_EXPLORE_CLUSTER_P=1.0` and `V2_GPU_EXPLORE_CLUSTER_MODE=both`, with
-  random-kick fallback when no usable cluster exists. Direct imports of
-  `placer.pipeline.macro_placer` do not apply this wrapper default.
-- Every return path passes through a final in-bounds clamp for movable macros.
-  Hard macros are already legalized by the normal path; the clamp mainly protects
-  against soft macro coordinates inherited from input data or DREAMPlace output.
+```text
+V2_CLUSTER_MAX_FANOUT=8
+V2_CLUSTER_MIN_EDGE=2
+```
 
-## Entry points
+The result is a hard-macro label array plus soft roles:
 
-The flow above starts from a `Benchmark`. There are two ways to produce one:
+- owned softs have one dominant cluster affinity and may be grouped/moved with
+  that cluster;
+- bridge softs connect multiple clusters with comparable strength and receive a
+  corridor-style region spanning those clusters.
 
-- **Challenge path** — the harness calls `load_benchmark` on an ICCAD04
-  `netlist.pb.txt` + `initial.plc` pair (the 17 IBM benchmarks, NG45, and the
-  synthetic suite under `test/benchmarks/`).
-- **eda_io path** — `src/place_design.py` accepts standard EDA inputs
-  (LEF / DEF / structural Verilog / SDC / Liberty), merges them into a neutral
-  `Design`, converts to the same ICCAD04 pair, and loads it through the same
-  `load_benchmark`. The flow in this document then runs completely unchanged,
-  including exact PLC proxy scoring. Results are written back out as an
-  updated DEF, ICC2/Innovus Tcl, and/or a QoR report. See
-  `src/eda_io/README.md`.
+## Grouped DREAMPlace
+
+The hierarchy path calls `run_dreamplace(..., cluster_groups=..., group_weight=...)`.
+The bridge writes synthetic per-cluster clique nets into the Bookshelf design so
+global placement pulls connected subsystems together.
+
+Controls:
+
+```text
+V2_HIER_GROUP_WEIGHT=8
+```
+
+DREAMPlace is a required part of the current path. The old proxy fallback that
+could run without it has been removed.
+
+## Legalization
+
+Hard macros are legalized with a cluster-consecutive order:
+
+1. Larger clusters first.
+2. Connectivity-pressure x area first within each cluster by default; set
+   `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=0` to restore larger-macro-first order.
+3. Unclustered macros last, with the same member ordering.
+
+A second default-order legalization pass is kept as a safety pass for validity.
+Soft macros may overlap by challenge rules, so they are not hard-legalized.
+
+## Region-Locked Relief
+
+Region relief recovers some congestion while preserving the hierarchy. Each
+cluster receives a soft region derived from its footprint and area. Hard
+relocation then strongly prefers colder candidate cells inside the cluster's
+own region, followed by soft relocation cleanup. Soft macros receive analogous
+region boxes from their assigned hard cluster. A move may leave its region only
+when the exact proxy improvement exceeds the configured escape threshold.
+Before relief runs, hot cluster regions expand toward colder neighboring grid
+bands so packed hierarchy blobs get room to create routing channels.
+
+Controls:
+
+```text
+V2_HIER_REGION_RELIEF=1
+V2_HIER_REGION_DENSITY=0.65
+V2_REGION_BIAS=1.0
+V2_HIER_REGION_ROUNDS=2
+V2_HIER_REGION_BUDGET_S=40
+V2_HIER_REGION_MARGIN=0
+V2_HIER_REGION_SINGLETON=0.05
+V2_HIER_REGION_ESCAPE_MIN=0.002
+V2_HIER_BRIDGE_SOFTS=1
+V2_HIER_BRIDGE_SOFT_RATIO=0.6
+V2_HIER_CONG_EXPAND_REGIONS=1
+V2_HIER_REGION_EXPAND_HOT_PCT=60
+V2_HIER_REGION_EXPAND_FRAC=0.08
+V2_HIER_REGION_EXPAND_BAND=3
+```
+
+All committed relocation moves still pass the exact incremental proxy gate, but
+candidate ranking is region-biased so the result stays clustered.
+
+The same relocation operators can optionally include deterministic
+BeyondPPA-style structural candidate ordering:
+
+```text
+V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
+V2_HIER_KEEP_OUT_WEIGHT=0.2
+V2_HIER_GRID_ALIGN_WEIGHT=0.2
+V2_HIER_NOTCH_WEIGHT=0.6
+```
+
+The structural term scores local edge keepout, grid alignment, and notch
+avoidance. It only reorders candidates inside the hierarchy flow. All committed
+moves still require legality, fixed-macro immobility, bounds, hierarchy-region
+constraints, and the existing exact-proxy or hierarchy-quality gates. The
+default weight is `0.0`, and `V2_HIER_STRUCTURAL_RANK=1` remains an alias for
+weight `1.0` for older experiments.
+
+After each region-relief round, `_micro_shift_polish()` runs tiny exact-gated
+one/two-grid-cell moves inside the same hierarchy-region constraints:
+
+```text
+V2_HIER_MICRO_SHIFT=1
+V2_HIER_MICRO_SHIFT_RADIUS=2
+V2_HIER_MICRO_SHIFT_TOP=96
+V2_HIER_MICRO_SHIFT_MIN_GAIN=0.00001
+```
+
+## Cluster Decompression
+
+Cluster decompression creates routing channels inside hot hierarchy blobs. It
+builds full-placement candidates by expanding a hot cluster away from its
+centroid inside the expanded region, legalizes hard macros, moves owned softs
+with the cluster, and nudges bridge softs toward the corridor centroid. The
+candidate is accepted only when full exact proxy improves and the hierarchy
+quality metric stays within budget.
+
+Controls:
+
+```text
+V2_HIER_DECOMPRESS=1
+V2_HIER_DECOMPRESS_BUDGET_S=18
+V2_HIER_DECOMPRESS_ROUNDS=2
+V2_HIER_DECOMPRESS_HOT_PCT=65
+V2_HIER_DECOMPRESS_FACTORS=1.08,1.16,1.25
+V2_HIER_DECOMPRESS_MIN_GAIN=0.0001
+V2_HIER_QUALITY_BUDGET=0.03
+V2_HIER_DECOMPRESS_ANISO=1
+V2_HIER_DECOMPRESS_ANISO_BAND=3
+V2_HIER_DECOMPRESS_ANISO_SECONDARY=0.25
+```
+
+## Region-Bounded Swaps
+
+After region relocation, the hierarchy path can run a small swap-relief pass.
+It tries hard-hard 2-opt, hard-soft cross swaps, and soft-soft swaps against the
+live congestion and density fields. In-region swaps use the normal exact-proxy
+accept gate; swaps that move either participant outside its region must improve
+proxy by at least `V2_HIER_REGION_ESCAPE_MIN`.
+
+Controls:
+
+```text
+V2_HIER_REGION_SWAPS=1
+V2_HIER_REGION_SWAP_ROUNDS=2
+V2_HIER_REGION_SWAP_BUDGET_S=20
+V2_HIER_HARD_SWAP_K=16
+V2_HIER_SOFT_SWAP_K=48
+V2_HIER_SWAP_MIN_GAIN=0.00001
+V2_HIER_SWAP_MIN_FIELD_RELIEF=0.0
+V2_HIER_SWAP_HH=1
+V2_HIER_SWAP_HS=1
+V2_HIER_SWAP_SS=1
+V2_HIER_SWAP_DENSITY_FIELD=1
+```
+
+The pass logs per-operator score/accept counts. Use
+`test/diagnostic/_sweep_region_swaps.py` for targeted operator and threshold
+sweeps on regression benchmarks.
+
+The accepted Stage-3 flow replays `_micro_shift_polish()` immediately after
+region swaps. This exact-gated one/two-grid-cell pass is enabled by default
+with `V2_HIER_POST_SWAP_MICRO_SHIFT=1` and recovers small hard and soft
+congestion improvements left behind by swaps.
+
+## Coldspot Tightening
+
+The retained LSMC helper is `_coldspot_cluster_kick()`. It gathers one hot
+cluster into a cold congestion window and legalizes the hard macros. In the
+current production flow it is used only as a hierarchy-tightening pass after
+region relief.
+
+Controls:
+
+```text
+V2_HIER_COLDSPOT_KICK=1
+V2_HIER_COLDSPOT_BUDGET=0.0
+V2_HIER_COLDSPOT_TOTAL=0.0
+V2_HIER_COLDSPOT_MIN_GAIN=0.0001
+V2_HIER_COLDSPOT_QUALITY_BUDGET=0.01
+V2_HIER_COLDSPOT_MIN_FIELD_GAP=0.02
+V2_HIER_COLDSPOT_ROUNDS=8
+V2_HIER_COLDSPOT_BUDGET_S=30
+```
+
+A round first requires a cheap congestion-field opportunity: an eligible cluster
+must be at least `V2_HIER_COLDSPOT_MIN_FIELD_GAP` hotter than its best matching
+cold window. A kick is then accepted only when exact proxy improves and the
+hierarchy-quality metric stays within budget. This keeps the pass from undoing
+congestion relief for compactness alone.
+
+Production then replays `_micro_shift_polish()` once more with
+`V2_HIER_POST_COLDSPOT_MICRO_SHIFT=1`. The paired post-swap and post-coldspot
+replays are the current accepted stack. Deterministic hot-cluster coldspot
+selection was tested separately and removed after regressing the full sweep.
+
+## BeyondPPA And GNN Hooks
+
+The current BeyondPPA integration is deterministic and hierarchy-integrated:
+
+- structural metrics live in `src/placer/local_search/structural_fields.py`;
+- structural candidate ordering lives inside existing relocation ranking;
+- `test/diagnostic/_structural_metrics.py` reports structural scores for final
+  or seed placements;
+- production defaults keep structural ranking disabled.
+
+The current GNN implementation is trace-only. Enable it with:
+
+```bash
+V2_HIER_GNN_TRACE=1 V2_HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b ibm10
+```
+
+Trace JSONL files are written under `ml_data/beyondppa_gnn/` unless
+`V2_HIER_GNN_TRACE_PATH` is supplied. Logging does not change placement output.
+The full GNN roadmap is in
+[../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md](../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md).
+
+## Entry Points
+
+- Challenge path: `uv run evaluate src/main.py -b ibm10`
+- eda_io path: `uv run python src/place_design.py ...`
+- Coldspot verifier: `uv run python test/verification/_verify_coldspot_kick.py ibm10`
+- Structural metric diagnostic:
+  `uv run python test/diagnostic/_structural_metrics.py ibm10`
+- Region-swap tuning sweep:
+  `uv run python test/diagnostic/_sweep_region_swaps.py --quick --bench ibm17`
+- CUDA relocation diagnostic:
+  `uv run python test/diagnostic/_cuda_relocation_status.py --benchmark ibm01`
+
+Every return path passes through the final in-bounds clamp for movable macros.
+
+The higher-level placement objectives behind these passes are documented in
+[OBJECTIVES.md](OBJECTIVES.md).
+
+## GPU Status
+
+The active hierarchy path uses CUDA through DREAMPlace when PyTorch can see a
+GPU. The archived `cuda_delta` scorer for hard-relocation proposal batches is
+still available and verified by diagnostics, but hierarchy region swaps and
+cluster decompression remain sequential exact-gated CPU/NumPy passes. They do
+not yet implement cuGenOpt-style batched GPU proposal evaluation.

@@ -1,25 +1,27 @@
-# ML notes — learned candidate ranker
+# ML And BeyondPPA Notes
 
-Conceptual / "why it works" notes for the per-operator XGBoost candidate ranker.
-This is the explanatory companion to:
+This directory now contains the active BeyondPPA/GNN planning notes for the
+hierarchy placer.
 
-- **`../general/ISSUES.md` S10** — the terse experiment-tracker entry (status, plan,
-  dataset counts).
-- **top-level `README.md` → "ML candidate-ranker data collection"** — how to run
-  the collection script.
+## Current Active Work
 
-**Status (2026-06-05): `hard_relocation` filter wired (opt-in) and compared at
-equal budget — comparable-or-better than the exhaustive interleave (net ~−0.008
-over 10 benchmarks, no robust regression). Production default unchanged.** Key
-finding: the ranker is not the bottleneck (`best_recall@16` ≈ 1.0), so retraining
-has no headroom; the leverage is integration policy and the routing-fill cost. See
-`../general/ISSUES.md` S10 for the numbers.
+Use `beyondppa_results/` for the current implementation record:
 
-## Notes
+- `beyondppa-structural-objectives.md` describes the deterministic structural
+  objective and how it is integrated into hierarchy candidate ordering.
+- `stage1_metrics.md` through `stage5_bounded_acceptance.md` record staged
+  implementation decisions and verification.
+- `gnn_trace_logging.md` documents the opt-in JSONL trace logger.
+- `gnn_full_implementation_next_steps.md` is the roadmap from trace logging to
+  a real hierarchy-aware GNN ranker.
 
-| File | Question it answers |
-| --- | --- |
-| [`01-candidate-ranker-design.md`](01-candidate-ranker-design.md) | What does XGBoost replace, and how is it wired so the search stays non-regressing? |
-| [`02-why-it-can-improve.md`](02-why-it-can-improve.md) | If it's trained on our own placer, how can its placements beat our placer? |
-| [`03-selection-mechanism.md`](03-selection-mechanism.md) | Concretely, what does the model select, and how does that differ from what the placer does today? |
-| [`04-gnn-routing-fill-surrogate.md`](04-gnn-routing-fill-surrogate.md) | Roadmap to replace the ~73% strip-gen cost with a learned Δ-congestion prefilter: what to add, what to restructure, and the decision gates. |
+## Current Status
+
+No learned GNN model or DQN policy is active in production. The shipped
+BeyondPPA-style pieces are deterministic structural metrics, default-off
+hierarchy candidate ordering, and default-off GNN trace logging.
+
+The integration rule is mandatory: structural and learned signals may rank
+candidates inside existing hierarchy operators, but they must not bypass hard
+legality, fixed macro immobility, bounds, hierarchy-region constraints,
+hierarchy-quality gates, or exact-proxy gates.

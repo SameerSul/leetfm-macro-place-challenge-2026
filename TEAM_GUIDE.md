@@ -2,6 +2,15 @@
 
 > A complete reference for understanding, developing, and contributing to this project.
 
+> **Current system note (2026-06-16):** this guide started as an early
+> onboarding document for the April `sameer_v1` proxy experiments. The active
+> submission now lives at the repository root (`src/main.py`, `src/placer/`,
+> `src/dreamplace_bridge/`, `src/eda_io/`) and is hierarchy-only. It requires
+> grouped DREAMPlace, preserves connected subsystems, and currently reports
+> `uv run evaluate src/main.py --all` = **AVG 1.4452**, 17/17 VALID, 0 overlaps,
+> 520.08s. Older `sameer_v1`, `system/v0`, restart, ML-ranker, R2, and generic
+> LSMC references below are historical unless explicitly marked as current.
+
 ---
 
 ## Table of Contents
@@ -13,7 +22,7 @@
 5. [Software Installation](#5-software-installation)
 6. [Repository Structure](#6-repository-structure)
 7. [How the Evaluation Works](#7-how-the-evaluation-works)
-8. [Our Algorithm (sameer_v1)](#8-our-algorithm)
+8. [Our Current Algorithm](#8-our-current-algorithm)
 9. [How to Develop and Contribute as a Team](#9-team-development-workflow)
 10. [How to Submit](#10-how-to-submit)
 11. [Team Roles and Responsibilities](#11-team-roles)
@@ -191,7 +200,23 @@ This tension is the core algorithmic challenge. A naive WL optimizer can easily 
 
 **May 21, 2026, 11:59 PM Pacific**
 
-### Current Competition Standing (as of April 2026)
+### Current Competition Standing
+
+As of **June 16, 2026**, the selected system is the hierarchy-preserving
+placer in `src/main.py`, not the April `sameer_v1` legalizer. The current IBM
+Tier 1 reference is:
+
+```text
+uv run evaluate src/main.py --all
+AVG 1.4452  17/17 VALID  0 overlaps  520.08s
+```
+
+This is slightly better than RePlAce's 1.4578 proxy average, but the system's
+chosen objective is hierarchy preservation. It intentionally avoids returning
+to the deleted spread-oriented proxy optimizer, whose historical best proxy
+average was lower but no longer reflects the active submission.
+
+Historical April snapshot:
 
 | Benchmark | sameer_v1 | will_seed | RePlAce |
 |-----------|-----------|-----------|---------|
@@ -203,7 +228,8 @@ This tension is the core algorithmic challenge. A naive WL optimizer can easily 
 | ibm17 | **1.7437** | ~3.67 | 1.645 |
 | **AVG** | **1.5062** | **1.5338** | **1.4578** |
 
-Our submission already beats will_seed by ~2.9%. The gap to RePlAce is 3.3%, which is worth chasing.
+The April `sameer_v1` submission beat `will_seed` by ~2.9% but trailed RePlAce.
+That state is no longer the active system.
 
 ---
 
@@ -241,13 +267,13 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 
 # Verify installation
-uv run evaluate system/v0/greedy_row_placer.py -b ibm01
+uv run evaluate src/main.py -b ibm10
 ```
 
 If `uv` is not available, use standard Python:
 ```bash
 pip install -e .
-python -m macro_place.evaluate system/v0/greedy_row_placer.py -b ibm01
+python -m macro_place.evaluate src/main.py -b ibm10
 ```
 
 ### Step 3: (Optional) OpenROAD for Full Flow
@@ -272,12 +298,14 @@ For development, the Tier 1 proxy evaluation is sufficient.
 ```
 macro-place-challenge-2026/
 │
-├── system/                       # Varrahan placers and active system work
-│   ├── v0/                       # Simple reference placers
-│   │   ├── greedy_row_placer.py  # Simple greedy baseline
-│   │   └── simple_random_placer.py
-│   ├── v1/placer.py              # Frozen checkpoint
-│   └── v2/src/main.py            # Active placer entrypoint
+├── src/                          # Active hierarchy placer and EDA I/O
+│   ├── main.py                   # Evaluator-facing entrypoint
+│   ├── placer/                   # Hierarchy pipeline, scoring, routing, legalization
+│   ├── dreamplace_bridge/        # ICCAD04 pb/plc <-> Bookshelf bridge
+│   └── eda_io/                   # LEF/DEF/Verilog/SDC/Liberty import/export
+│
+├── system/                       # Optional historical checkpoints if present
+│   └── v1/                       # Frozen checkpoint; read-only if present
 │
 ├── macro_place/                  # Core framework
 │   ├── evaluate.py               # Main evaluation harness
@@ -320,13 +348,13 @@ class Benchmark:
 **`macro_place/evaluate.py`**: Running evaluations:
 ```bash
 # Single benchmark
-python -m macro_place.evaluate system/v1/placer.py -b ibm01
+python -m macro_place.evaluate src/main.py -b ibm10
 
 # All 17 IBM benchmarks
-python -m macro_place.evaluate system/v1/placer.py --all
+python -m macro_place.evaluate src/main.py --all
 
 # NG45 designs (requires setup)
-python -m macro_place.evaluate system/v1/placer.py --ng45
+python -m macro_place.evaluate src/main.py --ng45
 ```
 
 ---
@@ -378,40 +406,70 @@ The `external/MacroPlacement/CodeElements/Plc_client/plc_client_os.py` evaluator
 
 ---
 
-## 8. Our Algorithm (sameer_v1)
+## 8. Our Current Algorithm
 
 ### High-Level Strategy
 
 ```
 initial.plc
     ↓
-Min-displacement Legalization    (resolve overlaps, keep good initial spread)
+Derive hard clusters from low-fanout hard/soft connectivity
+    ↓
+Classify soft macros as owned or bridge
+    ↓
+Grouped DREAMPlace with synthetic cluster clique nets
+    ↓
+Cluster-consecutive hard legalization
+    ↓
+Soft relocation cleanup
+    ↓
+Congestion-expanded hard/soft regions
+    ↓
+Region-locked hard and soft relief
+    ↓
+Exact-gated cluster decompression
+    ↓
+Region-bounded hard-hard / hard-soft / soft-soft swaps
+    ↓
+Proxy-aware coldspot tightening
     ↓
 Return placement
 ```
 
-### Why Just Legalization?
+### Why Hierarchy Preservation?
 
-After extensive testing, legalization alone (avg **1.5062**) beats will_seed (1.5338). Here's what we learned:
+The current selected system is not the old lowest-proxy optimizer. It keeps
+connected subsystems together because that is the desired placement behavior,
+even though the proxy metric often rewards spreading connected macros apart.
+The exact proxy still gates local relief moves and evaluator reports, but it is
+not the primary design objective.
 
-1. **initial.plc positions are already excellent**: The initial placements provided by the benchmark have good macro spread and low congestion. Our job is to resolve overlaps without destroying this quality.
+What remains true from the early work:
 
-2. **SA consistently hurts proxy cost**: Adding SA (Simulated Annealing) reduces wirelength (WL) but increases density and congestion faster. Net result: proxy cost goes up, not down.
-   - Example: ibm01 legalize-only = 1.2253, with SA = 1.3002 (SA is 6% worse)
-   - Example: ibm07 legalize-only = 1.4950, with SA = 1.7313 (SA is 16% worse!)
+1. **`initial.plc` is a strong seed.** Random or grid restarts were consistently worse.
+2. **Proxy and hierarchy are opposed.** Compact connected groups usually raise congestion.
+3. **Soft macros must move with hierarchy.** Owned and bridge soft roles are a live part of the current system.
+4. **DREAMPlace is required.** `MacroPlacer.place()` raises if grouped DREAMPlace cannot run.
 
-3. **Why SA hurts**: The proxy cost weights are: `1×WL + 0.5×density + 0.5×congestion`. When SA moves connected macros closer (reducing WL), it clusters them, increasing density and congestion. The density+congestion penalty outweighs the WL gain because the initial spread is already good.
+### Current Reference
 
-4. **Root cause**: The initial.plc comes from a prior algorithm that already optimized placement. SA from these good positions tends to over-optimize WL at the cost of routability.
+```text
+uv run evaluate src/main.py -b ibm10
+proxy=1.6759  VALID
 
-### Key Insight for Future Work
+uv run evaluate src/main.py --all
+AVG 1.4452  17/17 VALID  0 overlaps  520.08s
+```
 
-To beat RePlAce (1.4578), we need to reduce density and congestion, NOT wirelength. The WL is already small (0.05-0.08 normalized). The dominant cost is congestion (1.3-2.7 normalized). **The winning algorithm will improve congestion, not WL.**
+See `docs/general/DESIGN_FLOW.md`, `docs/general/ARCHITECTURE.md`, and
+`docs/general/OBJECTIVES.md` for the current implementation details and
+placement objectives.
 
-### Runtime
+### Historical April Insight
 
-- Legalization: ~5-15s per benchmark
-- **Total for all 17 benchmarks: ~3 minutes** (well within 1-hour limit)
+The old `sameer_v1` legalize-only system averaged 1.5062 and showed that
+congestion dominates the proxy. That insight still explains why hierarchy
+needs congestion-aware relief, but the legalize-only algorithm is historical.
 
 ---
 
@@ -445,15 +503,13 @@ git checkout -b feature/proxy-aware-sa           # member C
 
 ```bash
 # Quick test: single benchmark
-python -m macro_place.evaluate system/v1/placer.py -b ibm01
+uv run evaluate src/main.py -b ibm10
 
-# Full test: all 17 benchmarks (takes ~8 min)
-python -m macro_place.evaluate system/v1/placer.py --all
+# Full test: all 17 benchmarks
+uv run evaluate src/main.py --all
 
 # Compare two placers head-to-head
-python scripts/compare_placers.py \
-    system/v1/placer.py \
-    system/v0/greedy_row_placer.py
+uv run python scripts/compare_placers.py path/to/placer_a.py src/main.py
 ```
 
 ### Key Metrics to Track
@@ -465,7 +521,9 @@ For each benchmark, track:
 - `cong` = congestion component
 - `runtime` = seconds per benchmark
 
-Target: avg proxy < 1.5338 (will_seed) → competitive; < 1.4578 (RePlAce) → strong entry
+Current hierarchy reference: avg proxy **1.4452** with 17/17 valid placements.
+Treat older sub-1.13 proxy-path averages as historical; that code path was
+deleted and is not the active capability of this repository.
 
 ### Understanding the Numbers
 
@@ -485,7 +543,8 @@ Congestion dominates proxy for most benchmarks. Reducing congestion has 2x the i
 
 ### Step 1: Prepare Your Submission
 
-Your submission must be a single Python file at `system/v1/placer.py` (or your own folder) with a `MacroPlacer` class. It must:
+The active submission entrypoint is `src/main.py`, which exposes a
+`MacroPlacer` class. It must:
 - Work with the exact `place(benchmark) -> torch.Tensor` interface
 - Complete all 17 IBM benchmarks in under 1 hour total
 - Produce no overlaps (the evaluator checks this)
@@ -495,7 +554,7 @@ Your submission must be a single Python file at `system/v1/placer.py` (or your o
 
 ```bash
 # Run all 17 IBM benchmarks
-python -m macro_place.evaluate system/v1/placer.py --all
+uv run evaluate src/main.py --all
 
 # Check average proxy score in the final output line
 # Format: AVG our_score sa_score replace_score
@@ -504,8 +563,8 @@ python -m macro_place.evaluate system/v1/placer.py --all
 ### Step 3: Push to GitHub
 
 ```bash
-git add system/v1/placer.py
-git commit -m "Add sameer_v1 competitive macro placer"
+git add src docs test scripts
+git commit -m "Update hierarchy placer submission"
 git push origin main
 ```
 
@@ -530,73 +589,76 @@ Three roles split by expertise. Each person has a clear onboarding path, owns a 
 
 ---
 
-### Role A: Algorithm Lead (Sameer)
+### Role A: Algorithm Lead
 
-**Owns:** `system/v1/placer.py` · competition timeline · final submission
+**Owns:** `src/placer/pipeline/macro_placer.py`, `src/placer/local_search/`,
+`docs/general/PROGRESS.md`, competition timeline, final submission.
 
-**Why this role:** You built the project from scratch, understand every file, and have already beaten will_seed. You drive the main submission loop.
+**Why this role:** This role owns the hierarchy objective, legality, benchmark
+quality, and the decision to accept or reject system-level changes.
 
 #### Week 1 Onboarding Checklist
-- [ ] Re-read `system/v1/placer.py` top-to-bottom, especially `_will_legalize()` and the restart loop
-- [ ] Run `python -m macro_place.evaluate system/v1/placer.py --all` and record the full 17-benchmark avg
+- [ ] Re-read `src/placer/pipeline/macro_placer.py` top-to-bottom, especially `_hierarchy_floorplan()`
+- [ ] Run `uv run evaluate src/main.py --all` only when a change is ready for full verification
 - [ ] Read `macro_place/objective.py` (`compute_proxy_cost`) to understand exactly how WL, density, and congestion are computed from positions
 - [ ] Read `macro_place/evaluate.py` (`evaluate_benchmark`) for the full harness pipeline
 - [ ] Read `external/MacroPlacement/CodeElements/Plc_client/plc_client_os.py`, which is the PlacementCost evaluator used by `compute_proxy_cost`
 
 #### Immediate Next Steps (see §13 for full list)
-1. **Run the full 17-benchmark eval** with the new restart placer → get baseline avg
-2. **Tune noise levels**: try finer noise grid (0.01, 0.02, 0.03, 0.04, 0.05). ibm01 improved at 4%, and 2-3% might be even better for other benchmarks.
-3. **Increase restarts for fast benchmarks**: benchmarks that legalize in under 5s can afford 10-15 restarts within the same runtime budget. Add per-benchmark adaptive restart count.
-4. **Implement congestion-aware perturbation**: instead of uniform Gaussian noise, push macros away from high-congestion zones found in the baseline legalization
+1. **Use ibm10 as the hierarchy smoke** before broader sweeps.
+2. **Investigate current bottlenecks**: ibm12, ibm15, ibm17 congestion, plus ibm14/ibm18 regressions from the latest soft-swap tuning.
+3. **Keep hierarchy metrics visible** alongside proxy when accepting changes.
+4. **Update `docs/general/PROGRESS.md`** with concrete numbers for every accepted system result.
 
 #### Files You Own
 ```
-system/v1/placer.py     ← main submission
-test/diagnostic/test_smoke.py ← smoke-test harness
-TEAM_GUIDE.md                       ← this document
+src/main.py                         <- evaluator entrypoint
+src/placer/pipeline/macro_placer.py <- main hierarchy pipeline
+src/placer/local_search/            <- relief, swaps, decompression, coldspot helper
+docs/general/PROGRESS.md            <- accepted results and experiment history
 ```
 
 ---
 
 ### Role B: ML Research Lead
 
-**Owns:** `system/ml_placer/` (create this) · literature review · learning-based approach
+**Owns:** archived ML notes, any future hierarchy-specific learning prototype,
+and experiment design for learned scoring or placement.
 
-**Why this role:** The gap from our current avg (≈1.49) to RePlAce (1.4578) is small with perturbation heuristics alone. Closing it and going below likely needs a learned model. This role brings machine learning to the placement problem.
+**Why this role:** The old proxy-path ML ranker was deleted. Future ML work must
+define a hierarchy-aware target before adding model code.
 
 #### Week 1 Onboarding Checklist
 - [ ] Read §12 (Related Research) in this document to understand all 10 papers at a high level
-- [ ] Run the existing placer on ibm01: `python -m macro_place.evaluate system/v1/placer.py -b ibm01`
+- [ ] Run the existing placer on ibm10: `uv run evaluate src/main.py -b ibm10`
 - [ ] Read `macro_place/benchmark.py` to understand the `Benchmark` dataclass fields
 - [ ] Understand the netlist format: open `external/MacroPlacement/Testcases/ICCAD04/ibm01/netlist.pb.txt` in a text editor and look at the node, net, and pin structure
 - [ ] Clone and browse **WireMask-BBO** (`github.com/lamda-bbo/WireMask-BBO`), the most practically competitive ML method
 
 #### Immediate Next Steps
-1. **Reproduce WireMask-BBO on ibm01**: WireMask uses a greedy wire-density heuristic as the evaluator inside a black-box optimizer. Try applying their evaluator to our benchmarks, as it may directly give better placements.
-2. **Build a GNN feature extractor**: represent the ibm01 netlist as a graph (macros = nodes, nets = edges weighted by `1/(k-1)`). Use PyTorch Geometric (`torch_geometric`) to build a simple GCN. Output per-node embeddings. These embeddings are the foundation of any learned placement policy
-3. **Read ChiPFormer** (`arxiv.org/abs/2306.14744`) carefully. Their offline dataset approach doesn't require per-circuit RL training. We already have a dataset: 17 benchmarks × 5 restarts × proxy scores, which is a small supervised dataset for imitation learning.
-4. **Explore Circuit Training's gridding** (`github.com/google-research/circuit_training`). This is the soft-macro grouping step that converts millions of standard cells into around 500 clusters. Understand whether this preprocessing improves our netlist representation.
+1. **Define a hierarchy-aware label** before training anything. Proxy-only labels recreate the deleted spread-oriented optimizer.
+2. **Prototype on diagnostics first**: use cluster closeness, region congestion, and accepted/rejected exact-gated moves as features.
+3. **Keep ML optional** until it has a verified current integration point in the hierarchy path.
+4. **Update `docs/ml_nn/`** if a new hierarchy-specific ML direction replaces the archived proxy-ranker notes.
 
 #### Files You Will Create
 ```
-system/ml_placer/
-    __init__.py
-    placer.py          ← MacroPlacer class using a learned model
-    gnn_model.py       ← GNN architecture
-    train.py           ← training script
-    data/              ← training data (placements + proxy scores)
+src/placer/ml/         <- create only if a hierarchy-specific integration is accepted
+ml_data/               <- generated traces, labels, and model artifacts
+docs/ml_nn/            <- design notes; current files are historical
 ```
 
 ---
 
 ### Role C: Infrastructure and Experiments Lead
 
-**Owns:** `scripts/` · experiment tracking · DREAMPlace integration · evaluation pipeline
+**Owns:** `scripts/`, DREAMPlace install health, experiment tracking, evaluation pipeline.
 
-**Why this role:** As the team runs dozens of experiments (tuning noise, trying new algorithms, comparing methods), someone needs to make sure results are logged, reproducible, and comparable. This role also investigates the GPU path (DREAMPlace) which could unlock 30× speedup.
+**Why this role:** The current production path requires DREAMPlace. Reliable
+evaluation depends on keeping the bridge, install tree, and run logs healthy.
 
 #### Week 1 Onboarding Checklist
-- [ ] Run `python scripts/compare_placers.py system/v1/placer.py system/v0/greedy_row_placer.py` and understand the comparison output format
+- [ ] Run `uv run python scripts/compare_placers.py path/to/placer_a.py src/main.py` and understand the comparison output format
 - [ ] Read `scripts/compare_placers.py` end-to-end
 - [ ] Read `macro_place/evaluate.py` `main()` function to understand all CLI flags
 - [ ] Set up a results log: create `results/runs.csv` with columns: `date, placer, benchmark, proxy, wl, density, congestion, runtime, notes`
@@ -604,15 +666,14 @@ system/ml_placer/
 
 #### Immediate Next Steps
 1. **Automated experiment logging**: modify `scripts/compare_placers.py` to append results to `results/runs.csv` automatically. Every run of any placer should log to this file with a timestamp and git commit hash
-2. **DREAMPlace compatibility check**: DREAMPlace takes LEF/DEF or Bookshelf format. Our benchmarks are in `.pb.txt` format. Write a converter: `scripts/pb_to_bookshelf.py` that converts ibm01 netlist to Bookshelf format so DREAMPlace can process it. This unlocks GPU-accelerated global placement as an initial position generator
-3. **Perturbation noise sweep**: write `scripts/noise_sweep.py` that runs `sameer_v1` with noise_fracs=`[0.01, 0.02, ..., 0.10]` on ibm01 and plots proxy cost vs noise level. Identify the optimal noise range per benchmark
-4. **Per-benchmark adaptive restarts**: ibm10 takes 60s to legalize (too slow for 15 restarts). ibm07 takes 2s (fast, can afford 20+). Write a time-budget wrapper that decides how many restarts to run per benchmark given a per-benchmark time cap of `3600/17 ≈ 210s`
+2. **DREAMPlace health checks**: after rebuilds, run `scripts/patch_dreamplace_install.py` and verify grouped DREAMPlace produces ready results.
+3. **Targeted sweeps**: use existing diagnostics such as `test/diagnostic/_sweep_region_swaps.py` for current hierarchy operators.
+4. **Runtime tracking**: keep the all-17 run under the 1-hour harness limit; record contention-sensitive timings in `docs/general/ISSUES.md` or `PROGRESS.md`.
 
 #### Files You Own
 ```
 scripts/compare_placers.py     ← comparison harness (already exists)
-scripts/noise_sweep.py         ← create this
-scripts/pb_to_bookshelf.py     ← create this (DREAMPlace bridge)
+src/dreamplace_bridge/         ← active DREAMPlace bridge
 results/runs.csv               ← create this (experiment log)
 ```
 
@@ -622,13 +683,11 @@ results/runs.csv               ← create this (experiment log)
 
 | Task | Who Leads | Deadline |
 |------|-----------|----------|
-| Beat will_seed avg (1.5338) | Sameer (A) | Done ✅ |
-| Full 17-benchmark avg with restarts | Sameer (A) | This week |
-| Literature deep-dive on WireMask-BBO | ML Lead (B) | Week 1 |
-| Noise sweep script | Infra (C) | Week 1 |
-| DREAMPlace format bridge | Infra (C) | Week 2 |
-| GNN feature extractor prototype | ML Lead (B) | Week 2 |
-| Beat RePlAce avg (1.4578) | All | Week 3 |
+| Maintain current hierarchy `--all` reference | Algorithm Lead | Active |
+| Keep DREAMPlace bridge healthy | Infrastructure Lead | Active |
+| Investigate ibm12/15/17 congestion bottlenecks | Algorithm Lead | Active |
+| Define hierarchy-aware ML objective before model work | ML Lead | Open |
+| Keep documentation current after accepted changes | All | Active |
 | Final submission via Google Form | Sameer (A) | May 21, 2026 |
 
 ---
@@ -746,6 +805,10 @@ Before reading any other paper, understand this. The TILOS group (UCSD) publishe
 
 ## 13. Ideas for Improvement
 
+This section keeps early proxy-optimization ideas for context, but do not treat
+them as the current implementation plan. The active code is hierarchy-only and
+the proxy-only restart, R2, ML-ranker, and generic LSMC paths were deleted.
+
 ### Understanding the Numbers First
 
 Before trying to improve, understand what's actually being optimized:
@@ -753,48 +816,30 @@ Before trying to improve, understand what's actually being optimized:
 ```
 proxy = 1.0×WL + 0.5×density + 0.5×congestion
 
-Current avg (sameer_v1): 1.5062
+Current hierarchy avg: 1.4452
   WL component: ~0.06  (already very small, not the problem)
   Density:      ~0.90  (moderate)
   Congestion:   ~2.0   (THIS is what's killing us, it's 20-30x larger than WL)
 ```
 
-**The winning algorithm reduces congestion, not wirelength.** This completely changes the approach.
+For the selected system, "better" means preserving hierarchy while relieving
+enough congestion to stay valid and competitive. Pure proxy spread is not the
+current target.
 
-### Low Effort, High Impact
+### Current Directions
 
-1. **Perturbation + Re-legalization**: Randomly perturb the initial.plc positions (add noise to macro positions), re-legalize, evaluate, keep best. Run 5-10 random restarts per benchmark. If the noise happens to space macros more evenly, congestion drops.
-   ```python
-   best = legalize(initial_pos)
-   for _ in range(10):
-       noise = initial_pos + random.gauss(0, 0.5)  # small perturbation
-       candidate = legalize(noise)
-       if proxy(candidate) < proxy(best): best = candidate
-   ```
+1. **Congestion relief inside hierarchy regions**: improve region expansion, decompression, and soft-heavy swap choices for ibm12/15/17.
+2. **Soft macro placement around hard hierarchy**: keep owned/bridge behavior accurate and avoid soft moves that undo subsystem structure.
+3. **Hierarchy-quality metrics**: make accept gates sensitive to both proxy and structural closeness.
+4. **DREAMPlace bridge robustness**: grouped DREAMPlace is required, so install health and cache correctness are production concerns.
+5. **Hierarchy-specific learning**: only add ML after defining labels that reward the selected structural objective, not just lower proxy.
 
-2. **Spread macros from congested zones**: After legalization, identify the most congested grid cells. Move macros OUT of those cells (push them to the boundary or low-density areas). This directly reduces the congestion term.
-
-3. **Better initial positions**: Instead of using `initial.plc`, try placing macros on a regular grid (evenly spaced), then legalizing. Maximizes spread, minimizes congestion.
-
-### Medium Effort
-
-4. **Congestion-Map SA**: Run SA where the objective is `congestion_estimate` rather than WL. Move macros away from congested regions. The congestion can be estimated with a simple routing demand model.
-
-5. **Force-Directed with Repulsion**: Add repulsive forces between nearby macros (not just spring attractions to connected ones). This spreads macros evenly, reducing congestion.
-
-6. **Gradient Descent on Congestion (GPU)**: Model congestion as differentiable using a soft kernel to estimate routing demand per cell, then minimize via gradient descent. Much more effective than WL gradient descent.
-
-### High Effort, Potentially Huge Impact
-
-7. **Graph Neural Network**: Train a GNN on the netlist to predict CONGESTION-OPTIMAL macro positions. Key: train it to minimize proxy cost (including congestion), not just WL. Features: macro connectivity, size, canvas aspect ratio, benchmark statistics.
-
-8. **Reinforcement Learning**: Like Google's Circuit Training, train an RL agent to sequentially place macros using proxy cost as the reward signal. Requires significant training time.
-
-9. **Learned Legalization**: Instead of min-displacement legalization, train a model to predict WHERE to push macros during legalization to minimize congestion.
+### Historical Ideas
 
 ### What NOT to Try
 
-- WL-only optimization (we tested this exhaustively and it hurts proxy)
+- WL-only optimization (tested exhaustively and hurts proxy/hierarchy tradeoffs)
+- Reintroducing deleted proxy-only restarts, R2, generic LSMC, or ML ranker code by default
 - Hardcoding positions for specific benchmarks (against rules)
 - Running more than 1 hour total runtime (hardware limit)
 - Using external proprietary tools (against rules)

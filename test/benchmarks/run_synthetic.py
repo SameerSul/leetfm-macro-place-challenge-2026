@@ -13,7 +13,7 @@ Outputs (under this directory):
 Usage:
     uv run python test/benchmarks/run_synthetic.py
     uv run python .../run_synthetic.py -b syn02_fixed
-    uv run python .../run_synthetic.py --placer system/v1/placer.py
+    uv run python .../run_synthetic.py --placer src/main.py
     uv run python .../run_synthetic.py --budget 60 --skip-initial-vis
 """
 

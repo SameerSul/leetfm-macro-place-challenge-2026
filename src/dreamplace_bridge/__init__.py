@@ -5,5 +5,6 @@ Three-step pipeline:
     run_bridge.run_dreamplace(...)     - Bookshelf → DREAMPlace global → positions
     bookshelf_to_pb.read_dreamplace_positions(...) - back-convert to TILOS coords
 
-Used by `placer.pipeline.macro_placer` for async DREAMPlace seed candidates.
+Used by `placer.pipeline.macro_placer` for the required grouped DREAMPlace
+stage in the hierarchy-only production path.
 """

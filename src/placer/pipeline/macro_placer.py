@@ -1,6 +1,5 @@
 """Main macro-placement pipeline."""
 
-import concurrent.futures
 import os
 import random
 import time
@@ -12,38 +11,13 @@ import torch
 from macro_place.benchmark import Benchmark
 
 from placer.config import _GPU_BACKEND, _GPU_DEVICE_NAME, _log
-from placer.legalize.spiral import _will_legalize
-from placer.legalize.swap import _two_opt_swap
-from placer.local_search.fields import _congestion_field
-from placer.local_search.hard_soft import _three_opt_hard_soft_soft, _two_opt_hard_soft_swap
-from placer.local_search.lsmc_explore import _explore_enabled, _lsmc_explore
-from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
-from placer.local_search.soft_moves import _two_opt_soft_swap
-from placer.local_search.two_opt import _two_opt_proxy_swap
-from placer.ml.data_collection import get_candidate_trace
-from placer.ml.shadow import is_filter_enabled
-from placer.plc.loader import _load_plc
 from placer.scoring.exact import _exact_proxy
-from placer.scoring.incremental import IncrementalScorer
 
-_TRUE_ENV = {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
 _FALSE_ENV = {"", "0", "false", "FALSE", "no", "NO", "off", "OFF"}
 
 
-def _reloc_propose_all_enabled(raw: str | None, gpu_backend: str) -> bool:
-    """Return whether hard relocation should use the propose-all path."""
-    value = (raw or "").strip()
-    if value in _TRUE_ENV:
-        return True
-    if value in _FALSE_ENV:
-        return False
-    if value.lower() in {"auto", "cuda", "gpu"}:
-        return gpu_backend == "cuda"
-    return False
-
-
 class MacroPlacer:
-    """Budgeted placer with restarts, DREAMPlace seeds, and local search."""
+    """Hierarchy-preserving macro placer."""
 
     def __init__(
         self,
@@ -52,21 +26,47 @@ class MacroPlacer:
         seed: int = 42,
         time_budget_s: float = 150.0,
     ):
+        # Kept for API compatibility with previous experiments and harnesses.
         self.n_restarts = n_restarts
-        # Noise sizes for restart placements. Order affects seeded randomness.
         self.noise_fracs = noise_fracs or [
-            0.02, 0.04, 0.06, 0.08,
-            0.01, 0.03, 0.05, 0.07, 0.09,
-            0.06, 0.06, 0.04,
-            0.10, 0.12, 0.08,
-            0.025, 0.035, 0.045, 0.055, 0.065, 0.075,
-            0.15, 0.20, 0.10,
-            0.05, 0.06, 0.07, 0.03, 0.04, 0.02,
-            0.005, 0.010, 0.015, 0.030, 0.050,
+            0.02,
+            0.04,
+            0.06,
+            0.08,
+            0.01,
+            0.03,
+            0.05,
+            0.07,
+            0.09,
+            0.06,
+            0.06,
+            0.04,
+            0.10,
+            0.12,
+            0.08,
+            0.025,
+            0.035,
+            0.045,
+            0.055,
+            0.065,
+            0.075,
+            0.15,
+            0.20,
+            0.10,
+            0.05,
+            0.06,
+            0.07,
+            0.03,
+            0.04,
+            0.02,
+            0.005,
+            0.010,
+            0.015,
+            0.030,
+            0.050,
         ]
         self.seed = seed
         self.time_budget_s = time_budget_s
-        # Optional override for experiments and slower/faster machines.
         _env_budget = os.environ.get("V2_TIME_BUDGET")
         if _env_budget:
             try:
@@ -74,131 +74,8 @@ class MacroPlacer:
             except ValueError:
                 pass
 
-        # Track budget across an evaluate --all run.
-        self._first_place_call_time: Optional[float] = None
         self._benchmarks_done: int = 0
-        # Count only time spent inside place().
         self._total_place_time_s: float = 0.0
-        self.HARNESS_TOTAL_BUDGET_S: float = 3300.0
-        self.HARNESS_TOTAL_BENCHMARKS: int = 17
-        # Directed phases may overrun the soft budget by this much.
-        self.BUDGET_OVERRUN_S: float = 83.0
-        # Reserve enough time so late benchmarks are not starved.
-        self.PER_BENCH_FLOOR_S: float = 110.0
-        self.HARD_CAP_SAFE_S: float = 3540.0
-
-    def _effective_budget(self, t0: float) -> "tuple[float, float]":
-        """Return this benchmark's soft budget and total used time."""
-        if self._first_place_call_time is None:
-            self._first_place_call_time = t0
-        cumulative_elapsed = self._total_place_time_s
-        if self._benchmarks_done >= 1:
-            remaining_total = self.HARNESS_TOTAL_BUDGET_S - cumulative_elapsed
-            remaining_benchmarks = max(
-                1, self.HARNESS_TOTAL_BENCHMARKS - self._benchmarks_done
-            )
-            reserve_others = (
-                (self.PER_BENCH_FLOOR_S + self.BUDGET_OVERRUN_S)
-                * (remaining_benchmarks - 1)
-            )
-            this_cap = remaining_total - reserve_others - self.BUDGET_OVERRUN_S
-            effective_budget_s = min(
-                self.time_budget_s, max(self.PER_BENCH_FLOOR_S, this_cap)
-            )
-            hard_headroom = (
-                self.HARD_CAP_SAFE_S - cumulative_elapsed - self.BUDGET_OVERRUN_S
-            )
-            effective_budget_s = min(effective_budget_s, hard_headroom)
-        else:
-            effective_budget_s = self.time_budget_s
-        return effective_budget_s, cumulative_elapsed
-
-    def _launch_dreamplace_seeds(self, benchmark: Benchmark, plc) -> list:
-        """Start DREAMPlace seed runs in the background when available."""
-        dp_handles = []
-        if os.environ.get("V2_NO_DP", "0").strip() not in _FALSE_ENV:
-            return dp_handles  # DP disabled (paired DP on/off comparison)
-        try:
-            import sys as _sys
-            _v1_dir = str(Path(__file__).resolve().parents[2])
-            if _v1_dir not in _sys.path:
-                _sys.path.insert(0, _v1_dir)
-            from dreamplace_bridge.run_bridge import (  # noqa: E402
-                launch_dreamplace_async, is_available as _dp_available,
-            )
-            if _dp_available():
-                iccad_dir = (Path("external/MacroPlacement/Testcases/ICCAD04")
-                             / benchmark.name)
-                if iccad_dir.exists():
-                    # Try a few settings to get different starting layouts.
-                    for tag, td, root, soft_mv in (
-                        ("lo-fix",  0.65, "/tmp/dreamplace_v1_lofix",   False),
-                        ("hi-mov",  0.85, "/tmp/dreamplace_v1_himov",   True),
-                        ("hi-fix",  0.85, "/tmp/dreamplace_v1_hifix",   False),
-                    ):
-                        try:
-                            h = launch_dreamplace_async(
-                                str(iccad_dir), plc=plc,
-                                scratch_root=root,
-                                timeout_s=120.0,
-                                iterations=300,
-                                num_threads=1,
-                                soft_macros_movable=soft_mv,
-                                target_density=td,
-                            )
-                            dp_handles.append((tag, td, h))
-                        except Exception as exc:
-                            _log(f"  DREAMPlace[{tag}] launch failed: "
-                                 f"{type(exc).__name__}: {exc}")
-
-                    # Optional grouped config: inject cluster clique-nets so DP
-                    # softly keeps connected subsystems together (env-gated,
-                    # default off until validated). Scored as an ordinary gated
-                    # candidate, so it can only add a basin, never regress.
-                    if os.environ.get("V2_DP_GROUP", "0").strip() not in _FALSE_ENV:
-                        try:
-                            from placer.local_search.clusters import (
-                                cluster_max_fanout, cluster_min_edge,
-                                derive_hard_clusters,
-                            )
-                            gw = max(1, int(os.environ.get("V2_DP_GROUP_WEIGHT", "4")))
-                            _n = benchmark.num_hard_macros
-                            _ns = benchmark.num_soft_macros
-                            _, _clusters = derive_hard_clusters(
-                                plc, _n, n_soft=_ns,
-                                max_fanout=cluster_max_fanout(),
-                                min_edge=cluster_min_edge(),
-                            )
-                            hmi = plc.hard_macro_indices
-                            groups = [
-                                [plc.modules_w_pins[hmi[int(a)]].get_name()
-                                 for a in mem]
-                                for mem in _clusters.values()
-                            ]
-                            if groups:
-                                h = launch_dreamplace_async(
-                                    str(iccad_dir), plc=plc,
-                                    scratch_root="/tmp/dreamplace_v1_grp",
-                                    timeout_s=120.0, iterations=300,
-                                    num_threads=1, soft_macros_movable=False,
-                                    target_density=0.85,
-                                    cluster_groups=groups, group_weight=gw,
-                                )
-                                dp_handles.append(("grp", 0.85, h))
-                                _log(f"  DREAMPlace[grp] launched: "
-                                     f"{len(groups)} clusters, weight={gw}")
-                        except Exception as exc:
-                            _log(f"  DREAMPlace[grp] launch failed: "
-                                 f"{type(exc).__name__}: {exc}")
-                    if dp_handles:
-                        _log(f"  DREAMPlace launched async x{len(dp_handles)} "
-                             f"(target_density="
-                             f"{','.join(f'{td:.2f}' for _,td,_ in dp_handles)}, "
-                             f"iter=300, will check after Phase 3)")
-        except Exception as exc:
-            _log(f"  DREAMPlace launch failed: {type(exc).__name__}: {exc}")
-            dp_handles = []
-        return dp_handles
 
     @staticmethod
     def _clamp_in_bounds(pl: torch.Tensor, benchmark: Benchmark) -> torch.Tensor:
@@ -217,27 +94,46 @@ class MacroPlacer:
         return out
 
     def _hierarchy_floorplan(self, benchmark: Benchmark) -> "torch.Tensor | None":
-        """Non-proxy hierarchy-preserving placement (env V2_HIER_FLOORPLAN).
+        """Non-proxy hierarchy-preserving placement.
 
-        Grouped DREAMPlace (clusters + their connected softs) gives a
-        hierarchical global placement; cluster-consecutive legalization keeps
-        each subsystem's members together (the default global order scatters
-        them ~2x); soft-only cleanup recovers some congestion without moving
-        hard macros. Returns a valid placement, or None to fall back to the
-        normal proxy-optimized pipeline (e.g. DREAMPlace unavailable). This
-        trades proxy for hierarchy by design — see ISSUES.md / PROGRESS.md.
+        Grouped DREAMPlace derives a hierarchical global placement, cluster-
+        consecutive legalization keeps each subsystem together, and bounded
+        cleanup recovers some congestion without making proxy score the primary
+        objective.
         """
         from dreamplace_bridge.run_bridge import (  # noqa: E402
-            run_dreamplace, is_available as _dp_available,
+            run_dreamplace,
+            is_available as _dp_available,
         )
         from dreamplace_bridge.bookshelf_to_pb import read_dreamplace_positions_full
         from placer.legalize.spiral import _will_legalize
         from placer.local_search.clusters import (
-            cluster_max_fanout, cluster_min_edge,
-            derive_cluster_softs, derive_hard_clusters,
+            cluster_max_fanout,
+            cluster_min_edge,
+            compute_region_bbox,
+            compute_soft_region_bbox,
+            derive_cluster_softs,
+            derive_hard_clusters,
+            derive_soft_cluster_roles,
+            hier_region_density,
+            hier_region_margin,
+            hier_region_singleton,
         )
-        from placer.local_search.relocation import _soft_relocation_moves
+        from placer.local_search.cluster_decompress import (
+            _cluster_decompression_relief,
+            hierarchy_quality_metric,
+        )
+        from placer.local_search.fields import _congestion_field
+        from placer.local_search.gnn_trace import log_gnn_event
+        from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
+        from placer.local_search.region_expand import expand_regions_by_congestion
+        from placer.local_search.relocation import (
+            _micro_shift_polish,
+            _relocation_moves,
+            _soft_relocation_moves,
+        )
         from placer.scoring.incremental import IncrementalScorer
+        from placer.scoring.wirelength import _build_wl_cache
 
         if not _dp_available():
             return None
@@ -245,22 +141,91 @@ class MacroPlacer:
         if not iccad.exists():
             return None
 
+        def _auto_cuda_flag(name: str, default: str = "0") -> bool:
+            raw = os.environ.get(name, default).strip()
+            if raw.lower() == "auto":
+                return _GPU_BACKEND == "cuda"
+            return raw not in _FALSE_ENV
+
+        hier_post_reloc_top_m_raw = os.environ.get("V2_HIER_POST_RELOC_PROPOSE_TOP_M", "16").strip()
+        hier_post_reloc_top_m = (
+            int(hier_post_reloc_top_m_raw) if hier_post_reloc_top_m_raw else None
+        )
+        hier_reloc_propose_hot_k = max(1, int(os.environ.get("V2_HIER_RELOC_PROPOSE_HOT_K", "32")))
+        hier_post_reloc_propose = _auto_cuda_flag("V2_HIER_POST_RELOC_PROPOSE_ALL", "auto")
+        hier_post_soft_reloc = (
+            os.environ.get("V2_HIER_POST_SOFT_RELOC", "1").strip() not in _FALSE_ENV
+        )
+        hier_post_soft_reloc_top_k = max(
+            1, int(os.environ.get("V2_HIER_POST_SOFT_RELOC_TOP_K", "256"))
+        )
+        hier_post_soft_reloc_min_gain = float(
+            os.environ.get("V2_HIER_POST_SOFT_RELOC_MIN_GAIN", "0.0005")
+        )
+        hier_reloc_propose_min_gain = float(
+            os.environ.get("V2_HIER_RELOC_PROPOSE_MIN_GAIN", "0.0005")
+        )
+        hier_region_heat_frac = float(os.environ.get("V2_HIER_REGION_HEAT_FRAC", "0.04"))
+        hier_region_heat_pct = float(os.environ.get("V2_HIER_REGION_HEAT_HOT_PCT", "70"))
+        hier_region_heat_escape = float(os.environ.get("V2_HIER_REGION_HEAT_ESCAPE_MIN", "0.25"))
+        hier_micro_shift = os.environ.get("V2_HIER_MICRO_SHIFT", "1").strip() not in _FALSE_ENV
+        hier_micro_shift_radius = max(1, int(os.environ.get("V2_HIER_MICRO_SHIFT_RADIUS", "2")))
+        hier_micro_shift_top = max(1, int(os.environ.get("V2_HIER_MICRO_SHIFT_TOP", "96")))
+        hier_micro_shift_min_gain = float(os.environ.get("V2_HIER_MICRO_SHIFT_MIN_GAIN", "0.00001"))
+        hier_post_swap_micro = (
+            os.environ.get("V2_HIER_POST_SWAP_MICRO_SHIFT", "1").strip() not in _FALSE_ENV
+        )
+        hier_post_coldspot_micro = (
+            os.environ.get("V2_HIER_POST_COLDSPOT_MICRO_SHIFT", "1").strip() not in _FALSE_ENV
+        )
+        hier_decompress_aniso = (
+            os.environ.get("V2_HIER_DECOMPRESS_ANISO", "1").strip() not in _FALSE_ENV
+        )
+        from placer.plc.loader import _load_plc
+
         plc = _load_plc(benchmark.name, benchmark)
         n = benchmark.num_hard_macros
         n_soft = benchmark.num_soft_macros
         cw, ch = float(benchmark.canvas_width), float(benchmark.canvas_height)
         sizes = benchmark.macro_sizes.numpy().astype(np.float64)
         hw, hh = sizes[:n, 0] / 2.0, sizes[:n, 1] / 2.0
-        soft_hw, soft_hh = sizes[n:n + n_soft, 0] / 2.0, sizes[n:n + n_soft, 1] / 2.0
+        soft_hw, soft_hh = sizes[n : n + n_soft, 0] / 2.0, sizes[n : n + n_soft, 1] / 2.0
         movable = benchmark.get_movable_mask().numpy()
         gw = max(1, int(os.environ.get("V2_HIER_GROUP_WEIGHT", "8")))
 
-        # Derive clusters and build DP groups (hard members + their softs).
         labels, clusters = derive_hard_clusters(
-            plc, n, n_soft=n_soft, max_fanout=cluster_max_fanout(),
+            plc,
+            n,
+            n_soft=n_soft,
+            max_fanout=cluster_max_fanout(),
             min_edge=cluster_min_edge(),
         )
-        csofts = derive_cluster_softs(plc, n, n_soft, labels)
+
+        def _trace_pass(pass_name: str, before: float, after: float, accepts: int, **extra) -> None:
+            log_gnn_event(
+                "hier_pass_result",
+                benchmark=benchmark.name,
+                hierarchy_pass=pass_name,
+                proxy_before=float(before),
+                proxy_after=float(after),
+                proxy_delta=float(after) - float(before),
+                accepts=int(accepts),
+                **extra,
+            )
+
+        bridge_ratio = float(os.environ.get("V2_HIER_BRIDGE_SOFT_RATIO", "0.6"))
+        if os.environ.get("V2_HIER_BRIDGE_SOFTS", "1").strip() not in _FALSE_ENV:
+            csofts, bridge_softs = derive_soft_cluster_roles(
+                plc,
+                n,
+                n_soft,
+                labels,
+                max_fanout=cluster_max_fanout(),
+                bridge_ratio=bridge_ratio,
+            )
+        else:
+            csofts = derive_cluster_softs(plc, n, n_soft, labels)
+            bridge_softs = {}
         hmi, smi = plc.hard_macro_indices, plc.soft_macro_indices
         groups = []
         for cid, mem in clusters.items():
@@ -269,52 +234,882 @@ class MacroPlacer:
                 names.append(plc.modules_w_pins[smi[int(p) - n]].get_name())
             groups.append(names)
 
+        def _full_tensor(hard_xy, soft_xy):
+            return torch.tensor(
+                np.vstack([hard_xy, soft_xy]).astype(np.float32), dtype=torch.float32
+            )
+
+        def _hard_connectivity_pressure() -> np.ndarray:
+            pressure = np.zeros(n, dtype=np.float64)
+            cache = _build_wl_cache(plc)
+            ref_idx = cache["ref_idx"]
+            net_starts = cache["net_starts"]
+            net_lengths = cache["net_lengths"]
+            net_weights = cache["net_weights"]
+            b_to_a = {int(b): a for a, b in enumerate(plc.hard_macro_indices)}
+            max_fanout = cluster_max_fanout()
+            for net_i in range(len(net_starts)):
+                length = int(net_lengths[net_i])
+                if length < 2 or length > max_fanout:
+                    continue
+                start = int(net_starts[net_i])
+                hard_a = [
+                    b_to_a[int(r)] for r in ref_idx[start : start + length] if int(r) in b_to_a
+                ]
+                if not hard_a:
+                    continue
+                add = float(net_weights[net_i]) / max(1.0, float(len(hard_a) - 1))
+                for i in hard_a:
+                    pressure[int(i)] += add
+            return pressure
+
+        use_conn_order = os.environ.get("V2_HIER_LEGALIZE_CONNECTIVITY_ORDER", "1").strip()
+        if use_conn_order not in _FALSE_ENV:
+            area = sizes[:n, 0] * sizes[:n, 1]
+            pressure = _hard_connectivity_pressure()
+
+            def _member_key(i: int) -> tuple[float, float]:
+                return (-(pressure[i] * area[i]), -area[i])
+
+            def _cluster_key(mem: np.ndarray) -> tuple[float, int]:
+                return (-float(np.sum(pressure[mem] * area[mem])), -int(mem.size))
+
+            order = []
+            for mem in sorted(clusters.values(), key=_cluster_key):
+                order += sorted((int(x) for x in mem), key=_member_key)
+            order += sorted([i for i in range(n) if labels[i] < 0], key=_member_key)
+        else:
+            order = []
+            for mem in sorted(clusters.values(), key=lambda m: -m.size):
+                order += sorted((int(x) for x in mem), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
+            order += sorted(
+                [i for i in range(n) if labels[i] < 0],
+                key=lambda i: -(sizes[i, 0] * sizes[i, 1]),
+            )
+
+        def _prepare_dreamplace_candidate(
+            *,
+            group_weight: int,
+            random_seed: int,
+            scratch_root: str,
+        ):
+            run_dreamplace(
+                str(iccad),
+                plc=plc,
+                scratch_root=scratch_root,
+                iterations=300,
+                num_threads=2,
+                random_seed=random_seed,
+                soft_macros_movable=True,
+                cluster_groups=(groups or None),
+                group_weight=group_weight,
+            )
+            raw_hard, raw_soft = read_dreamplace_positions_full(
+                plc, f"{scratch_root}/{benchmark.name}", benchmark.name
+            )
+            legal_hard = _will_legalize(
+                raw_hard.copy(),
+                movable[:n],
+                sizes[:n],
+                hw,
+                hh,
+                cw,
+                ch,
+                n,
+                deadline=time.monotonic() + 120,
+                order=order,
+            )
+            legal_hard = _will_legalize(
+                legal_hard,
+                movable[:n],
+                sizes[:n],
+                hw,
+                hh,
+                cw,
+                ch,
+                n,
+                deadline=time.monotonic() + 120,
+                order=None,
+            )
+
+            cand_pos = np.vstack([legal_hard, raw_soft]).astype(np.float64)
+            cand_soft = raw_soft.copy()
+            cand_score = float(
+                _exact_proxy(torch.tensor(cand_pos, dtype=torch.float32), benchmark, plc)
+            )
+            cand_scorer = IncrementalScorer(plc, benchmark, cand_pos.copy())
+            soft_mov_local = movable[n : n + n_soft]
+            for use_density in (False, True):
+                cand_soft, _, cand_score = _soft_relocation_moves(
+                    cand_soft,
+                    soft_hw,
+                    soft_hh,
+                    cw,
+                    ch,
+                    n,
+                    plc,
+                    benchmark,
+                    cand_scorer,
+                    cand_score,
+                    deadline=time.monotonic() + 30,
+                    top_hot=1024,
+                    n_targets=6,
+                    soft_movable=soft_mov_local,
+                    use_density=use_density,
+                )
+            return legal_hard, cand_soft, cand_score
+
         try:
-            run_dreamplace(str(iccad), plc=plc, scratch_root="/tmp/dreamplace_v1_hier",
-                           iterations=300, num_threads=2, soft_macros_movable=True,
-                           cluster_groups=(groups or None), group_weight=gw)
-            hard, soft = read_dreamplace_positions_full(
-                plc, f"/tmp/dreamplace_v1_hier/{benchmark.name}", benchmark.name)
+            hard, soft, s_score = _prepare_dreamplace_candidate(
+                group_weight=gw,
+                random_seed=1000,
+                scratch_root="/tmp/dreamplace_v1_hier",
+            )
         except Exception as exc:
             _log(f"  [hier] DREAMPlace failed: {type(exc).__name__}: {exc}")
             return None
 
-        # Cluster-consecutive legalization order: each cluster's members
-        # back-to-back so they claim their region before other clusters.
-        order = []
-        for mem in sorted(clusters.values(), key=lambda m: -m.size):
-            order += sorted((int(x) for x in mem), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
-        order += sorted([i for i in range(n) if labels[i] < 0],
-                        key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
-        legal = _will_legalize(hard.copy(), movable[:n], sizes[:n], hw, hh, cw, ch, n,
-                               deadline=time.monotonic() + 120, order=order)
-        # Safety pass: dense cluster packing can leave one macro at an
-        # overlapping fallback. A default-order re-legalize keeps every
-        # non-conflicting macro in place (in-place accept) and only nudges the
-        # offender, guaranteeing a valid (overlap-free) hard placement.
-        legal = _will_legalize(legal, movable[:n], sizes[:n], hw, hh, cw, ch, n,
-                               deadline=time.monotonic() + 120, order=None)
-
-        # Soft-only cleanup (hard untouched -> hierarchy preserved).
-        pos = np.vstack([legal, soft]).astype(np.float64)
+        legal = hard
         s_pos = soft.copy()
-        s_score = float(_exact_proxy(torch.tensor(pos, dtype=torch.float32), benchmark, plc))
+        pos = np.vstack([legal, s_pos]).astype(np.float64)
         scorer = IncrementalScorer(plc, benchmark, pos.copy())
-        soft_mov = movable[n:n + n_soft]
-        for use_density in (False, True):
-            s_pos, _, s_score = _soft_relocation_moves(
-                s_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark, scorer, s_score,
-                deadline=time.monotonic() + 30, top_hot=1024, n_targets=6,
-                soft_movable=soft_mov, use_density=use_density)
+        soft_mov = movable[n : n + n_soft]
+
+        pre_relief = s_score
+        region = None
+        soft_region = None
+        if os.environ.get("V2_HIER_REGION_RELIEF", "1").strip() not in _FALSE_ENV:
+            nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
+            base_heat_field = _congestion_field(scorer, nr, nc)
+            cluster_heat = None
+
+            def _cluster_heat(field):
+                if field is None or not clusters:
+                    return None
+                cell_w, cell_h = float(cw) / nc, float(ch) / nr
+                out = {}
+                for cid, mem in clusters.items():
+                    mem = np.asarray(mem, dtype=np.int64)
+                    if mem.size == 0:
+                        continue
+                    ci = np.clip((legal[mem, 0] / cell_w).astype(np.int64), 0, nc - 1)
+                    ri = np.clip((legal[mem, 1] / cell_h).astype(np.int64), 0, nr - 1)
+                    out[int(cid)] = float(field[ri, ci].mean())
+                return out
+
+            if hier_region_heat_frac > 0.0:
+                cluster_heat = _cluster_heat(base_heat_field)
+            region = compute_region_bbox(
+                legal,
+                sizes[:n],
+                hw,
+                hh,
+                cw,
+                ch,
+                n,
+                labels,
+                clusters,
+                target_density=hier_region_density(),
+                margin=hier_region_margin(),
+                singleton_window=hier_region_singleton(),
+                cluster_heat=cluster_heat,
+                heat_expand_frac=hier_region_heat_frac,
+                heat_hot_percentile=hier_region_heat_pct,
+                heat_escape_min=hier_region_heat_escape,
+            )
+            soft_region = compute_soft_region_bbox(
+                legal,
+                s_pos,
+                sizes[:n],
+                hw,
+                hh,
+                soft_hw,
+                soft_hh,
+                cw,
+                ch,
+                n,
+                clusters,
+                csofts,
+                bridge_softs=bridge_softs,
+                target_density=hier_region_density(),
+                margin=hier_region_margin(),
+                singleton_window=hier_region_singleton(),
+                cluster_heat=cluster_heat,
+                heat_expand_frac=hier_region_heat_frac,
+                heat_hot_percentile=hier_region_heat_pct,
+                heat_escape_min=hier_region_heat_escape,
+            )
+            if os.environ.get("V2_HIER_CONG_EXPAND_REGIONS", "1").strip() not in _FALSE_ENV:
+                expand_field = base_heat_field
+                region, soft_region, n_expanded = expand_regions_by_congestion(
+                    region,
+                    soft_region,
+                    legal,
+                    s_pos,
+                    clusters,
+                    csofts,
+                    bridge_softs,
+                    hw,
+                    hh,
+                    soft_hw,
+                    soft_hh,
+                    cw,
+                    ch,
+                    expand_field,
+                    hot_percentile=float(os.environ.get("V2_HIER_REGION_EXPAND_HOT_PCT", "60")),
+                    max_expand_frac=float(os.environ.get("V2_HIER_REGION_EXPAND_FRAC", "0.08")),
+                    side_band=max(1, int(os.environ.get("V2_HIER_REGION_EXPAND_BAND", "3"))),
+                )
+                if n_expanded:
+                    _log(f"  [hier] congestion-expanded regions: {n_expanded} clusters")
+            bias = float(os.environ.get("V2_REGION_BIAS", "1.0"))
+            escape_min = float(os.environ.get("V2_HIER_REGION_ESCAPE_MIN", "0.002"))
+            rounds = max(1, int(os.environ.get("V2_HIER_REGION_ROUNDS", "2")))
+            rdeadline = time.monotonic() + float(os.environ.get("V2_HIER_REGION_BUDGET_S", "40"))
+            h_pos = legal.copy()
+            full = np.vstack([h_pos, s_pos]).astype(np.float64)
+            r_score = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
+            rscorer = IncrementalScorer(plc, benchmark, full.copy())
+            best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+
+            def _hard_valid(hard_xy):
+                if hard_xy.shape[0] == 0:
+                    return True
+                if np.any(hard_xy[:, 0] < hw - 1e-6) or np.any(hard_xy[:, 0] > cw - hw + 1e-6):
+                    return False
+                if np.any(hard_xy[:, 1] < hh - 1e-6) or np.any(hard_xy[:, 1] > ch - hh + 1e-6):
+                    return False
+                dx = np.abs(hard_xy[:, None, 0] - hard_xy[None, :, 0])
+                dy = np.abs(hard_xy[:, None, 1] - hard_xy[None, :, 1])
+                ok = (dx + 1e-6 >= (hw[:, None] + hw[None, :])) | (
+                    dy + 1e-6 >= (hh[:, None] + hh[None, :])
+                )
+                np.fill_diagonal(ok, True)
+                return bool(ok.all())
+
+            for _ in range(rounds):
+                if time.monotonic() >= rdeadline:
+                    break
+                if hier_micro_shift:
+                    before_micro = r_score
+                    micro_acc = 0
+                    for use_density in (False, True):
+                        h_pos, s_pos, got, r_score = _micro_shift_polish(
+                            h_pos,
+                            s_pos,
+                            sizes[:n],
+                            hw,
+                            hh,
+                            soft_hw,
+                            soft_hh,
+                            cw,
+                            ch,
+                            movable[:n],
+                            soft_mov,
+                            n,
+                            plc,
+                            benchmark,
+                            rscorer,
+                            r_score,
+                            hard_region=region,
+                            soft_region=soft_region,
+                            deadline=rdeadline,
+                            radius_cells=hier_micro_shift_radius,
+                            top_hot=hier_micro_shift_top,
+                            min_gain=hier_micro_shift_min_gain,
+                            use_density=use_density,
+                        )
+                        micro_acc += got
+                    if micro_acc:
+                        _log(
+                            f"  [hier] micro-shift polish: {micro_acc} accepts, "
+                            f"proxy {before_micro:.4f}->{r_score:.4f}"
+                        )
+                    _trace_pass(
+                        "micro_shift",
+                        before_micro,
+                        r_score,
+                        micro_acc,
+                        quality=hierarchy_quality_metric(h_pos, clusters),
+                    )
+                reloc_acc = 0
+                for use_density in (False, True):
+                    h_pos, got, r_score = _relocation_moves(
+                        h_pos,
+                        sizes[:n],
+                        hw,
+                        hh,
+                        cw,
+                        ch,
+                        movable[:n],
+                        n,
+                        plc,
+                        benchmark,
+                        rscorer,
+                        r_score,
+                        deadline=rdeadline,
+                        top_hot=128,
+                        n_targets=16,
+                        use_density=use_density,
+                        propose_all=False,
+                        propose_top_m=None,
+                        region_bbox=region,
+                        region_bias=bias,
+                        region_escape_min=escape_min,
+                    )
+                    reloc_acc += got
+                soft_reloc_acc = 0
+                for use_density in (False, True):
+                    s_pos, got, r_score = _soft_relocation_moves(
+                        s_pos,
+                        soft_hw,
+                        soft_hh,
+                        cw,
+                        ch,
+                        n,
+                        plc,
+                        benchmark,
+                        rscorer,
+                        r_score,
+                        deadline=rdeadline,
+                        top_hot=1024,
+                        n_targets=6,
+                        soft_movable=soft_mov,
+                        use_density=use_density,
+                        region_bbox=soft_region,
+                        region_bias=bias,
+                        region_escape_min=escape_min,
+                    )
+                    soft_reloc_acc += got
+            if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+            if os.environ.get("V2_HIER_DECOMPRESS", "1").strip() not in _FALSE_ENV:
+                pre_decomp_h, pre_decomp_s, pre_decomp_score = h_pos.copy(), s_pos.copy(), r_score
+                d_deadline = min(
+                    rdeadline,
+                    time.monotonic() + float(os.environ.get("V2_HIER_DECOMPRESS_BUDGET_S", "18")),
+                )
+                h_pos, s_pos, d_acc, r_score, hq = _cluster_decompression_relief(
+                    h_pos,
+                    s_pos,
+                    sizes[:n],
+                    hw,
+                    hh,
+                    soft_hw,
+                    soft_hh,
+                    cw,
+                    ch,
+                    movable[:n],
+                    soft_mov,
+                    n,
+                    clusters,
+                    csofts,
+                    bridge_softs,
+                    region,
+                    soft_region,
+                    plc,
+                    benchmark,
+                    r_score,
+                    deadline=d_deadline,
+                    rounds=max(1, int(os.environ.get("V2_HIER_DECOMPRESS_ROUNDS", "2"))),
+                    hot_percentile=float(os.environ.get("V2_HIER_DECOMPRESS_HOT_PCT", "65")),
+                    quality_budget=float(os.environ.get("V2_HIER_QUALITY_BUDGET", "0.03")),
+                    min_proxy_gain=float(os.environ.get("V2_HIER_DECOMPRESS_MIN_GAIN", "0.0001")),
+                    anisotropic=hier_decompress_aniso,
+                    anisotropic_band=max(
+                        1, int(os.environ.get("V2_HIER_DECOMPRESS_ANISO_BAND", "3"))
+                    ),
+                    anisotropic_secondary=float(
+                        os.environ.get("V2_HIER_DECOMPRESS_ANISO_SECONDARY", "0.25")
+                    ),
+                )
+                invalid_decomp = not _hard_valid(h_pos)
+                weak_decomp = (
+                    d_acc
+                    and os.environ.get("V2_HIER_ROLLBACK_WEAK_DECOMP", "1").strip()
+                    not in _FALSE_ENV
+                    and r_score
+                    > pre_decomp_score
+                    - float(os.environ.get("V2_HIER_DECOMPRESS_MIN_GAIN", "0.0001"))
+                )
+                if invalid_decomp or weak_decomp:
+                    h_pos, s_pos, r_score = pre_decomp_h, pre_decomp_s, pre_decomp_score
+                    d_acc = 0
+                if d_acc:
+                    full = np.vstack([h_pos, s_pos]).astype(np.float64)
+                    rscorer = IncrementalScorer(plc, benchmark, full.copy())
+                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                _log(
+                    f"  [hier] cluster decompression: {d_acc} accepts, "
+                    f"quality={hq:.4f}, proxy={r_score:.4f}"
+                )
+                _trace_pass(
+                    "cluster_decompression",
+                    pre_decomp_score,
+                    r_score,
+                    d_acc,
+                    quality=float(hq),
+                    rolled_back=bool(invalid_decomp or weak_decomp),
+                )
+            if os.environ.get("V2_HIER_REGION_SWAPS", "1").strip() not in _FALSE_ENV:
+                swap_rounds = max(1, int(os.environ.get("V2_HIER_REGION_SWAP_ROUNDS", "2")))
+                swap_deadline = min(
+                    rdeadline,
+                    time.monotonic() + float(os.environ.get("V2_HIER_REGION_SWAP_BUDGET_S", "20")),
+                )
+                hard_k = max(1, int(os.environ.get("V2_HIER_HARD_SWAP_K", "16")))
+                soft_k = max(1, int(os.environ.get("V2_HIER_SOFT_SWAP_K", "48")))
+                swap_min_gain = float(os.environ.get("V2_HIER_SWAP_MIN_GAIN", "0.00001"))
+                swap_min_field = float(os.environ.get("V2_HIER_SWAP_MIN_FIELD_RELIEF", "0.0"))
+                enable_hh = os.environ.get("V2_HIER_SWAP_HH", "1").strip() not in _FALSE_ENV
+                enable_hs = os.environ.get("V2_HIER_SWAP_HS", "1").strip() not in _FALSE_ENV
+                enable_ss = os.environ.get("V2_HIER_SWAP_SS", "1").strip() not in _FALSE_ENV
+                use_density_swaps = (
+                    os.environ.get("V2_HIER_SWAP_DENSITY_FIELD", "1").strip() not in _FALSE_ENV
+                )
+                swap_stats = {
+                    "hh_scores": 0,
+                    "hh_accepts": 0,
+                    "hh_escape_accepts": 0,
+                    "hs_scores": 0,
+                    "hs_accepts": 0,
+                    "hs_escape_accepts": 0,
+                    "ss_scores": 0,
+                    "ss_accepts": 0,
+                    "ss_escape_accepts": 0,
+                    "proxy_gain": 0.0,
+                }
+                swap_acc = 0
+                pre_swap_score = r_score
+                fields = (False, True) if use_density_swaps else (False,)
+                for use_density in fields:
+                    h_pos, s_pos, got, r_score, stats = _region_bounded_swap_relief(
+                        h_pos,
+                        s_pos,
+                        sizes[:n],
+                        hw,
+                        hh,
+                        soft_hw,
+                        soft_hh,
+                        cw,
+                        ch,
+                        movable[:n],
+                        soft_mov,
+                        benchmark,
+                        rscorer,
+                        r_score,
+                        region,
+                        soft_region,
+                        deadline=swap_deadline,
+                        rounds=swap_rounds,
+                        hard_k=hard_k,
+                        soft_k=soft_k,
+                        region_bias=bias,
+                        escape_min=escape_min,
+                        min_gain=swap_min_gain,
+                        min_field_relief=swap_min_field,
+                        enable_hh=enable_hh,
+                        enable_hs=enable_hs,
+                        enable_ss=enable_ss,
+                        use_density=use_density,
+                    )
+                    swap_acc += got
+                    for k, v in stats.items():
+                        swap_stats[k] += v
+                if not _hard_valid(h_pos):
+                    h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
+                    full = np.vstack([h_pos, s_pos]).astype(np.float64)
+                    rscorer = IncrementalScorer(plc, benchmark, full.copy())
+                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                _log(
+                    f"  [hier] region swaps: {swap_acc} accepts "
+                    f"(hh {swap_stats['hh_accepts']}/{swap_stats['hh_scores']}, "
+                    f"hs {swap_stats['hs_accepts']}/{swap_stats['hs_scores']}, "
+                    f"ss {swap_stats['ss_accepts']}/{swap_stats['ss_scores']}, "
+                    f"esc {swap_stats['hh_escape_accepts'] + swap_stats['hs_escape_accepts'] + swap_stats['ss_escape_accepts']}, "
+                    f"gain {swap_stats['proxy_gain']:.4f}), proxy={r_score:.4f}"
+                )
+                _trace_pass(
+                    "region_swaps",
+                    pre_swap_score,
+                    r_score,
+                    swap_acc,
+                    stats=swap_stats,
+                    quality=hierarchy_quality_metric(h_pos, clusters),
+                )
+            if hier_post_swap_micro:
+                post_micro_deadline = min(
+                    rdeadline,
+                    time.monotonic()
+                    + float(os.environ.get("V2_HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S", "8")),
+                )
+                pre_post_micro_score = r_score
+                post_micro_acc = 0
+                for use_density in (False, True):
+                    h_pos, s_pos, got, r_score = _micro_shift_polish(
+                        h_pos,
+                        s_pos,
+                        sizes[:n],
+                        hw,
+                        hh,
+                        soft_hw,
+                        soft_hh,
+                        cw,
+                        ch,
+                        movable[:n],
+                        soft_mov,
+                        n,
+                        plc,
+                        benchmark,
+                        rscorer,
+                        r_score,
+                        hard_region=region,
+                        soft_region=soft_region,
+                        deadline=post_micro_deadline,
+                        radius_cells=hier_micro_shift_radius,
+                        top_hot=hier_micro_shift_top,
+                        min_gain=hier_micro_shift_min_gain,
+                        use_density=use_density,
+                    )
+                    post_micro_acc += got
+                if not _hard_valid(h_pos):
+                    h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
+                    full = np.vstack([h_pos, s_pos]).astype(np.float64)
+                    rscorer = IncrementalScorer(plc, benchmark, full.copy())
+                    post_micro_acc = 0
+                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                _log(
+                    f"  [hier] post-swap micro-shift replay: {post_micro_acc} accepts, "
+                    f"proxy {pre_post_micro_score:.4f}->{r_score:.4f}"
+                )
+                _trace_pass(
+                    "post_swap_micro_shift",
+                    pre_post_micro_score,
+                    r_score,
+                    post_micro_acc,
+                    quality=hierarchy_quality_metric(h_pos, clusters),
+                )
+            if hier_post_reloc_propose:
+                post_deadline = min(
+                    rdeadline,
+                    time.monotonic()
+                    + float(os.environ.get("V2_HIER_POST_RELOC_PROPOSE_BUDGET_S", "8")),
+                )
+                pre_post_score = r_score
+                h_pos, post_acc, r_score = _relocation_moves(
+                    h_pos,
+                    sizes[:n],
+                    hw,
+                    hh,
+                    cw,
+                    ch,
+                    movable[:n],
+                    n,
+                    plc,
+                    benchmark,
+                    rscorer,
+                    r_score,
+                    deadline=post_deadline,
+                    top_hot=hier_reloc_propose_hot_k,
+                    n_targets=16,
+                    use_density=False,
+                    propose_all=True,
+                    propose_top_m=hier_post_reloc_top_m,
+                    region_bbox=region,
+                    region_bias=bias,
+                    region_escape_min=escape_min,
+                    propose_accept_min_gain=hier_reloc_propose_min_gain,
+                )
+                if not _hard_valid(h_pos):
+                    h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
+                    full = np.vstack([h_pos, s_pos]).astype(np.float64)
+                    rscorer = IncrementalScorer(plc, benchmark, full.copy())
+                    post_acc = 0
+                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                _log(
+                    f"  [hier] post-swap hard propose-all: {post_acc} accepts, "
+                    f"proxy {pre_post_score:.4f}->{r_score:.4f}"
+                )
+                _trace_pass(
+                    "post_swap_hard_propose_all",
+                    pre_post_score,
+                    r_score,
+                    post_acc,
+                    quality=hierarchy_quality_metric(h_pos, clusters),
+                )
+            if hier_post_soft_reloc:
+                post_soft_deadline = min(
+                    rdeadline,
+                    time.monotonic()
+                    + float(os.environ.get("V2_HIER_POST_SOFT_RELOC_BUDGET_S", "8")),
+                )
+                pre_post_soft_score = r_score
+                post_soft_acc = 0
+                for use_density in (False, True):
+                    s_pos, got, r_score = _soft_relocation_moves(
+                        s_pos,
+                        soft_hw,
+                        soft_hh,
+                        cw,
+                        ch,
+                        n,
+                        plc,
+                        benchmark,
+                        rscorer,
+                        r_score,
+                        deadline=post_soft_deadline,
+                        top_hot=hier_post_soft_reloc_top_k,
+                        n_targets=6,
+                        soft_movable=soft_mov,
+                        use_density=use_density,
+                        region_bbox=soft_region,
+                        region_bias=bias,
+                        region_escape_min=escape_min,
+                        accept_min_gain=hier_post_soft_reloc_min_gain,
+                    )
+                    post_soft_acc += got
+                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                _log(
+                    f"  [hier] post-swap soft relocation: {post_soft_acc} accepts, "
+                    f"proxy {pre_post_soft_score:.4f}->{r_score:.4f}"
+                )
+                _trace_pass(
+                    "post_swap_soft_relocation",
+                    pre_post_soft_score,
+                    r_score,
+                    post_soft_acc,
+                    quality=hierarchy_quality_metric(h_pos, clusters),
+                )
+            legal_candidate = _will_legalize(
+                h_pos,
+                movable[:n],
+                sizes[:n],
+                hw,
+                hh,
+                cw,
+                ch,
+                n,
+                deadline=time.monotonic() + 30,
+                order=order,
+            )
+            legal_score = float(
+                _exact_proxy(
+                    torch.tensor(
+                        np.vstack([legal_candidate, s_pos]).astype(np.float32),
+                        dtype=torch.float32,
+                    ),
+                    benchmark,
+                    plc,
+                )
+            )
+            if legal_score <= best_score + 1e-9:
+                legal = legal_candidate
+                best_h, best_s, best_score = legal.copy(), s_pos.copy(), legal_score
+            elif _hard_valid(best_h):
+                legal, s_pos = best_h.copy(), best_s.copy()
+            else:
+                legal = legal_candidate
+
+        if os.environ.get("V2_HIER_COLDSPOT_KICK", "1").strip() not in _FALSE_ENV:
+            from placer.local_search.lsmc_explore import _coldspot_cluster_kick
+
+            ck_budget = float(os.environ.get("V2_HIER_COLDSPOT_BUDGET", "0.0"))
+            ck_total = float(os.environ.get("V2_HIER_COLDSPOT_TOTAL", "0.0"))
+            ck_min_gain = float(os.environ.get("V2_HIER_COLDSPOT_MIN_GAIN", "0.0001"))
+            ck_quality_budget = float(os.environ.get("V2_HIER_COLDSPOT_QUALITY_BUDGET", "0.01"))
+            ck_rounds = max(1, int(os.environ.get("V2_HIER_COLDSPOT_ROUNDS", "8")))
+            ck_min_field_gap = float(os.environ.get("V2_HIER_COLDSPOT_MIN_FIELD_GAP", "0.02"))
+            ck_deadline = time.monotonic() + float(
+                os.environ.get("V2_HIER_COLDSPOT_BUDGET_S", "30")
+            )
+            nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
+            soft_mov = movable[n : n + n_soft]
+
+            def _full(h, sft):
+                return torch.tensor(np.vstack([h, sft]).astype(np.float32), dtype=torch.float32)
+
+            def _min_window_avg(field: np.ndarray, win_cells: int) -> float:
+                w = int(max(1, min(win_cells, nr, nc)))
+                rows, cols = nr - w + 1, nc - w + 1
+                if rows <= 0 or cols <= 0:
+                    return float(np.min(field))
+                integ = np.zeros((nr + 1, nc + 1), dtype=np.float64)
+                integ[1:, 1:] = np.cumsum(np.cumsum(field, axis=0), axis=1)
+                win_sum = (
+                    integ[w : w + rows, w : w + cols]
+                    - integ[0:rows, w : w + cols]
+                    - integ[w : w + rows, 0:cols]
+                    + integ[0:rows, 0:cols]
+                )
+                return float(np.min(win_sum) / float(w * w))
+
+            def _coldspot_field_gap(field: np.ndarray) -> float:
+                cell_w, cell_h = cw / nc, ch / nr
+                mcol = np.clip((cur_h[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
+                mrow = np.clip((cur_h[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
+                macro_cong = field[mrow, mcol]
+                best_gap = -np.inf
+                for members in clusters.values():
+                    members = members[movable[:n][members]]
+                    if members.size < 2 or members.size > 64:
+                        continue
+                    member_area = float(np.sum(sizes[members, 0] * sizes[members, 1]))
+                    win_microns = float(np.sqrt(member_area / 0.65))
+                    win_cells = max(1, int(np.ceil(win_microns / min(cell_w, cell_h))))
+                    gap = float(np.mean(macro_cong[members])) - _min_window_avg(field, win_cells)
+                    if gap > best_gap:
+                        best_gap = gap
+                return best_gap
+
+            cur_h, cur_s = legal.copy(), s_pos.copy()
+            base_proxy = float(_exact_proxy(_full(cur_h, cur_s), benchmark, plc))
+            cur_proxy, cur_quality = base_proxy, hierarchy_quality_metric(cur_h, clusters)
+            ck_scorer = IncrementalScorer(
+                plc,
+                benchmark,
+                np.vstack([cur_h, cur_s]).astype(np.float64),
+            )
+            ck_rng = np.random.default_rng(0)
+            ck_acc = 0
+            for _ in range(ck_rounds):
+                if time.monotonic() >= ck_deadline:
+                    break
+                field = _congestion_field(ck_scorer, nr, nc)
+                if field is None:
+                    break
+                field_gap = _coldspot_field_gap(field)
+                if field_gap < ck_min_field_gap:
+                    _log(
+                        f"  [hier] coldspot tightening: skipped, "
+                        f"field_gap={field_gap:.4f} < {ck_min_field_gap:.4f}"
+                    )
+                    break
+                res = _coldspot_cluster_kick(
+                    cur_h,
+                    sizes[:n],
+                    hw,
+                    hh,
+                    cw,
+                    ch,
+                    movable[:n],
+                    n,
+                    clusters,
+                    csofts,
+                    cur_s,
+                    soft_hw,
+                    soft_hh,
+                    soft_mov,
+                    field,
+                    nr,
+                    nc,
+                    ck_rng,
+                    deadline=ck_deadline,
+                    pick="random",
+                )
+                if res is None:
+                    continue
+                kh, ks = res
+                ks = ks if ks is not None else cur_s
+                kproxy = float(_exact_proxy(_full(kh, ks), benchmark, plc))
+                kquality = hierarchy_quality_metric(kh, clusters)
+                if (
+                    kquality <= cur_quality + ck_quality_budget
+                    and kproxy <= cur_proxy + ck_budget
+                    and kproxy <= base_proxy + ck_total
+                    and kproxy < cur_proxy - ck_min_gain
+                ):
+                    cur_h, cur_s, cur_proxy, cur_quality = kh, ks, kproxy, kquality
+                    ck_scorer = IncrementalScorer(
+                        plc,
+                        benchmark,
+                        np.vstack([cur_h, cur_s]).astype(np.float64),
+                    )
+                    ck_acc += 1
+            legal, s_pos = cur_h, cur_s
+            _log(
+                f"  [hier] coldspot tightening: {ck_acc} accepts, "
+                f"quality={cur_quality:.4f}, proxy {base_proxy:.4f}->{cur_proxy:.4f}"
+            )
+            _trace_pass(
+                "coldspot_tightening",
+                base_proxy,
+                cur_proxy,
+                ck_acc,
+                quality=float(cur_quality),
+            )
+
+            if hier_post_coldspot_micro and region is not None and soft_region is not None:
+                post_ck_micro_deadline = min(
+                    ck_deadline,
+                    time.monotonic()
+                    + float(os.environ.get("V2_HIER_POST_COLDSPOT_MICRO_SHIFT_BUDGET_S", "8")),
+                )
+                post_ck_micro_acc = 0
+                pre_post_ck_micro_score = cur_proxy
+                full = np.vstack([legal, s_pos]).astype(np.float64)
+                ck_scorer = IncrementalScorer(plc, benchmark, full.copy())
+                for use_density in (False, True):
+                    legal, s_pos, got, cur_proxy = _micro_shift_polish(
+                        legal,
+                        s_pos,
+                        sizes[:n],
+                        hw,
+                        hh,
+                        soft_hw,
+                        soft_hh,
+                        cw,
+                        ch,
+                        movable[:n],
+                        soft_mov,
+                        n,
+                        plc,
+                        benchmark,
+                        ck_scorer,
+                        cur_proxy,
+                        hard_region=region,
+                        soft_region=soft_region,
+                        deadline=post_ck_micro_deadline,
+                        radius_cells=hier_micro_shift_radius,
+                        top_hot=hier_micro_shift_top,
+                        min_gain=hier_micro_shift_min_gain,
+                        use_density=use_density,
+                    )
+                    post_ck_micro_acc += got
+                _log(
+                    f"  [hier] post-coldspot micro-shift replay: {post_ck_micro_acc} accepts, "
+                    f"proxy {pre_post_ck_micro_score:.4f}->{cur_proxy:.4f}"
+                )
+                _trace_pass(
+                    "post_coldspot_micro_shift",
+                    pre_post_ck_micro_score,
+                    cur_proxy,
+                    post_ck_micro_acc,
+                    quality=hierarchy_quality_metric(legal, clusters),
+                )
 
         out = torch.tensor(np.vstack([legal, s_pos]).astype(np.float32), dtype=torch.float32)
         proxy = float(_exact_proxy(out, benchmark, plc))
-        _log(f"  [hier] {len(clusters)} clusters, weight={gw}: proxy={proxy:.4f} "
-             f"(hierarchy-preserving, NON-proxy mode)")
+        log_gnn_event(
+            "hier_final",
+            benchmark=benchmark.name,
+            proxy=float(proxy),
+            pre_relief_proxy=float(pre_relief),
+            hierarchy_quality=float(hierarchy_quality_metric(legal, clusters)),
+            clusters=int(len(clusters)),
+            group_weight=int(gw),
+        )
+        _log(
+            f"  [hier] {len(clusters)} clusters, weight={gw}: proxy={proxy:.4f} "
+            f"(pre-relief {pre_relief:.4f}; hierarchy-preserving NON-proxy mode)"
+        )
         return out
 
     def place(self, benchmark: Benchmark) -> torch.Tensor:
-        # Final guard for any soft macro positions copied from input or DP.
         return self._clamp_in_bounds(self._place_impl(benchmark), benchmark)
 
     def _place_impl(self, benchmark: Benchmark) -> torch.Tensor:
@@ -324,1221 +1119,11 @@ class MacroPlacer:
         _log(f"[GPU] backend={_GPU_BACKEND} device={_GPU_DEVICE_NAME} | benchmark={benchmark.name}")
 
         t0 = time.monotonic()
-
-        # Hierarchy-floorplan mode (env-gated, off by default): a NON-PROXY
-        # deliverable that keeps connected subsystems together rather than
-        # optimizing the congestion-dominated proxy. Grouped DREAMPlace +
-        # cluster-consecutive legalization + soft cleanup. Costs proxy by design
-        # (this objective rewards spread); use only when hierarchy is the goal.
-        if os.environ.get("V2_HIER_FLOORPLAN", "0").strip() not in _FALSE_ENV:
-            hier = self._hierarchy_floorplan(benchmark)
-            if hier is not None:
-                self._total_place_time_s += time.monotonic() - t0
-                self._benchmarks_done += 1
-                return hier
-            _log("  [hier] floorplan mode unavailable; falling back to normal place()")
-
-        n = benchmark.num_hard_macros
-        cw, ch = benchmark.canvas_width, benchmark.canvas_height
-        sizes = benchmark.macro_sizes[:n].numpy().astype(np.float64)
-        hw = sizes[:, 0] / 2
-        hh = sizes[:, 1] / 2
-        movable = (benchmark.get_movable_mask() & benchmark.get_hard_macro_mask())[:n].numpy()
-        init_pos = benchmark.macro_positions[:n].numpy().copy().astype(np.float64)
-
-        effective_budget_s, cumulative_elapsed = self._effective_budget(t0)
-
-        _log(f"  [{benchmark.name}] hard={n}  movable={movable.sum()}  "
-             f"budget={effective_budget_s:.0f}s"
-             + (f"  (--all cumulative={cumulative_elapsed:.0f}s, "
-                f"done={self._benchmarks_done}/{self.HARNESS_TOTAL_BENCHMARKS})"
-                if self._benchmarks_done >= 1 else ""))
-
-        _ml_trace = get_candidate_trace()
-        if _ml_trace is not None:
-            _ml_trace.start_benchmark(
-                benchmark=benchmark,
-                seed=self.seed,
-                effective_budget_s=effective_budget_s,
-                benchmark_index=self._benchmarks_done,
-                config={
-                    "n_restarts": self.n_restarts,
-                    "noise_fracs": self.noise_fracs,
-                    "time_budget_s": self.time_budget_s,
-                    "budget_overrun_s": self.BUDGET_OVERRUN_S,
-                },
+        hier = self._hierarchy_floorplan(benchmark)
+        if hier is None:
+            raise RuntimeError(
+                "hierarchy floorplan path unavailable; proxy fallback has been removed"
             )
-            _ml_trace.set_context(phase="pipeline", elapsed_s=0.0)
-
-        def _ml_finish(reason: str, final_score=None) -> None:
-            if _ml_trace is not None:
-                _ml_trace.set_context(
-                    phase="complete",
-                    elapsed_s=time.monotonic() - t0,
-                    current_best_score=final_score,
-                )
-                _ml_trace.event("benchmark_end", reason=reason, final_score=final_score)
-                _ml_trace.flush()
-
-        # Exact-scoring cutoffs; the slow-score guard still handles bad load.
-        EXACT_MACRO_THRESHOLD = 10000
-        EXACT_GRID_CELL_LIMIT = 10000
-        grid_cells = benchmark.grid_rows * benchmark.grid_cols
-        plc = _load_plc(benchmark.name, benchmark)
-        use_exact = (
-            (plc is not None)
-            and (n <= EXACT_MACRO_THRESHOLD)
-            and (grid_cells <= EXACT_GRID_CELL_LIMIT)
-        )
-        if plc is None:
-            _log("  Warning: plc unavailable, returning baseline only")
-        elif n > EXACT_MACRO_THRESHOLD:
-            _log(f"  Large benchmark (n={n} > {EXACT_MACRO_THRESHOLD}); "
-                 f"restarts unrankable without exact proxy - returning baseline")
-        elif grid_cells > EXACT_GRID_CELL_LIMIT:
-            _log(f"  Large grid ({benchmark.grid_rows}x{benchmark.grid_cols}={grid_cells} > "
-                 f"{EXACT_GRID_CELL_LIMIT}); restarts unrankable - returning baseline")
-
-        # Shared buffer reused for candidate scores.
-        pl_scratch = benchmark.macro_positions.clone()
-
-        def _score(pos: np.ndarray) -> float:
-            """Update pl_scratch with hard-macro positions and return exact proxy.
-
-            Caller must clone pl_scratch immediately if it needs to persist the
-            result - the next _score call overwrites it.
-            """
-            pos32 = torch.from_numpy(np.ascontiguousarray(pos)).float()
-            pl_scratch[:n, 0] = pos32[:, 0]
-            pl_scratch[:n, 1] = pos32[:, 1]
-            return float(_exact_proxy(pl_scratch, benchmark, plc))
-
-        # Launch DREAMPlace seeds while the main pipeline runs.
-        dp_handles = self._launch_dreamplace_seeds(benchmark, plc)
-
-        # Baseline
-        _log("  Restart 0 (baseline)...")
-        t1 = time.monotonic()
-        baseline_pos = _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n)
-        _log(f"    Legalized in {time.monotonic()-t1:.1f}s")
-
-        # Fill scratch with baseline positions.
-        pl_scratch[:n, 0] = torch.tensor(baseline_pos[:, 0], dtype=torch.float32)
-        pl_scratch[:n, 1] = torch.tensor(baseline_pos[:, 1], dtype=torch.float32)
-
-        # Without exact scoring, return the legalized baseline after a legal
-        # displacement-reducing 2-opt pass.
-        if not use_exact:
-            t_2opt = time.monotonic()
-            opt_pos, swap_count = _two_opt_swap(
-                baseline_pos, init_pos, sizes, hw, hh, cw, ch, movable, n,
-                k_neighbors=5, max_iters=3, deadline=t_2opt + 30.0,
-            )
-            _log(f"  2-opt: {swap_count} swaps in {time.monotonic()-t_2opt:.1f}s")
-            if swap_count > 0:
-                pl_scratch[:n, 0] = torch.tensor(opt_pos[:, 0], dtype=torch.float32)
-                pl_scratch[:n, 1] = torch.tensor(opt_pos[:, 1], dtype=torch.float32)
-
-            # On large cases, compare only the first DREAMPlace seed if time remains.
-            dp_handle = dp_handles[0][2] if dp_handles else None
-            for _tag, _td, _h in dp_handles[1:]:
-                try:
-                    _h.kill()
-                except Exception:
-                    pass
-            if plc is not None and dp_handle is not None:
-                large_dp_budget = effective_budget_s + 83.0  # mirrors BUDGET_OVERRUN_S below
-                t_base_score_start = time.monotonic()
-                try:
-                    base_score = float(_exact_proxy(pl_scratch, benchmark, plc))
-                    t_base_score = time.monotonic() - t_base_score_start
-                    _log(f"  [large-DP] baseline exact proxy={base_score:.4f}  "
-                         f"(scored in {t_base_score:.1f}s)")
-                    # Skip DP comparison when another exact score is unlikely to fit.
-                    if t_base_score < 130.0:
-                        # Wait for DP up to remaining budget minus reserved
-                        # legalize+score window (~2*t_base_score).
-                        remaining = large_dp_budget - (time.monotonic() - t0)
-                        max_wait = max(0.0, remaining - 2.0 * t_base_score - 5.0)
-                        dp_full_large = dp_handle.wait_for_result_full(
-                            max_wait_s=min(max_wait, 60.0)
-                        )
-                        if dp_full_large is not None:
-                            dp_hard_l, dp_soft_l = dp_full_large
-                            dp_hard_l_clip = dp_hard_l.copy()
-                            dp_hard_l_clip[:, 0] = np.clip(dp_hard_l_clip[:, 0], hw, cw - hw)
-                            dp_hard_l_clip[:, 1] = np.clip(dp_hard_l_clip[:, 1], hh, ch - hh)
-                            t_dp_leg = time.monotonic()
-                            dp_leg_large = _will_legalize(
-                                dp_hard_l_clip, movable, sizes, hw, hh, cw, ch, n,
-                                deadline=t_dp_leg + 60.0,
-                            )
-                            dp_pl_large = benchmark.macro_positions.clone()
-                            dp_pl_large[:n, 0] = torch.tensor(
-                                dp_leg_large[:, 0], dtype=torch.float32
-                            )
-                            dp_pl_large[:n, 1] = torch.tensor(
-                                dp_leg_large[:, 1], dtype=torch.float32
-                            )
-                            n_soft_l = int(min(dp_soft_l.shape[0], benchmark.num_soft_macros))
-                            if n_soft_l > 0:
-                                dp_pl_large[n:n + n_soft_l, 0] = torch.tensor(
-                                    dp_soft_l[:n_soft_l, 0], dtype=torch.float32
-                                )
-                                dp_pl_large[n:n + n_soft_l, 1] = torch.tensor(
-                                    dp_soft_l[:n_soft_l, 1], dtype=torch.float32
-                                )
-                            dp_score_large = float(_exact_proxy(dp_pl_large, benchmark, plc))
-                            _log(f"  [large-DP] dreamplace exact proxy={dp_score_large:.4f}  "
-                                 f"(leg+score {time.monotonic()-t_dp_leg:.1f}s)")
-                            if dp_score_large < base_score:
-                                _log(f"  [large-DP] DP wins ({dp_score_large:.4f} < "
-                                     f"{base_score:.4f}); returning DP placement")
-                                _log(f"  total={time.monotonic()-t0:.1f}s")
-                                self._total_place_time_s += time.monotonic() - t0
-                                _ml_finish("large_dp_early_return", float(dp_score_large))
-                                self._benchmarks_done += 1
-                                return dp_pl_large
-                            else:
-                                _log(f"  [large-DP] baseline wins ({base_score:.4f} <= "
-                                     f"{dp_score_large:.4f}); returning baseline")
-                        else:
-                            _log(f"  [large-DP] DP not ready in {max_wait:.0f}s; "
-                                 f"returning baseline")
-                            dp_handle.kill()
-                    else:
-                        _log(f"  [large-DP] baseline scoring slow ({t_base_score:.0f}s); "
-                             f"skipping DP comparison, returning baseline")
-                        dp_handle.kill()
-                except Exception as exc:
-                    _log(f"  [large-DP] error: {type(exc).__name__}: {exc}; "
-                         f"returning baseline")
-                    if dp_handle is not None:
-                        try:
-                            dp_handle.kill()
-                        except Exception:
-                            pass
-
-            _log(f"  total={time.monotonic()-t0:.1f}s")
-            self._total_place_time_s += time.monotonic() - t0
-            _ml_finish("insufficient_budget")
-            self._benchmarks_done += 1
-            return pl_scratch  # safe: no more in-place writes will happen
-
-        # Last-resort guard: do not start a restart that cannot finish.
-        cumulative_now = self._total_place_time_s
-        if effective_budget_s < 45.0:
-            _log(f"  [--all guard] tight budget "
-                 f"(eff={effective_budget_s:.0f}s, cumulative={cumulative_now:.0f}s"
-                 f" of {self.HARNESS_TOTAL_BUDGET_S:.0f}s); returning baseline")
-            for _tag, _td, _h in dp_handles:
-                try:
-                    _h.kill()
-                except Exception:
-                    pass
-            _log(f"  total={time.monotonic()-t0:.1f}s")
-            self._total_place_time_s += time.monotonic() - t0
-            _ml_finish("exact_scoring_unavailable")
-            self._benchmarks_done += 1
-            return pl_scratch
-
-        t_score0 = time.monotonic()
-        best_score = float(_exact_proxy(pl_scratch, benchmark, plc))
-        t_one_score = time.monotonic() - t_score0
-        best_pl = pl_scratch.clone()
-        _log(f"  Candidate 0: proxy={best_score:.4f}  (scored in {t_one_score:.1f}s)")
-
-        lsmc_seed_pool: list[tuple[str, float, torch.Tensor]] = []
-
-        def _remember_lsmc_seed(
-            label: str,
-            score: float,
-            pl: torch.Tensor,
-            *,
-            force: bool = False,
-        ) -> None:
-            """Keep distinct generic seeds for final LSMC."""
-            if not np.isfinite(score):
-                return
-            margin_raw = os.environ.get("V2_GPU_EXPLORE_SEED_MARGIN", "0.08")
-            try:
-                margin = max(0.0, float(margin_raw))
-            except ValueError:
-                margin = 0.08
-            if not force and score > best_score + margin:
-                return
-
-            snap = pl.detach().cpu().clone()
-            hard = snap[:n]
-            for idx, (old_label, old_score, old_pl) in enumerate(lsmc_seed_pool):
-                if old_label == label:
-                    if score < old_score:
-                        lsmc_seed_pool[idx] = (label, float(score), snap)
-                    return
-                if torch.max(torch.abs(hard - old_pl[:n])).item() < 1e-3:
-                    if score < old_score:
-                        lsmc_seed_pool[idx] = (label, float(score), snap)
-                    return
-            lsmc_seed_pool.append((label, float(score), snap))
-
-        _remember_lsmc_seed("baseline", best_score, best_pl, force=True)
-
-        # Safety net: if the first exact score is slow (CPU contention), it would
-        # eat the whole per-benchmark budget, so return baseline instead.
-        SLOW_SCORE_THRESHOLD_S = 80.0
-        if t_one_score > SLOW_SCORE_THRESHOLD_S:
-            _log(f"  Exact score slow ({t_one_score:.0f}s); returning baseline")
-            for _tag, _td, _h in dp_handles:
-                try:
-                    _h.kill()
-                except Exception:
-                    pass
-            _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
-            self._total_place_time_s += time.monotonic() - t0
-            _ml_finish("baseline_score_too_slow", best_score)
-            self._benchmarks_done += 1
-            return best_pl
-
-        # Directed restarts get a small overrun allowance; noise restarts do not.
-        BUDGET_OVERRUN_S = self.BUDGET_OVERRUN_S
-
-        def _try_restart(label: str, perturbed_init: np.ndarray, k: int,
-                         allow_overrun: bool = False,
-                         order: Optional[List[int]] = None) -> bool:
-            """Legalize + score one candidate. Returns False if budget exhausted.
-
-            `order` (optional) is a custom macro placement order passed to
-            _will_legalize. Default (None) uses largest-area first. Multi-order
-            restarts vary this to explore different legal arrangements from the
-            same starting positions.
-            """
-            nonlocal best_score, best_pl, t_one_score
-            elapsed = time.monotonic() - t0
-            cap = effective_budget_s + (BUDGET_OVERRUN_S if allow_overrun else 0.0)
-            remaining = cap - elapsed
-            # t_one_score is a running max over observed scoring times (x1.3 for
-            # score + legalize). Running max, not baseline-only: --all CPU
-            # contention makes scores 3-5x slower, and a stale estimate would
-            # approve restarts that then overrun.
-            estimated_cost = t_one_score * 1.3
-            if remaining < estimated_cost:
-                _log(f"  Skipping restart {k}+ (budget: {remaining:.0f}s left, "
-                     f"need ~{estimated_cost:.0f}s)")
-                return False  # signal: stop further restarts
-
-            t1 = time.monotonic()
-            leg_deadline = t1 + 60.0  # cap spiral search; timed-out macros keep pos value
-            leg = _will_legalize(perturbed_init, movable, sizes, hw, hh, cw, ch, n,
-                                 deadline=leg_deadline, order=order)
-            t_leg = time.monotonic() - t1
-            _log(f"  Restart {k} ({label}) legalized in {t_leg:.1f}s")
-
-            t_score_start = time.monotonic()
-            score = _score(leg)
-            t_score_observed = time.monotonic() - t_score_start
-            if t_score_observed > t_one_score:
-                t_one_score = t_score_observed
-            _log(f"  Candidate {k}: proxy={score:.4f}")
-            if label.startswith("random noise"):
-                _remember_lsmc_seed(label, score, pl_scratch)
-            if score < best_score:
-                best_score = score
-                best_pl = pl_scratch.clone()  # snapshot only on improvement
-                if label.startswith("random noise"):
-                    _remember_lsmc_seed(f"best-{label}", score, best_pl, force=True)
-
-            # Safety: if scoring overran the (possibly relaxed) cap, stop immediately
-            # rather than launching another restart that would push time further over.
-            if time.monotonic() - t0 > cap:
-                _log(f"  Over budget after scoring ({time.monotonic()-t0:.0f}s, cap={cap:.0f}s); stopping")
-                return False
-
-            return True
-
-        directed_ran = 0
-
-        # Routing-congestion restarts use their own RNG so noise draws stay stable.
-        rng_cong = np.random.RandomState(self.seed + 1)
-        # Score any DREAMPlace seeds that finished in time.
-        dp_placements: list[tuple[str, float, torch.Tensor]] = []
-        for tag, td, h in dp_handles:
-            remaining_dp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            # Keep enough reserve for follow-up search.
-            max_wait = max(0.0, min(remaining_dp - 3.0 * t_one_score, 30.0))
-            dp_full = h.wait_for_result_full(max_wait_s=max_wait)
-            if dp_full is None:
-                _log(f"  DREAMPlace[{tag} td={td:.2f}] not ready "
-                     f"(elapsed={h.time_elapsed():.1f}s); killing subprocess")
-                h.kill()
-                continue
-            dp_hard, dp_soft = dp_full
-            _log(f"  DREAMPlace[{tag} td={td:.2f}] ready in {h.time_elapsed():.1f}s "
-                 f"(hard={dp_hard.shape[0]}, soft={dp_soft.shape[0]}); "
-                 f"testing as candidate")
-            # Legalize hard macros (DREAMPlace's NLP may leave overlaps); clip
-            # out-of-canvas first (macro_place_flag can push slightly past canvas).
-            t_dp = time.monotonic()
-            dp_leg_deadline = t_dp + 60.0
-            dp_hard_clip = dp_hard.copy()
-            dp_hard_clip[:, 0] = np.clip(dp_hard_clip[:, 0], hw, cw - hw)
-            dp_hard_clip[:, 1] = np.clip(dp_hard_clip[:, 1], hh, ch - hh)
-            dp_hard_leg = _will_legalize(
-                dp_hard_clip, movable, sizes, hw, hh, cw, ch, n,
-                deadline=dp_leg_deadline,
-            )
-            dp_pl = benchmark.macro_positions.clone()
-            dp_pl[:n, 0] = torch.tensor(dp_hard_leg[:, 0], dtype=torch.float32)
-            dp_pl[:n, 1] = torch.tensor(dp_hard_leg[:, 1], dtype=torch.float32)
-            n_soft_dp = int(min(dp_soft.shape[0], benchmark.num_soft_macros))
-            if n_soft_dp > 0:
-                dp_pl[n:n + n_soft_dp, 0] = torch.tensor(
-                    dp_soft[:n_soft_dp, 0], dtype=torch.float32
-                )
-                dp_pl[n:n + n_soft_dp, 1] = torch.tensor(
-                    dp_soft[:n_soft_dp, 1], dtype=torch.float32
-                )
-            t_dp_score_start = time.monotonic()
-            dp_score = float(_exact_proxy(dp_pl, benchmark, plc))
-            t_dp_score = time.monotonic() - t_dp_score_start
-            if t_dp_score > t_one_score:
-                t_one_score = t_dp_score
-            directed_ran += 1
-            _log(f"  Candidate {directed_ran} (dreamplace[{tag}] hard+soft): "
-                 f"proxy={dp_score:.4f}  (leg+score {time.monotonic()-t_dp:.1f}s)")
-            if dp_score < best_score:
-                best_score = dp_score
-                best_pl = dp_pl.clone()
-            dp_placements.append((tag, dp_score, dp_pl))
-
-        # Random Gaussian restarts.
-        noise_scale_base = min(cw, ch)
-        for k, frac in enumerate(
-            self.noise_fracs[: self.n_restarts - 1 - directed_ran], start=1 + directed_ran
-        ):
-            noise = np.random.normal(0, frac * noise_scale_base, init_pos.shape)
-            perturbed = np.clip(
-                init_pos + noise,
-                np.stack([hw, hh], axis=1),
-                np.stack([cw - hw, ch - hh], axis=1),
-            )
-            if not _try_restart(f"random noise={frac:.0%}", perturbed, k=k):
-                break
-
-        # Retry legalization with random tie-breaks.
-        N_ORDER_TRIALS = 3
-        area = sizes[:n, 0] * sizes[:n, 1]
-        # Legalize trials can run in parallel; scoring remains sequential.
-        p9_orders: list = []
-        for _ in range(N_ORDER_TRIALS):
-            # Largest first, random order within equal-area groups.
-            random_key = rng_cong.random(n)
-            p9_orders.append(np.lexsort((random_key, -area)).tolist())
-
-        def _p9_legalize(order):
-            return _will_legalize(init_pos, movable, sizes, hw, hh, cw, ch, n,
-                                  deadline=time.monotonic() + 60.0, order=order)
-
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=N_ORDER_TRIALS) as _p9_ex:
-                p9_legs = list(_p9_ex.map(_p9_legalize, p9_orders))
-        except Exception as exc:
-            _log(f"  Phase 9 parallel legalize failed ({type(exc).__name__}: {exc}); "
-                 f"falling back to sequential")
-            p9_legs = [_p9_legalize(o) for o in p9_orders]
-
-        for trial, leg in enumerate(p9_legs):
-            remaining_p9 = (
-                effective_budget_s + BUDGET_OVERRUN_S
-            ) - (time.monotonic() - t0)
-            if remaining_p9 < t_one_score * 1.3:
-                _log(f"  Skipping P9 trial {trial}+ "
-                     f"(budget: {remaining_p9:.0f}s left)")
-                break
-            t_score_start = time.monotonic()
-            score = _score(leg)
-            t_score_observed = time.monotonic() - t_score_start
-            if t_score_observed > t_one_score:
-                t_one_score = t_score_observed
-            _log(f"  Restart {1 + directed_ran} (random-order-legalize "
-                 f"trial={trial}) proxy={score:.4f}")
-            _remember_lsmc_seed(f"random-order-legalize trial={trial}", score, pl_scratch)
-            if score < best_score:
-                best_score = score
-                best_pl = pl_scratch.clone()
-                _remember_lsmc_seed(
-                    f"best-random-order-legalize trial={trial}", score, best_pl, force=True
-                )
-            directed_ran += 1
-            # Safety: post-score budget guard, same as _try_restart's tail.
-            if time.monotonic() - t0 > (effective_budget_s + BUDGET_OVERRUN_S):
-                _log(f"  Over budget after P9 trial {trial}; stopping")
-                break
-
-        _remember_lsmc_seed("pre-r2-best", best_score, best_pl, force=True)
-
-        # R2: keep trying local moves while they still improve the score.
-        R2_MAX_ROUNDS = 20
-        R2_HOT = 48
-        R2_TGT = 16
-        _ml_hard_reloc_targets = os.environ.get("ML_HARD_RELOCATION_N_TARGETS")
-        if _ml_hard_reloc_targets:
-            try:
-                R2_TGT = max(R2_TGT, int(_ml_hard_reloc_targets))
-            except ValueError:
-                _log(
-                    f"  ignoring invalid ML_HARD_RELOCATION_N_TARGETS="
-                    f"{_ml_hard_reloc_targets!r}"
-                )
-        if is_filter_enabled("hard_relocation"):
-            _log(
-                f"  R2 hard relocation ML filter on (pool={R2_TGT}, "
-                f"top_k={os.environ.get('ML_FILTER_TOP_K') or 'all'})"
-            )
-        _reloc_propose_all_raw = os.environ.get("V2_RELOC_PROPOSE_ALL", "")
-        R2_RELOC_PROPOSE_ALL = _reloc_propose_all_enabled(
-            _reloc_propose_all_raw,
-            _GPU_BACKEND,
-        )
-        if (
-            _reloc_propose_all_raw.strip().lower() in {"auto", "cuda", "gpu"}
-            and not R2_RELOC_PROPOSE_ALL
-        ):
-            _log(
-                "  R2 hard relocation propose-all auto disabled "
-                f"(backend={_GPU_BACKEND})"
-            )
-        R2_RELOC_PROPOSE_TOP_M = None
-        _reloc_propose_top_m = os.environ.get("V2_RELOC_PROPOSE_TOP_M")
-        if _reloc_propose_top_m:
-            try:
-                R2_RELOC_PROPOSE_TOP_M = max(1, int(_reloc_propose_top_m))
-            except ValueError:
-                _log(
-                    f"  ignoring invalid V2_RELOC_PROPOSE_TOP_M="
-                    f"{_reloc_propose_top_m!r}"
-                )
-        if R2_RELOC_PROPOSE_ALL:
-            _log(
-                "  R2 hard relocation propose-all enabled "
-                f"(top_m={R2_RELOC_PROPOSE_TOP_M or 'all'})"
-            )
-        R2_2OPT_SLICE = 8.0
-
-        def _env_int(name, default):
-            v = os.environ.get(name)
-            try:
-                return max(1, int(v)) if v not in (None, "") else default
-            except ValueError:
-                _log(f"  ignoring invalid {name}={v!r}")
-                return default
-        R3_SOFT_HOT = _env_int("V2_SOFT_HOT", 128)
-        R3_SOFT_TGT = _env_int("V2_SOFT_TGT", 32)
-        # Density keeps helping after congestion moves dry up.
-        R3_SOFT_HOT_BOOSTED = _env_int("V2_SOFT_HOT_BOOSTED", 192)
-        # Soft move ordering blends distance-to-current and distance-to-net-center.
-        A3_WL_BLEND = 0.3
-        _n_soft = benchmark.num_soft_macros
-        _soft_sizes = benchmark.macro_sizes[n:n + _n_soft].numpy().astype(np.float64)
-        soft_hw = _soft_sizes[:, 0] / 2
-        soft_hh = _soft_sizes[:, 1] / 2
-        _soft_movable = benchmark.get_movable_mask().numpy()[n:n + _n_soft]
-
-        def _hard_xy(_pl):
-            return np.stack([_pl[:n, 0].numpy(), _pl[:n, 1].numpy()], axis=1).astype(np.float64)
-
-        def _macro_cong_now():
-            # Read each hard macro's current congestion cell.
-            try:
-                nr_g, nc_g = benchmark.grid_rows, benchmark.grid_cols
-                cc = _congestion_field(plc, nr_g, nc_g)
-                if cc is None:
-                    return None
-                cwc, chc = cw / nc_g, ch / nr_g
-                ci = np.clip((best_pl[:n, 0].numpy() / cwc).astype(np.int64), 0, nc_g - 1)
-                ri = np.clip((best_pl[:n, 1].numpy() / chc).astype(np.int64), 0, nr_g - 1)
-                return cc[ri, ci]
-            except Exception:
-                return None
-
-        # Stop a pass after repeated rounds with no accepted moves.
-        SKIP_EMPTY_AFTER = 1
-        _empty_streak = {
-            "reloc_density": 0,
-            "reloc_combined": 0,
-            "soft_reloc_cong": 0,
-            "soft2opt_cong": 0,
-            "soft2opt_density": 0,
-            "hxs_cong": 0,
-            "hxs_density": 0,
-            "hs3_cong": 0,
-            "hs3_density": 0,
-        }
-
-        # Stop when rounds are no longer making useful progress.
-        R2_DELTA_THRESHOLD = 1e-3
-        R2_DELTA_HARD_STOP = 3e-4
-        TINY_R2_ROUNDS_TO_STOP = 2
-        _r2_tiny_streak = 0
-
-        # Share one scorer across a round and rebuild only if it falls out of sync.
-        _round_scorer = [None]   # list-as-mutable-flag (closure-safe)
-        _round_scorer_dirty = [False]
-
-        # Optional: give more time to passes that have been paying off.
-        _ADAPTIVE_BUDGET = os.environ.get("V2_ADAPTIVE_BUDGET", "").strip() in {
-            "1", "true", "TRUE", "yes", "YES", "on", "ON"
-        }
-
-        def _env_float(name, default):
-            v = os.environ.get(name)
-            try:
-                return float(v) if v not in (None, "") else default
-            except ValueError:
-                return default
-        _ADAPTIVE_LO = _env_float("V2_ADAPTIVE_LO", 0.4)
-        _ADAPTIVE_HI = _env_float("V2_ADAPTIVE_HI", 2.5)
-        _pass_gain = {}
-        _pass_time = {}
-        _cur_pass = [None]
-        _cur_pass_t0 = [0.0]
-
-        def _pass_close():
-            if _cur_pass[0] is not None:
-                _pass_time[_cur_pass[0]] = _pass_time.get(_cur_pass[0], 0.0) + (
-                    time.monotonic() - _cur_pass_t0[0]
-                )
-                _cur_pass[0] = None
-
-        def _pass_cap(name, base):
-            """Return this pass's time cap."""
-            if not _ADAPTIVE_BUDGET:
-                return base
-            ys = {p: _pass_gain.get(p, 0.0) / t for p, t in _pass_time.items() if t > 1e-6}
-            if name not in ys or len(ys) < 2:
-                return base
-            mean_y = sum(ys.values()) / len(ys)
-            if mean_y <= 1e-12:
-                return base
-            return base * max(_ADAPTIVE_LO, min(_ADAPTIVE_HI, ys[name] / mean_y))
-
-        def _round_scorer_get():
-            """Return a scorer that matches `best_pl`."""
-            if _round_scorer[0] is None or _round_scorer_dirty[0]:
-                _exact_proxy(best_pl, benchmark, plc)
-                _round_scorer[0] = IncrementalScorer(
-                    plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
-                )
-                _round_scorer_dirty[0] = False
-            return _round_scorer[0]
-
-        def _round_scorer_handoff(cand_true, cand):
-            """Accept a pass result or mark the scorer for rebuild."""
-            nonlocal best_score, best_pl, round_improved
-            if _ADAPTIVE_BUDGET and _cur_pass[0] is not None and cand_true < best_score:
-                _pass_gain[_cur_pass[0]] = _pass_gain.get(_cur_pass[0], 0.0) + (
-                    best_score - cand_true
-                )
-            if cand_true < best_score - 1e-6:
-                best_score, best_pl = cand_true, cand
-                round_improved = True
-                return True
-            else:
-                # The pass changed the scorer but not the incumbent placement.
-                _round_scorer_dirty[0] = True
-                return False
-
-        def _ml_r2_context(pass_name: str, field: str | None, remaining_s: float, **extra):
-            if _ADAPTIVE_BUDGET:
-                _pass_close()
-                _cur_pass[0] = pass_name
-                _cur_pass_t0[0] = time.monotonic()
-            if _ml_trace is not None:
-                _ml_trace.set_context(
-                    phase="r2",
-                    r2_round=_r2 + 1,
-                    pass_name=pass_name,
-                    field=field,
-                    elapsed_s=time.monotonic() - t0,
-                    remaining_budget_s=remaining_s,
-                    current_best_score=best_score,
-                    round_start_score=_r2_prev_best,
-                    hard_relocation_n_targets=R2_TGT,
-                    **extra,
-                )
-
-        for _r2 in range(R2_MAX_ROUNDS):
-            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if rem_r2 < 3.0 * t_one_score + 3.0:
-                break
-            _t_round_start = time.monotonic()
-            _r2_prev_best = best_score
-            round_improved = False
-            # best_pl may have changed in the previous round.
-            _round_scorer_dirty[0] = True
-
-            try:
-                _ml_r2_context("hard_relocation", "congestion", rem_r2)
-                t_rel = time.monotonic()
-                base_rel = float(_exact_proxy(best_pl, benchmark, plc))
-                rel_scorer = _round_scorer_get()
-                rel_pos, rel_acc, _ = _relocation_moves(
-                    _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
-                    benchmark, rel_scorer, base_rel,
-                    deadline=t_rel + min(rem_r2 - t_one_score, _pass_cap("hard_relocation", 15.0)),
-                    top_hot=R2_HOT, n_targets=R2_TGT,
-                    propose_all=R2_RELOC_PROPOSE_ALL,
-                    propose_top_m=R2_RELOC_PROPOSE_TOP_M,
-                )
-                if rel_acc > 0:
-                    cand = best_pl.clone()
-                    cand[:n, 0] = torch.tensor(rel_pos[:, 0], dtype=torch.float32)
-                    cand[:n, 1] = torch.tensor(rel_pos[:, 1], dtype=torch.float32)
-                    rel_true = float(_exact_proxy(cand, benchmark, plc))
-                    if rel_true < best_score - 1e-6:
-                        _log(f"  R2 round {_r2+1} reloc[cong]: {rel_acc} moves, "
-                             f"{best_score:.4f} → {rel_true:.4f}")
-                    _round_scorer_handoff(rel_true, cand)
-            except Exception as exc:
-                _log(f"  R2 relocation[cong] failed: {type(exc).__name__}: {exc}")
-                _round_scorer_dirty[0] = True
-
-            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if rem_r2 < 2.0 * t_one_score + 2.0:
-                break
-
-            # Move hard macros out of dense cells.
-            if _empty_streak["reloc_density"] < SKIP_EMPTY_AFTER:
-                try:
-                    _ml_r2_context("hard_relocation", "density", rem_r2)
-                    t_rel_d = time.monotonic()
-                    base_rel_d = float(_exact_proxy(best_pl, benchmark, plc))
-                    rel_scorer_d = _round_scorer_get()
-                    rel_pos_d, rel_acc_d, _ = _relocation_moves(
-                        _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
-                        benchmark, rel_scorer_d, base_rel_d,
-                        deadline=t_rel_d + min(rem_r2 - t_one_score, _pass_cap("hard_relocation", 15.0)),
-                        top_hot=R2_HOT, n_targets=R2_TGT,
-                        use_density=True,
-                        propose_all=R2_RELOC_PROPOSE_ALL,
-                        propose_top_m=R2_RELOC_PROPOSE_TOP_M,
-                    )
-                    if rel_acc_d == 0:
-                        _empty_streak["reloc_density"] += 1
-                    else:
-                        _empty_streak["reloc_density"] = 0
-                    if rel_acc_d > 0:
-                        cand = best_pl.clone()
-                        cand[:n, 0] = torch.tensor(rel_pos_d[:, 0], dtype=torch.float32)
-                        cand[:n, 1] = torch.tensor(rel_pos_d[:, 1], dtype=torch.float32)
-                        rel_true_d = float(_exact_proxy(cand, benchmark, plc))
-                        if rel_true_d < best_score - 1e-6:
-                            _log(f"  R2 round {_r2+1} reloc[density]: {rel_acc_d} moves, "
-                                 f"{best_score:.4f} → {rel_true_d:.4f}")
-                        _round_scorer_handoff(rel_true_d, cand)
-                except Exception as exc:
-                    _log(f"  R2 relocation[density] failed: {type(exc).__name__}: {exc}")
-                    _round_scorer_dirty[0] = True
-
-            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if rem_r2 < 2.0 * t_one_score + 2.0:
-                break
-
-            # Move hard macros that are moderately bad on both fields.
-            if _empty_streak["reloc_combined"] < SKIP_EMPTY_AFTER:
-                try:
-                    _ml_r2_context("hard_relocation", "combined", rem_r2)
-                    t_rel_c = time.monotonic()
-                    base_rel_c = float(_exact_proxy(best_pl, benchmark, plc))
-                    rel_scorer_c = _round_scorer_get()
-                    rel_pos_c, rel_acc_c, _ = _relocation_moves(
-                        _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n, plc,
-                        benchmark, rel_scorer_c, base_rel_c,
-                        deadline=t_rel_c + min(rem_r2 - t_one_score, _pass_cap("hard_relocation", 4.0)),
-                        top_hot=R2_HOT, n_targets=R2_TGT,
-                        use_combined=True,
-                        propose_all=R2_RELOC_PROPOSE_ALL,
-                        propose_top_m=R2_RELOC_PROPOSE_TOP_M,
-                    )
-                    if rel_acc_c == 0:
-                        _empty_streak["reloc_combined"] += 1
-                    else:
-                        _empty_streak["reloc_combined"] = 0
-                    if rel_acc_c > 0:
-                        cand = best_pl.clone()
-                        cand[:n, 0] = torch.tensor(rel_pos_c[:, 0], dtype=torch.float32)
-                        cand[:n, 1] = torch.tensor(rel_pos_c[:, 1], dtype=torch.float32)
-                        rel_true_c = float(_exact_proxy(cand, benchmark, plc))
-                        if rel_true_c < best_score - 1e-6:
-                            _log(f"  R2 round {_r2+1} reloc[combined]: {rel_acc_c} moves, "
-                                 f"{best_score:.4f} → {rel_true_c:.4f}")
-                        _round_scorer_handoff(rel_true_c, cand)
-                except Exception as exc:
-                    _log(f"  R2 relocation[combined] failed: {type(exc).__name__}: {exc}")
-                    _round_scorer_dirty[0] = True
-
-            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if rem_r2 < 2.0 * t_one_score + 2.0:
-                break
-
-            # --- Soft relocation passes: hot soft clusters -> cold cells, by the
-            # congestion field then the density field. Softs are the bulk of both
-            # terms, and the density pass finds moves the cong pass misses. Softs
-            # may overlap (no legality check); accept-on-true-proxy. Reuses the
-            # shared scorer (already at the post-reloc committed state). ---
-            for _sfield, _use_d in (("cong", False), ("density", True)):
-                if _n_soft <= 0:
-                    break
-                # Drop the congestion pass after it stops accepting moves.
-                if _sfield == "cong" and _empty_streak["soft_reloc_cong"] >= SKIP_EMPTY_AFTER:
-                    continue
-                rem_sr = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                if rem_sr < 2.0 * t_one_score + 2.0:
-                    break
-                # After congestion stalls, let density try a wider set.
-                _cong_saturated = _empty_streak["soft_reloc_cong"] >= SKIP_EMPTY_AFTER
-                _top_hot_this = (
-                    R3_SOFT_HOT_BOOSTED
-                    if (_sfield == "density" and _cong_saturated)
-                    else R3_SOFT_HOT
-                )
-                _n_tgt_this = (
-                    16
-                    if (_sfield == "density" and _cong_saturated)
-                    else R3_SOFT_TGT
-                )
-                try:
-                    _ml_r2_context(
-                        "soft_relocation",
-                        _sfield,
-                        rem_sr,
-                        congestion_saturated=_cong_saturated,
-                    )
-                    t_sr = time.monotonic()
-                    base_sr = float(_exact_proxy(best_pl, benchmark, plc))
-                    sr_scorer = _round_scorer_get()
-                    sr_pos = np.stack(
-                        [best_pl[n:n + _n_soft, 0].numpy(),
-                         best_pl[n:n + _n_soft, 1].numpy()], axis=1
-                    ).astype(np.float64)
-                    # Net centroids guide target ordering.
-                    _soft_centroids = sr_scorer.soft_net_centroids()
-                    sr_pos, sr_acc, _ = _soft_relocation_moves(
-                        sr_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark,
-                        sr_scorer, base_sr,
-                        deadline=t_sr + min(rem_sr - t_one_score, _pass_cap("soft_relocation", 15.0)),
-                        top_hot=_top_hot_this, n_targets=_n_tgt_this,
-                        soft_movable=_soft_movable, use_density=_use_d,
-                        net_centroid=_soft_centroids, wl_blend=A3_WL_BLEND,
-                    )
-                    # Track empty congestion passes.
-                    if _sfield == "cong":
-                        if sr_acc == 0:
-                            _empty_streak["soft_reloc_cong"] += 1
-                        else:
-                            _empty_streak["soft_reloc_cong"] = 0
-                    if sr_acc > 0:
-                        cand = best_pl.clone()
-                        cand[n:n + _n_soft, 0] = torch.tensor(sr_pos[:, 0], dtype=torch.float32)
-                        cand[n:n + _n_soft, 1] = torch.tensor(sr_pos[:, 1], dtype=torch.float32)
-                        sr_true = float(_exact_proxy(cand, benchmark, plc))
-                        if sr_true < best_score - 1e-6:
-                            _log(f"  R2 round {_r2+1} soft-reloc[{_sfield}]: {sr_acc} "
-                                 f"moves, {best_score:.4f} → {sr_true:.4f}")
-                        _round_scorer_handoff(sr_true, cand)
-                except Exception as exc:
-                    _log(f"  R2 soft-reloc[{_sfield}] failed: {type(exc).__name__}: {exc}")
-                    _round_scorer_dirty[0] = True
-
-            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if rem_r2 < 2.0 * t_one_score + 2.0:
-                break
-
-            # Soft-soft swaps catch exchanges relocation misses.
-            A5_NUM_PASSES = 2
-            for _ssfield, _ssuse_d in (("cong", False), ("density", True)):
-                if _n_soft < 2:
-                    break
-                _streak_key = "soft2opt_cong" if _ssfield == "cong" else "soft2opt_density"
-                if _empty_streak[_streak_key] >= SKIP_EMPTY_AFTER:
-                    continue
-                for _a5_pass in range(A5_NUM_PASSES):
-                    try:
-                        rem_ss = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                        if rem_ss < 2.0 * t_one_score + 2.0:
-                            break
-                        _ml_r2_context(
-                            "soft_2opt",
-                            _ssfield,
-                            rem_ss,
-                            inner_pass=_a5_pass + 1,
-                        )
-                        t_ss = time.monotonic()
-                        base_ss = float(_exact_proxy(best_pl, benchmark, plc))
-                        ss_scorer = _round_scorer_get()
-                        ss_pos = np.stack(
-                            [best_pl[n:n + _n_soft, 0].numpy(),
-                             best_pl[n:n + _n_soft, 1].numpy()], axis=1
-                        ).astype(np.float64)
-                        # Net centroids guide swap ordering.
-                        _ss_centroids = ss_scorer.soft_net_centroids()
-                        ss_pos, ss_acc, _ = _two_opt_soft_swap(
-                            ss_pos, cw, ch, n, plc, benchmark, ss_scorer, base_ss,
-                            deadline=t_ss + min(rem_ss - t_one_score, _pass_cap("soft_2opt", 6.0)),
-                            top_hot=64, k_neighbors=12,
-                            soft_movable=_soft_movable,
-                            use_density=_ssuse_d, n_cold_teleports=4,
-                            net_centroid=_ss_centroids, wl_blend=A3_WL_BLEND,
-                        )
-                        # Count only the first pass for skip gating.
-                        if _a5_pass == 0:
-                            if ss_acc == 0:
-                                _empty_streak[_streak_key] += 1
-                            else:
-                                _empty_streak[_streak_key] = 0
-                        _improved_this_pass = False
-                        if ss_acc > 0:
-                            cand = best_pl.clone()
-                            cand[n:n + _n_soft, 0] = torch.tensor(ss_pos[:, 0], dtype=torch.float32)
-                            cand[n:n + _n_soft, 1] = torch.tensor(ss_pos[:, 1], dtype=torch.float32)
-                            ss_true = float(_exact_proxy(cand, benchmark, plc))
-                            if ss_true < best_score - 1e-6:
-                                _log(f"  R2 round {_r2+1} soft-2opt[{_ssfield}]"
-                                     f"{'' if _a5_pass == 0 else f' pass{_a5_pass+1}'}: "
-                                     f"{ss_acc} swaps, {best_score:.4f} → {ss_true:.4f}")
-                                _improved_this_pass = True
-                            _round_scorer_handoff(ss_true, cand)
-                        # Stop this field when another pass does not help.
-                        if not _improved_this_pass:
-                            break
-                    except Exception as exc:
-                        _log(f"  R2 soft-2opt[{_ssfield}] failed: {type(exc).__name__}: {exc}")
-                        _round_scorer_dirty[0] = True
-                        break
-
-            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if rem_r2 < 2.0 * t_one_score + 2.0:
-                break
-
-            # Swap hard and soft macros when same-type swaps miss the pair.
-            for _xfield, _xuse_d in (("cong", False), ("density", True)):
-                if _n_soft < 1:
-                    break
-                _xstreak = "hxs_cong" if _xfield == "cong" else "hxs_density"
-                if _empty_streak[_xstreak] >= SKIP_EMPTY_AFTER:
-                    continue
-                rem_x = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                if rem_x < 2.0 * t_one_score + 2.0:
-                    break
-                try:
-                    _ml_r2_context("hard_soft_swap", _xfield, rem_x)
-                    t_x = time.monotonic()
-                    base_x = float(_exact_proxy(best_pl, benchmark, plc))
-                    x_scorer = _round_scorer_get()
-                    x_hard_pos = _hard_xy(best_pl)
-                    x_soft_pos = np.stack(
-                        [best_pl[n:n + _n_soft, 0].numpy(),
-                         best_pl[n:n + _n_soft, 1].numpy()], axis=1
-                    ).astype(np.float64)
-                    x_hard_pos, x_soft_pos, x_acc, _ = _two_opt_hard_soft_swap(
-                        x_hard_pos, x_soft_pos, sizes, hw, hh, cw, ch,
-                        movable, n, plc, benchmark, x_scorer, base_x,
-                        deadline=t_x + min(rem_x - t_one_score, _pass_cap("hard_soft_swap", 2.5)),
-                        top_hot=24, k_neighbors=12,
-                        soft_movable=_soft_movable, use_density=_xuse_d,
-                    )
-                    if x_acc == 0:
-                        _empty_streak[_xstreak] += 1
-                    else:
-                        _empty_streak[_xstreak] = 0
-                    if x_acc > 0:
-                        cand = best_pl.clone()
-                        cand[:n, 0] = torch.tensor(x_hard_pos[:, 0], dtype=torch.float32)
-                        cand[:n, 1] = torch.tensor(x_hard_pos[:, 1], dtype=torch.float32)
-                        cand[n:n + _n_soft, 0] = torch.tensor(x_soft_pos[:, 0], dtype=torch.float32)
-                        cand[n:n + _n_soft, 1] = torch.tensor(x_soft_pos[:, 1], dtype=torch.float32)
-                        x_true = float(_exact_proxy(cand, benchmark, plc))
-                        if x_true < best_score - 1e-6:
-                            _log(f"  R2 round {_r2+1} HXS[{_xfield}]: {x_acc} swaps, "
-                                 f"{best_score:.4f} → {x_true:.4f}")
-                        _round_scorer_handoff(x_true, cand)
-                except Exception as exc:
-                    _log(f"  R2 HXS[{_xfield}] failed: {type(exc).__name__}: {exc}")
-                    _round_scorer_dirty[0] = True
-
-            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if rem_r2 < 2.0 * t_one_score + 2.0:
-                break
-
-            # Rotate one hard and two soft macros as one move.
-            for _h3field, _h3use_d in (("cong", False), ("density", True)):
-                if _n_soft < 2:
-                    break
-                _h3streak = "hs3_cong" if _h3field == "cong" else "hs3_density"
-                if _empty_streak[_h3streak] >= SKIP_EMPTY_AFTER:
-                    continue
-                rem_h3 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                if rem_h3 < 2.0 * t_one_score + 2.0:
-                    break
-                try:
-                    _ml_r2_context("hard_soft_soft_cycle", _h3field, rem_h3)
-                    t_h3 = time.monotonic()
-                    base_h3 = float(_exact_proxy(best_pl, benchmark, plc))
-                    h3_scorer = _round_scorer_get()
-                    h3_hard_pos = _hard_xy(best_pl)
-                    h3_soft_pos = np.stack(
-                        [best_pl[n:n + _n_soft, 0].numpy(),
-                         best_pl[n:n + _n_soft, 1].numpy()], axis=1
-                    ).astype(np.float64)
-                    h3_hard_pos, h3_soft_pos, h3_acc, _ = _three_opt_hard_soft_soft(
-                        h3_hard_pos, h3_soft_pos, sizes, hw, hh, cw, ch,
-                        movable, n, plc, benchmark, h3_scorer, base_h3,
-                        deadline=t_h3 + min(rem_h3 - t_one_score, _pass_cap("hard_soft_soft_cycle", 3.0)),
-                        top_hot=15, k_inner=5,
-                        soft_movable=_soft_movable, use_density=_h3use_d,
-                    )
-                    if h3_acc == 0:
-                        _empty_streak[_h3streak] += 1
-                    else:
-                        _empty_streak[_h3streak] = 0
-                    if h3_acc > 0:
-                        cand = best_pl.clone()
-                        cand[:n, 0] = torch.tensor(h3_hard_pos[:, 0], dtype=torch.float32)
-                        cand[:n, 1] = torch.tensor(h3_hard_pos[:, 1], dtype=torch.float32)
-                        cand[n:n + _n_soft, 0] = torch.tensor(h3_soft_pos[:, 0], dtype=torch.float32)
-                        cand[n:n + _n_soft, 1] = torch.tensor(h3_soft_pos[:, 1], dtype=torch.float32)
-                        h3_true = float(_exact_proxy(cand, benchmark, plc))
-                        if h3_true < best_score - 1e-6:
-                            _log(f"  R2 round {_r2+1} HS3[{_h3field}]: {h3_acc} cycles, "
-                                 f"{best_score:.4f} → {h3_true:.4f}")
-                        _round_scorer_handoff(h3_true, cand)
-                except Exception as exc:
-                    _log(f"  R2 HS3[{_h3field}] failed: {type(exc).__name__}: {exc}")
-                    _round_scorer_dirty[0] = True
-
-            rem_r2 = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            if rem_r2 < 2.0 * t_one_score + 2.0:
-                break
-
-            # --- 2-opt cleanup pass (swaps around the relocated macros) ---
-            try:
-                _ml_r2_context("hard_2opt", "congestion", rem_r2)
-                t_2o = time.monotonic()
-                base_2o = float(_exact_proxy(best_pl, benchmark, plc))
-                o_scorer = _round_scorer_get()
-                o_scratch = best_pl.clone()
-
-                def _r2_score(pos_arr, _scr=o_scratch):
-                    p32 = torch.from_numpy(np.ascontiguousarray(pos_arr)).float()
-                    _scr[:n, 0] = p32[:, 0]
-                    _scr[:n, 1] = p32[:, 1]
-                    return float(_exact_proxy(_scr, benchmark, plc))
-
-                o_pos, o_acc, _o_fs, _o_sc = _two_opt_proxy_swap(
-                    _hard_xy(best_pl), sizes, hw, hh, cw, ch, movable, n,
-                    score_fn=_r2_score, initial_score=base_2o, k_neighbors=16,
-                    max_iters=6, deadline=t_2o + min(rem_r2 - t_one_score, _pass_cap("hard_2opt", R2_2OPT_SLICE)),
-                    incremental_scorer=o_scorer, macro_cong=_macro_cong_now(),
-                )
-                if o_acc > 0:
-                    cand = best_pl.clone()
-                    cand[:n, 0] = torch.tensor(o_pos[:, 0], dtype=torch.float32)
-                    cand[:n, 1] = torch.tensor(o_pos[:, 1], dtype=torch.float32)
-                    o_true = float(_exact_proxy(cand, benchmark, plc))
-                    if o_true < best_score - 1e-6:
-                        _log(f"  R2 round {_r2+1} 2-opt: {o_acc} swaps, "
-                             f"{best_score:.4f} → {o_true:.4f}")
-                    _round_scorer_handoff(o_true, cand)
-            except Exception as exc:
-                _log(f"  R2 2-opt failed: {type(exc).__name__}: {exc}")
-                _round_scorer_dirty[0] = True
-
-            if not round_improved:
-                break
-            # Stop when a round's gain is too small.
-            _r2_delta = _r2_prev_best - best_score
-            _r2_round_time = time.monotonic() - _t_round_start
-            if _r2_delta < R2_DELTA_HARD_STOP:
-                _log(f"  R2 round {_r2+1}: negligible Δ={_r2_delta:.5f} "
-                     f"(< {R2_DELTA_HARD_STOP}) in {_r2_round_time:.1f}s; "
-                     f"stopping interleave early")
-                break
-            elif _r2_delta < R2_DELTA_THRESHOLD:
-                _r2_tiny_streak += 1
-                if _r2_tiny_streak >= TINY_R2_ROUNDS_TO_STOP:
-                    _log(f"  R2 round {_r2+1}: tiny Δ={_r2_delta:.5f} for "
-                         f"{_r2_tiny_streak} rounds (< {R2_DELTA_THRESHOLD}) "
-                         f"in {_r2_round_time:.1f}s; stopping interleave early")
-                    break
-            else:
-                _r2_tiny_streak = 0
-
-        # Spend leftover time on one last soft relocation pass.
-        if _n_soft > 0:
-            for _post_field, _post_ud in (("cong", False), ("density", True)):
-                rem_post = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-                # Keep enough time to verify the result.
-                if rem_post < t_one_score * 1.5:
-                    break
-                try:
-                    if _ml_trace is not None:
-                        _ml_trace.set_context(
-                            phase="post_r2",
-                            pass_name="soft_relocation",
-                            field=_post_field,
-                            elapsed_s=time.monotonic() - t0,
-                            remaining_budget_s=rem_post,
-                            current_best_score=best_score,
-                        )
-                    _post_base = best_score
-                    _post_shared = IncrementalScorer(
-                        plc, benchmark, best_pl.cpu().numpy().astype(np.float64)
-                    )
-                    _post_sr_pos = np.stack(
-                        [best_pl[n:n + _n_soft, 0].numpy(),
-                         best_pl[n:n + _n_soft, 1].numpy()], axis=1
-                    ).astype(np.float64)
-                    t_post = time.monotonic()
-                    _post_max = min(rem_post - t_one_score * 1.0, 15.0)
-                    if _post_max < 0.5:
-                        break
-                    _post_sr_pos, _post_acc, _ = _soft_relocation_moves(
-                        _post_sr_pos, soft_hw, soft_hh, cw, ch, n, plc, benchmark,
-                        _post_shared, _post_base,
-                        deadline=t_post + _post_max,
-                        top_hot=1024, n_targets=4,
-                        soft_movable=_soft_movable, use_density=_post_ud,
-                    )
-                    if _post_acc > 0:
-                        _post_cand = best_pl.clone()
-                        _post_cand[n:n + _n_soft, 0] = torch.tensor(
-                            _post_sr_pos[:, 0], dtype=torch.float32)
-                        _post_cand[n:n + _n_soft, 1] = torch.tensor(
-                            _post_sr_pos[:, 1], dtype=torch.float32)
-                        _post_true = float(_exact_proxy(_post_cand, benchmark, plc))
-                        if _post_true < best_score - 1e-6:
-                            _log(f"  Post-R2 soft-reloc[{_post_field}]: {_post_acc} moves, "
-                                 f"{best_score:.4f} -> {_post_true:.4f}")
-                            best_score = _post_true
-                            best_pl = _post_cand
-                        else:
-                            # Restore plc to the incumbent placement.
-                            float(_exact_proxy(best_pl, benchmark, plc))
-                except Exception as _post_exc:
-                    _log(f"  Post-R2 soft-reloc[{_post_field}] failed: {_post_exc}")
-                    try:
-                        float(_exact_proxy(best_pl, benchmark, plc))
-                    except Exception:
-                        pass
-
-        # LSMC phase isolation harness (diagnostic, opt-in via V2_LSMC_ISOLATE).
-        # Runs LSMC from the IDENTICAL post-R2 incumbent under several cluster-kick
-        # configs with the same seed and time budget, so the kick variants can be
-        # compared without the deadline-gated R2 timing confound. Logs per-variant
-        # deltas, keeps the best result, then skips the normal LSMC block.
-        if os.environ.get("V2_LSMC_ISOLATE"):
-            iso_s = float(os.environ.get("V2_LSMC_ISOLATE_S", "30.0"))
-            snap_pl = best_pl.detach().cpu().clone()
-            snap_score = float(best_score)
-            variants = [("off", "0.0", "gather"),
-                        ("gather", "1.0", "gather"),
-                        ("translate", "1.0", "translate")]
-            _prev_p = os.environ.get("V2_GPU_EXPLORE_CLUSTER_P")
-            _prev_m = os.environ.get("V2_GPU_EXPLORE_CLUSTER_MODE")
-            _log(f"  LSMC ISOLATE from incumbent {snap_score:.4f}  {iso_s:.0f}s/variant")
-            for _vn, _vp, _vm in variants:
-                os.environ["V2_GPU_EXPLORE_CLUSTER_P"] = _vp
-                os.environ["V2_GPU_EXPLORE_CLUSTER_MODE"] = _vm
-                float(_exact_proxy(snap_pl, benchmark, plc))  # restore plc to incumbent
-                _iso_pl, _iso_score, _iso_it, _iso_ac = _lsmc_explore(
-                    snap_pl, snap_score, benchmark, plc, _exact_proxy,
-                    sizes, hw, hh, cw, ch, movable, n,
-                    time_budget_s=iso_s, log=None,
-                    soft_hw=soft_hw, soft_hh=soft_hh,
-                    soft_movable=_soft_movable, n_soft=_n_soft,
-                )
-                _log(f"  ISOLATE[{_vn:9s}] {snap_score:.4f} -> {_iso_score:.4f} "
-                     f"(d={_iso_score - snap_score:+.4f}, {_iso_ac}/{_iso_it})")
-                if _iso_score < best_score - 1e-6:
-                    best_pl, best_score = _iso_pl, _iso_score
-            if _prev_p is None:
-                os.environ.pop("V2_GPU_EXPLORE_CLUSTER_P", None)
-            else:
-                os.environ["V2_GPU_EXPLORE_CLUSTER_P"] = _prev_p
-            if _prev_m is None:
-                os.environ.pop("V2_GPU_EXPLORE_CLUSTER_MODE", None)
-            else:
-                os.environ["V2_GPU_EXPLORE_CLUSTER_MODE"] = _prev_m
-            float(_exact_proxy(best_pl, benchmark, plc))  # leave plc on the kept result
-            _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
-            self._total_place_time_s += time.monotonic() - t0
-            self._benchmarks_done += 1
-            return best_pl
-
-        # LSMC exploration (GPU-ops.md Stage 2a) - opt-in via V2_GPU_EXPLORE.
-        # Final quality phase: kicks from the fully-refined optimum and accepts
-        # on exact post-descent score. Earlier placements (pre-R2, pre-post-soft)
-        # were tested and disproven - any refinement AFTER the accept gate makes
-        # the gate compare the wrong objective.
-        if _explore_enabled(_GPU_BACKEND):
-            _remember_lsmc_seed("post-r2-best", best_score, best_pl, force=True)
-            _exp_time = float(os.environ.get("V2_GPU_EXPLORE_TIME_S", "30.0"))
-            _rem_exp = (effective_budget_s + BUDGET_OVERRUN_S) - (time.monotonic() - t0)
-            _exp_slice = min(_exp_time, _rem_exp - t_one_score * 1.5)
-            if _exp_slice > t_one_score:
-                try:
-                    multi_raw = os.environ.get("V2_GPU_EXPLORE_MULTI_INCUMBENT", "1")
-                    multi_on = multi_raw.strip() not in _FALSE_ENV
-                    max_seeds_raw = os.environ.get("V2_GPU_EXPLORE_MAX_SEEDS", "3")
-                    try:
-                        max_seeds = max(1, int(max_seeds_raw))
-                    except ValueError:
-                        max_seeds = 3
-                    if not multi_on:
-                        seeds = [("post-r2-best", best_score, best_pl.detach().cpu().clone())]
-                    else:
-                        seeds = sorted(lsmc_seed_pool, key=lambda x: x[1])[:max_seeds]
-                        if not any(label == "post-r2-best" for label, _, _ in seeds):
-                            seeds = [
-                                ("post-r2-best", best_score, best_pl.detach().cpu().clone())
-                            ] + seeds
-                            seeds = sorted(seeds, key=lambda x: x[1])[:max_seeds]
-                    per_seed_slice = _exp_slice / max(1, len(seeds))
-                    _log(
-                        "  LSMC explore seeds: "
-                        + ", ".join(f"{label}={score:.4f}" for label, score, _ in seeds)
-                        + f"  slice={per_seed_slice:.1f}s each"
-                    )
-
-                    total_iters = 0
-                    total_acc = 0
-                    for _seed_label, _seed_score, _seed_pl in seeds:
-                        if per_seed_slice <= t_one_score * 0.5:
-                            break
-                        _cand_pl, _cand_score, _exp_iters, _exp_acc = _lsmc_explore(
-                            _seed_pl, _seed_score, benchmark, plc, _exact_proxy,
-                            sizes, hw, hh, cw, ch, movable, n,
-                            time_budget_s=per_seed_slice, log=_log,
-                            soft_hw=soft_hw, soft_hh=soft_hh,
-                            soft_movable=_soft_movable, n_soft=_n_soft,
-                        )
-                        total_iters += _exp_iters
-                        total_acc += _exp_acc
-                        if _cand_score < best_score - 1e-6:
-                            _log(
-                                f"  LSMC seed[{_seed_label}] improved global: "
-                                f"{best_score:.4f} -> {_cand_score:.4f}"
-                            )
-                            best_pl, best_score = _cand_pl, _cand_score
-                        else:
-                            # Restore plc to the global incumbent before the next seed.
-                            float(_exact_proxy(best_pl, benchmark, plc))
-                    _log(f"  LSMC explore: {total_acc} accepts / {total_iters} iters, "
-                         f"best={best_score:.4f}")
-                except Exception as exc:
-                    _log(f"  LSMC explore failed: {type(exc).__name__}: {exc}")
-
-        _log(f"  Best proxy={best_score:.4f}  total={time.monotonic()-t0:.1f}s")
-        _ml_finish("completed", best_score)
         self._total_place_time_s += time.monotonic() - t0
         self._benchmarks_done += 1
-        return best_pl
+        return hier

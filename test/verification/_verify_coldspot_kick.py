@@ -1,0 +1,84 @@
+"""Verify the coldspot cluster kick produces VALID (overlap-free, in-bounds) output.
+
+Builds a real congestion field, then calls `_coldspot_cluster_kick` across many
+seeds and asserts the legalized hard placement has zero hard-macro overlaps and is
+in-bounds, and that co-moved softs stay in-bounds.
+
+    uv run python test/verification/_verify_coldspot_kick.py [ibm04 ibm10]
+"""
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
+
+import numpy as np
+import torch
+
+from macro_place.loader import load_benchmark_from_dir
+from placer.local_search.clusters import derive_cluster_softs, derive_hard_clusters
+from placer.local_search.fields import _congestion_field
+from placer.local_search.lsmc_explore import _coldspot_cluster_kick
+from placer.scoring.exact import _exact_proxy
+
+TOL = 0.05
+
+
+def _check(bench):
+    src = ROOT / "external" / "MacroPlacement" / "Testcases" / "ICCAD04" / bench
+    benchmark, plc = load_benchmark_from_dir(str(src))
+    n, n_soft = benchmark.num_hard_macros, benchmark.num_soft_macros
+    sizes = benchmark.macro_sizes.numpy().astype(np.float64)
+    hw, hh = sizes[:n, 0] / 2, sizes[:n, 1] / 2
+    soft_hw, soft_hh = sizes[n:n + n_soft, 0] / 2, sizes[n:n + n_soft, 1] / 2
+    movable = benchmark.get_movable_mask().numpy()
+    cw, ch = float(benchmark.canvas_width), float(benchmark.canvas_height)
+    nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
+
+    pos = benchmark.macro_positions.numpy().astype(np.float64)
+    float(_exact_proxy(torch.tensor(pos, dtype=torch.float32), benchmark, plc))
+    field = _congestion_field(plc, nr, nc)
+    assert field is not None, "no congestion field"
+
+    labels, clusters = derive_hard_clusters(plc, n, n_soft=n_soft, min_edge=2)
+    csofts = derive_cluster_softs(plc, n, n_soft, labels)
+    hard_xy = pos[:n]
+    soft_xy = pos[n:n + n_soft]
+    mv = np.flatnonzero(movable[:n])
+
+    kicks = 0
+    for s in range(25):
+        rng = np.random.default_rng(s)
+        for pk in ("hot", "random"):
+            res = _coldspot_cluster_kick(
+                hard_xy, sizes[:n], hw, hh, cw, ch, movable[:n], n,
+                clusters, csofts, soft_xy, soft_hw, soft_hh, movable[n:n + n_soft],
+                field, nr, nc, rng, deadline=float("inf"), pick=pk)
+            if res is None:
+                continue
+            kicks += 1
+            out, out_soft = res
+            assert np.all(out[:, 0] >= hw - TOL) and np.all(out[:, 0] <= cw - hw + TOL), "hard x oob"
+            assert np.all(out[:, 1] >= hh - TOL) and np.all(out[:, 1] <= ch - hh + TOL), "hard y oob"
+            p = out[mv]
+            sx = np.abs(p[:, None, 0] - p[None, :, 0]) + TOL >= (hw[mv][:, None] + hw[mv][None, :])
+            sy = np.abs(p[:, None, 1] - p[None, :, 1]) + TOL >= (hh[mv][:, None] + hh[mv][None, :])
+            ok = sx | sy
+            np.fill_diagonal(ok, True)
+            assert ok.all(), f"{pk} seed{s}: hard overlap"
+            if out_soft is not None:
+                moved = np.any(np.abs(out_soft - soft_xy) > TOL, axis=1)
+                m = out_soft[moved]
+                assert np.all(m[:, 0] >= soft_hw[moved] - TOL) and \
+                    np.all(m[:, 0] <= cw - soft_hw[moved] + TOL), "soft x oob"
+                assert np.all(m[:, 1] >= soft_hh[moved] - TOL) and \
+                    np.all(m[:, 1] <= ch - soft_hh[moved] + TOL), "soft y oob"
+    assert kicks > 0, "no kicks fired (no usable cluster?)"
+    print(f"{bench}: coldspot-kick OK  {len(clusters)} clusters, {kicks} kicks, 0 overlaps, in-bounds")
+
+
+if __name__ == "__main__":
+    for b in (sys.argv[1:] or ["ibm04", "ibm10"]):
+        _check(b)
+    print("COLDSPOT-KICK VERIFICATION PASSED")
