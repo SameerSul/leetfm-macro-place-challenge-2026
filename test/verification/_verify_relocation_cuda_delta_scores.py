@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 from macro_place.loader import load_benchmark_from_dir
 
-from placer.geometry import separation_matrices
+from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field
 from placer.local_search.relocation import _score_relocation_proposals_cuda_delta
 from placer.scoring.congestion import _patch_plc_congestion

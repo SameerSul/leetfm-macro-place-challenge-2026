@@ -16,7 +16,7 @@ from utils.config import (
     _GPU_DEVICE_NAME,
     _numba_njit,
 )
-from placer.geometry import separation_matrices
+from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.region_rules import accepts_region_score, point_in_region
