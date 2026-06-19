@@ -21,18 +21,22 @@ Already implemented:
   environment variables.
 - Trace events for relocation candidates, relocation results, hierarchy pass
   summaries, and final placement summaries.
+- Schema v1 candidate labels for region swaps, cluster decompression, and
+  coldspot tightening.
+- Schema-v1 trace-to-graph dataset builder in `scripts/build_gnn_dataset.py`.
 
 Not implemented:
 
-- Graph construction.
 - Learned model.
-- Training dataset builder.
 - Train/eval scripts.
 - Inference-time ranker integration.
 - Model artifact versioning.
 - Full benchmark acceptance policy.
 
 ## Stage G1: Trace Completeness
+
+Status: implemented for schema v1. The schema is documented in
+[`gnn_trace_schema.md`](gnn_trace_schema.md).
 
 Goal: collect enough supervised data to train a candidate ranker.
 
@@ -70,6 +74,9 @@ The trace should include candidate and label events from all active hierarchy
 operators without changing placement output.
 
 ## Stage G2: Graph Dataset Builder
+
+Status: implemented for schema v1. The dataset payload is documented in
+[`gnn_dataset_schema.md`](gnn_dataset_schema.md).
 
 Goal: convert JSONL traces into graph examples.
 

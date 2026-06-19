@@ -23,12 +23,26 @@ HIER_GNN_TRACE_PATH=/tmp/hier_gnn_trace.jsonl
 
 ## Events
 
+All events include `schema_version`. The current schema is documented in
+[`gnn_trace_schema.md`](gnn_trace_schema.md).
+
 - `hier_relocation_candidates`
   - hard propose-all candidate pool after proxy/structural candidate scoring
   - includes macro id, candidate rank, target location, field values, structural
     delta, and candidate score
 - `hier_relocation_result`
   - accepted hard/soft relocation moves with proxy deltas
+- `hier_decompression_candidate`
+  - cluster decompression candidate labels with expansion factor, axis scale,
+    hierarchy-quality delta, exact proxy delta when scored, accepted flag, and
+    rejection reason
+- `hier_swap_candidates`
+  - sampled hard/hard, hard/soft, and soft/soft region-swap candidate pools with
+    legality, region, score, proxy delta, accepted flag, and rejection reason
+- `hier_coldspot_candidate`
+  - coldspot tightening candidates and skipped rounds with selected cluster,
+    field gap, hierarchy-quality delta, exact proxy delta when scored, accepted
+    flag, and rejection reason
 - `hier_pass_result`
   - pass-level summaries for micro-shift, decompression, swaps, post-swap
     relocation, coldspot tightening, and post-coldspot micro-shift

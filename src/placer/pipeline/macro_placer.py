@@ -939,6 +939,22 @@ class MacroPlacer:
                     break
                 field_gap = _coldspot_field_gap(field)
                 if field_gap < ck_min_field_gap:
+                    log_gnn_event(
+                        "hier_coldspot_candidate",
+                        benchmark=benchmark.name,
+                        operator="coldspot_tightening",
+                        candidate_id=int(ck_acc),
+                        field_gap=float(field_gap),
+                        min_field_gap=float(ck_min_field_gap),
+                        old_proxy=float(cur_proxy),
+                        candidate_proxy=None,
+                        proxy_delta=None,
+                        hierarchy_quality_before=float(cur_quality),
+                        hierarchy_quality_after=None,
+                        hierarchy_quality_delta=None,
+                        accepted=False,
+                        rejection_reason="field_gap_below_threshold",
+                    )
                     _log(
                         f"  [hier] coldspot tightening: skipped, "
                         f"field_gap={field_gap:.4f} < {ck_min_field_gap:.4f}"
@@ -965,19 +981,62 @@ class MacroPlacer:
                     ck_rng,
                     deadline=ck_deadline,
                     pick="random",
+                    return_trace=True,
                 )
                 if res is None:
+                    log_gnn_event(
+                        "hier_coldspot_candidate",
+                        benchmark=benchmark.name,
+                        operator="coldspot_tightening",
+                        candidate_id=int(ck_acc),
+                        field_gap=float(field_gap),
+                        min_field_gap=float(ck_min_field_gap),
+                        old_proxy=float(cur_proxy),
+                        candidate_proxy=None,
+                        proxy_delta=None,
+                        hierarchy_quality_before=float(cur_quality),
+                        hierarchy_quality_after=None,
+                        hierarchy_quality_delta=None,
+                        accepted=False,
+                        rejection_reason="no_eligible_cluster",
+                    )
                     continue
-                kh, ks = res
+                kh, ks, ck_trace = res
                 ks = ks if ks is not None else cur_s
                 kproxy = float(_exact_proxy(_full(kh, ks), benchmark, plc))
                 kquality = hierarchy_quality_metric(kh, clusters)
-                if (
+                accepted = (
                     kquality <= cur_quality + ck_quality_budget
                     and kproxy <= cur_proxy + ck_budget
                     and kproxy <= base_proxy + ck_total
                     and kproxy < cur_proxy - ck_min_gain
-                ):
+                )
+                if kquality > cur_quality + ck_quality_budget:
+                    reason = "hierarchy_quality_failed"
+                elif kproxy > cur_proxy + ck_budget or kproxy > base_proxy + ck_total:
+                    reason = "proxy_budget_failed"
+                elif kproxy >= cur_proxy - ck_min_gain:
+                    reason = "exact_proxy_failed"
+                else:
+                    reason = "accepted"
+                log_gnn_event(
+                    "hier_coldspot_candidate",
+                    benchmark=benchmark.name,
+                    operator="coldspot_tightening",
+                    candidate_id=int(ck_acc),
+                    field_gap=float(field_gap),
+                    min_field_gap=float(ck_min_field_gap),
+                    old_proxy=float(cur_proxy),
+                    candidate_proxy=float(kproxy),
+                    proxy_delta=float(kproxy) - float(cur_proxy),
+                    hierarchy_quality_before=float(cur_quality),
+                    hierarchy_quality_after=float(kquality),
+                    hierarchy_quality_delta=float(kquality) - float(cur_quality),
+                    accepted=bool(accepted),
+                    rejection_reason=None if accepted else reason,
+                    **ck_trace,
+                )
+                if accepted:
                     cur_h, cur_s, cur_proxy, cur_quality = kh, ks, kproxy, kquality
                     ck_scorer = IncrementalScorer(
                         plc,
