@@ -11,7 +11,7 @@ The active submission now lives at the repository root: `src/`, `docs/`,
 absent after the root-layout migration; if present, treat it as frozen /
 read-only.
 
-**Current production mode (2026-06-16): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-06-18): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py` and raises if grouped DREAMPlace is not
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
@@ -20,6 +20,12 @@ ranker defaults, and their proxy-only verifiers are not active code.
 Current accepted hierarchy result: `uv run evaluate src/main.py --all` =
 **AVG 1.3631**, 17/17 VALID, 0 overlaps, 602.76s; `ibm10` smoke is
 `proxy=1.6133`, VALID.
+
+BeyondPPA-style work is integrated into the hierarchy path, not as a separate
+placer. The current shipped pieces are deterministic structural metrics,
+default-off hierarchy relocation candidate ordering
+(`V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0`), and default-off GNN trace logging
+(`V2_HIER_GNN_TRACE=0`). No learned GNN model or DQN policy is active.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](docs/general/PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
 
@@ -164,7 +170,7 @@ src/eda_io/        Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tc
 src/place_design.py CLI tying eda_io together - see src/eda_io/README.md.
 docs/general/      ARCHITECTURE.md / ISSUES.md / PROGRESS.md / DESIGN_FLOW.md.
 docs/gpu/          Archived CUDA/GPU proxy-path notes.
-docs/ml_nn/        Archived learned-ranker and GNN-surrogate notes.
+docs/ml_nn/        Current BeyondPPA/GNN notes plus archived learned-ranker history.
 test/benchmarks/   Synthetic anti-overfitting suite: generator, runner, impact analyzer.
 test/diagnostic/   Maintained smoke tests plus current profiling/recall probes.
 test/eda_io/       eda_io pytest suite + LEF/DEF/Verilog/SDC/Liberty fixture design.
@@ -184,6 +190,12 @@ scripts/                  Comparison + benchmark-conversion utilities.
 - **`docs/general/PAPERS_NOTES.md` describes the MaskRegulate regularity mask incorrectly.** The actual paper formula `min(x, X_max-x) + min(y, Y_max-y)` rewards placing macros near canvas *edges*. The notes describe distance-to-center, which is the opposite. The implementation in `_density_gradient_perturb` does neither - it is a pure occupancy-spreading gradient. If you see comments referencing "MaskRegulate centering", the comments are wrong, not the code.
 - **`initial.plc` is already a good seed.** It comes from a prior EDA flow with hand-tuned spread. The job of legalization is to resolve overlaps without destroying that spread. Restart from random or grid layouts has consistently lost to restarting from `initial.plc + small perturbation`.
 - **Soft macros must move with hierarchy.** The current path classifies soft macros as owned or bridge, gives them region boxes, lets grouped DREAMPlace place them, and uses soft relocation plus soft-heavy region swaps after hard legalization/relief. The accepted `V2_HIER_SOFT_SWAP_K=48` default is intentional; `24` was worse on ibm12/15/17, while `64` regressed ibm17.
+- **BeyondPPA/GNN must stay inside hierarchy.** Structural metrics and future
+  learned rankers may reorder candidates inside existing hierarchy operators,
+  but accepted moves still need hard legality, fixed macro immobility, bounds,
+  hierarchy-region constraints, hierarchy-quality gates, and exact-proxy gates.
+  Do not add a separate structural polish or acceptance path unless the user
+  explicitly changes that direction.
 
 ## Code style
 
@@ -207,5 +219,5 @@ scripts/                  Comparison + benchmark-conversion utilities.
 ## When in doubt
 
 - For current work, start with `docs/general/DESIGN_FLOW.md` and `docs/general/ARCHITECTURE.md`; they describe the hierarchy system.
-- `docs/gpu/`, `docs/ml_nn/`, and `docs/theory/LSMC.md` are archived proxy-path notes unless explicitly revived by the user.
+- `docs/gpu/` and `docs/theory/LSMC.md` are archived proxy-path notes unless explicitly revived by the user. `docs/ml_nn/beyondppa_results/` is active for the hierarchy-integrated BeyondPPA/GNN trace work.
 - Do not reintroduce deleted proxy-only code unless the user explicitly asks to restore the proxy path.

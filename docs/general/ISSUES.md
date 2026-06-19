@@ -1,4 +1,4 @@
-# Open issues and recent shipped items — v2 placer (last revised 2026-06-16)
+# Open issues and recent shipped items — v2 placer (last revised 2026-06-18)
 
 This file tracks current gaps, speculative score ideas, follow-up work, and a
 small number of recent shipped items that still explain active knobs. Older
@@ -9,7 +9,7 @@ resolved or rejected findings are primarily captured in commit messages and
 
 ## Current state (headline)
 
-**Current production mode (2026-06-16): hierarchy-only.** The old
+**Current production mode (2026-06-18): hierarchy-only.** The old
 proxy-optimized production path (candidate restarts, R2/2-opt/LSMC, ML ranker
 defaults, and generic LSMC cluster kicks) has been deleted from active code.
 `MacroPlacer.place()` now always routes through `_hierarchy_floorplan()` and
@@ -18,6 +18,12 @@ VALID, ~41s locally. Current full IBM run:
 `uv run evaluate src/main.py --all` = **AVG 1.3631**, 17/17 VALID, 0 overlaps,
 602.76s. The historical proxy table below is retained as context for the
 removed proxy path, not the current hierarchy-preserving output.
+
+BeyondPPA-style structural guidance is now integrated only as hierarchy
+candidate-ordering signal. Production defaults remain unchanged:
+`V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` and `V2_HIER_GNN_TRACE=0`. The current
+GNN work is opt-in JSONL trace logging for future hierarchy-aware ranker
+training, not a model or second placement path.
 
 | Metric | Value |
 |---|---|
@@ -75,6 +81,36 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 ---
 
 ## Current issues and shipped context
+
+### S22. BeyondPPA structural signal and GNN trace logging (SHIPPED 2026-06-18)
+
+The BeyondPPA work is integrated into the hierarchy flow rather than branching
+into a separate placer. Shipped pieces:
+
+- deterministic structural metrics in
+  `src/placer/local_search/structural_fields.py`;
+- structural diagnostics in `test/diagnostic/_structural_metrics.py`;
+- opt-in structural relocation candidate ordering through
+  `V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT`;
+- opt-in GNN JSONL traces through `V2_HIER_GNN_TRACE=1`.
+
+The structural term only reorders candidates. Hard legality, fixed macros,
+bounds, hierarchy regions, hierarchy-quality gates, and exact-proxy gates still
+decide accepted moves. Standalone structural polish and bounded structural
+acceptance were deliberately not kept, because they created a second path
+instead of integrating with hierarchy.
+
+Verification: `py_compile` passed; `test/verification/test_structural_fields.py`
+passed; `ibm01` GNN trace smoke was VALID and wrote relocation candidate,
+relocation result, pass summary, and final summary events. A default-off
+`--all` verification stayed in-family at **AVG 1.3626**, 17/17 VALID,
+0 overlaps, 595.52s. The small difference from the accepted 1.3631 result is
+not isolated from unrelated worktree changes.
+
+Open follow-up: implement GNN trace completeness for region swap, cluster
+decompression, and coldspot candidates before building a dataset or model. The
+full roadmap lives in
+`docs/ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md`.
 
 ### S21. Congestion-aware hierarchy relief and region-bounded swaps (SHIPPED 2026-06-16)
 

@@ -10,8 +10,31 @@ Target: beat RePlAce avg of 1.4578.
 > hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 > ranker defaults, and their verifiers. Current accepted Stage-3 full run:
 > **AVG 1.3631**, 17/17 VALID, 0 overlaps, 602.76s, with post-swap and
-> post-coldspot micro-shift replay. The proxy-score history below is retained as
-> historical experiment context, not the current production output.
+> post-coldspot micro-shift replay. BeyondPPA-style structural metrics,
+> optional hierarchy candidate ordering, and opt-in GNN trace logging are now
+> integrated into the hierarchy flow with production defaults disabled. The
+> proxy-score history below is retained as historical experiment context, not
+> the current production output.
+
+> **Status (2026-06-18 — BeyondPPA structural objective and GNN trace logging
+> integrated, defaults unchanged):** added deterministic edge-keepout,
+> grid-alignment, notch, and combined structural metrics in
+> `src/placer/local_search/structural_fields.py`; added
+> `test/diagnostic/_structural_metrics.py`; and integrated the structural term
+> into existing hierarchy relocation candidate ordering behind
+> `V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0`
+> (`V2_HIER_STRUCTURAL_RANK=1` remains an alias for weight `1.0`). This is not a
+> second BeyondPPA path: legality, fixed-macro immobility, bounds,
+> hierarchy-region constraints, hierarchy-quality gates, and exact-proxy gates
+> still decide accepted moves. Added opt-in GNN JSONL tracing through
+> `src/placer/local_search/gnn_trace.py` with events for relocation candidates,
+> accepted relocation labels, hierarchy pass summaries, and final placement
+> summaries. Verification: `py_compile` passed; focused structural tests passed
+> (`4 passed`); GNN trace smoke on `ibm01` was VALID with proxy `0.9435` and
+> wrote 24 trace events. A later default-off full sweep produced **AVG 1.3626**,
+> 17/17 VALID, 0 overlaps, 595.52s, in-family with the accepted 1.3631 result.
+> Because the worktree also contains unrelated local changes, do not attribute
+> the small delta solely to the structural/GNN logging work without a clean A/B.
 
 > **Status (2026-06-18 — Stage 3 micro-shift replay stack accepted,
 > `--all` avg = 1.3631):** promoted two exact-gated replay passes that rerun

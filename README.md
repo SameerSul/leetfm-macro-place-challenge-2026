@@ -2,7 +2,7 @@
 
 Active placer for the Partcl/HRT Macro Placement Challenge.
 
-**Current production mode (2026-06-16): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-06-18): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py`. The previous proxy-optimized production
 path has been deleted: random candidate restarts, R2/2-opt/swap/cycle search,
@@ -19,6 +19,8 @@ micro-shift replay passes. The exact proxy is still used for evaluation and
 local gates, but it is no longer the primary design objective.
 
 The placement objective note is in [docs/general/OBJECTIVES.md](docs/general/OBJECTIVES.md).
+The hierarchy-integrated BeyondPPA structural objective notes and GNN trace
+roadmap are in [docs/ml_nn/beyondppa_results/](docs/ml_nn/beyondppa_results/).
 
 Current smoke reference:
 
@@ -80,11 +82,14 @@ initial.plc / benchmark
   -> soft relocation cleanup
   -> congestion-expanded hard/soft regions
   -> region-locked hard relocation + soft relocation relief
+  -> exact-gated in-region micro-shift polish
   -> exact-gated cluster decompression
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
+  -> post-swap micro-shift replay
   -> post-swap hard propose-all polish
   -> post-swap soft relocation polish
   -> proxy-aware coldspot tightening
+  -> post-coldspot micro-shift replay
   -> final movable-macro in-bounds clamp
   -> return macro centers
 ```
@@ -113,7 +118,11 @@ V2_HIER_REGION_ROUNDS=2
 V2_HIER_REGION_BUDGET_S=40
 V2_HIER_REGION_ESCAPE_MIN=0.002
 V2_HIER_CONG_EXPAND_REGIONS=1
+V2_HIER_MICRO_SHIFT=1
+V2_HIER_POST_SWAP_MICRO_SHIFT=1
+V2_HIER_POST_COLDSPOT_MICRO_SHIFT=1
 V2_HIER_DECOMPRESS=1
+V2_HIER_DECOMPRESS_ANISO=1
 V2_HIER_REGION_SWAPS=1
 V2_HIER_SOFT_SWAP_K=48
 V2_HIER_COLDSPOT_KICK=1
@@ -121,9 +130,18 @@ V2_HIER_COLDSPOT_BUDGET=0.0
 V2_HIER_COLDSPOT_TOTAL=0.0
 V2_HIER_COLDSPOT_MIN_FIELD_GAP=0.02
 V2_HIER_COLDSPOT_ROUNDS=8
+V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
+V2_HIER_GNN_TRACE=0
 ```
 
 `V2_SEED` is still accepted by `src/main.py` for reproducible runs.
+
+`V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT` is the opt-in BeyondPPA-style structural
+ranking weight inside the existing hierarchy relocation operators. It only
+reorders candidates; legality, fixed-macro, region, hierarchy-quality, and
+exact-proxy gates still decide accepted moves. `V2_HIER_GNN_TRACE=1` writes
+JSONL traces for future hierarchy-aware GNN training without changing placement
+output.
 
 ## Source Layout
 
@@ -138,7 +156,8 @@ src/dreamplace_bridge/         pb.txt <-> Bookshelf bridge and DP launcher
 src/eda_io/                    LEF/DEF/Verilog/SDC/Liberty I/O layer
 test/verification/             focused correctness checks
 docs/general/                  current architecture, issues, progress history
-docs/gpu/, docs/ml_nn/         archived notes for removed proxy/ML/GPU paths
+docs/gpu/                      archived notes for removed proxy/GPU paths
+docs/ml_nn/beyondppa_results/  active BeyondPPA/GNN trace notes and stage logs
 ```
 
 Deleted active subsystems:
@@ -171,5 +190,7 @@ See `src/eda_io/README.md` for parser and output details.
 - `docs/general/ISSUES.md` - current findings plus recent dead ends.
 - `docs/general/PROGRESS.md` - chronological experiment history; older proxy
   scores are historical.
-- `docs/theory/LSMC.md`, `docs/gpu/`, `docs/ml_nn/` - archived references for
-  deleted proxy-era work.
+- `docs/ml_nn/beyondppa_results/` - current deterministic BeyondPPA structural
+  integration notes, stage results, GNN trace logging, and GNN roadmap.
+- `docs/theory/LSMC.md`, `docs/gpu/` - archived references for deleted
+  proxy-era work.

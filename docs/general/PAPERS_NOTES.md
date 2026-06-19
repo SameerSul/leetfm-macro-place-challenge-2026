@@ -2,8 +2,10 @@
 
 > Historical research log. Most implementation notes describe the retired
 > proxy-optimized path. The active system is hierarchy-only; use
-> `ARCHITECTURE.md`, `DESIGN_FLOW.md`, and `docs/theory/` for the current flow.
-> Updated: 2026-06-16
+> `ARCHITECTURE.md`, `DESIGN_FLOW.md`, `OBJECTIVES.md`, and
+> `docs/ml_nn/beyondppa_results/` for the current hierarchy and BeyondPPA/GNN
+> trace work.
+> Updated: 2026-06-18
 
 ---
 

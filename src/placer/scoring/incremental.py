@@ -280,6 +280,12 @@ class IncrementalScorer:
         top = np.partition(xx, n - cnt)[n - cnt :]
         return float(top.sum() / cnt)
 
+    def congestion_field(self) -> np.ndarray:
+        """Return the current max(H, V) routing congestion grid."""
+        Hm = (self.H_macro_flat / self.grid_h_routes).reshape(self.grid_row, self.grid_col)
+        Vm = (self.V_macro_flat / self.grid_v_routes).reshape(self.grid_row, self.grid_col)
+        return np.maximum(self.H_smoothed + Hm, self.V_smoothed + Vm)
+
     @staticmethod
     def _union_bbox(*bbs):
         """Union non-empty row/column boxes."""
@@ -858,6 +864,14 @@ class IncrementalScorer:
             self._hard_slot_array(i_hard, j_hard),
         )
 
+    def score_swap_hard_hard_many(self, i_hard: int, candidates: np.ndarray) -> np.ndarray:
+        """Score hard-hard swaps for one hard macro, preserving candidate order."""
+        cand = np.asarray(candidates, dtype=np.int64).reshape(-1)
+        out = np.empty(cand.size, dtype=np.float64)
+        for k, j_hard in enumerate(cand):
+            out[k] = self.score_swap_hard_hard(i_hard, int(j_hard))
+        return out
+
     def commit_swap_hard_hard(self, i_hard: int, j_hard: int) -> None:
         """Commit exchanging two hard macro centers."""
         i_hard, j_hard = int(i_hard), int(j_hard)
@@ -880,6 +894,14 @@ class IncrementalScorer:
         a_xy = tuple(self.committed_soft_pos[soft_a])
         b_xy = tuple(self.committed_soft_pos[soft_b])
         return self._score_multi_move([am, bm], [a_xy, b_xy], [b_xy, a_xy], [])
+
+    def score_swap_soft_soft_many(self, soft_a: int, candidates: np.ndarray) -> np.ndarray:
+        """Score soft-soft swaps for one soft macro, preserving candidate order."""
+        cand = np.asarray(candidates, dtype=np.int64).reshape(-1)
+        out = np.empty(cand.size, dtype=np.float64)
+        for k, soft_b in enumerate(cand):
+            out[k] = self.score_swap_soft_soft(soft_a, int(soft_b))
+        return out
 
     def commit_swap_soft_soft(self, soft_a: int, soft_b: int) -> None:
         """Commit exchanging two soft macro centers."""
@@ -908,6 +930,14 @@ class IncrementalScorer:
             [s_xy, h_xy],
             self._hard_slot_array(i_hard),
         )
+
+    def score_swap_hard_soft_many(self, i_hard: int, candidates: np.ndarray) -> np.ndarray:
+        """Score hard-soft swaps for one hard macro, preserving candidate order."""
+        cand = np.asarray(candidates, dtype=np.int64).reshape(-1)
+        out = np.empty(cand.size, dtype=np.float64)
+        for k, soft_k in enumerate(cand):
+            out[k] = self.score_swap_hard_soft(i_hard, int(soft_k))
+        return out
 
     def commit_swap_hard_soft(self, i_hard: int, soft_k: int) -> None:
         """Commit exchanging a hard macro center with a soft macro center."""
@@ -1024,6 +1054,14 @@ class IncrementalScorer:
         self.V_macro_flat[:] = Vm_snap
 
         return score
+
+    def _trial_many_at(self, prep: dict, xy_array: np.ndarray) -> np.ndarray:
+        """Score several hard targets after `_prepare_move`, preserving order."""
+        xy = np.asarray(xy_array, dtype=np.float64).reshape(-1, 2)
+        out = np.empty(xy.shape[0], dtype=np.float64)
+        for k in range(xy.shape[0]):
+            out[k] = self._trial_at(prep, xy[k])
+        return out
 
     def _commit_after_prep(self, prep: dict, new_xy) -> None:
         """Commit the winning target after `_prepare_move`."""
@@ -1154,6 +1192,14 @@ class IncrementalScorer:
         self.V_flat[:] = V_snap
 
         return score
+
+    def _trial_many_at_soft(self, prep: dict, xy_array: np.ndarray) -> np.ndarray:
+        """Score several soft targets after `_prepare_move_soft`, preserving order."""
+        xy = np.asarray(xy_array, dtype=np.float64).reshape(-1, 2)
+        out = np.empty(xy.shape[0], dtype=np.float64)
+        for k in range(xy.shape[0]):
+            out[k] = self._trial_at_soft(prep, xy[k])
+        return out
 
     def _commit_after_prep_soft(self, prep: dict, new_xy) -> None:
         """Commit the winning soft target after `_prepare_move_soft`."""

@@ -7,10 +7,19 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from placer.config import _CUDA_DEVICE_REQUESTED, _GPU_BACKEND, _GPU_DEVICE, _GPU_DEVICE_NAME
+from placer.config import (
+    HAS_NUMBA,
+    _CUDA_DEVICE_REQUESTED,
+    _GPU_BACKEND,
+    _GPU_DEVICE,
+    _GPU_DEVICE_NAME,
+    _numba_njit,
+)
 from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
+from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.region_rules import accepts_region_score, point_in_region
+from placer.local_search.structural_fields import combined_structural_penalty
 from placer.plc.placement import _ensure_pos_cache
 
 if TYPE_CHECKING:
@@ -20,6 +29,352 @@ if TYPE_CHECKING:
 def _proposal_scorer_mode() -> str:
     mode = os.environ.get("V2_RELOC_PROPOSE_SCORER", "cuda_delta").strip().lower()
     return mode if mode in {"exact", "tensor", "cuda_delta"} else "cuda_delta"
+
+
+def _env_enabled(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip() not in {"0", "false", "False", "no", "NO", "off"}
+
+
+def _structural_weights() -> tuple[float, float, float]:
+    return (
+        float(os.environ.get("V2_HIER_KEEP_OUT_WEIGHT", "0.2")),
+        float(os.environ.get("V2_HIER_GRID_ALIGN_WEIGHT", "0.2")),
+        float(os.environ.get("V2_HIER_NOTCH_WEIGHT", "0.6")),
+    )
+
+
+def _hierarchy_structural_weight() -> float:
+    """Weight for BeyondPPA-style structure inside hierarchy candidate ordering."""
+    raw = os.environ.get("V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT")
+    if raw is not None and raw.strip():
+        return max(0.0, float(raw))
+    # Backward-compatible opt-in from the first implementation pass.
+    if _env_enabled("V2_HIER_STRUCTURAL_RANK", "0"):
+        return 1.0
+    return 0.0
+
+
+def _candidate_trace_sample(proposals: list[dict], limit: int) -> list[dict]:
+    if limit <= 0:
+        return []
+    out = []
+    for p in proposals[:limit]:
+        out.append(
+            {
+                "macro": int(p["i"]),
+                "hot_rank": int(p.get("hot_rank", -1)),
+                "candidate_rank": int(p.get("candidate_rank", -1)),
+                "target_index": int(p.get("target_index", -1)),
+                "score": float(p.get("score", 0.0)),
+                "local_field": float(p.get("local_field", 0.0)),
+                "target_field": float(p.get("target_field", 0.0)),
+                "structural_delta": float(p.get("structural_delta", 0.0)),
+                "x": float(p["xy"][0]),
+                "y": float(p["xy"][1]),
+            }
+        )
+    return out
+
+
+def _full_committed_pos(incremental_scorer) -> np.ndarray:
+    return np.vstack(
+        [
+            incremental_scorer.committed_hard_pos,
+            incremental_scorer.committed_soft_pos,
+        ]
+    ).astype(np.float64, copy=True)
+
+
+def _full_macro_sizes(incremental_scorer) -> np.ndarray:
+    return incremental_scorer.benchmark.macro_sizes.detach().cpu().numpy().astype(np.float64)
+
+
+def _structural_penalty(
+    full_pos: np.ndarray,
+    sizes: np.ndarray,
+    cw: float,
+    ch: float,
+    benchmark: "Benchmark",
+) -> float:
+    kw, gw, nw = _structural_weights()
+    return combined_structural_penalty(
+        full_pos,
+        sizes,
+        cw,
+        ch,
+        grid_cols=int(benchmark.grid_cols),
+        grid_rows=int(benchmark.grid_rows),
+        keepout_weight=kw,
+        grid_align_weight=gw,
+        notch_weight=nw,
+    )
+
+
+def _structural_local_penalty(
+    full_pos: np.ndarray,
+    sizes: np.ndarray,
+    cw: float,
+    ch: float,
+    benchmark: "Benchmark",
+    module_index: int,
+) -> float:
+    pos = np.asarray(full_pos, dtype=np.float64)
+    i = int(module_index)
+    values = _structural_local_penalty_batch(
+        pos,
+        np.asarray(sizes, dtype=np.float64),
+        cw,
+        ch,
+        benchmark,
+        module_index=i,
+        target_x=np.array([float(pos[i, 0])]),
+        target_y=np.array([float(pos[i, 1])]),
+    )
+    if values.size == 0:
+        return 0.0
+    return float(values[0])
+
+
+def _structural_local_penalty_batch(
+    full_pos: np.ndarray,
+    sizes: np.ndarray,
+    cw: float,
+    ch: float,
+    benchmark: "Benchmark",
+    *,
+    module_index: int,
+    target_x: np.ndarray,
+    target_y: np.ndarray,
+) -> np.ndarray:
+    kw, gw, nw = _structural_weights()
+    pos = np.asarray(full_pos, dtype=np.float64)
+    sz = np.asarray(sizes, dtype=np.float64)
+    i = int(module_index)
+    tx = np.asarray(target_x, dtype=np.float64).reshape(-1)
+    ty = np.asarray(target_y, dtype=np.float64).reshape(-1)
+    if tx.size == 0 or ty.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    if tx.shape != ty.shape:
+        raise ValueError("target_x and target_y must be the same shape")
+
+    half = sz / 2.0
+    hw_i = float(half[i, 0])
+    hh_i = float(half[i, 1])
+    keepout = max(
+        min(float(np.median(np.minimum(sz[:, 0], sz[:, 1]))), min(cw, ch) * 0.02),
+        1e-9,
+    )
+    clear = np.minimum.reduce(
+        [
+            tx - hw_i,
+            cw - (tx + hw_i),
+            ty - hh_i,
+            ch - (ty + hh_i),
+        ]
+    )
+    edge = np.maximum((keepout - clear) / keepout, 0.0) ** 2
+
+    px = cw / max(int(benchmark.grid_cols), 1)
+    py = ch / max(int(benchmark.grid_rows), 1)
+    gx = (np.floor(tx / px) + 0.5) * px
+    gy = (np.floor(ty / py) + 0.5) * py
+    dx = np.minimum(np.abs(tx - gx) / max(0.5 * px, 1e-9), 1.0)
+    dy = np.minimum(np.abs(ty - gy) / max(0.5 * py, 1e-9), 1.0)
+    grid = 0.5 * (dx * dx + dy * dy)
+
+    left = pos[:, 0] - half[:, 0]
+    right = pos[:, 0] + half[:, 0]
+    bottom = pos[:, 1] - half[:, 1]
+    top = pos[:, 1] + half[:, 1]
+    left_t = tx - hw_i
+    right_t = tx + hw_i
+    bottom_t = ty - hh_i
+    top_t = ty + hh_i
+    x_gap = np.maximum.reduce(
+        [
+            left[None, :] - right_t[:, None],
+            left_t[:, None] - right[None, :],
+            np.zeros((tx.size, pos.shape[0]), dtype=np.float64),
+        ]
+    )
+    y_gap = np.maximum.reduce(
+        [
+            bottom[None, :] - top_t[:, None],
+            bottom_t[:, None] - top[None, :],
+            np.zeros((tx.size, pos.shape[0]), dtype=np.float64),
+        ]
+    )
+    x_overlap = np.minimum(right_t[:, None], right[None, :]) - np.maximum(
+        left_t[:, None], left[None, :]
+    )
+    y_overlap = np.minimum(top_t[:, None], top[None, :]) - np.maximum(
+        bottom_t[:, None], bottom[None, :]
+    )
+    valid_x = (x_gap > 0.0) & (x_gap < keepout) & (y_overlap > 0.0)
+    valid_y = (y_gap > 0.0) & (y_gap < keepout) & (x_overlap > 0.0)
+    if i < pos.shape[0]:
+        valid_x[:, i] = False
+        valid_y[:, i] = False
+    terms = np.zeros((tx.size, pos.shape[0]), dtype=np.float64)
+    if valid_x.any():
+        cover = np.minimum(1.0, y_overlap[valid_x] / max(float(sz[i, 1]), 1e-9))
+        terms[valid_x] = ((keepout - x_gap[valid_x]) / keepout) ** 2 * cover
+    if valid_y.any():
+        cover = np.minimum(1.0, x_overlap[valid_y] / max(float(sz[i, 0]), 1e-9))
+        terms[valid_y] = ((keepout - y_gap[valid_y]) / keepout) ** 2 * cover
+    term_sum = np.sum(terms, axis=1)
+    term_count = np.count_nonzero(terms, axis=1)
+    notch = np.divide(term_sum, term_count, out=np.zeros_like(term_sum), where=term_count > 0)
+    return kw * edge + gw * grid + nw * notch
+
+
+def _structural_candidate_order(
+    *,
+    cand: np.ndarray,
+    base_rank: np.ndarray,
+    module_index: int,
+    target_x: np.ndarray,
+    target_y: np.ndarray,
+    full_pos: np.ndarray,
+    sizes: np.ndarray,
+    cw: float,
+    ch: float,
+    benchmark: "Benchmark",
+) -> np.ndarray:
+    structural_weight = _hierarchy_structural_weight()
+    if cand.size == 0 or structural_weight <= 0.0:
+        return np.argsort(base_rank)
+    base_struct = _structural_local_penalty(
+        full_pos, sizes, cw, ch, benchmark, module_index
+    )
+    span2 = max(float(max(cw, ch)) ** 2, 1.0)
+    adjusted = np.asarray(base_rank, dtype=np.float64).copy()
+    local_scores = _structural_local_penalty_batch(
+        full_pos,
+        sizes,
+        cw,
+        ch,
+        benchmark,
+        module_index=module_index,
+        target_x=target_x[cand],
+        target_y=target_y[cand],
+    )
+    adjusted += structural_weight * span2 * (local_scores - base_struct)
+    return np.argsort(adjusted, kind="stable")
+
+
+def _apply_structural_proposal_scores(
+    proposals: list[dict],
+    *,
+    full_pos: np.ndarray,
+    sizes: np.ndarray,
+    cw: float,
+    ch: float,
+    benchmark: "Benchmark",
+    n_hard: int,
+    soft: bool = False,
+) -> None:
+    structural_weight = _hierarchy_structural_weight()
+    if not proposals or structural_weight <= 0.0:
+        return
+    proposals_by_module: dict[int, list[tuple[int, float, float]]] = {}
+    for p_i, proposal in enumerate(proposals):
+        idx = int(proposal["i"])
+        module_index = n_hard + idx if soft else idx
+        proposals_by_module.setdefault(module_index, []).append(
+            (p_i, float(proposal["xy"][0]), float(proposal["xy"][1]))
+        )
+
+    for module_index, entries in proposals_by_module.items():
+        base_pos = _structural_local_penalty_batch(
+            full_pos,
+            sizes,
+            cw,
+            ch,
+            benchmark,
+            module_index=module_index,
+            target_x=np.array([float(full_pos[module_index, 0])]),
+            target_y=np.array([float(full_pos[module_index, 1])]),
+        )
+        base_struct = float(base_pos[0]) if base_pos.size else 0.0
+        idxs = np.array([e[0] for e in entries], dtype=np.int64)
+        tx = np.array([e[1] for e in entries], dtype=np.float64)
+        ty = np.array([e[2] for e in entries], dtype=np.float64)
+        if tx.size == 0:
+            continue
+        local_scores = _structural_local_penalty_batch(
+            full_pos,
+            sizes,
+            cw,
+            ch,
+            benchmark,
+            module_index=module_index,
+            target_x=tx,
+            target_y=ty,
+        )
+        deltas = local_scores - base_struct
+        for k, p_i in enumerate(idxs):
+            proposals[p_i]["structural_delta"] = float(deltas[k])
+            proposals[p_i]["score"] = float(proposals[p_i]["score"]) + structural_weight * float(
+                deltas[k]
+            )
+
+
+if HAS_NUMBA:
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _legal_candidate_mask(
+        cand_x: np.ndarray,
+        cand_y: np.ndarray,
+        blocked_x: np.ndarray,
+        blocked_y: np.ndarray,
+        blocked_sx: np.ndarray,
+        blocked_sy: np.ndarray,
+        eps: float,
+    ) -> np.ndarray:
+        """Numba-accelerated legality mask for candidate points."""
+        n = cand_x.shape[0]
+        m = blocked_x.shape[0]
+        out = np.ones(n, dtype=np.bool_)
+        for i in range(n):
+            cx = cand_x[i]
+            cy = cand_y[i]
+            ok = True
+            for j in range(m):
+                dx = cx - blocked_x[j]
+                if dx < 0.0:
+                    dx = -dx
+                if dx < (blocked_sx[j] + eps):
+                    dy = cy - blocked_y[j]
+                    if dy < 0.0:
+                        dy = -dy
+                    if dy < (blocked_sy[j] + eps):
+                        ok = False
+                        break
+            out[i] = ok
+        return out
+
+else:
+
+    def _legal_candidate_mask(
+        cand_x: np.ndarray,
+        cand_y: np.ndarray,
+        blocked_x: np.ndarray,
+        blocked_y: np.ndarray,
+        blocked_sx: np.ndarray,
+        blocked_sy: np.ndarray,
+        eps: float,
+    ) -> np.ndarray:
+        """Fallback overlap test when numba is unavailable."""
+        if cand_x.size == 0:
+            return np.ones(0, dtype=np.bool_)
+        if blocked_x.size == 0:
+            return np.ones(cand_x.size, dtype=np.bool_)
+        overlap = (
+            (np.abs(cand_x[:, None] - blocked_x[None, :]) < (blocked_sx[None, :] + eps))
+            & (np.abs(cand_y[:, None] - blocked_y[None, :]) < (blocked_sy[None, :] + eps))
+        )
+        return ~np.any(overlap, axis=1)
 
 
 def _score_relocation_proposals_tensor(
@@ -1819,7 +2174,7 @@ def _micro_shift_polish(
     field = (
         _density_field(incremental_scorer, nr, nc)
         if use_density
-        else _congestion_field(plc, nr, nc)
+        else _congestion_field(incremental_scorer, nr, nc)
     )
     if field is None:
         return hard_pos, soft_pos, 0, float(initial_score)
@@ -1857,17 +2212,48 @@ def _micro_shift_polish(
             oy = hard_pos[mask, 1]
             sxi = sep_x_mat[i, mask]
             syi = sep_y_mat[i, mask]
-            for dx, dy, _dist in offsets:
+            dxs = np.array([d[0] for d in offsets], dtype=np.float64)
+            dys = np.array([d[1] for d in offsets], dtype=np.float64)
+            if dxs.size:
+                cand_x = hard_pos[i, 0] + dxs
+                cand_y = hard_pos[i, 1] + dys
+                in_bounds = (
+                    (cand_x - hw[i] >= 0.0)
+                    & (cand_x + hw[i] <= cw)
+                    & (cand_y - hh[i] >= 0.0)
+                    & (cand_y + hh[i] <= ch)
+                )
+                legal = np.zeros(dxs.size, dtype=np.bool_)
+                if in_bounds.any():
+                    legal_in = _legal_candidate_mask(
+                        cand_x[in_bounds],
+                        cand_y[in_bounds],
+                        ox,
+                        oy,
+                        sxi,
+                        syi,
+                        0.05,
+                    )
+                    legal[in_bounds] = legal_in
+            else:
+                in_bounds = np.zeros(0, dtype=np.bool_)
+                legal = np.zeros(0, dtype=np.bool_)
+
+            targets = []
+            for idx, (dx, dy, _dist) in enumerate(offsets):
                 nx = float(hard_pos[i, 0] + dx)
                 ny = float(hard_pos[i, 1] + dy)
+                if idx >= legal.size or not in_bounds[idx] or not legal[idx]:
+                    continue
                 if hard_region is not None:
                     if not point_in_region(hard_region, i, nx, ny):
                         continue
-                if nx - hw[i] < 0 or nx + hw[i] > cw or ny - hh[i] < 0 or ny + hh[i] > ch:
-                    continue
-                if ((np.abs(nx - ox) < sxi + 0.05) & (np.abs(ny - oy) < syi + 0.05)).any():
-                    continue
-                score = incremental_scorer._trial_at(prep, (nx, ny))
+                targets.append((nx, ny))
+            if targets:
+                scores = incremental_scorer._trial_many_at(prep, np.asarray(targets))
+            else:
+                scores = np.empty(0, dtype=np.float64)
+            for (nx, ny), score in zip(targets, scores):
                 if float(score) < best_score - float(min_gain):
                     best_score = float(score)
                     best_xy = (nx, ny)
@@ -1898,12 +2284,18 @@ def _micro_shift_polish(
         prep = incremental_scorer._prepare_move_soft(k)
         best_xy = None
         try:
+            targets = []
             for dx, dy, _dist in offsets:
                 nx = float(np.clip(soft_pos[k, 0] + dx, soft_hw[k], cw - soft_hw[k]))
                 ny = float(np.clip(soft_pos[k, 1] + dy, soft_hh[k], ch - soft_hh[k]))
                 if soft_region is not None and not point_in_region(soft_region, k, nx, ny):
                     continue
-                score = incremental_scorer._trial_at_soft(prep, (nx, ny))
+                targets.append((nx, ny))
+            if targets:
+                scores = incremental_scorer._trial_many_at_soft(prep, np.asarray(targets))
+            else:
+                scores = np.empty(0, dtype=np.float64)
+            for (nx, ny), score in zip(targets, scores):
                 if float(score) < best_score - float(min_gain):
                     best_score = float(score)
                     best_xy = (nx, ny)
@@ -1929,6 +2321,7 @@ def _relocation_moves_propose_all(
     ch: float,
     movable: np.ndarray,
     n: int,
+    benchmark: "Benchmark",
     incremental_scorer,
     initial_score: float,
     deadline: "float | None",
@@ -1957,6 +2350,8 @@ def _relocation_moves_propose_all(
     all_idx = np.arange(n)
     _span2 = float(max(cw, ch)) ** 2
     proposals = []
+    full_pos_for_struct = _full_committed_pos(incremental_scorer)
+    sizes_for_struct = _full_macro_sizes(incremental_scorer)
     t0 = time.monotonic()
     legal_count = 0
     frozen_scores = 0
@@ -1988,12 +2383,32 @@ def _relocation_moves_propose_all(
         ox = pos[mask, 0]
         oy = pos[mask, 1]
         legal = []
+        cand_x = tgt_x[cand].astype(np.float64, copy=False)
+        cand_y = tgt_y[cand].astype(np.float64, copy=False)
+        in_bounds = (
+            (cand_x - hw[i] >= 0.0)
+            & (cand_x + hw[i] <= cw)
+            & (cand_y - hh[i] >= 0.0)
+            & (cand_y + hh[i] <= ch)
+        )
+        legal_mask = np.zeros(cand.size, dtype=np.bool_)
+        if in_bounds.any():
+            legal_mask[in_bounds] = _legal_candidate_mask(
+                cand_x[in_bounds],
+                cand_y[in_bounds],
+                ox,
+                oy,
+                sxi,
+                syi,
+                eps,
+            )
         for candidate_rank, t in enumerate(cand):
             nx, ny = float(tgt_x[t]), float(tgt_y[t])
-            # Keep the whole macro inside the canvas.
-            if nx - hw[i] < 0 or nx + hw[i] > cw or ny - hh[i] < 0 or ny + hh[i] > ch:
-                continue
-            if ((np.abs(nx - ox) < sxi + eps) & (np.abs(ny - oy) < syi + eps)).any():
+            if (
+                candidate_rank >= legal_mask.size
+                or not in_bounds[candidate_rank]
+                or not legal_mask[candidate_rank]
+            ):
                 continue
             legal.append((int(candidate_rank), int(t), nx, ny))
         if not legal:
@@ -2003,10 +2418,11 @@ def _relocation_moves_propose_all(
         if scorer_mode == "exact":
             prep = incremental_scorer._prepare_move(i)
             try:
-                for candidate_rank, target_index, nx, ny in legal:
+                targets = np.asarray([(nx, ny) for _, _, nx, ny in legal], dtype=np.float64)
+                scores = incremental_scorer._trial_many_at(prep, targets)
+                for (candidate_rank, target_index, nx, ny), score in zip(legal, scores):
                     if deadline is not None and time.monotonic() > deadline:
                         break
-                    score = incremental_scorer._trial_at(prep, (nx, ny))
                     frozen_scores += 1
                     proposals.append(
                         {
@@ -2059,6 +2475,16 @@ def _relocation_moves_propose_all(
         )
         frozen_scores = len(proposals)
 
+    _apply_structural_proposal_scores(
+        proposals,
+        full_pos=full_pos_for_struct,
+        sizes=sizes_for_struct,
+        cw=cw,
+        ch=ch,
+        benchmark=benchmark,
+        n_hard=n,
+    )
+
     if not proposals:
         return pos, 0, best_score
 
@@ -2074,7 +2500,22 @@ def _relocation_moves_propose_all(
     if propose_top_m is not None and propose_top_m > 0:
         proposals = proposals[:propose_top_m]
 
+    log_gnn_event(
+        "hier_relocation_candidates",
+        benchmark=getattr(benchmark, "name", ""),
+        kind="hard_propose_all",
+        field=field,
+        scorer=scorer_mode,
+        initial_proxy=float(initial_score),
+        proposal_count=int(len(proposals)),
+        legal_count=int(legal_count),
+        frozen_scores=int(frozen_scores),
+        structural_weight=float(_hierarchy_structural_weight()),
+        candidates=_candidate_trace_sample(proposals, gnn_trace_limit()),
+    )
+
     moved = set()
+    accepted_trace = []
     for p in proposals:
         if deadline is not None and time.monotonic() > deadline:
             break
@@ -2086,10 +2527,15 @@ def _relocation_moves_propose_all(
         if nx - hw[i] < 0 or nx + hw[i] > cw or ny - hh[i] < 0 or ny + hh[i] > ch:
             continue
         mask = all_idx != i
-        if (
-            (np.abs(nx - pos[mask, 0]) < sep_x_mat[i, mask] + eps)
-            & (np.abs(ny - pos[mask, 1]) < sep_y_mat[i, mask] + eps)
-        ).any():
+        if not _legal_candidate_mask(
+            np.array([nx], dtype=np.float64),
+            np.array([ny], dtype=np.float64),
+            pos[mask, 0],
+            pos[mask, 1],
+            sep_x_mat[i, mask],
+            sep_y_mat[i, mask],
+            eps,
+        )[0]:
             continue
 
         prep = incremental_scorer._prepare_move(i)
@@ -2103,16 +2549,42 @@ def _relocation_moves_propose_all(
                 float(region_escape_min) if outside else 0.0,
             )
             if float(score) < float(best_score) - min_gain:
+                old_score = float(best_score)
                 incremental_scorer._commit_after_prep(prep, (nx, ny))
                 pos[i, 0], pos[i, 1] = nx, ny
                 best_score = float(score)
                 accepts += 1
                 moved.add(i)
+                accepted_trace.append(
+                    {
+                        "macro": i,
+                        "x": float(nx),
+                        "y": float(ny),
+                        "old_proxy": old_score,
+                        "new_proxy": float(score),
+                        "proxy_delta": float(score) - old_score,
+                        "target_index": int(p.get("target_index", -1)),
+                        "candidate_rank": int(p.get("candidate_rank", -1)),
+                        "structural_delta": float(p.get("structural_delta", 0.0)),
+                    }
+                )
             else:
                 incremental_scorer._revert_prep(prep)
         except Exception:
             incremental_scorer._revert_prep(prep)
             raise
+
+    log_gnn_event(
+        "hier_relocation_result",
+        benchmark=getattr(benchmark, "name", ""),
+        kind="hard_propose_all",
+        field=field,
+        initial_proxy=float(initial_score),
+        final_proxy=float(best_score),
+        verify_scores=int(verify_scores),
+        accepts=int(accepts),
+        accepted=accepted_trace[: gnn_trace_limit()],
+    )
 
     if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {
         "1",
@@ -2248,7 +2720,7 @@ def _relocation_moves(
     trace_field = "combined" if use_combined else ("density" if use_density else "congestion")
     if use_combined:
         # A cell is hot only when both fields are high.
-        cong_field = _congestion_field(plc, nr, nc)
+        cong_field = _congestion_field(incremental_scorer, nr, nc)
         dens_field = _density_field(incremental_scorer, nr, nc)
         if cong_field is None or dens_field is None:
             return pos, 0, initial_score
@@ -2259,7 +2731,7 @@ def _relocation_moves(
         cell_cong = (
             _density_field(incremental_scorer, nr, nc)
             if use_density
-            else _congestion_field(plc, nr, nc)
+            else _congestion_field(incremental_scorer, nr, nc)
         )
     if cell_cong is None:
         return pos, 0, initial_score
@@ -2299,6 +2771,7 @@ def _relocation_moves(
             ch=ch,
             movable=movable,
             n=n,
+            benchmark=benchmark,
             incremental_scorer=incremental_scorer,
             initial_score=initial_score,
             deadline=deadline,
@@ -2326,6 +2799,9 @@ def _relocation_moves(
     accepts = 0
     all_idx = np.arange(n)
     _span2 = float(max(cw, ch)) ** 2
+    full_pos_for_struct = _full_committed_pos(incremental_scorer)
+    sizes_for_struct = _full_macro_sizes(incremental_scorer)
+    accepted_trace = []
     for i in hot:
         i = int(i)
         if deadline is not None and time.monotonic() > deadline:
@@ -2343,7 +2819,19 @@ def _relocation_moves(
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
         if region_bbox is not None and region_bias > 0.0:
             d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, _span2, region_bias)
-        cand = cand[np.argsort(d2)][:n_targets]
+        order = _structural_candidate_order(
+            cand=cand,
+            base_rank=d2,
+            module_index=i,
+            target_x=tgt_x,
+            target_y=tgt_y,
+            full_pos=full_pos_for_struct,
+            sizes=sizes_for_struct,
+            cw=cw,
+            ch=ch,
+            benchmark=benchmark,
+        )
+        cand = cand[order][:n_targets]
 
         mask = all_idx != i
         sxi = sep_x_mat[i, mask]
@@ -2353,7 +2841,9 @@ def _relocation_moves(
         # Remove the macro once, then try several target cells.
         prep = incremental_scorer._prepare_move(i)
         best_i_xy = None
+        score_before_i = float(best_score)
         try:
+            targets = []
             for candidate_rank, t in enumerate(cand):
                 nx, ny = float(tgt_x[t]), float(tgt_y[t])
                 # Keep the whole macro inside the canvas.
@@ -2362,7 +2852,12 @@ def _relocation_moves(
                 # Hard macros cannot overlap.
                 if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
                     continue
-                s = incremental_scorer._trial_at(prep, (nx, ny))
+                targets.append((nx, ny))
+            if targets:
+                scores = incremental_scorer._trial_many_at(prep, np.asarray(targets))
+            else:
+                scores = np.empty(0, dtype=np.float64)
+            for nx, ny, s in [(x, y, score) for (x, y), score in zip(targets, scores)]:
                 outside = not point_in_region(region_bbox, i, nx, ny)
                 if accepts_region_score(s, best_score, outside, region_escape_min):
                     best_score = s
@@ -2370,13 +2865,36 @@ def _relocation_moves(
             if best_i_xy is not None:
                 incremental_scorer._commit_after_prep(prep, best_i_xy)
                 pos[i, 0], pos[i, 1] = best_i_xy
+                full_pos_for_struct[i, 0], full_pos_for_struct[i, 1] = best_i_xy
                 accepts += 1
+                accepted_trace.append(
+                    {
+                        "macro": i,
+                        "x": float(best_i_xy[0]),
+                        "y": float(best_i_xy[1]),
+                        "old_proxy": score_before_i,
+                        "new_proxy": float(best_score),
+                        "proxy_delta": float(best_score) - score_before_i,
+                    }
+                )
             else:
                 incremental_scorer._revert_prep(prep)
         except Exception:
             # Restore committed state if a trial failed.
             incremental_scorer._revert_prep(prep)
             raise
+    log_gnn_event(
+        "hier_relocation_result",
+        benchmark=getattr(benchmark, "name", ""),
+        kind="hard_sequential",
+        field=trace_field,
+        initial_proxy=float(initial_score),
+        final_proxy=float(best_score),
+        hot_count=int(len(hot)),
+        accepts=int(accepts),
+        structural_weight=float(_hierarchy_structural_weight()),
+        accepted=accepted_trace[: gnn_trace_limit()],
+    )
     return pos, accepts, best_score
 
 
@@ -2416,7 +2934,7 @@ def _soft_relocation_moves(
     cell_field = (
         _density_field(incremental_scorer, nr, nc)
         if use_density
-        else _congestion_field(plc, nr, nc)
+        else _congestion_field(incremental_scorer, nr, nc)
     )
     if cell_field is None:
         return soft_pos, 0, initial_score
@@ -2444,6 +2962,9 @@ def _soft_relocation_moves(
 
     best_score = initial_score
     accepts = 0
+    full_pos_for_struct = _full_committed_pos(incremental_scorer)
+    sizes_for_struct = _full_macro_sizes(incremental_scorer)
+    accepted_trace = []
     for k in hot:
         k = int(k)
         if deadline is not None and time.monotonic() > deadline:
@@ -2459,11 +2980,25 @@ def _soft_relocation_moves(
         if region_bbox is not None and region_bias > 0.0:
             _span2 = float(max(cw, ch)) ** 2
             d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, k, _span2, region_bias)
-        cand = cand[np.argsort(d2)][:n_targets]
+        order = _structural_candidate_order(
+            cand=cand,
+            base_rank=d2,
+            module_index=n + k,
+            target_x=tgt_x,
+            target_y=tgt_y,
+            full_pos=full_pos_for_struct,
+            sizes=sizes_for_struct,
+            cw=cw,
+            ch=ch,
+            benchmark=benchmark,
+        )
+        cand = cand[order][:n_targets]
         # Remove the soft macro once, then try several targets.
         prep = incremental_scorer._prepare_move_soft(k)
         best_k_xy = None
+        score_before_k = float(best_score)
         try:
+            targets = []
             for t in cand:
                 nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
                 ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
@@ -2473,7 +3008,12 @@ def _soft_relocation_moves(
                     wl_d = incremental_scorer.wl_delta_move_soft(k, (nx, ny))
                     if wl_prefilter > 0.0 and wl_d > wl_prefilter:
                         continue
-                s = incremental_scorer._trial_at_soft(prep, (nx, ny))
+                targets.append((nx, ny))
+            if targets:
+                scores = incremental_scorer._trial_many_at_soft(prep, np.asarray(targets))
+            else:
+                scores = np.empty(0, dtype=np.float64)
+            for nx, ny, s in [(x, y, score) for (x, y), score in zip(targets, scores)]:
                 outside = not point_in_region(region_bbox, k, nx, ny)
                 min_gain = max(
                     1e-9,
@@ -2486,10 +3026,33 @@ def _soft_relocation_moves(
             if best_k_xy is not None:
                 incremental_scorer._commit_after_prep_soft(prep, best_k_xy)
                 soft_pos[k, 0], soft_pos[k, 1] = best_k_xy
+                full_pos_for_struct[n + k, 0], full_pos_for_struct[n + k, 1] = best_k_xy
                 accepts += 1
+                accepted_trace.append(
+                    {
+                        "soft_macro": k,
+                        "x": float(best_k_xy[0]),
+                        "y": float(best_k_xy[1]),
+                        "old_proxy": score_before_k,
+                        "new_proxy": float(best_score),
+                        "proxy_delta": float(best_score) - score_before_k,
+                    }
+                )
             else:
                 incremental_scorer._revert_prep_soft(prep)
         except Exception:
             incremental_scorer._revert_prep_soft(prep)
             raise
+    log_gnn_event(
+        "hier_relocation_result",
+        benchmark=getattr(benchmark, "name", ""),
+        kind="soft_sequential",
+        field="density" if use_density else "congestion",
+        initial_proxy=float(initial_score),
+        final_proxy=float(best_score),
+        hot_count=int(len(hot)),
+        accepts=int(accepts),
+        structural_weight=float(_hierarchy_structural_weight()),
+        accepted=accepted_trace[: gnn_trace_limit()],
+    )
     return soft_pos, accepts, best_score

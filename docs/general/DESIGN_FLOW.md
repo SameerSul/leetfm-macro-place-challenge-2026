@@ -42,7 +42,8 @@ flowchart TD
     I -->|Yes| R[Congestion-expanded hard/soft regions]
     R --> J[Region-locked hard relocation + soft cleanup]
     I -->|No| K
-    J --> U{V2_HIER_DECOMPRESS enabled?}
+    J --> A1[In-region micro-shift polish]
+    A1 --> U{V2_HIER_DECOMPRESS enabled?}
     U -->|Yes| V[Exact-gated cluster decompression]
     U -->|No| S
     V --> S{V2_HIER_REGION_SWAPS enabled?}
@@ -143,6 +144,33 @@ V2_HIER_REGION_EXPAND_BAND=3
 All committed relocation moves still pass the exact incremental proxy gate, but
 candidate ranking is region-biased so the result stays clustered.
 
+The same relocation operators can optionally include deterministic
+BeyondPPA-style structural candidate ordering:
+
+```text
+V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
+V2_HIER_KEEP_OUT_WEIGHT=0.2
+V2_HIER_GRID_ALIGN_WEIGHT=0.2
+V2_HIER_NOTCH_WEIGHT=0.6
+```
+
+The structural term scores local edge keepout, grid alignment, and notch
+avoidance. It only reorders candidates inside the hierarchy flow. All committed
+moves still require legality, fixed-macro immobility, bounds, hierarchy-region
+constraints, and the existing exact-proxy or hierarchy-quality gates. The
+default weight is `0.0`, and `V2_HIER_STRUCTURAL_RANK=1` remains an alias for
+weight `1.0` for older experiments.
+
+After each region-relief round, `_micro_shift_polish()` runs tiny exact-gated
+one/two-grid-cell moves inside the same hierarchy-region constraints:
+
+```text
+V2_HIER_MICRO_SHIFT=1
+V2_HIER_MICRO_SHIFT_RADIUS=2
+V2_HIER_MICRO_SHIFT_TOP=96
+V2_HIER_MICRO_SHIFT_MIN_GAIN=0.00001
+```
+
 ## Cluster Decompression
 
 Cluster decompression creates routing channels inside hot hierarchy blobs. It
@@ -162,6 +190,9 @@ V2_HIER_DECOMPRESS_HOT_PCT=65
 V2_HIER_DECOMPRESS_FACTORS=1.08,1.16,1.25
 V2_HIER_DECOMPRESS_MIN_GAIN=0.0001
 V2_HIER_QUALITY_BUDGET=0.03
+V2_HIER_DECOMPRESS_ANISO=1
+V2_HIER_DECOMPRESS_ANISO_BAND=3
+V2_HIER_DECOMPRESS_ANISO_SECONDARY=0.25
 ```
 
 ## Region-Bounded Swaps
@@ -228,11 +259,34 @@ Production then replays `_micro_shift_polish()` once more with
 replays are the current accepted stack. Deterministic hot-cluster coldspot
 selection was tested separately and removed after regressing the full sweep.
 
+## BeyondPPA And GNN Hooks
+
+The current BeyondPPA integration is deterministic and hierarchy-integrated:
+
+- structural metrics live in `src/placer/local_search/structural_fields.py`;
+- structural candidate ordering lives inside existing relocation ranking;
+- `test/diagnostic/_structural_metrics.py` reports structural scores for final
+  or seed placements;
+- production defaults keep structural ranking disabled.
+
+The current GNN implementation is trace-only. Enable it with:
+
+```bash
+V2_HIER_GNN_TRACE=1 V2_HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b ibm10
+```
+
+Trace JSONL files are written under `ml_data/beyondppa_gnn/` unless
+`V2_HIER_GNN_TRACE_PATH` is supplied. Logging does not change placement output.
+The full GNN roadmap is in
+[../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md](../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md).
+
 ## Entry Points
 
 - Challenge path: `uv run evaluate src/main.py -b ibm10`
 - eda_io path: `uv run python src/place_design.py ...`
 - Coldspot verifier: `uv run python test/verification/_verify_coldspot_kick.py ibm10`
+- Structural metric diagnostic:
+  `uv run python test/diagnostic/_structural_metrics.py ibm10`
 - Region-swap tuning sweep:
   `uv run python test/diagnostic/_sweep_region_swaps.py --quick --bench ibm17`
 - CUDA relocation diagnostic:

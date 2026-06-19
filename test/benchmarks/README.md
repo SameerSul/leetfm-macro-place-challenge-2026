@@ -79,12 +79,13 @@ hard failures (invalid placements, score regressions on a specific axis).
 
 ## How the runner wires into v2
 
-`benchmark.name` for synthetic cases doesn't resolve under
-`external/MacroPlacement/Testcases/ICCAD04/`, so v2's `_load_plc` would
-return None and bail to baseline. The runner sets `benchmark._cached_plc`
-(the cache attribute `_load_plc` already honors) so v2 gets exact scoring.
-DREAMPlace seeding is skipped automatically (its ICCAD04 path check fails),
-which mirrors how v2 would behave on any unseen benchmark.
+`benchmark.name` for synthetic cases does not resolve under
+`external/MacroPlacement/Testcases/ICCAD04/`. The runner sets
+`benchmark._cached_plc` (the cache attribute `_load_plc` already honors) so v2
+gets exact scoring from the generated seed. The current production placer is
+hierarchy-only and requires grouped DREAMPlace for normal challenge runs, so
+synthetic use should be treated as a diagnostic compatibility path rather than
+a substitute for the IBM acceptance sequence.
 
 ## Findings log
 
