@@ -298,11 +298,17 @@ HIER_GNN_TRACE_MAX_CANDIDATES=512
 HIER_GNN_TRACE_PATH=<optional direct JSONL path>
 ```
 
-When enabled, the logger records hierarchy relocation candidate pools,
-accepted relocation labels, pass summaries, and final placement summaries as
-JSONL. It does not change candidate ordering or acceptance. The next required
-GNN work is trace completeness for swaps, decompression, and coldspot
-candidates before building a dataset or model.
+When enabled, the logger records schema-v1 hierarchy candidate labels for
+relocation, region swaps, cluster decompression, and coldspot tightening, plus
+pass summaries and final placement summaries as JSONL. It does not change
+candidate ordering or acceptance. A deterministic schema-v1 trace-to-graph
+dataset builder now lives at `scripts/build_gnn_dataset.py`.
+
+The next required GNN work is Stage G3: train and evaluate baseline non-GNN
+rankers on held-out benchmark traces before implementing the hetero macro-net
+GNN. The broader target is a default-off hierarchy-flow assistant that can
+rank, propose, select, budget, and diagnose work inside existing hierarchy
+operators while preserving all deterministic placement gates.
 
 ## Scoring And Legality
 

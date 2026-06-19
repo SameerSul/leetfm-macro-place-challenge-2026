@@ -1,6 +1,7 @@
 # GNN Trace Logging
 
-Implemented as opt-in logging for future hierarchy-aware GNN training.
+Implemented as opt-in schema-v1 logging for hierarchy-aware GNN training and
+future default-off hierarchy-flow assistance.
 
 ## Environment Variables
 
@@ -55,7 +56,9 @@ All events include `schema_version`. The current schema is documented in
 Logging is attached to the existing hierarchy flow. It does not add a GNN model,
 does not change candidate ranking by itself, and does not create a separate
 placement path. The trace is intended to collect data for future learned
-rankers or graph models.
+rankers, graph models, and expanded hierarchy-flow assistant roles such as
+candidate proposal, operator selection, region guidance, soft-role guidance,
+risk scoring, and budget allocation.
 
 For the full implementation roadmap, see
 `docs/ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md`.
@@ -77,12 +80,15 @@ Result:
 proxy=0.9435  (wl=0.082 den=0.640 cong=1.083)  VALID  [35.80s]
 ```
 
-Trace file summary:
+Current schema-v1 smoke summary:
 
 ```text
-24 events
-hier_relocation_result: 13
+1539 events
+hier_coldspot_candidate: 8
+hier_decompression_candidate: 3
+hier_final: 1
 hier_pass_result: 9
 hier_relocation_candidates: 1
-hier_final: 1
+hier_relocation_result: 13
+hier_swap_candidates: 1504
 ```

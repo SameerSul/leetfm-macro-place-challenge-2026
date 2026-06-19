@@ -83,7 +83,7 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 
 ## Current issues and shipped context
 
-### S22. BeyondPPA structural signal and GNN trace logging (SHIPPED 2026-06-18)
+### S22. BeyondPPA structural signal and GNN trace/data foundation (SHIPPED 2026-06-18; G1/G2 UPDATED 2026-06-19)
 
 The BeyondPPA work is integrated into the hierarchy flow rather than branching
 into a separate placer. Shipped pieces:
@@ -92,8 +92,10 @@ into a separate placer. Shipped pieces:
   `src/placer/local_search/structural_fields.py`;
 - opt-in structural relocation candidate ordering through
   `HIER_OBJECTIVE_STRUCTURAL_WEIGHT`;
-- opt-in GNN JSONL traces through the `HIER_GNN_TRACE*` runtime environment
-  variables.
+- opt-in schema-v1 GNN JSONL traces through the `HIER_GNN_TRACE*` runtime
+  environment variables;
+- deterministic schema-v1 trace-to-graph dataset builder in
+  `scripts/build_gnn_dataset.py`.
 
 The structural term only reorders candidates. Hard legality, fixed macros,
 bounds, hierarchy regions, hierarchy-quality gates, and exact-proxy gates still
@@ -102,15 +104,17 @@ acceptance were deliberately not kept, because they created a second path
 instead of integrating with hierarchy.
 
 Verification: `py_compile` passed; `test/verification/test_structural_fields.py`
-passed; `ibm01` GNN trace smoke was VALID and wrote relocation candidate,
-relocation result, pass summary, and final summary events. A default-off
+passed; `ibm01` GNN trace smoke was VALID with proxy `0.9435` and wrote 1539
+schema-v1 events including decompression, swap, and coldspot candidate labels;
+`test/verification/_verify_gnn_dataset_builder.py` passed; a default-off
 `--all` verification stayed in-family at **AVG 1.3626**, 17/17 VALID,
 0 overlaps, 595.52s. The small difference from the accepted 1.3631 result is
 not isolated from unrelated worktree changes.
 
-Open follow-up: implement GNN trace completeness for region swap, cluster
-decompression, and coldspot candidates before building a dataset or model. The
-full roadmap lives in
+Open follow-up: Stage G3 baseline non-GNN rankers. Do not build or integrate
+the GNN model until the baseline proves the labels are learnable on held-out
+benchmark traces. The dedicated project plan lives in `docs/ml_nn/gnn/`, and
+the implementation record lives in
 `docs/ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md`.
 
 ### S21. Congestion-aware hierarchy relief and region-bounded swaps (SHIPPED 2026-06-16)
