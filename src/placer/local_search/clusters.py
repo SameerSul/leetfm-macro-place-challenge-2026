@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from placer import constants as const
+from utils import constants as const
 from placer.scoring.wirelength import _build_wl_cache
 
 

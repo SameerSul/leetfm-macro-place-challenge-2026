@@ -5,7 +5,7 @@ Implemented as opt-in logging for future hierarchy-aware GNN training.
 ## Environment Variables
 
 These settings are intentionally runtime environment variables, not constants in
-`src/placer/constants.py`. They can be exported directly in the shell or provided
+`src/utils/constants.py`. They can be exported directly in the shell or provided
 through a `.env` workflow that exports them before running the placer.
 
 ```bash

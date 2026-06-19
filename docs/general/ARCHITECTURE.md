@@ -62,6 +62,7 @@ AVG 1.3631  17/17 VALID  0 overlaps  602.76s
 | Path | Current role |
 |---|---|
 | `src/main.py` | Evaluator entrypoint. Exposes `MacroPlacer`; applies `SEED` only. |
+| `src/utils/` | Runtime CUDA/numba config, logging shim, and accepted hierarchy constants. |
 | `src/placer/pipeline/macro_placer.py` | Entire production flow. `_place_impl()` calls `_hierarchy_floorplan()` and raises if it cannot run. |
 | `src/dreamplace_bridge/` | Converts ICCAD04 pb/plc to Bookshelf, injects cluster grouping, launches DREAMPlace, reads hard/soft positions back. |
 | `src/placer/local_search/clusters.py` | Derives hard clusters, owned/bridge soft memberships, and region boxes. |
@@ -90,7 +91,7 @@ connectivity. Because ICCAD04 netlists are flat and direct hard-to-hard nets are
 sparse, the cluster logic accounts for hard/soft connectivity and maps carefully
 between placement-order indices and `modules_w_pins` indices.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 CLUSTER_MAX_FANOUT=8
@@ -150,7 +151,7 @@ congestion/density while adding a penalty for leaving the assigned region.
 Out-of-region moves are only accepted when the exact proxy gain clears
 `HIER_REGION_ESCAPE_MIN`.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_REGION_RELIEF=1
@@ -176,7 +177,7 @@ structural penalties for edge keepout, grid alignment, and notch avoidance.
 When enabled, `src/placer/local_search/relocation.py` adds the local structural
 delta into existing hard and soft relocation candidate ordering.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
@@ -199,7 +200,7 @@ softs move with their clusters, bridge softs are nudged toward their corridor
 centroid, and the move is accepted only if exact proxy improves while the
 hierarchy-quality metric remains within budget.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_DECOMPRESS=1
@@ -216,7 +217,7 @@ accept gate; outside-region swaps must clear the escape threshold. The current
 accepted system keeps a wider soft candidate list because the largest remaining
 congestion cases are most sensitive to soft-soft and mixed soft movement.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_REGION_SWAPS=1
@@ -242,7 +243,7 @@ The accepted Stage-3 flow also reruns `_micro_shift_polish()` after swaps. This
 exact-gated replay is default-on and uses the same tiny one/two-cell moves as
 the earlier in-region micro-shift pass.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_POST_SWAP_MICRO_SHIFT=1
@@ -262,7 +263,7 @@ window, co-moves connected soft macros, and legalizes the hard macros. The
 hierarchy path now accepts a kick only when exact proxy improves and the
 hierarchy-quality metric remains within budget.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_COLDSPOT_KICK=1

@@ -28,7 +28,7 @@ from macro_place.loader import load_benchmark_from_dir
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from placer.config import _CUDA_DEVICE_REQUESTED, _GPU_BACKEND, _GPU_DEVICE, _GPU_DEVICE_NAME
+from utils.config import _CUDA_DEVICE_REQUESTED, _GPU_BACKEND, _GPU_DEVICE, _GPU_DEVICE_NAME
 from placer.local_search.relocation import _score_relocation_proposals_cuda_delta
 from placer.scoring.congestion import _patch_plc_congestion
 from placer.scoring.incremental import IncrementalScorer

@@ -32,7 +32,7 @@ def main() -> int:
         if part
     )
     proc = subprocess.run(
-        [sys.executable, "-c", "import placer.config; print(placer.config._GPU_BACKEND)"],
+        [sys.executable, "-c", "import utils.config; print(utils.config._GPU_BACKEND)"],
         env=env,
         text=True,
         capture_output=True,

@@ -166,6 +166,7 @@ hierarchy output.
 ```md
 src/main.py         Evaluator-facing entrypoint - exposes MacroPlacer.
 src/placer/        Active hierarchy placer package: pipeline, scoring, routing, legalize, local_search.
+src/utils/         Runtime config, logging shim, and accepted placement constants.
 src/dreamplace_bridge/  pb.txt <-> Bookshelf converters + DREAMPlace launcher.
 src/eda_io/        Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR-report out.
 src/place_design.py CLI tying eda_io together - see src/eda_io/README.md.

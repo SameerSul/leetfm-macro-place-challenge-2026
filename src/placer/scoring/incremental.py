@@ -3,7 +3,7 @@
 import numpy as np
 from macro_place.benchmark import Benchmark
 
-from placer.config import HAS_NUMBA, _numba_njit
+from utils.config import HAS_NUMBA, _numba_njit
 from placer.plc.placement import _ensure_pos_cache, _fast_set_placement
 from placer.routing.apply import (
     _apply_macro_routing_subset,
