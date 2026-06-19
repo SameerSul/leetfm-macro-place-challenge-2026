@@ -2,19 +2,23 @@
 
 Implemented as opt-in logging for future hierarchy-aware GNN training.
 
-## Controls
+## Environment Variables
+
+These settings are intentionally runtime environment variables, not constants in
+`src/placer/constants.py`. They can be exported directly in the shell or provided
+through a `.env` workflow that exports them before running the placer.
 
 ```bash
-V2_HIER_GNN_TRACE=1
-V2_HIER_GNN_TRACE_DIR=ml_data/beyondppa_gnn
-V2_HIER_GNN_TRACE_RUN=my_run
-V2_HIER_GNN_TRACE_MAX_CANDIDATES=512
+HIER_GNN_TRACE=1
+HIER_GNN_TRACE_DIR=ml_data/beyondppa_gnn
+HIER_GNN_TRACE_RUN=my_run
+HIER_GNN_TRACE_MAX_CANDIDATES=512
 ```
 
 Optional direct path:
 
 ```bash
-V2_HIER_GNN_TRACE_PATH=/tmp/hier_gnn_trace.jsonl
+HIER_GNN_TRACE_PATH=/tmp/hier_gnn_trace.jsonl
 ```
 
 ## Events
@@ -47,9 +51,9 @@ For the full implementation roadmap, see
 Smoke command:
 
 ```bash
-V2_HIER_GNN_TRACE=1 \
-V2_HIER_GNN_TRACE_PATH=/tmp/hier_gnn_trace_smoke.jsonl \
-V2_HIER_GNN_TRACE_MAX_CANDIDATES=5 \
+HIER_GNN_TRACE=1 \
+HIER_GNN_TRACE_PATH=/tmp/hier_gnn_trace_smoke.jsonl \
+HIER_GNN_TRACE_MAX_CANDIDATES=5 \
 uv run evaluate src/main.py -b ibm01
 ```
 

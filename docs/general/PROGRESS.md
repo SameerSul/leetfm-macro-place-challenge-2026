@@ -22,8 +22,7 @@ Target: beat RePlAce avg of 1.4578.
 > `src/placer/local_search/structural_fields.py`; added
 > `test/diagnostic/_structural_metrics.py`; and integrated the structural term
 > into existing hierarchy relocation candidate ordering behind
-> `V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0`
-> (`V2_HIER_STRUCTURAL_RANK=1` remains an alias for weight `1.0`). This is not a
+> the `HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant. This is not a
 > second BeyondPPA path: legality, fixed-macro immobility, bounds,
 > hierarchy-region constraints, hierarchy-quality gates, and exact-proxy gates
 > still decide accepted moves. Added opt-in GNN JSONL tracing through
@@ -65,8 +64,8 @@ Target: beat RePlAce avg of 1.4578.
 > **Status (2026-06-18 — Stage 2 micro-shift + anisotropic decompression
 > accepted, `--all` avg = 1.3707):** promoted exact-gated one/two-grid-cell
 > micro-shift polish for hot hard and soft macros inside their hierarchy regions
-> (`V2_HIER_MICRO_SHIFT=1`, radius 2, top 96, min gain `1e-5`) and promoted
-> anisotropic cluster decompression (`V2_HIER_DECOMPRESS_ANISO=1`). Full
+> (`HIER_MICRO_SHIFT=1`, radius 2, top 96, min gain `1e-5`) and promoted
+> anisotropic cluster decompression (`HIER_DECOMPRESS_ANISO=1`). Full
 > `uv run evaluate src/main.py --all`: **AVG 1.3707**, 17/17 VALID, 0 overlaps,
 > 563.00s. Micro-shift alone was **AVG 1.3718**, 17/17 VALID, 0 overlaps,
 > 591.59s, so anisotropic decompression adds a small but real full-suite gain.
@@ -81,9 +80,9 @@ Target: beat RePlAce avg of 1.4578.
 
 > **Status (2026-06-16 — post-swap soft polish accepted, `--all`
 > avg = 1.3947):** promoted ordinary post-swap soft relocation with
-> `V2_HIER_POST_SOFT_RELOC=1`, `V2_HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005`, and
+> `HIER_POST_SOFT_RELOC=1`, `HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005`, and
 > lowered the post-swap hard propose-all margin to
-> `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005`. This is not the rejected soft
+> `HIER_RELOC_PROPOSE_MIN_GAIN=0.0005`. This is not the rejected soft
 > propose-all path; it is sequential exact-gated `_soft_relocation_moves()` after
 > swaps. Full `uv run evaluate src/main.py --all`: **AVG 1.3947**, 17/17 VALID,
 > 0 overlaps, 534.30s. Margin comparison on ibm10/12/15/17/14/18 favored
@@ -93,11 +92,11 @@ Target: beat RePlAce avg of 1.4578.
 > ibm01/06/07/09/11/16.
 
 > **Status (2026-06-16 — post-swap hard propose-all polish accepted, `--all`
-> avg = 1.3974):** kept `V2_HIER_RELOC_PROPOSE_ALL=0` for the pre-swap hard
+> avg = 1.3974):** kept `HIER_RELOC_PROPOSE_ALL=0` for the pre-swap hard
 > relocation loop, but promoted CUDA-only
-> `V2_HIER_POST_RELOC_PROPOSE_ALL=auto` after region swaps with footprint-averaged
-> hard-macro field ranking, `V2_HIER_POST_RELOC_PROPOSE_TOP_M=16`, and
-> `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.001`. Full
+> `HIER_POST_RELOC_PROPOSE_ALL=auto` after region swaps with footprint-averaged
+> hard-macro field ranking, `HIER_POST_RELOC_PROPOSE_TOP_M=16`, and
+> `HIER_RELOC_PROPOSE_MIN_GAIN=0.001`. Full
 > `uv run evaluate src/main.py --all`: **AVG 1.3974**, 17/17 VALID, 0 overlaps,
 > 526.21s. Accepted post-swap hard moves were sparse and helped the congestion
 > cases without reintroducing the earlier pre-swap basin regression: ibm10
@@ -105,7 +104,7 @@ Target: beat RePlAce avg of 1.4578.
 > run noise.
 
 > **Status (2026-06-16 — connectivity legalize order accepted, `--all`
-> avg = 1.3978):** promoted `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=1`, which keeps
+> avg = 1.3978):** promoted `HIER_LEGALIZE_CONNECTIVITY_ORDER=1`, which keeps
 > cluster-consecutive legalization but orders members by connectivity-pressure x
 > area instead of area alone. Full
 > `uv run evaluate src/main.py --all`: **AVG 1.3978**, 17/17 VALID, 0 overlaps,
@@ -113,8 +112,8 @@ Target: beat RePlAce avg of 1.4578.
 > result 1.4452 are broad and congestion-led: ibm12 2.3297→2.2535, ibm17
 > 2.2374→2.2109, ibm15 1.9494→1.8894, ibm14 1.6991→1.6790, ibm18
 > 1.7869→1.7832, and ibm10 1.6759→1.6506. The rejected Stage-1 bundle
-> (`V2_HIER_RELOC_PROPOSE_ALL=auto`, `V2_HIER_SOFT_RELOC_PROPOSE_ALL=auto`,
-> connectivity order, and `V2_HIER_SS_SWAP_MAX_SCORES=12000`) regressed badly:
+> (`HIER_RELOC_PROPOSE_ALL=auto`, `HIER_SOFT_RELOC_PROPOSE_ALL=auto`,
+> connectivity order, and `HIER_SS_SWAP_MAX_SCORES=12000`) regressed badly:
 > **AVG 1.6000**, 17/17 VALID, 0 overlaps, 1029.78s. Follow-up full ablations:
 > hard propose-all only **AVG 1.4019** / 546.26s; hard top-M 16 **AVG 1.4066** /
 > 545.26s; hard congestion-pass top-32 hot macros **AVG 1.4030** / 526.26s; soft
@@ -127,7 +126,7 @@ Target: beat RePlAce avg of 1.4578.
 > regions, exact-gated cluster decompression, proxy-aware coldspot tightening,
 > per-operator region-swap controls, strict hard-swap legality, and best-state
 > rollback; then raised the default soft swap candidate count
-> `V2_HIER_SOFT_SWAP_K` from 24 to 48. Full
+> `HIER_SOFT_SWAP_K` from 24 to 48. Full
 > `uv run evaluate src/main.py --all`: **AVG 1.4452**, 17/17 VALID, 0 overlaps,
 > 520.08s; beats RePlAce avg 1.4578 (+0.9% vs RePlAce). Net gain vs the prior
 > tuned region-swap `--all` 1.4471 is -0.0019, led by the intended congestion
@@ -153,9 +152,9 @@ Target: beat RePlAce avg of 1.4578.
 > LSMC then kicked a whole cluster as a unit — `gather` (collapse members to one
 > anchor, legalizer packed them) or `translate` (rigid relocate) — instead of
 > scattering random macros. It was enabled in the then-current `src/main.py`
-> through `_enable_cluster_kick_defaults` and `V2_GPU_EXPLORE_CLUSTER_*`; those
+> through `_enable_cluster_kick_defaults` and `GPU_EXPLORE_CLUSTER_*`; those
 > integration points were later deleted with the proxy path.
-> isolation-harness `V2_LSMC_ISOLATE=1` confirmed cluster kicks beat random
+> isolation-harness `LSMC_ISOLATE=1` confirmed cluster kicks beat random
 > 6/6 from an identical incumbent (−0.0053 avg, congestion-driven). The old
 > `test/verification/_verify_cluster_kick.py` verifier was deleted with that
 > code.
@@ -191,12 +190,12 @@ Target: beat RePlAce avg of 1.4578.
 > source.** Removed 272 lines from `macro_placer.py` + the whole
 > `local_search/workers.py` (and the `mp` import + `__init__` export): the
 > multi-seed 2-opt phase, Phase 5c (wide-from-best), and Phase 8 (TOP-K
-> cong-grad chains), plus their `V2_PRUNE_*` flags. These were all pruned-by-
+> cong-grad chains), plus their `PRUNE_*` flags. These were all pruned-by-
 > default already, so deletion is behaviorally equivalent — verified on ibm01/
 > 04/12/18 (seed1) within ±0.0003 of the flag-pruned references, all VALID.
 > Shipped `--all` stays ~1.1170–1.1176 (the all-pruned value); the lone real
 > score win in Stage 4 was multi-seed 2-opt removal (1.1169), 5c/8 were
-> near-noise simplification. NB: the "restore via V2_PRUNE_*=0" knobs no longer
+> near-noise simplification. NB: the "restore via PRUNE_*=0" knobs no longer
 > exist; ARCHITECTURE.md / README phase lists for these three are now superseded.
 
 > **Status (2026-06-14 — Stage 4: Phase 5c (wide-from-best) PRUNED by default
@@ -204,13 +203,13 @@ Target: beat RePlAce avg of 1.4578.
 > = **1.1170** (seed1, full 17/17). The paired gate actually favored KEEPING 5c
 > (keep seed1 1.1156 / seed2 1.1191 vs prune seed1 1.1170; 5c does real work on
 > ibm09/12/17), so its "pure insurance" label in older notes was stale. Pruned
-> anyway by directive to keep the pipeline lean; `V2_PRUNE_P5C=0` restores it.
+> anyway by directive to keep the pipeline lean; `PRUNE_P5C=0` restores it.
 > So 1.1156 (5c kept) is the lower achievable; the shipped lean default is 1.1170.
 > Gate stopped after 3/4 runs (decision was made); logs `ml_data/compare/stage4p5c_*`.
 
 > **Status (2026-06-13 — Stage 4: multi-seed 2-opt PRUNED by default; NEW BEST
 > `--all` 1.1169):** the pre-R2 multi-seed 2-opt phase is now skipped by default
-> (`V2_PRUNE_MULTISEED_2OPT=0` restores it). Paired gate keep-vs-prune,
+> (`PRUNE_MULTISEED_2OPT=0` restores it). Paired gate keep-vs-prune,
 > full-stack (dp=17 both arms): seed1 1.1175→1.1169 (−0.0006), seed2
 > 1.1229→1.1178 (−0.0051) — 2/2 prune-wins, mean −0.0029, and faster
 > (seed2 2816s vs 2926s). The phase was net-harmful: it steers R2 into worse
@@ -227,7 +226,7 @@ Target: beat RePlAce avg of 1.4578.
 
 > **Status (2026-06-13 — Stage 2b kick pre-screen SHIPPED AS DEFAULT
 > (PRESCREEN=8); on-arm best 1.1176 is the NEW BEST `--all`):** each LSMC
-> iteration now scores a batch of kicks (`V2_GPU_EXPLORE_PRESCREEN`, default 8)
+> iteration now scores a batch of kicks (`GPU_EXPLORE_PRESCREEN`, default 8)
 > and descends only the best one — the cuGenOpt evaluate→reduce→descend-one
 > pattern at the kick level, since descent dominates iteration cost.
 > **Full-stack paired gate (DP+ML active, dp=17 both arms; B8 vs B1=2a
@@ -246,7 +245,7 @@ Target: beat RePlAce avg of 1.4578.
 > seed-1 on-arm avg 1.1194 is the NEW BEST `--all`):** the post-R2 LSMC
 > kick/descent/accept phase (`local_search/lsmc_explore.py`, hook as the FINAL
 > quality phase in `macro_placer.py`) was default-on under CUDA
-> (`V2_GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice, in that
+> (`GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice, in that
 > deleted proxy path —
 > exactly the measured gate config. **Full-stack paired gate (DP + ML filter
 > verified active in every log; user-authorized 2-seed bar): seed1 off 1.1245 /
@@ -276,7 +275,7 @@ Target: beat RePlAce avg of 1.4578.
 > machines are not reachable from this box yet — second half of Stage 0
 > (inventory, DP rebuild, re-baseline there) pending access.
 >
-> **Stage 1 (2026-06-12): `V2_RELOC_PROPOSE_ALL=auto` paired multi-seed A/B —
+> **Stage 1 (2026-06-12): `RELOC_PROPOSE_ALL=auto` paired multi-seed A/B —
 > WASH, stays opt-in.** Both verifiers PASS (in-loop scorer-vs-exact delta
 > 1.4e-11). Paired same-box sequential `--all` runs, seeds 1/2/3
 > (logs `ml_data/compare/all_20260612_propall_*`): seed1 off 1.1231 / auto
@@ -294,7 +293,7 @@ Target: beat RePlAce avg of 1.4578.
 > 35233s) with per-benchmark monotonic budgets unaffected. **Takeaway for
 > Stage 2:** the GPU pool-scoring machinery is validated and fast; the ±0.02
 > per-benchmark policy divergence is exactly what an exact-gated multi-candidate
-> selector can harvest. Next: Stage 2 exploration engine (V2_GPU_EXPLORE) per
+> selector can harvest. Next: Stage 2 exploration engine (GPU_EXPLORE) per
 > docs/gpu/GPU-ops.md §2–3.
 
 > **Status (2026-06-11 — ML hard-relocation ranker connected as production
@@ -362,7 +361,7 @@ Target: beat RePlAce avg of 1.4578.
 > −0.0107 only resolves above the noise floor at the 17-benchmark aggregate.
 >
 > **Also this session — LAHC disproven (reverted).** Late-Acceptance Hill Climbing
-> on the 2-opt-on-winner (env `V2_LAHC`=history length): strictly worse 2-opt on
+> on the 2-opt-on-winner (env `LAHC`=history length): strictly worse 2-opt on
 > ibm12/17/18 (ibm17 1.7299→1.7401 at L=1000, →1.7328 at L=50 — i.e. tighter L only
 > recovers greedy, never beats it), ~85% accept rate = random-walk on the plateau.
 > The deadline-bound 2-opt converges fast to a strong basin min, so non-monotonic
@@ -404,7 +403,7 @@ Target: beat RePlAce avg of 1.4578.
 > **adaptive per-pass budget control** — yield-weighted deadline caps were
 > consistently worse on deadline-bound benchmarks (shrink → early termination;
 > boost → saturates), so the static caps + skip-if-empty stay. Env knobs:
-> `V2_SOFT_TGT` / `V2_SOFT_HOT`, `V2_ADAPTIVE_BUDGET` (off).
+> `SOFT_TGT` / `SOFT_HOT`, `ADAPTIVE_BUDGET` (off).
 
 > **Status (2026-06-06 — scoring-cost reduction in 2-opt + soft-relocation, ISSUES.md S11):**
 > **Avg 1.1423 — all 17 VALID / 0 overlaps, 3433.76s (new best, beats prior 1.1500
@@ -577,7 +576,7 @@ Target: beat RePlAce avg of 1.4578.
 > benchmarks). Density `top_hot` boost still triggers, but adaptively (when
 > the cong empty-streak counter saturates).
 > **#3v2 time-shifted multi-seed 2-opt subprocess pool (drafted, env-gated
-> off):** `V2_MULTISEED_MP=1` runs the main "best" 2-opt inline first (full
+> off):** `MULTISEED_MP=1` runs the main "best" 2-opt inline first (full
 > solo CPU during the 15s deadline), then submits DP seed 2-opts to a
 > ProcessPoolExecutor afterward. Default off — direct subprocess parallelism
 > on the deadline-bound search caused regression due to CPU contention.

@@ -16,10 +16,9 @@ expense of hierarchy.
 
 from __future__ import annotations
 
-import os
-
 import numpy as np
 
+from placer import constants as const
 from placer.scoring.wirelength import _build_wl_cache
 
 
@@ -255,29 +254,14 @@ def derive_soft_cluster_roles(
     return owned_out, bridge
 
 
-
-
 def cluster_max_fanout() -> int:
-    """Net pin-count ceiling for cluster unioning (V2_CLUSTER_MAX_FANOUT)."""
-    try:
-        return max(2, int(os.environ.get("V2_CLUSTER_MAX_FANOUT", "8")))
-    except ValueError:
-        return 8
+    """Net pin-count ceiling for cluster unioning."""
+    return max(2, int(const.CLUSTER_MAX_FANOUT))
 
 
 def cluster_min_edge() -> int:
-    """Min shared-net count to merge two hard macros (V2_CLUSTER_MIN_EDGE)."""
-    try:
-        return max(1, int(os.environ.get("V2_CLUSTER_MIN_EDGE", "2")))
-    except ValueError:
-        return 2
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, str(default)))
-    except (TypeError, ValueError):
-        return default
+    """Min shared-net count to merge two hard macros."""
+    return max(1, int(const.CLUSTER_MIN_EDGE))
 
 
 def compute_region_bbox(
@@ -569,20 +553,20 @@ def compute_soft_region_bbox(
 
 
 def hier_region_density() -> float:
-    """Target packing density for area-based region sizing (V2_HIER_REGION_DENSITY).
+    """Target packing density for area-based region sizing.
 
     Higher = tighter regions (more region-locked, less relief); lower = bigger
     regions (more congestion relief, looser hierarchy). 0.65 leans toward keeping
     macros locked while still relieving congestion.
     """
-    return _env_float("V2_HIER_REGION_DENSITY", 0.65)
+    return float(const.HIER_REGION_DENSITY)
 
 
 def hier_region_margin() -> float:
-    """Fractional-margin fallback region sizing (V2_HIER_REGION_MARGIN)."""
-    return _env_float("V2_HIER_REGION_MARGIN", 0.0)
+    """Fractional-margin fallback region sizing."""
+    return float(const.HIER_REGION_MARGIN)
 
 
 def hier_region_singleton() -> float:
-    """Local-window half-width fraction for unclustered macros (V2_HIER_REGION_SINGLETON)."""
-    return _env_float("V2_HIER_REGION_SINGLETON", 0.05)
+    """Local-window half-width fraction for unclustered macros."""
+    return float(const.HIER_REGION_SINGLETON)

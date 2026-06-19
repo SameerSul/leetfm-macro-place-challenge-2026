@@ -42,7 +42,7 @@ run_dreamplace(
     plc=plc,
     soft_macros_movable=True,
     cluster_groups=groups,
-    group_weight=V2_HIER_GROUP_WEIGHT,
+    group_weight=HIER_GROUP_WEIGHT,
 )
 ```
 

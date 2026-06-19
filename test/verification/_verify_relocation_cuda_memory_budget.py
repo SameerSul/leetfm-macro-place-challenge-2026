@@ -1,4 +1,4 @@
-"""Verify V2_RELOC_PROPOSE_MAX_MB caps automatic cuda_delta chunking.
+"""Verify RELOC_PROPOSE_MAX_MB caps automatic cuda_delta chunking.
 
 This monkeypatches the relocation module to exercise CUDA chunk selection
 without requiring a visible GPU.
@@ -31,10 +31,10 @@ def main() -> int:
     original_static = relocation._build_relocation_cuda_static_tensors
     original_batch = relocation._score_relocation_proposals_cuda_delta_batch
     original_mem_get_info = relocation.torch.cuda.mem_get_info
-    old_chunk = os.environ.get("V2_RELOC_PROPOSE_CHUNK_SIZE")
-    old_budget = os.environ.get("V2_RELOC_PROPOSE_MAX_MB")
-    old_auto_frac = os.environ.get("V2_RELOC_PROPOSE_AUTO_MEM_FRAC")
-    old_safety = os.environ.get("V2_RELOC_PROPOSE_MEM_SAFETY")
+    old_chunk = os.environ.get("RELOC_PROPOSE_CHUNK_SIZE")
+    old_budget = os.environ.get("RELOC_PROPOSE_MAX_MB")
+    old_auto_frac = os.environ.get("RELOC_PROPOSE_AUTO_MEM_FRAC")
+    old_safety = os.environ.get("RELOC_PROPOSE_MEM_SAFETY")
 
     try:
         relocation._GPU_DEVICE = torch.device("cuda:0")
@@ -48,9 +48,9 @@ def main() -> int:
                 proposal["score"] = float(proposal["i"])
 
         relocation._score_relocation_proposals_cuda_delta_batch = fake_batch
-        os.environ.pop("V2_RELOC_PROPOSE_CHUNK_SIZE", None)
-        os.environ.pop("V2_RELOC_PROPOSE_MEM_SAFETY", None)
-        os.environ["V2_RELOC_PROPOSE_MAX_MB"] = "0.00008"
+        os.environ.pop("RELOC_PROPOSE_CHUNK_SIZE", None)
+        os.environ.pop("RELOC_PROPOSE_MEM_SAFETY", None)
+        os.environ["RELOC_PROPOSE_MAX_MB"] = "0.00008"
         relocation._score_relocation_proposals_cuda_delta(
             proposals,
             pos=None,
@@ -82,9 +82,9 @@ def main() -> int:
             raise AssertionError(f"unexpected budget stats: {stats}")
 
         calls.clear()
-        os.environ.pop("V2_RELOC_PROPOSE_CHUNK_SIZE", None)
-        os.environ["V2_RELOC_PROPOSE_MAX_MB"] = "0.00008"
-        os.environ["V2_RELOC_PROPOSE_MEM_SAFETY"] = "2"
+        os.environ.pop("RELOC_PROPOSE_CHUNK_SIZE", None)
+        os.environ["RELOC_PROPOSE_MAX_MB"] = "0.00008"
+        os.environ["RELOC_PROPOSE_MEM_SAFETY"] = "2"
         relocation._score_relocation_proposals_cuda_delta(
             proposals,
             pos=None,
@@ -112,8 +112,8 @@ def main() -> int:
             raise AssertionError(f"unexpected safety-budget stats: {stats}")
 
         calls.clear()
-        os.environ.pop("V2_RELOC_PROPOSE_MEM_SAFETY", None)
-        os.environ["V2_RELOC_PROPOSE_CHUNK_SIZE"] = "4"
+        os.environ.pop("RELOC_PROPOSE_MEM_SAFETY", None)
+        os.environ["RELOC_PROPOSE_CHUNK_SIZE"] = "4"
         relocation._score_relocation_proposals_cuda_delta(
             proposals,
             pos=None,
@@ -134,8 +134,8 @@ def main() -> int:
             raise AssertionError(f"unexpected explicit stats: {stats}")
 
         calls.clear()
-        os.environ.pop("V2_RELOC_PROPOSE_CHUNK_SIZE", None)
-        os.environ["V2_RELOC_PROPOSE_MAX_MB"] = "1000"
+        os.environ.pop("RELOC_PROPOSE_CHUNK_SIZE", None)
+        os.environ["RELOC_PROPOSE_MAX_MB"] = "1000"
         relocation._score_relocation_proposals_cuda_delta(
             proposals,
             pos=None,
@@ -152,10 +152,10 @@ def main() -> int:
             raise AssertionError(f"unexpected high-budget stats: {stats}")
 
         calls.clear()
-        os.environ.pop("V2_RELOC_PROPOSE_CHUNK_SIZE", None)
-        os.environ.pop("V2_RELOC_PROPOSE_MAX_MB", None)
-        os.environ.pop("V2_RELOC_PROPOSE_MEM_SAFETY", None)
-        os.environ["V2_RELOC_PROPOSE_AUTO_MEM_FRAC"] = "0.3"
+        os.environ.pop("RELOC_PROPOSE_CHUNK_SIZE", None)
+        os.environ.pop("RELOC_PROPOSE_MAX_MB", None)
+        os.environ.pop("RELOC_PROPOSE_MEM_SAFETY", None)
+        os.environ["RELOC_PROPOSE_AUTO_MEM_FRAC"] = "0.3"
         relocation.torch.cuda.mem_get_info = lambda *_args, **_kwargs: (400, 1000)
         relocation._score_relocation_proposals_cuda_delta(
             proposals,
@@ -185,9 +185,9 @@ def main() -> int:
             raise AssertionError(f"unexpected auto-budget stats: {stats}")
 
         calls.clear()
-        os.environ.pop("V2_RELOC_PROPOSE_CHUNK_SIZE", None)
-        os.environ.pop("V2_RELOC_PROPOSE_AUTO_MEM_FRAC", None)
-        os.environ["V2_RELOC_PROPOSE_MAX_MB"] = "0.00004"
+        os.environ.pop("RELOC_PROPOSE_CHUNK_SIZE", None)
+        os.environ.pop("RELOC_PROPOSE_AUTO_MEM_FRAC", None)
+        os.environ["RELOC_PROPOSE_MAX_MB"] = "0.00004"
         relocation._build_relocation_cuda_static_tensors = lambda *_args, **_kwargs: {
             "oversized_static": torch.empty(100, dtype=torch.uint8)
         }
@@ -215,7 +215,7 @@ def main() -> int:
             raise AssertionError(f"unexpected static-exceeds stats: {stats}")
 
         calls.clear()
-        os.environ["V2_RELOC_PROPOSE_MAX_MB"] = "0.00018"
+        os.environ["RELOC_PROPOSE_MAX_MB"] = "0.00018"
         relocation._build_relocation_cuda_static_tensors = lambda *_args, **_kwargs: {
             "larger_static": torch.empty(120, dtype=torch.uint8)
         }
@@ -250,21 +250,21 @@ def main() -> int:
         relocation._score_relocation_proposals_cuda_delta_batch = original_batch
         relocation.torch.cuda.mem_get_info = original_mem_get_info
         if old_chunk is None:
-            os.environ.pop("V2_RELOC_PROPOSE_CHUNK_SIZE", None)
+            os.environ.pop("RELOC_PROPOSE_CHUNK_SIZE", None)
         else:
-            os.environ["V2_RELOC_PROPOSE_CHUNK_SIZE"] = old_chunk
+            os.environ["RELOC_PROPOSE_CHUNK_SIZE"] = old_chunk
         if old_budget is None:
-            os.environ.pop("V2_RELOC_PROPOSE_MAX_MB", None)
+            os.environ.pop("RELOC_PROPOSE_MAX_MB", None)
         else:
-            os.environ["V2_RELOC_PROPOSE_MAX_MB"] = old_budget
+            os.environ["RELOC_PROPOSE_MAX_MB"] = old_budget
         if old_auto_frac is None:
-            os.environ.pop("V2_RELOC_PROPOSE_AUTO_MEM_FRAC", None)
+            os.environ.pop("RELOC_PROPOSE_AUTO_MEM_FRAC", None)
         else:
-            os.environ["V2_RELOC_PROPOSE_AUTO_MEM_FRAC"] = old_auto_frac
+            os.environ["RELOC_PROPOSE_AUTO_MEM_FRAC"] = old_auto_frac
         if old_safety is None:
-            os.environ.pop("V2_RELOC_PROPOSE_MEM_SAFETY", None)
+            os.environ.pop("RELOC_PROPOSE_MEM_SAFETY", None)
         else:
-            os.environ["V2_RELOC_PROPOSE_MEM_SAFETY"] = old_safety
+            os.environ["RELOC_PROPOSE_MEM_SAFETY"] = old_safety
 
     print("PASS memory_budget_and_env_override")
     return 0

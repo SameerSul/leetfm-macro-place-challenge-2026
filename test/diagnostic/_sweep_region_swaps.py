@@ -1,4 +1,4 @@
-"""Run targeted region-swap tuning sweeps.
+"""Run the current region-swap diagnostic.
 
 Examples:
     uv run python test/diagnostic/_sweep_region_swaps.py --bench ibm10 ibm17
@@ -18,19 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PROXY_RE = re.compile(r"proxy=([0-9.]+).*VALID")
 
 
-VARIANTS = [
-    ("current", {}),
-    ("swaps_off", {"V2_HIER_REGION_SWAPS": "0"}),
-    ("hh_only", {"V2_HIER_SWAP_HH": "1", "V2_HIER_SWAP_HS": "0", "V2_HIER_SWAP_SS": "0"}),
-    ("hs_only", {"V2_HIER_SWAP_HH": "0", "V2_HIER_SWAP_HS": "1", "V2_HIER_SWAP_SS": "0"}),
-    ("ss_only", {"V2_HIER_SWAP_HH": "0", "V2_HIER_SWAP_HS": "0", "V2_HIER_SWAP_SS": "1"}),
-    ("escape_005", {"V2_HIER_REGION_ESCAPE_MIN": "0.005"}),
-    ("escape_010", {"V2_HIER_REGION_ESCAPE_MIN": "0.010"}),
-    ("density_off", {"V2_HIER_SWAP_DENSITY_FIELD": "0"}),
-    ("field_relief_002", {"V2_HIER_SWAP_MIN_FIELD_RELIEF": "0.02"}),
-    ("soft_k24", {"V2_HIER_SOFT_SWAP_K": "24"}),
-    ("soft_k64", {"V2_HIER_SOFT_SWAP_K": "64"}),
-]
+VARIANTS = [("current", {})]
 
 
 def _run_eval(bench: str, variant: str, env_updates: dict[str, str]) -> tuple[float | None, str]:

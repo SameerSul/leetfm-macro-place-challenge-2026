@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import time
 
 import numpy as np
 
+from placer import constants as const
 from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
 from placer.local_search.region_rules import accepts_region_score, any_outside_region
@@ -28,15 +28,7 @@ def _new_stats() -> dict:
 
 
 def _batch_swap_scores() -> bool:
-    return os.environ.get("V2_HIER_BATCH_SWAP_SCORES", "0").strip() in {
-        "1",
-        "true",
-        "TRUE",
-        "yes",
-        "YES",
-        "on",
-        "ON",
-    }
+    return const.HIER_BATCH_SWAP_SCORES
 
 
 def _accept_swap(score, best_score, outside_region, escape_min, min_gain) -> bool:
@@ -160,16 +152,10 @@ def _legal_hard_soft_candidates(
     hh_k = soft_hh[cand].astype(np.float64, copy=False)
 
     in_bounds_i = (
-        (k_x - hw_i >= 0.0)
-        & (k_x + hw_i <= cw)
-        & (k_y - hh_i >= 0.0)
-        & (k_y + hh_i <= ch)
+        (k_x - hw_i >= 0.0) & (k_x + hw_i <= cw) & (k_y - hh_i >= 0.0) & (k_y + hh_i <= ch)
     )
     in_bounds_k = (
-        (x_i - hw_k >= 0.0)
-        & (x_i + hw_k <= cw)
-        & (y_i - hh_k >= 0.0)
-        & (y_i + hh_k <= ch)
+        (x_i - hw_k >= 0.0) & (x_i + hw_k <= cw) & (y_i - hh_k >= 0.0) & (y_i + hh_k <= ch)
     )
 
     # Hard move (i -> soft slot): reject overlaps with all other hards except i.
@@ -323,8 +309,7 @@ def _try_hard_hard(
             scored_iter = zip(scored, scores)
         else:
             scored_iter = (
-                ((j, outside_move), scorer.score_swap_hard_hard(i, j))
-                for j, outside_move in scored
+                ((j, outside_move), scorer.score_swap_hard_hard(i, j)) for j, outside_move in scored
             )
         for (j, outside_move), score in scored_iter:
             stats["hh_scores"] += 1
@@ -412,8 +397,7 @@ def _try_soft_soft(
             scored_iter = zip(scored, scores)
         else:
             scored_iter = (
-                ((b, outside_move), scorer.score_swap_soft_soft(a, b))
-                for b, outside_move in scored
+                ((b, outside_move), scorer.score_swap_soft_soft(a, b)) for b, outside_move in scored
             )
         for (b, outside_move), score in scored_iter:
             stats["ss_scores"] += 1

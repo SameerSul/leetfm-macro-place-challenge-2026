@@ -16,8 +16,9 @@ Already implemented:
   - notch penalty
   - combined structural penalty
 - Hierarchy-integrated structural candidate ordering controlled by
-  `V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT`.
-- Opt-in JSONL trace logging controlled by `V2_HIER_GNN_TRACE=1`.
+  `HIER_OBJECTIVE_STRUCTURAL_WEIGHT`.
+- Opt-in JSONL trace logging controlled by the `HIER_GNN_TRACE*` runtime
+  environment variables.
 - Trace events for relocation candidates, relocation results, hierarchy pass
   summaries, and final placement summaries.
 
@@ -62,7 +63,7 @@ Add trace coverage for:
 Acceptance gate:
 
 ```bash
-V2_HIER_GNN_TRACE=1 V2_HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b ibm10
+HIER_GNN_TRACE=1 HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b ibm10
 ```
 
 The trace should include candidate and label events from all active hierarchy
@@ -191,10 +192,10 @@ Goal: use the GNN only as a ranker inside existing hierarchy operators.
 Add controls:
 
 ```bash
-V2_HIER_GNN_RANK=0
-V2_HIER_GNN_MODEL=ml_data/beyondppa_gnn/model.pt
-V2_HIER_GNN_TOP_K=32
-V2_HIER_GNN_OPERATORS=relocation
+HIER_GNN_RANK=0
+HIER_GNN_MODEL=ml_data/beyondppa_gnn/model.pt
+HIER_GNN_TOP_K=32
+HIER_GNN_OPERATORS=relocation
 ```
 
 Rules:
@@ -217,7 +218,7 @@ Acceptance gate:
 
 ```bash
 uv run evaluate src/main.py -b ibm10
-V2_HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm10
+HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm10
 ```
 
 The GNN run must be valid and not materially slower before testing additional
@@ -228,16 +229,16 @@ benchmarks.
 Required sequence:
 
 ```bash
-V2_HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm01
-V2_HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm10
-V2_HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm12
-V2_HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm17
+HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm01
+HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm10
+HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm12
+HIER_GNN_RANK=1 uv run evaluate src/main.py -b ibm17
 ```
 
 Only then run:
 
 ```bash
-V2_HIER_GNN_RANK=1 uv run evaluate src/main.py --all
+HIER_GNN_RANK=1 uv run evaluate src/main.py --all
 ```
 
 Promotion requirements:

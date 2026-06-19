@@ -8,8 +8,8 @@ Deleted pieces include:
 - generic `_lsmc_explore`,
 - random hard-macro kick/descent/accept loop,
 - generic `_cluster_kick`,
-- `V2_GPU_EXPLORE_*` defaults,
-- `V2_GPU_EXPLORE_CLUSTER_*` defaults,
+- `GPU_EXPLORE_*` defaults,
+- `GPU_EXPLORE_CLUSTER_*` defaults,
 - the `_verify_cluster_kick.py` verifier.
 
 The only retained code in `src/placer/local_search/lsmc_explore.py` is
@@ -31,11 +31,11 @@ proposal:
 drops and proxy stays within the configured budget:
 
 ```text
-V2_HIER_COLDSPOT_KICK=1
-V2_HIER_COLDSPOT_BUDGET=0.05
-V2_HIER_COLDSPOT_TOTAL=0.15
-V2_HIER_COLDSPOT_ROUNDS=8
-V2_HIER_COLDSPOT_BUDGET_S=30
+HIER_COLDSPOT_KICK=1
+HIER_COLDSPOT_BUDGET=0.05
+HIER_COLDSPOT_TOTAL=0.15
+HIER_COLDSPOT_ROUNDS=8
+HIER_COLDSPOT_BUDGET_S=30
 ```
 
 ## Historical Finding

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
+from placer import constants as const
 from placer.config import (
     HAS_NUMBA,
     _CUDA_DEVICE_REQUESTED,
@@ -27,31 +28,21 @@ if TYPE_CHECKING:
 
 
 def _proposal_scorer_mode() -> str:
-    mode = os.environ.get("V2_RELOC_PROPOSE_SCORER", "cuda_delta").strip().lower()
+    mode = const.RELOC_PROPOSE_SCORER.strip().lower()
     return mode if mode in {"exact", "tensor", "cuda_delta"} else "cuda_delta"
-
-
-def _env_enabled(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip() not in {"0", "false", "False", "no", "NO", "off"}
 
 
 def _structural_weights() -> tuple[float, float, float]:
     return (
-        float(os.environ.get("V2_HIER_KEEP_OUT_WEIGHT", "0.2")),
-        float(os.environ.get("V2_HIER_GRID_ALIGN_WEIGHT", "0.2")),
-        float(os.environ.get("V2_HIER_NOTCH_WEIGHT", "0.6")),
+        float(const.HIER_KEEP_OUT_WEIGHT),
+        float(const.HIER_GRID_ALIGN_WEIGHT),
+        float(const.HIER_NOTCH_WEIGHT),
     )
 
 
 def _hierarchy_structural_weight() -> float:
     """Weight for BeyondPPA-style structure inside hierarchy candidate ordering."""
-    raw = os.environ.get("V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT")
-    if raw is not None and raw.strip():
-        return max(0.0, float(raw))
-    # Backward-compatible opt-in from the first implementation pass.
-    if _env_enabled("V2_HIER_STRUCTURAL_RANK", "0"):
-        return 1.0
-    return 0.0
+    return max(0.0, float(const.HIER_OBJECTIVE_STRUCTURAL_WEIGHT))
 
 
 def _candidate_trace_sample(proposals: list[dict], limit: int) -> list[dict]:
@@ -244,9 +235,7 @@ def _structural_candidate_order(
     structural_weight = _hierarchy_structural_weight()
     if cand.size == 0 or structural_weight <= 0.0:
         return np.argsort(base_rank)
-    base_struct = _structural_local_penalty(
-        full_pos, sizes, cw, ch, benchmark, module_index
-    )
+    base_struct = _structural_local_penalty(full_pos, sizes, cw, ch, benchmark, module_index)
     span2 = max(float(max(cw, ch)) ** 2, 1.0)
     adjusted = np.asarray(base_rank, dtype=np.float64).copy()
     local_scores = _structural_local_penalty_batch(
@@ -370,9 +359,8 @@ else:
             return np.ones(0, dtype=np.bool_)
         if blocked_x.size == 0:
             return np.ones(cand_x.size, dtype=np.bool_)
-        overlap = (
-            (np.abs(cand_x[:, None] - blocked_x[None, :]) < (blocked_sx[None, :] + eps))
-            & (np.abs(cand_y[:, None] - blocked_y[None, :]) < (blocked_sy[None, :] + eps))
+        overlap = (np.abs(cand_x[:, None] - blocked_x[None, :]) < (blocked_sx[None, :] + eps)) & (
+            np.abs(cand_y[:, None] - blocked_y[None, :]) < (blocked_sy[None, :] + eps)
         )
         return ~np.any(overlap, axis=1)
 
@@ -1227,7 +1215,9 @@ def _relocation_dynamic_byte_components(
 
 def _relocation_memory_safety_factor() -> float:
     try:
-        factor = float(os.environ.get("V2_RELOC_PROPOSE_MEM_SAFETY", "1.0"))
+        factor = float(
+            os.environ.get("RELOC_PROPOSE_MEM_SAFETY", str(const.RELOC_PROPOSE_MEM_SAFETY))
+        )
     except ValueError:
         return 1.0
     return max(1.0, factor)
@@ -1872,7 +1862,7 @@ def _score_relocation_proposals_cuda_delta(
         incremental_scorer,
         proposals,
     )
-    chunk_raw = os.environ.get("V2_RELOC_PROPOSE_CHUNK_SIZE")
+    chunk_raw = os.environ.get("RELOC_PROPOSE_CHUNK_SIZE")
     user_chunked = bool(chunk_raw)
     chunk_source = "env" if chunk_raw else ("cuda_default" if _GPU_DEVICE.type == "cuda" else "cpu")
     if chunk_raw:
@@ -1881,7 +1871,11 @@ def _score_relocation_proposals_cuda_delta(
         except ValueError:
             chunk_size = len(proposals)
     else:
-        chunk_size = 128 if _GPU_DEVICE.type == "cuda" else len(proposals)
+        chunk_size = (
+            const.RELOC_PROPOSE_DEFAULT_CUDA_CHUNK_SIZE
+            if _GPU_DEVICE.type == "cuda"
+            else len(proposals)
+        )
         default_chunk_size = chunk_size
         budget_chunk = None
         budget_mb = None
@@ -1898,7 +1892,7 @@ def _score_relocation_proposals_cuda_delta(
         budget_adjusted_after_static = False
         budget_adjustment = "none"
         if _GPU_DEVICE.type == "cuda":
-            max_mb_raw = os.environ.get("V2_RELOC_PROPOSE_MAX_MB", "")
+            max_mb_raw = os.environ.get("RELOC_PROPOSE_MAX_MB", "")
             (
                 budget_chunk,
                 budget_mb,
@@ -1915,7 +1909,7 @@ def _score_relocation_proposals_cuda_delta(
                 budget_source = "max_mb"
             elif not max_mb_raw.strip():
                 auto_budget = _cuda_auto_memory_budget_mb(
-                    os.environ.get("V2_RELOC_PROPOSE_AUTO_MEM_FRAC", "")
+                    os.environ.get("RELOC_PROPOSE_AUTO_MEM_FRAC", "")
                 )
                 if auto_budget is not None:
                     auto_budget_mb, auto_mem_frac, auto_free_bytes, auto_total_bytes = auto_budget
@@ -2006,7 +2000,7 @@ def _score_relocation_proposals_cuda_delta(
         if _GPU_DEVICE.type == "cuda" and _is_torch_oom(exc):
             raise RuntimeError(
                 "CUDA OOM while building relocation static tensors; "
-                "reducing V2_RELOC_PROPOSE_CHUNK_SIZE will not reduce this allocation "
+                "reducing RELOC_PROPOSE_CHUNK_SIZE will not reduce this allocation "
                 "(estimated_static_bytes=%d)." % static_bytes_estimate
             ) from exc
         raise
@@ -2110,7 +2104,7 @@ def _score_relocation_proposals_cuda_delta(
             next_chunk = max(1, chunk_size // 2)
             if next_chunk == chunk_size:
                 raise
-            if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {
+            if os.environ.get("RELOC_PROPOSE_LOG", "").strip() in {
                 "1",
                 "true",
                 "TRUE",
@@ -2586,7 +2580,7 @@ def _relocation_moves_propose_all(
         accepted=accepted_trace[: gnn_trace_limit()],
     )
 
-    if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {
+    if os.environ.get("RELOC_PROPOSE_LOG", "").strip() in {
         "1",
         "true",
         "TRUE",
