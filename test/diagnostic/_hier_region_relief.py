@@ -55,7 +55,7 @@ def _dist(pos, pairs, diag):
 
 def _run(bench, relief):
     from macro_place.loader import load_benchmark_from_dir
-    from placer import constants as const
+    from utils import constants as const
     import placer.pipeline.macro_placer as mp
 
     const.HIER_REGION_RELIEF = bool(relief)

@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from placer import constants as const
+from utils import constants as const
 from placer.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
 from placer.local_search.region_rules import accepts_region_score, any_outside_region

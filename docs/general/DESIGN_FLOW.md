@@ -70,7 +70,7 @@ Clusters are inferred from the flat ICCAD04-style netlist. The benchmarks do
 not provide hierarchy directly, and direct hard-to-hard nets are sparse, so the
 cluster builder uses low-fanout connectivity through soft macros.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 CLUSTER_MAX_FANOUT=8
@@ -90,7 +90,7 @@ The hierarchy path calls `run_dreamplace(..., cluster_groups=..., group_weight=.
 The bridge writes synthetic per-cluster clique nets into the Bookshelf design so
 global placement pulls connected subsystems together.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_GROUP_WEIGHT=8
@@ -122,7 +122,7 @@ when the exact proxy improvement exceeds the configured escape threshold.
 Before relief runs, hot cluster regions expand toward colder neighboring grid
 bands so packed hierarchy blobs get room to create routing channels.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_REGION_RELIEF=1
@@ -179,7 +179,7 @@ with the cluster, and nudges bridge softs toward the corridor centroid. The
 candidate is accepted only when full exact proxy improves and the hierarchy
 quality metric stays within budget.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_DECOMPRESS=1
@@ -202,7 +202,7 @@ live congestion and density fields. In-region swaps use the normal exact-proxy
 accept gate; swaps that move either participant outside its region must improve
 proxy by at least `HIER_REGION_ESCAPE_MIN`.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_REGION_SWAPS=1
@@ -234,7 +234,7 @@ cluster into a cold congestion window and legalizes the hard macros. In the
 current production flow it is used only as a hierarchy-tightening pass after
 region relief.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```text
 HIER_COLDSPOT_KICK=1
@@ -269,7 +269,7 @@ The current BeyondPPA integration is deterministic and hierarchy-integrated:
 - production defaults keep structural ranking disabled.
 
 The current GNN implementation is trace-only. It is controlled by runtime
-environment variables, not `src/placer/constants.py`. Enable it with:
+environment variables, not `src/utils/constants.py`. Enable it with:
 
 ```bash
 HIER_GNN_TRACE=1 HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b ibm10

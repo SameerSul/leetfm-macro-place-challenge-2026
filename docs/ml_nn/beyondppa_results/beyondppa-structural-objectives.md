@@ -93,7 +93,7 @@ The structural score affects proposal ordering only. Existing legality checks,
 fixed-macro rules, region constraints, and exact proxy accept gates remain the
 authority.
 
-Constants in `src/placer/constants.py`:
+Constants in `src/utils/constants.py`:
 
 ```bash
 HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0

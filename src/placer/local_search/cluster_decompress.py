@@ -7,7 +7,7 @@ import time
 import numpy as np
 import torch
 
-from placer import constants as const
+from utils import constants as const
 from placer.legalize.spiral import _will_legalize
 from placer.local_search.fields import _congestion_field
 from placer.scoring.exact import _exact_proxy

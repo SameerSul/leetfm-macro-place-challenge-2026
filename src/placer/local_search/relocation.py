@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from placer import constants as const
-from placer.config import (
+from utils import constants as const
+from utils.config import (
     HAS_NUMBA,
     _CUDA_DEVICE_REQUESTED,
     _GPU_BACKEND,

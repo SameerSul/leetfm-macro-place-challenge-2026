@@ -8,8 +8,8 @@ import numpy as np
 import torch
 from macro_place.benchmark import Benchmark
 
-from placer import constants as const
-from placer.config import _GPU_BACKEND, _GPU_DEVICE_NAME, _log
+from utils import constants as const
+from utils.config import _GPU_BACKEND, _GPU_DEVICE_NAME, _log
 from placer.scoring.exact import _exact_proxy
 
 

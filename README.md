@@ -94,7 +94,7 @@ initial.plc / benchmark
   -> return macro centers
 ```
 
-Accepted hierarchy constants live in `src/placer/constants.py`:
+Accepted hierarchy constants live in `src/utils/constants.py`:
 
 ```text
 HIER_GROUP_WEIGHT=8
@@ -149,6 +149,7 @@ src/placer/local_search/       cluster fields, relocation, coldspot kick helper
 src/placer/scoring/            exact and incremental proxy scoring
 src/placer/routing/            routing demand and congestion helpers
 src/placer/legalize/           hard-macro legalization
+src/utils/                     runtime config and accepted placement constants
 src/dreamplace_bridge/         pb.txt <-> Bookshelf bridge and DP launcher
 src/eda_io/                    LEF/DEF/Verilog/SDC/Liberty I/O layer
 test/verification/             focused correctness checks

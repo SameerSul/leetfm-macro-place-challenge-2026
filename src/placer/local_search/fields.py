@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from placer import constants as const
+from utils import constants as const
 
 
 def _congestion_field(source, nr: int, nc: int):

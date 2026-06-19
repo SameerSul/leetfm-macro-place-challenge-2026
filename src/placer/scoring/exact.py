@@ -6,7 +6,7 @@ import time
 import torch
 from macro_place.benchmark import Benchmark
 
-from placer import constants as const
+from utils import constants as const
 from placer.plc.placement import _fast_set_placement
 from placer.scoring.congestion import _patch_plc_congestion
 from placer.scoring.density import _patch_plc_density

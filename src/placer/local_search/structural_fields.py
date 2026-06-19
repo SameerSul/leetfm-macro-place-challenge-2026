@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from placer import constants as const
-from placer.config import HAS_NUMBA, _numba_njit
+from utils import constants as const
+from utils.config import HAS_NUMBA, _numba_njit
 
 
 def _notch_numba_enabled(n_idx: int, n_all: int) -> bool:
@@ -179,7 +179,7 @@ def _notch_penalty_torch(
 ) -> tuple[float, int] | None:
     import torch
 
-    from placer.config import _GPU_DEVICE
+    from utils.config import _GPU_DEVICE
 
     if _GPU_DEVICE.type != "cuda" or not torch.cuda.is_available():
         return None

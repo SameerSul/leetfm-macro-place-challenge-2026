@@ -5,7 +5,7 @@ from typing import Optional
 
 from macro_place.benchmark import Benchmark
 
-from placer.config import _log
+from utils.config import _log
 
 
 def _resolve_benchmark_dir(name: str, benchmark: Optional[Benchmark] = None) -> Optional[Path]:
@@ -82,6 +82,7 @@ def _load_plc(name: str, benchmark: Optional[Benchmark] = None):
             return cached
     try:
         from macro_place.loader import load_benchmark_from_dir, load_benchmark
+
         root = _resolve_benchmark_dir(name, benchmark)
         plc = None
         if root is not None:

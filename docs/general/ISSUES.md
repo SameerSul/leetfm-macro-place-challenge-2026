@@ -1006,7 +1006,7 @@ cProfile on ibm13 found the routing-apply (`_apply_net_routing_struct`, ~114 s
 cumtime — half the run) running the **numpy fallbacks** (`_apply_3pin_routing_vec_numpy`
 etc.), not the JIT paths. Root cause: **numba was not installed** (`HAS_NUMBA=False`).
 numba is declared in `v2/requirements.txt` (`numba>=0.59`) but **not** in
-`pyproject.toml`, so `uv sync` alone never installs it, and `config.py` falls back
+`pyproject.toml`, so `uv sync` alone never installs it, and `src/utils/config.py` falls back
 to numpy **silently**. So every measurement this session (incl. the 1.1403 headline)
 ran ~25 % slower than intended.
 

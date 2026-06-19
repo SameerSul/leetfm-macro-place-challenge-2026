@@ -388,7 +388,7 @@ Target: beat RePlAce avg of 1.4578.
 > Installing numba 0.65.1 (supports py3.14): `--all` **3486s→2563s (~26% faster)**
 > *and* **1.1403→1.1380** (freed speed → more refinement on the deadline-bound
 > benchmarks). Without numba the placer still runs but ~25% slower (~58 min, near
-> the 1 h cap) — a config.py warning now fires when numba is missing. **Action: the
+> the 1 h cap) — a src/utils/config.py warning now fires when numba is missing. **Action: the
 > eval env must install `v2/requirements.txt` (or numba must reach `pyproject`)** to
 > realize 1.1380; the graceful fallback is 1.1403. Both still beat RePlAce (1.4578)
 > and the leaderboard (1.4076) on every benchmark.
