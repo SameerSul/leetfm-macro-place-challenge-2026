@@ -24,11 +24,11 @@ These are the structural objectives we use to guide macro placement.
   `src/placer/local_search/structural_fields.py`.
 - Those structural metrics are diagnostic by default and can opt into hierarchy
   relocation candidate ordering with
-  `V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT>0`. They do not bypass legality,
+  `HIER_OBJECTIVE_STRUCTURAL_WEIGHT>0`. They do not bypass legality,
   region, hierarchy-quality, or exact-proxy gates.
-- GNN support is currently logging only. `V2_HIER_GNN_TRACE=1` records JSONL
-  traces for future hierarchy-aware candidate rankers without changing
-  placement output.
+- GNN support is currently logging only. The `HIER_GNN_TRACE*` runtime
+  environment variables record JSONL traces for future hierarchy-aware
+  candidate rankers without changing placement output.
 
 ## Why This Works
 

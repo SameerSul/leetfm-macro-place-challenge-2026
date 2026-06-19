@@ -57,9 +57,9 @@ for seed in "${SEEDS[@]}"; do
   echo "    trace: $trace_path"
   echo "    log  : $log_path"
 
-  # V2_SEED is read by src/main.py (default-preserving).
+  # SEED is read by src/main.py (default-preserving).
   # ML_RUN_ID feeds the {run_id} substitution in ML_TRACE_PATH.
-  V2_SEED="$seed" \
+  SEED="$seed" \
   ML_RUN_ID="$run_id" \
   ML_TRACE_PATH="$OUT_DIR/{run_id}.jsonl.gz" \
     uv run evaluate "$PLACER" "$MODE" > "$log_path" 2>&1 \

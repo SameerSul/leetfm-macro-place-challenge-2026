@@ -19,7 +19,8 @@ Use `beyondppa_results/` for the current implementation record:
 
 No learned GNN model or DQN policy is active in production. The shipped
 BeyondPPA-style pieces are deterministic structural metrics, default-off
-hierarchy candidate ordering, and default-off GNN trace logging.
+hierarchy candidate ordering, and default-off GNN trace logging. Trace logging
+is controlled by `HIER_GNN_TRACE*` runtime environment variables.
 
 The integration rule is mandatory: structural and learned signals may rank
 candidates inside existing hierarchy operators, but they must not bypass hard

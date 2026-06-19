@@ -10,24 +10,23 @@ from typing import Any
 
 import numpy as np
 
-
 _FALSE = {"0", "false", "False", "no", "NO", "off", ""}
 
 
 def gnn_trace_enabled() -> bool:
-    return os.environ.get("V2_HIER_GNN_TRACE", "0").strip() not in _FALSE
+    return os.environ.get("HIER_GNN_TRACE", "0").strip() not in _FALSE
 
 
 def gnn_trace_limit(default: int = 512) -> int:
-    return max(0, int(os.environ.get("V2_HIER_GNN_TRACE_MAX_CANDIDATES", str(default))))
+    return max(0, int(os.environ.get("HIER_GNN_TRACE_MAX_CANDIDATES", str(default))))
 
 
 def _trace_path() -> Path:
-    raw = os.environ.get("V2_HIER_GNN_TRACE_PATH", "").strip()
+    raw = os.environ.get("HIER_GNN_TRACE_PATH", "").strip()
     if raw:
         return Path(raw)
-    root = Path(os.environ.get("V2_HIER_GNN_TRACE_DIR", "ml_data/beyondppa_gnn"))
-    run_id = os.environ.get("V2_HIER_GNN_TRACE_RUN", "").strip()
+    root = Path(os.environ.get("HIER_GNN_TRACE_DIR", "ml_data/beyondppa_gnn"))
+    run_id = os.environ.get("HIER_GNN_TRACE_RUN", "").strip()
     name = f"{run_id}.jsonl" if run_id else "trace.jsonl"
     return root / name
 
@@ -47,7 +46,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def log_gnn_event(event: str, **payload: Any) -> None:
-    """Append one trace event when `V2_HIER_GNN_TRACE=1`."""
+    """Append one trace event when `HIER_GNN_TRACE=1`."""
     if not gnn_trace_enabled():
         return
     path = _trace_path()

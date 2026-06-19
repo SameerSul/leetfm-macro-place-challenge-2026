@@ -1,15 +1,14 @@
-"""Verify hierarchy-floorplan + region-locked relief yields a VALID placement.
+"""Verify hierarchy floorplan + region-locked relief yields a VALID placement.
 
-Runs MacroPlacer with V2_HIER_FLOORPLAN=1 and V2_HIER_REGION_RELIEF=1 and asserts
-the hard placement is overlap-free and in-bounds (the harness's hard requirements).
+Runs MacroPlacer and asserts the hard placement is overlap-free and in-bounds.
 The region lock is SOFT (macros may exit on a large proxy win by design), so this
 does not assert a hard region invariant — hierarchy retention is measured
 quantitatively by test/diagnostic/_hier_region_relief.py. Skips when DREAMPlace is
-unavailable (the mode falls back to the normal pipeline).
+unavailable.
 
     uv run python test/verification/_verify_region_relief.py [ibm01]
 """
-import os
+
 import sys
 from itertools import combinations
 from pathlib import Path
@@ -30,10 +29,9 @@ def main(bench):
     if not is_available():
         print("DREAMPlace unavailable; hier mode falls back to normal place(). SKIP.")
         return
-    os.environ["V2_HIER_FLOORPLAN"] = "1"
-    os.environ["V2_HIER_REGION_RELIEF"] = "1"
     import importlib
     import placer.pipeline.macro_placer as mp
+
     importlib.reload(mp)
 
     src = ROOT / "external" / "MacroPlacement" / "Testcases" / "ICCAD04" / bench
@@ -60,6 +58,7 @@ def main(bench):
 
     # Report intra-cluster spread for eyeballing hierarchy retention.
     from placer.local_search.clusters import derive_hard_clusters
+
     _, clusters = derive_hard_clusters(plc, n, n_soft=n_soft, min_edge=2)
     diag = float(np.hypot(cw, ch))
     intra = []
@@ -67,12 +66,20 @@ def main(bench):
         intra += list(combinations(sorted(int(x) for x in mem), 2))
     if intra:
         p = np.array(intra)
-        spread = float(np.hypot(pos[p[:, 0], 0] - pos[p[:, 1], 0],
-                                pos[p[:, 0], 1] - pos[p[:, 1], 1]).mean()) / diag
+        spread = (
+            float(
+                np.hypot(
+                    pos[p[:, 0], 0] - pos[p[:, 1], 0], pos[p[:, 0], 1] - pos[p[:, 1], 1]
+                ).mean()
+            )
+            / diag
+        )
     else:
         spread = float("nan")
-    print(f"{bench}: region-relief OK  hard={n}  0 overlaps, in-bounds, "
-          f"intra-cluster spread={spread:.4f}")
+    print(
+        f"{bench}: region-relief OK  hard={n}  0 overlaps, in-bounds, "
+        f"intra-cluster spread={spread:.4f}"
+    )
 
 
 if __name__ == "__main__":

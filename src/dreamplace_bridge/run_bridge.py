@@ -25,7 +25,15 @@ from macro_place._plc import PlacementCost  # noqa: E402
 
 
 # Disk cache keyed by input files and DREAMPlace settings.
-CACHE_VERSION = "v1"
+CACHE_VERSION = "v3"
+
+
+def dreamplace_design_name(benchmark_dir: str | Path) -> str:
+    """Return a stable, unique Bookshelf design name for a benchmark source dir."""
+    benchmark_dir = Path(benchmark_dir).resolve()
+    if benchmark_dir.name == "output_CT_Grouping" and benchmark_dir.parent.name == "netlist":
+        return f"{benchmark_dir.parent.parent.name}_{benchmark_dir.name}"
+    return benchmark_dir.name
 
 
 def _file_fingerprint(p: Path) -> str:
@@ -41,8 +49,9 @@ def _cache_key(benchmark_dir: Path, iterations: int, random_seed: int,
                random_center_init: bool, group_sig: str = "") -> str:
     netlist_fp = _file_fingerprint(benchmark_dir / "netlist.pb.txt")
     init_fp = _file_fingerprint(benchmark_dir / "initial.plc")
+    design = dreamplace_design_name(benchmark_dir)
     raw = (
-        f"{CACHE_VERSION}|{benchmark_dir.name}|netlist={netlist_fp}|"
+        f"{CACHE_VERSION}|{design}|path={benchmark_dir.as_posix()}|netlist={netlist_fp}|"
         f"init={init_fp}|iter={iterations}|seed={random_seed}|"
         f"threads={num_threads}|soft={int(soft_macros_movable)}|"
         f"rci={int(random_center_init)}|grp={group_sig}"
@@ -170,7 +179,8 @@ def run_dreamplace(
     target_density: float = 0.75,
     cluster_groups: "Optional[list]" = None,
     group_weight: int = 0,
-) -> np.ndarray:
+    return_full: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Run DREAMPlace and return hard-macro center positions."""
     if not is_available():
         raise RuntimeError(
@@ -179,7 +189,7 @@ def run_dreamplace(
         )
 
     benchmark_dir = Path(benchmark_dir).resolve()
-    design = benchmark_dir.name
+    design = dreamplace_design_name(benchmark_dir)
     work_dir = Path(scratch_root).resolve() / design
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -191,9 +201,11 @@ def run_dreamplace(
     )
     cached = _try_load_cache(work_dir, cache_key)
     if cached is not None:
-        hard_pos, _soft_pos = cached
+        hard_pos, soft_pos = cached
         print(f"  [dreamplace] {design}: {hard_pos.shape[0]} hard macros "
               f"(cache hit, skipped subprocess)")
+        if return_full:
+            return hard_pos, soft_pos
         return hard_pos
 
     # Convert to Bookshelf.
@@ -257,6 +269,10 @@ def run_dreamplace(
     try:
         hard_pos, soft_pos = read_dreamplace_positions_full(plc, str(work_dir), design)
         _write_cache(work_dir, cache_key, hard_pos, soft_pos)
+        if return_full:
+            print(f"  [dreamplace] {design}: {hard_pos.shape[0]} hard macros placed "
+                  f"(global-place {dp_time:.1f}s)")
+            return hard_pos, soft_pos
         pos = hard_pos
     except Exception:
         pos = read_dreamplace_positions(plc, str(work_dir), design)
@@ -426,7 +442,7 @@ def launch_dreamplace_async(
         )
 
     benchmark_dir_p = Path(benchmark_dir).resolve()
-    design = benchmark_dir_p.name
+    design = dreamplace_design_name(benchmark_dir_p)
     work_dir = Path(scratch_root).resolve() / design
     work_dir.mkdir(parents=True, exist_ok=True)
 

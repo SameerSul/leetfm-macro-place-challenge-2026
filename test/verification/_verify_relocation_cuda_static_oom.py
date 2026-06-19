@@ -26,7 +26,7 @@ def main() -> int:
     original_device = relocation._GPU_DEVICE
     original_static = relocation._build_relocation_cuda_static_tensors
     original_batch = relocation._score_relocation_proposals_cuda_delta_batch
-    old_chunk = os.environ.get("V2_RELOC_PROPOSE_CHUNK_SIZE")
+    old_chunk = os.environ.get("RELOC_PROPOSE_CHUNK_SIZE")
 
     def fake_static(*_args, **_kwargs):
         nonlocal calls
@@ -40,7 +40,7 @@ def main() -> int:
         relocation._GPU_DEVICE = torch.device("cuda:0")
         relocation._build_relocation_cuda_static_tensors = fake_static
         relocation._score_relocation_proposals_cuda_delta_batch = fake_batch
-        os.environ["V2_RELOC_PROPOSE_CHUNK_SIZE"] = "4"
+        os.environ["RELOC_PROPOSE_CHUNK_SIZE"] = "4"
         try:
             relocation._score_relocation_proposals_cuda_delta(
                 proposals,
@@ -63,9 +63,9 @@ def main() -> int:
         relocation._build_relocation_cuda_static_tensors = original_static
         relocation._score_relocation_proposals_cuda_delta_batch = original_batch
         if old_chunk is None:
-            os.environ.pop("V2_RELOC_PROPOSE_CHUNK_SIZE", None)
+            os.environ.pop("RELOC_PROPOSE_CHUNK_SIZE", None)
         else:
-            os.environ["V2_RELOC_PROPOSE_CHUNK_SIZE"] = old_chunk
+            os.environ["RELOC_PROPOSE_CHUNK_SIZE"] = old_chunk
 
     if calls != 1:
         raise AssertionError(f"static cache should be attempted once, got {calls}")

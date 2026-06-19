@@ -6,32 +6,27 @@ check legality and do not mutate placements.
 
 from __future__ import annotations
 
-import os
-
 import numpy as np
 
+from placer import constants as const
 from placer.config import HAS_NUMBA, _numba_njit
 
 
-def _env_enabled(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip() not in {"0", "false", "False", "no", "NO", "off"}
-
-
 def _notch_numba_enabled(n_idx: int, n_all: int) -> bool:
-    if not _env_enabled("V2_HIER_STRUCTURAL_NOTCH_NUMBA", "1"):
+    if not const.HIER_STRUCTURAL_NOTCH_NUMBA:
         return False
     if n_all <= 1:
         return False
-    min_pairs = int(os.environ.get("V2_HIER_STRUCTURAL_NOTCH_NUMBA_MIN_PAIRS", "24"))
+    min_pairs = int(const.HIER_STRUCTURAL_NOTCH_NUMBA_MIN_PAIRS)
     return int(n_idx * n_all) >= max(min_pairs, 1)
 
 
 def _notch_gpu_enabled(n_idx: int, n_all: int) -> bool:
     if n_all <= 1 or n_idx <= 0:
         return False
-    if not _env_enabled("V2_HIER_STRUCTURAL_NOTCH_GPU", "0"):
+    if not const.HIER_STRUCTURAL_NOTCH_GPU:
         return False
-    min_n = int(os.environ.get("V2_HIER_STRUCTURAL_NOTCH_GPU_MIN_N", "128"))
+    min_n = int(const.HIER_STRUCTURAL_NOTCH_GPU_MIN_N)
     return n_idx >= min_n and n_all >= min_n
 
 
@@ -279,7 +274,10 @@ def _structural_notch_penalty_totals(
     if HAS_NUMBA and _notch_numba_enabled(idx.size, n):
         return _notch_penalty_numba(left, right, bottom, top, sizes[:, 0], sizes[:, 1], idx, window)
 
-    return _notch_penalty_cpu_vectorized(left, right, bottom, top, sizes[:, 0], sizes[:, 1], idx, window)
+    return _notch_penalty_cpu_vectorized(
+        left, right, bottom, top, sizes[:, 0], sizes[:, 1], idx, window
+    )
+
 
 def _as_pos_size(
     positions: np.ndarray,

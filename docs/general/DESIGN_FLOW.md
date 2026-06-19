@@ -38,25 +38,25 @@ flowchart TD
     E --> F[Cluster-consecutive hard legalization]
     F --> G[Default-order safety legalization]
     G --> H[Soft relocation cleanup]
-    H --> I{V2_HIER_REGION_RELIEF enabled?}
+    H --> I{HIER_REGION_RELIEF enabled?}
     I -->|Yes| R[Congestion-expanded hard/soft regions]
     R --> J[Region-locked hard relocation + soft cleanup]
     I -->|No| K
     J --> A1[In-region micro-shift polish]
-    A1 --> U{V2_HIER_DECOMPRESS enabled?}
+    A1 --> U{HIER_DECOMPRESS enabled?}
     U -->|Yes| V[Exact-gated cluster decompression]
     U -->|No| S
-    V --> S{V2_HIER_REGION_SWAPS enabled?}
+    V --> S{HIER_REGION_SWAPS enabled?}
     S -->|Yes| T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
     S -->|No| P
     T --> Y[Post-swap micro-shift replay]
-    Y --> P{V2_HIER_POST_RELOC_PROPOSE_ALL enabled?}
+    Y --> P{HIER_POST_RELOC_PROPOSE_ALL enabled?}
     P -->|Yes| Q[Post-swap hard propose-all polish]
     P -->|No| W
-    Q --> W{V2_HIER_POST_SOFT_RELOC enabled?}
+    Q --> W{HIER_POST_SOFT_RELOC enabled?}
     W -->|Yes| X[Post-swap soft relocation polish]
     W -->|No| K
-    X --> K{V2_HIER_COLDSPOT_KICK enabled?}
+    X --> K{HIER_COLDSPOT_KICK enabled?}
     K -->|Yes| L[Coldspot cluster tightening with bounded proxy budget]
     K -->|No| M[Clamp movable macros in bounds]
     L --> Z[Post-coldspot micro-shift replay]
@@ -70,11 +70,11 @@ Clusters are inferred from the flat ICCAD04-style netlist. The benchmarks do
 not provide hierarchy directly, and direct hard-to-hard nets are sparse, so the
 cluster builder uses low-fanout connectivity through soft macros.
 
-Controls:
+Constants in `src/placer/constants.py`:
 
 ```text
-V2_CLUSTER_MAX_FANOUT=8
-V2_CLUSTER_MIN_EDGE=2
+CLUSTER_MAX_FANOUT=8
+CLUSTER_MIN_EDGE=2
 ```
 
 The result is a hard-macro label array plus soft roles:
@@ -90,10 +90,10 @@ The hierarchy path calls `run_dreamplace(..., cluster_groups=..., group_weight=.
 The bridge writes synthetic per-cluster clique nets into the Bookshelf design so
 global placement pulls connected subsystems together.
 
-Controls:
+Constants in `src/placer/constants.py`:
 
 ```text
-V2_HIER_GROUP_WEIGHT=8
+HIER_GROUP_WEIGHT=8
 ```
 
 DREAMPlace is a required part of the current path. The old proxy fallback that
@@ -105,7 +105,7 @@ Hard macros are legalized with a cluster-consecutive order:
 
 1. Larger clusters first.
 2. Connectivity-pressure x area first within each cluster by default; set
-   `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=0` to restore larger-macro-first order.
+   `HIER_LEGALIZE_CONNECTIVITY_ORDER=False` restores larger-macro-first order.
 3. Unclustered macros last, with the same member ordering.
 
 A second default-order legalization pass is kept as a safety pass for validity.
@@ -122,53 +122,52 @@ when the exact proxy improvement exceeds the configured escape threshold.
 Before relief runs, hot cluster regions expand toward colder neighboring grid
 bands so packed hierarchy blobs get room to create routing channels.
 
-Controls:
+Constants in `src/placer/constants.py`:
 
 ```text
-V2_HIER_REGION_RELIEF=1
-V2_HIER_REGION_DENSITY=0.65
-V2_REGION_BIAS=1.0
-V2_HIER_REGION_ROUNDS=2
-V2_HIER_REGION_BUDGET_S=40
-V2_HIER_REGION_MARGIN=0
-V2_HIER_REGION_SINGLETON=0.05
-V2_HIER_REGION_ESCAPE_MIN=0.002
-V2_HIER_BRIDGE_SOFTS=1
-V2_HIER_BRIDGE_SOFT_RATIO=0.6
-V2_HIER_CONG_EXPAND_REGIONS=1
-V2_HIER_REGION_EXPAND_HOT_PCT=60
-V2_HIER_REGION_EXPAND_FRAC=0.08
-V2_HIER_REGION_EXPAND_BAND=3
+HIER_REGION_RELIEF=1
+HIER_REGION_DENSITY=0.65
+REGION_BIAS=1.0
+HIER_REGION_ROUNDS=2
+HIER_REGION_BUDGET_S=40
+HIER_REGION_MARGIN=0
+HIER_REGION_SINGLETON=0.05
+HIER_REGION_ESCAPE_MIN=0.002
+HIER_BRIDGE_SOFTS=1
+HIER_BRIDGE_SOFT_RATIO=0.6
+HIER_CONG_EXPAND_REGIONS=1
+HIER_REGION_EXPAND_HOT_PCT=60
+HIER_REGION_EXPAND_FRAC=0.08
+HIER_REGION_EXPAND_BAND=3
 ```
 
 All committed relocation moves still pass the exact incremental proxy gate, but
 candidate ranking is region-biased so the result stays clustered.
 
-The same relocation operators can optionally include deterministic
-BeyondPPA-style structural candidate ordering:
+The same relocation operators include deterministic BeyondPPA-style structural
+candidate ordering, currently disabled by its zero weight:
 
 ```text
-V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
-V2_HIER_KEEP_OUT_WEIGHT=0.2
-V2_HIER_GRID_ALIGN_WEIGHT=0.2
-V2_HIER_NOTCH_WEIGHT=0.6
+HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
+HIER_KEEP_OUT_WEIGHT=0.2
+HIER_GRID_ALIGN_WEIGHT=0.2
+HIER_NOTCH_WEIGHT=0.6
 ```
 
 The structural term scores local edge keepout, grid alignment, and notch
 avoidance. It only reorders candidates inside the hierarchy flow. All committed
 moves still require legality, fixed-macro immobility, bounds, hierarchy-region
 constraints, and the existing exact-proxy or hierarchy-quality gates. The
-default weight is `0.0`, and `V2_HIER_STRUCTURAL_RANK=1` remains an alias for
-weight `1.0` for older experiments.
+default weight is `0.0`.
 
 After each region-relief round, `_micro_shift_polish()` runs tiny exact-gated
 one/two-grid-cell moves inside the same hierarchy-region constraints:
 
 ```text
-V2_HIER_MICRO_SHIFT=1
-V2_HIER_MICRO_SHIFT_RADIUS=2
-V2_HIER_MICRO_SHIFT_TOP=96
-V2_HIER_MICRO_SHIFT_MIN_GAIN=0.00001
+HIER_MICRO_SHIFT=1
+HIER_MICRO_SHIFT_RADIUS=2
+HIER_MICRO_SHIFT_TOP=96
+HIER_MICRO_SHIFT_MIN_GAIN=0.00001
 ```
 
 ## Cluster Decompression
@@ -180,19 +179,19 @@ with the cluster, and nudges bridge softs toward the corridor centroid. The
 candidate is accepted only when full exact proxy improves and the hierarchy
 quality metric stays within budget.
 
-Controls:
+Constants in `src/placer/constants.py`:
 
 ```text
-V2_HIER_DECOMPRESS=1
-V2_HIER_DECOMPRESS_BUDGET_S=18
-V2_HIER_DECOMPRESS_ROUNDS=2
-V2_HIER_DECOMPRESS_HOT_PCT=65
-V2_HIER_DECOMPRESS_FACTORS=1.08,1.16,1.25
-V2_HIER_DECOMPRESS_MIN_GAIN=0.0001
-V2_HIER_QUALITY_BUDGET=0.03
-V2_HIER_DECOMPRESS_ANISO=1
-V2_HIER_DECOMPRESS_ANISO_BAND=3
-V2_HIER_DECOMPRESS_ANISO_SECONDARY=0.25
+HIER_DECOMPRESS=1
+HIER_DECOMPRESS_BUDGET_S=18
+HIER_DECOMPRESS_ROUNDS=2
+HIER_DECOMPRESS_HOT_PCT=65
+HIER_DECOMPRESS_FACTORS=1.08,1.16,1.25
+HIER_DECOMPRESS_MIN_GAIN=0.0001
+HIER_QUALITY_BUDGET=0.03
+HIER_DECOMPRESS_ANISO=1
+HIER_DECOMPRESS_ANISO_BAND=3
+HIER_DECOMPRESS_ANISO_SECONDARY=0.25
 ```
 
 ## Region-Bounded Swaps
@@ -201,22 +200,22 @@ After region relocation, the hierarchy path can run a small swap-relief pass.
 It tries hard-hard 2-opt, hard-soft cross swaps, and soft-soft swaps against the
 live congestion and density fields. In-region swaps use the normal exact-proxy
 accept gate; swaps that move either participant outside its region must improve
-proxy by at least `V2_HIER_REGION_ESCAPE_MIN`.
+proxy by at least `HIER_REGION_ESCAPE_MIN`.
 
-Controls:
+Constants in `src/placer/constants.py`:
 
 ```text
-V2_HIER_REGION_SWAPS=1
-V2_HIER_REGION_SWAP_ROUNDS=2
-V2_HIER_REGION_SWAP_BUDGET_S=20
-V2_HIER_HARD_SWAP_K=16
-V2_HIER_SOFT_SWAP_K=48
-V2_HIER_SWAP_MIN_GAIN=0.00001
-V2_HIER_SWAP_MIN_FIELD_RELIEF=0.0
-V2_HIER_SWAP_HH=1
-V2_HIER_SWAP_HS=1
-V2_HIER_SWAP_SS=1
-V2_HIER_SWAP_DENSITY_FIELD=1
+HIER_REGION_SWAPS=1
+HIER_REGION_SWAP_ROUNDS=2
+HIER_REGION_SWAP_BUDGET_S=20
+HIER_HARD_SWAP_K=16
+HIER_SOFT_SWAP_K=48
+HIER_SWAP_MIN_GAIN=0.00001
+HIER_SWAP_MIN_FIELD_RELIEF=0.0
+HIER_SWAP_HH=1
+HIER_SWAP_HS=1
+HIER_SWAP_SS=1
+HIER_SWAP_DENSITY_FIELD=1
 ```
 
 The pass logs per-operator score/accept counts. Use
@@ -225,7 +224,7 @@ sweeps on regression benchmarks.
 
 The accepted Stage-3 flow replays `_micro_shift_polish()` immediately after
 region swaps. This exact-gated one/two-grid-cell pass is enabled by default
-with `V2_HIER_POST_SWAP_MICRO_SHIFT=1` and recovers small hard and soft
+with `HIER_POST_SWAP_MICRO_SHIFT=1` and recovers small hard and soft
 congestion improvements left behind by swaps.
 
 ## Coldspot Tightening
@@ -235,27 +234,27 @@ cluster into a cold congestion window and legalizes the hard macros. In the
 current production flow it is used only as a hierarchy-tightening pass after
 region relief.
 
-Controls:
+Constants in `src/placer/constants.py`:
 
 ```text
-V2_HIER_COLDSPOT_KICK=1
-V2_HIER_COLDSPOT_BUDGET=0.0
-V2_HIER_COLDSPOT_TOTAL=0.0
-V2_HIER_COLDSPOT_MIN_GAIN=0.0001
-V2_HIER_COLDSPOT_QUALITY_BUDGET=0.01
-V2_HIER_COLDSPOT_MIN_FIELD_GAP=0.02
-V2_HIER_COLDSPOT_ROUNDS=8
-V2_HIER_COLDSPOT_BUDGET_S=30
+HIER_COLDSPOT_KICK=1
+HIER_COLDSPOT_BUDGET=0.0
+HIER_COLDSPOT_TOTAL=0.0
+HIER_COLDSPOT_MIN_GAIN=0.0001
+HIER_COLDSPOT_QUALITY_BUDGET=0.01
+HIER_COLDSPOT_MIN_FIELD_GAP=0.02
+HIER_COLDSPOT_ROUNDS=8
+HIER_COLDSPOT_BUDGET_S=30
 ```
 
 A round first requires a cheap congestion-field opportunity: an eligible cluster
-must be at least `V2_HIER_COLDSPOT_MIN_FIELD_GAP` hotter than its best matching
+must be at least `HIER_COLDSPOT_MIN_FIELD_GAP` hotter than its best matching
 cold window. A kick is then accepted only when exact proxy improves and the
 hierarchy-quality metric stays within budget. This keeps the pass from undoing
 congestion relief for compactness alone.
 
 Production then replays `_micro_shift_polish()` once more with
-`V2_HIER_POST_COLDSPOT_MICRO_SHIFT=1`. The paired post-swap and post-coldspot
+`HIER_POST_COLDSPOT_MICRO_SHIFT=1`. The paired post-swap and post-coldspot
 replays are the current accepted stack. Deterministic hot-cluster coldspot
 selection was tested separately and removed after regressing the full sweep.
 
@@ -269,14 +268,15 @@ The current BeyondPPA integration is deterministic and hierarchy-integrated:
   or seed placements;
 - production defaults keep structural ranking disabled.
 
-The current GNN implementation is trace-only. Enable it with:
+The current GNN implementation is trace-only. It is controlled by runtime
+environment variables, not `src/placer/constants.py`. Enable it with:
 
 ```bash
-V2_HIER_GNN_TRACE=1 V2_HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b ibm10
+HIER_GNN_TRACE=1 HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b ibm10
 ```
 
 Trace JSONL files are written under `ml_data/beyondppa_gnn/` unless
-`V2_HIER_GNN_TRACE_PATH` is supplied. Logging does not change placement output.
+`HIER_GNN_TRACE_PATH` is supplied. Logging does not change placement output.
 The full GNN roadmap is in
 [../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md](../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md).
 

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import time
-import os
 
 import numpy as np
 import torch
 
+from placer import constants as const
 from placer.legalize.spiral import _will_legalize
 from placer.local_search.fields import _congestion_field
 from placer.scoring.exact import _exact_proxy
@@ -158,11 +158,7 @@ def _cluster_decompression_relief(
     cur_s = soft_xy.copy()
     cur_quality = hierarchy_quality_metric(cur_h, clusters)
     accepts = 0
-    factors = tuple(
-        float(x)
-        for x in str(os.environ.get("V2_HIER_DECOMPRESS_FACTORS", "1.08,1.16,1.25")).split(",")
-        if x.strip()
-    )
+    factors = const.HIER_DECOMPRESS_FACTORS
 
     for _ in range(max(1, int(rounds))):
         if deadline is not None and time.monotonic() > deadline:
