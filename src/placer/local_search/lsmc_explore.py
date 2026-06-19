@@ -31,7 +31,8 @@ def _coldspot_cluster_kick(
     target_density=0.65,
     pick="hot",
     max_size=64,
-) -> "tuple[np.ndarray, np.ndarray | None] | None":
+    return_trace: bool = False,
+) -> "tuple[np.ndarray, np.ndarray | None] | tuple[np.ndarray, np.ndarray | None, dict] | None":
     """Gather one cluster into a low-congestion window, then legalize hard macros."""
     if not clusters or cong_field is None:
         return None
@@ -92,5 +93,22 @@ def _coldspot_cluster_kick(
                         ch - soft_hh[s_local],
                     )
         legal_hard = _will_legalize(kicked, movable, sizes, hw, hh, cw, ch, n, deadline=deadline)
+        trace = {
+            "cluster": int(cid),
+            "movable_count": int(members.size),
+            "member_area": float(member_area),
+            "cluster_heat": float(macro_cong[members].mean()),
+            "anchor_x": float(ax),
+            "anchor_y": float(ay),
+            "window_microns": float(win_microns),
+            "window_cells": int(win_cells),
+            "target_density": float(target_density),
+            "pick": str(pick),
+            "soft_moved": int(
+                0 if soft_new is None else np.count_nonzero(np.any(soft_new != soft_xy, axis=1))
+            ),
+        }
+        if return_trace:
+            return legal_hard, soft_new, trace
         return legal_hard, soft_new
     return None

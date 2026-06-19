@@ -10,6 +10,7 @@ import torch
 from utils import constants as const
 from placer.legalize.spiral import _will_legalize
 from placer.local_search.fields import _congestion_field
+from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.scoring.exact import _exact_proxy
 
 
@@ -112,6 +113,31 @@ def _full_tensor(hard_xy, soft_xy):
     return torch.tensor(np.vstack([hard_xy, soft_xy]).astype(np.float32), dtype=torch.float32)
 
 
+def _hard_rejection_reason(hard_xy, sizes, hw, hh, cw, ch) -> str | None:
+    if (
+        np.any(hard_xy[:, 0] < hw - 1e-6)
+        or np.any(hard_xy[:, 0] > cw - hw + 1e-6)
+        or np.any(hard_xy[:, 1] < hh - 1e-6)
+        or np.any(hard_xy[:, 1] > ch - hh + 1e-6)
+    ):
+        return "out_of_bounds"
+    left = hard_xy[:, 0] - hw
+    right = hard_xy[:, 0] + hw
+    bottom = hard_xy[:, 1] - hh
+    top = hard_xy[:, 1] + hh
+    n = hard_xy.shape[0]
+    for i in range(n):
+        overlap = (
+            (left[i] < right[i + 1 :] - 1e-6)
+            & (right[i] > left[i + 1 :] + 1e-6)
+            & (bottom[i] < top[i + 1 :] - 1e-6)
+            & (top[i] > bottom[i + 1 :] + 1e-6)
+        )
+        if bool(np.any(overlap)):
+            return "illegal_overlap"
+    return None
+
+
 def _cluster_decompression_relief(
     hard_xy,
     soft_xy,
@@ -159,6 +185,8 @@ def _cluster_decompression_relief(
     cur_quality = hierarchy_quality_metric(cur_h, clusters)
     accepts = 0
     factors = const.HIER_DECOMPRESS_FACTORS
+    trace_limit = gnn_trace_limit()
+    trace_count = 0
 
     for _ in range(max(1, int(rounds))):
         if deadline is not None and time.monotonic() > deadline:
@@ -201,6 +229,14 @@ def _cluster_decompression_relief(
                 axis_x = max(float(anisotropic_secondary), float(axis_x))
                 axis_y = max(float(anisotropic_secondary), float(axis_y))
             for factor in factors:
+                if deadline is not None and time.monotonic() > deadline:
+                    break
+                score = None
+                q = None
+                reason = "exact_proxy_failed"
+                accepted = False
+                old_score = float(best_score)
+                old_quality = float(cur_quality)
                 cand_h = cur_h.copy()
                 cand_s = cur_s.copy()
                 vec = cand_h[mem] - center
@@ -248,16 +284,47 @@ def _cluster_decompression_relief(
                         ch,
                     )
 
+                reason = _hard_rejection_reason(cand_h, sizes, hw, hh, cw, ch)
                 q = hierarchy_quality_metric(cand_h, clusters)
-                if q > cur_quality + quality_budget:
-                    continue
-                score = float(_exact_proxy(_full_tensor(cand_h, cand_s), benchmark, plc))
-                if score < best_score - min_proxy_gain:
-                    cur_h, cur_s = cand_h, cand_s
-                    best_score = score
-                    cur_quality = q
-                    accepts += 1
-                    accepted_round = True
+                if reason is None and q > cur_quality + quality_budget:
+                    reason = "hierarchy_quality_failed"
+                if reason is None:
+                    score = float(_exact_proxy(_full_tensor(cand_h, cand_s), benchmark, plc))
+                    if score < old_score - min_proxy_gain:
+                        cur_h, cur_s = cand_h, cand_s
+                        best_score = score
+                        cur_quality = q
+                        accepts += 1
+                        accepted_round = True
+                        accepted = True
+                        reason = "accepted"
+                    else:
+                        reason = "exact_proxy_failed"
+                if trace_count < trace_limit:
+                    log_gnn_event(
+                        "hier_decompression_candidate",
+                        benchmark=getattr(benchmark, "name", ""),
+                        operator="cluster_decompression",
+                        candidate_id=trace_count,
+                        cluster=int(cid),
+                        movable_count=int(mem.size),
+                        member_count=int(mem_all.size),
+                        soft_count=int(
+                            0 if cluster_softs.get(cid) is None else len(cluster_softs.get(cid))
+                        ),
+                        expansion_factor=float(factor),
+                        axis_scale=[float(scale[0]), float(scale[1])],
+                        hierarchy_quality_before=old_quality,
+                        hierarchy_quality_after=None if q is None else float(q),
+                        hierarchy_quality_delta=None if q is None else float(q) - old_quality,
+                        old_proxy=old_score,
+                        candidate_proxy=None if score is None else float(score),
+                        proxy_delta=None if score is None else float(score) - old_score,
+                        accepted=bool(accepted),
+                        rejection_reason=None if accepted else reason,
+                    )
+                    trace_count += 1
+                if accepted:
                     break
             if accepted_round:
                 break

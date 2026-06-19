@@ -16,11 +16,44 @@ Target: beat RePlAce avg of 1.4578.
 > proxy-score history below is retained as historical experiment context, not
 > the current production output.
 
+> **Status (2026-06-19 — GNN Stage G2 graph dataset builder):** added
+> `scripts/build_gnn_dataset.py`, a deterministic schema-v1 JSONL-to-PyTorch
+> dataset builder. The output contains one graph per benchmark with hard macro,
+> soft macro, and inferred-cluster nodes; netlist clique, macro-cluster
+> membership, and spatial-neighbor edges; and a stacked candidate table with
+> source/target node references, 27 candidate features, accepted labels,
+> proxy-delta labels with known-mask, rejection ids, and trace provenance.
+> Added the dataset contract in
+> `docs/ml_nn/beyondppa_results/gnn_dataset_schema.md` and the verifier
+> `test/verification/_verify_gnn_dataset_builder.py`. Smoke build from the
+> Stage-G1 `ibm01` trace produced 1 graph, 4526 examples, and 78 accepted
+> labels; repeated builds were tensor-identical. Verification: broad
+> `py_compile` over `src`, `scripts`, and `test/verification` passed
+> (with an unrelated existing regex escape warning in
+> `scripts/generate_macro_placement_tcl.py`); the G2 verifier passed.
+
+> **Status (2026-06-19 — GNN Stage G1 trace completeness and schema v1):**
+> completed candidate-level trace coverage for the active hierarchy GNN data
+> path without changing placement behavior. `log_gnn_event()` now emits
+> `schema_version=1`; `hier_decompression_candidate` records cluster expansion,
+> axis scale, hierarchy-quality delta, exact proxy delta when scored, accepted
+> flag, and rejection reason; `hier_swap_candidates` records sampled hard/hard,
+> hard/soft, and soft/soft region-swap candidate pools with legality, region,
+> score, proxy delta, accepted flag, and rejection reason; and
+> `hier_coldspot_candidate` records skipped, missing, rejected, and accepted
+> coldspot proposals with selected-cluster metadata, field gap, quality delta,
+> and proxy delta. Added the schema contract in
+> `docs/ml_nn/beyondppa_results/gnn_trace_schema.md`. Verification:
+> `py_compile` passed; focused structural tests passed (`4 passed`);
+> `_verify_score_region_swaps.py` passed on ibm01/04/10;
+> `_verify_coldspot_kick.py ibm10` passed; GNN trace smoke on `ibm01` was
+> VALID with proxy `0.9435` and wrote 1539 schema-v1 events with the new
+> decompression, swap, and coldspot candidate event families.
+
 > **Status (2026-06-18 — BeyondPPA structural objective and GNN trace logging
 > integrated, defaults unchanged):** added deterministic edge-keepout,
 > grid-alignment, notch, and combined structural metrics in
-> `src/placer/local_search/structural_fields.py`; added
-> `test/diagnostic/_structural_metrics.py`; and integrated the structural term
+> `src/placer/local_search/structural_fields.py`; and integrated the structural term
 > into existing hierarchy relocation candidate ordering behind
 > the `HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant. This is not a
 > second BeyondPPA path: legality, fixed-macro immobility, bounds,
@@ -426,7 +459,7 @@ Target: beat RePlAce avg of 1.4578.
 > scorer methods `wl_delta_swap` / `wl_delta_move_soft` (verified). Env knobs:
 > `SOFT_RELOC_WL_PREFILTER` / `SOFT_2OPT_WL_PREFILTER` / `HARD_2OPT_K` /
 > `HARD_2OPT_WL_PREFILTER`. Tests: `_verify_wl_delta_swap.py`,
-> `_verify_wl_delta_move_soft.py`, `_calibrate_wl_prefilter.py`.
+> `_verify_wl_delta_move_soft.py`.
 
 > **Status (2026-06-04 — readability refactor, no algorithm change):**
 > **Avg 1.1500 — all 17 VALID / 0 overlaps, 3300.10s.** Pure code-simplification

@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 
+TRACE_SCHEMA_VERSION = 1
+
 _FALSE = {"0", "false", "False", "no", "NO", "off", ""}
 
 
@@ -52,6 +54,7 @@ def log_gnn_event(event: str, **payload: Any) -> None:
     path = _trace_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {
+        "schema_version": TRACE_SCHEMA_VERSION,
         "time_s": time.time(),
         "event": event,
         **payload,

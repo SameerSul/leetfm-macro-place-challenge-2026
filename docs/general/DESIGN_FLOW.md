@@ -218,9 +218,7 @@ HIER_SWAP_SS=1
 HIER_SWAP_DENSITY_FIELD=1
 ```
 
-The pass logs per-operator score/accept counts. Use
-`test/diagnostic/_sweep_region_swaps.py` for targeted operator and threshold
-sweeps on regression benchmarks.
+The pass logs per-operator score/accept counts.
 
 The accepted Stage-3 flow replays `_micro_shift_polish()` immediately after
 region swaps. This exact-gated one/two-grid-cell pass is enabled by default
@@ -264,8 +262,6 @@ The current BeyondPPA integration is deterministic and hierarchy-integrated:
 
 - structural metrics live in `src/placer/local_search/structural_fields.py`;
 - structural candidate ordering lives inside existing relocation ranking;
-- `test/diagnostic/_structural_metrics.py` reports structural scores for final
-  or seed placements;
 - production defaults keep structural ranking disabled.
 
 The current GNN implementation is trace-only. It is controlled by runtime
@@ -285,12 +281,8 @@ The full GNN roadmap is in
 - Challenge path: `uv run evaluate src/main.py -b ibm10`
 - eda_io path: `uv run python src/place_design.py ...`
 - Coldspot verifier: `uv run python test/verification/_verify_coldspot_kick.py ibm10`
-- Structural metric diagnostic:
-  `uv run python test/diagnostic/_structural_metrics.py ibm10`
 - Region-swap tuning sweep:
-  `uv run python test/diagnostic/_sweep_region_swaps.py --quick --bench ibm17`
-- CUDA relocation diagnostic:
-  `uv run python test/diagnostic/_cuda_relocation_status.py --benchmark ibm01`
+  targeted region-swap sweeps on regression benchmarks.
 
 Every return path passes through the final in-bounds clamp for movable macros.
 

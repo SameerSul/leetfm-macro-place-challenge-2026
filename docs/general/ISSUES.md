@@ -90,7 +90,6 @@ into a separate placer. Shipped pieces:
 
 - deterministic structural metrics in
   `src/placer/local_search/structural_fields.py`;
-- structural diagnostics in `test/diagnostic/_structural_metrics.py`;
 - opt-in structural relocation candidate ordering through
   `HIER_OBJECTIVE_STRUCTURAL_WEIGHT`;
 - opt-in GNN JSONL traces through the `HIER_GNN_TRACE*` runtime environment
@@ -275,10 +274,8 @@ soft-only cleanup (hard untouched → hierarchy preserved). All VALID. Proxy cos
 scales with hierarchy structure: ibm01 ~1.02 (+0.10), ibm10 ~1.82 (+0.74),
 ibm17 ~2.52 (+1.17, has a 351-macro cluster). Knobs: `HIER_GROUP_WEIGHT` (8),
 `CLUSTER_MIN_EDGE` (2), `CLUSTER_MAX_FANOUT` (8). `_hierarchy_floorplan` in
-`pipeline/macro_placer.py`; verified `test/verification/_verify_hier_floorplan.py`;
-diagnostics `_cluster_stats.py`, `_dp_group_closeness.py`, `_hier_tradeoff.py`,
-`_hier_tradeoff.py`. **Use only when hierarchy is the goal, never for the
-leaderboard score.**
+`pipeline/macro_placer.py`; verified `test/verification/_verify_hier_floorplan.py`.
+**Use only when hierarchy is the goal, never for the leaderboard score.**
 
 **Region-locked congestion relief (2026-06-15, `HIER_REGION_RELIEF=1`, default
 ON in hier mode).** The floorplan's soft-only cleanup can't relieve the dense
@@ -295,8 +292,7 @@ DROPS while hard↔hard / intra closeness stays ~unchanged — ibm01 1.0194→0.
 (−0.073, closeness Δ≈0), ibm10 1.8215→1.6809 (−0.14, closeness loosens modestly,
 tunable by `HIER_REGION_DENSITY`). Knobs: `REGION_BIAS` (1.0),
 `HIER_REGION_ROUNDS` (2), `HIER_REGION_BUDGET_S` (40), `HIER_REGION_MARGIN`
-(0=area-based), `HIER_REGION_SINGLETON` (0.05). Diagnostic
-`_hier_region_relief.py`; verified `_verify_region_relief.py`.
+(0=area-based), `HIER_REGION_SINGLETON` (0.05).
 
 **Coldspot-aware cluster kick (2026-06-16).** Tested as a prototype for a
 proposed regional/GPU pipeline: gather a HOT cluster into a COLDSPOT of the
@@ -310,7 +306,7 @@ Concentrating a subsystem spikes local congestion the exact-proxy gate rejects e
 at a coldspot. So the regional/GPU pipeline (Stages 2/3) was NOT pursued for proxy.
 GPU note reaffirmed: per-macro GPU batching loses on IBM's ~2000-cell grids (§6.1
 S2); only cross-macro batching on large grids (NG45) could win — out of scope for
-the leaderboard. Diagnostic `_coldspot_kick.py`, verified `_verify_coldspot_kick.py`.
+the leaderboard.
 
 **Superseded by S21:** the first hierarchy coldspot pass accepted tighter
 clusters with bounded proxy worsening. The current production coldspot pass is
@@ -606,7 +602,7 @@ relieves more hot macros per round (and converges in fewer rounds, so it's also
 improved-or-flat; broader than expected (ibm12 −0.008, ibm16 −0.0065, ibm11
 −0.006, not just the largest). 1518s.
 
-**Leverage analysis (`_reloc_leverage.py`):** gain correlates with hard-macro
+**Leverage analysis:** gain correlates with hard-macro
 utilization (canvas fraction occupied by hard macros) gated by congestion
 headroom — NOT with macro dominance or open space (both hypotheses refuted:
 ibm15 has the most-dominant macro but small gain; ibm18 has the most open space
@@ -929,7 +925,7 @@ deeper refinement on the deadline-bound benchmarks.
 
 1. **soft_2opt WL-delta prefilter 0.01 → 3e-4.** The 0.01 default rejected
    *nothing* on ibm13 (no soft swap's wl_delta exceeds it). Calibrated via
-   `test/diagnostic/_calibrate_wl_prefilter.py`: 3e-4 skips ~23% of
+   benchmark sweeps: 3e-4 skips ~23% of
    `score_swap_soft` calls, drops only ~0.2% of improving swaps. Env override
    `SOFT_2OPT_WL_PREFILTER`.
 2. **R2-cleanup hard_2opt k_neighbors 20 → 16** (the per-round 2-opt pass). Fewer
@@ -1408,10 +1404,7 @@ wins vs the cong-only baseline, biggest movers ibm17 −0.034, ibm16 −0.019, i
 wall vs ~125s real); `monotonic` budget held — no benchmark returned baseline.
 
 **Diagnostics retained** (`v2/test/diagnostic/`): `_profile_move.py` (per-move
-breakdown — cong=20%, density=0.7%, routing-apply=67%), `_profile_move_internals.py`
-(cProfile attribution that pointed at `_apply_net_routing_subset`),
-`_profile_move_realistic.py` (same-macro/nearby vs random-k pattern, isolates
-#2's cache benefit).
+breakdown — cong=20%, density=0.7%, routing-apply=67%).
 
 ---
 
