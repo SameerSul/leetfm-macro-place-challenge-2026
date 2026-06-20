@@ -169,6 +169,11 @@ def _benchmark_dir(name: str, roots: list[Path]) -> Path:
             return direct
         if root.name == name and (root / "netlist.pb.txt").exists():
             return root
+        if name.endswith("_ng45"):
+            design = name[: -len("_ng45")]
+            ng45 = root / design / "netlist" / "output_CT_Grouping"
+            if (ng45 / "netlist.pb.txt").exists():
+                return ng45
     raise FileNotFoundError(f"Could not find benchmark '{name}' under: {roots}")
 
 
