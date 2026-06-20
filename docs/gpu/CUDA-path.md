@@ -4,7 +4,7 @@ This document is historical. It described an opt-in CUDA proposal scorer for the
 deleted proxy optimizer's hard-relocation loop.
 
 The current production placer is hierarchy-only and does not pass
-`V2_RELOC_PROPOSE_ALL` through a main R2 loop. The active GPU-sensitive component
+`RELOC_PROPOSE_ALL` through a main R2 loop. The active GPU-sensitive component
 is DREAMPlace, launched through `src/dreamplace_bridge/`.
 
 ## Historical Finding

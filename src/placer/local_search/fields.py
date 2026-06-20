@@ -1,16 +1,13 @@
 """Hot/cold cell fields shared by the relocation and swap move passes."""
 
-import os
 import numpy as np
 
-
-def _env_enabled(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip() in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+from utils import constants as const
 
 
 def _congestion_field(source, nr: int, nc: int):
     """max(H, V) routing congestion as an (nr, nc) grid, or None if unavailable."""
-    if _env_enabled("V2_USE_SCORER_CONGESTION_FIELD", "1"):
+    if const.USE_SCORER_CONGESTION_FIELD:
         scorer_field = getattr(source, "congestion_field", None)
         if scorer_field is not None:
             try:

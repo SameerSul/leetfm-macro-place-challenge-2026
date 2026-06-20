@@ -3,7 +3,7 @@
 import numpy as np
 from macro_place.benchmark import Benchmark
 
-from placer.config import HAS_NUMBA, _numba_njit
+from utils.config import HAS_NUMBA, _numba_njit
 from placer.plc.placement import _ensure_pos_cache, _fast_set_placement
 from placer.routing.apply import (
     _apply_macro_routing_subset,
@@ -199,6 +199,9 @@ class IncrementalScorer:
 
         # Cache per-macro net routing structures.
         self._route_struct_cache: "dict[int, object]" = {}
+        # Cache touched nets for frequently repeated module sets.
+        self._touched_cache2: "dict[tuple[int, int], np.ndarray]" = {}
+        self._touched_cache_many: "dict[tuple[int, ...], np.ndarray]" = {}
 
         # Density state.
         dens_cache = _build_density_cache(plc, benchmark)
@@ -414,37 +417,73 @@ class IncrementalScorer:
         return (max_x - min_x) + (max_y - min_y)
 
     def _touched_nets(self, i_module: int, j_module: int) -> np.ndarray:
-        a = self.macro_to_nets.get(i_module)
-        b = self.macro_to_nets.get(j_module)
+        i0 = int(i_module)
+        j0 = int(j_module)
+        key = (i0, j0) if i0 <= j0 else (j0, i0)
+        cached = self._touched_cache2.get(key)
+        if cached is not None:
+            return cached
+        a = self.macro_to_nets.get(i0)
+        b = self.macro_to_nets.get(j0)
         if a is None and b is None:
             return np.empty(0, dtype=np.int64)
         if a is None:
+            self._touched_cache2[key] = b
             return b
         if b is None:
+            self._touched_cache2[key] = a
             return a
-        return np.union1d(a, b)
+        out = np.union1d(a, b)
+        self._touched_cache2[key] = out
+        return out
 
     def _touched_nets3(self, m1: int, m2: int, m3: int) -> np.ndarray:
         """Return nets touched by three modules."""
-        a = self.macro_to_nets.get(m1)
-        b = self.macro_to_nets.get(m2)
-        c = self.macro_to_nets.get(m3)
-        parts = [x for x in (a, b, c) if x is not None]
+        key = tuple(sorted({int(m1), int(m2), int(m3)}))
+        if len(key) == 1:
+            return self._touched_nets_only(key[0])
+        if len(key) == 2:
+            return self._touched_nets(key[0], key[1])
+        cached = self._touched_cache_many.get(key)
+        if cached is not None:
+            return cached
+        parts = [self._macro_nets(int(m)) for m in key]
         if not parts:
             return np.empty(0, dtype=np.int64)
         if len(parts) == 1:
             return parts[0]
-        return np.unique(np.concatenate(parts))
+        out = np.unique(np.concatenate(parts))
+        self._touched_cache_many[key] = out
+        return out
+
+    def _touched_nets_only(self, module: int) -> np.ndarray:
+        """Return nets touched by exactly one module."""
+        module = int(module)
+        cached = self._touched_cache2.get((module, module))
+        if cached is not None:
+            return cached
+        nets = self._macro_nets(module)
+        self._touched_cache2[(module, module)] = nets
+        return nets
 
     def _touched_nets_many(self, modules) -> np.ndarray:
         """Return the union of nets touched by the given modules."""
-        parts = [self._macro_nets(int(m)) for m in modules]
+        key = tuple(sorted({int(m) for m in modules}))
+        if not key:
+            return np.empty(0, dtype=np.int64)
+        cached = self._touched_cache_many.get(key)
+        if cached is not None:
+            return cached
+        parts = [self._macro_nets(int(m)) for m in key]
         parts = [p for p in parts if p.size]
         if not parts:
             return np.empty(0, dtype=np.int64)
         if len(parts) == 1:
+            self._touched_cache_many[key] = parts[0]
             return parts[0]
-        return np.unique(np.concatenate(parts))
+        out = np.unique(np.concatenate(parts))
+        self._touched_cache_many[key] = out
+        return out
 
     def _apply_pos(self, module_idx: int, x: float, y: float) -> None:
         """Set a module position and mark cached costs dirty."""
@@ -508,12 +547,11 @@ class IncrementalScorer:
         old_iy = float(self.committed_hard_pos[i_hard, 1])
         new_ix, new_iy = float(new_xy[0]), float(new_xy[1])
 
-        H_snap = self.H_flat.copy()
-        V_snap = self.V_flat.copy()
+        touched = self._touched_nets_only(i_module)
+        H_snap = self.H_flat.copy() if touched.size else None
+        V_snap = self.V_flat.copy() if touched.size else None
         Hm_snap = self.H_macro_flat.copy()
         Vm_snap = self.V_macro_flat.copy()
-
-        touched = self._macro_nets(i_module)
         struct = self._route_struct(i_module)
         macro_subset = (
             np.array([i_slot], dtype=np.int64)
@@ -568,8 +606,9 @@ class IncrementalScorer:
         if o_idx.size:
             np.add.at(go, o_idx, o_area)
         self._apply_pos(i_module, old_ix, old_iy)
-        self.H_flat[:] = H_snap
-        self.V_flat[:] = V_snap
+        if touched.size:
+            self.H_flat[:] = H_snap
+            self.V_flat[:] = V_snap
         self.H_macro_flat[:] = Hm_snap
         self.V_macro_flat[:] = Vm_snap
         if c_lo is not None:
@@ -633,9 +672,9 @@ class IncrementalScorer:
         old_y = float(self.committed_soft_pos[soft_k, 1])
         new_x, new_y = float(new_xy[0]), float(new_xy[1])
 
-        H_snap = self.H_flat.copy()
-        V_snap = self.V_flat.copy()
-        touched = self._macro_nets(s_module)
+        touched = self._touched_nets_only(s_module)
+        H_snap = self.H_flat.copy() if touched.size else None
+        V_snap = self.V_flat.copy() if touched.size else None
         struct = self._route_struct(s_module)
 
         bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
@@ -677,8 +716,9 @@ class IncrementalScorer:
         if o_idx.size:
             np.add.at(go, o_idx, o_area)
         self._apply_pos(s_module, old_x, old_y)
-        self.H_flat[:] = H_snap
-        self.V_flat[:] = V_snap
+        if touched.size:
+            self.H_flat[:] = H_snap
+            self.V_flat[:] = V_snap
         if c_lo is not None:
             self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
             self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
@@ -725,12 +765,11 @@ class IncrementalScorer:
         new_xy = [(float(x), float(y)) for x, y in new_xy]
         hard_slots = np.asarray(hard_slots, dtype=np.int64)
 
-        H_snap = self.H_flat.copy()
-        V_snap = self.V_flat.copy()
-        Hm_snap = self.H_macro_flat.copy()
-        Vm_snap = self.V_macro_flat.copy()
-
         touched = self._touched_nets_many(modules)
+        H_snap = self.H_flat.copy() if touched.size else None
+        V_snap = self.V_flat.copy() if touched.size else None
+        Hm_snap = self.H_macro_flat.copy() if hard_slots.size else None
+        Vm_snap = self.V_macro_flat.copy() if hard_slots.size else None
         bb_old = _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
         if hard_slots.size:
             _apply_macro_routing_subset(
@@ -786,10 +825,12 @@ class IncrementalScorer:
                 np.add.at(go, idx, area)
         for m, (x, y) in zip(modules, old_xy):
             self._apply_pos(m, x, y)
-        self.H_flat[:] = H_snap
-        self.V_flat[:] = V_snap
-        self.H_macro_flat[:] = Hm_snap
-        self.V_macro_flat[:] = Vm_snap
+        if touched.size:
+            self.H_flat[:] = H_snap
+            self.V_flat[:] = V_snap
+        if Hm_snap is not None:
+            self.H_macro_flat[:] = Hm_snap
+            self.V_macro_flat[:] = Vm_snap
         if c_lo is not None:
             self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
             self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
@@ -1001,11 +1042,12 @@ class IncrementalScorer:
         macro_subset = prep["macro_subset"]
         old_ix, old_iy = prep["old_ix"], prep["old_iy"]
         new_ix, new_iy = float(new_xy[0]), float(new_xy[1])
+        touched = self._touched_nets_only(i_module)
 
-        H_snap = self.H_flat.copy()
-        V_snap = self.V_flat.copy()
-        Hm_snap = self.H_macro_flat.copy()
-        Vm_snap = self.V_macro_flat.copy()
+        H_snap = self.H_flat.copy() if touched.size else None
+        V_snap = self.V_flat.copy() if touched.size else None
+        Hm_snap = self.H_macro_flat.copy() if macro_subset.size else None
+        Vm_snap = self.V_macro_flat.copy() if macro_subset.size else None
 
         self._apply_pos(i_module, new_ix, new_iy)
         bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
@@ -1048,10 +1090,12 @@ class IncrementalScorer:
             self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
             self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
         self._apply_pos(i_module, old_ix, old_iy)
-        self.H_flat[:] = H_snap
-        self.V_flat[:] = V_snap
-        self.H_macro_flat[:] = Hm_snap
-        self.V_macro_flat[:] = Vm_snap
+        if touched.size:
+            self.H_flat[:] = H_snap
+            self.V_flat[:] = V_snap
+        if Hm_snap is not None:
+            self.H_macro_flat[:] = Hm_snap
+            self.V_macro_flat[:] = Vm_snap
 
         return score
 
@@ -1147,9 +1191,10 @@ class IncrementalScorer:
         struct = prep["struct"]
         old_x, old_y = prep["old_x"], prep["old_y"]
         new_x, new_y = float(new_xy[0]), float(new_xy[1])
+        touched = self._touched_nets_only(s_module)
 
-        H_snap = self.H_flat.copy()
-        V_snap = self.V_flat.copy()
+        H_snap = self.H_flat.copy() if touched.size else None
+        V_snap = self.V_flat.copy() if touched.size else None
 
         self._apply_pos(s_module, new_x, new_y)
         bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
@@ -1188,8 +1233,9 @@ class IncrementalScorer:
             self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
             self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
         self._apply_pos(s_module, old_x, old_y)
-        self.H_flat[:] = H_snap
-        self.V_flat[:] = V_snap
+        if touched.size:
+            self.H_flat[:] = H_snap
+            self.V_flat[:] = V_snap
 
         return score
 

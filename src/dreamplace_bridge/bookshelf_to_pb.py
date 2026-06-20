@@ -120,8 +120,18 @@ def read_dreamplace_positions(
             sz = sizes[sanitized]
             x_center_scaled = x_ll + sz.width / 2.0
             y_center_scaled = y_ll + sz.height / 2.0
-            out[out_idx, 0] = x_center_scaled / scale
-            out[out_idx, 1] = y_center_scaled / scale
+            x = x_center_scaled / scale
+            y = y_center_scaled / scale
+            if np.isfinite(x) and np.isfinite(y):
+                out[out_idx, 0] = x
+                out[out_idx, 1] = y
+            else:
+                try:
+                    cur_x, cur_y = node.get_pos()
+                    out[out_idx, 0] = float(cur_x)
+                    out[out_idx, 1] = float(cur_y)
+                except Exception:
+                    pass
         else:
             # Fallback: keep current TILOS position
             try:
@@ -182,8 +192,18 @@ def read_dreamplace_positions_full(
             if sanitized in pl and sanitized in sizes:
                 x_ll, y_ll, _fixed = pl[sanitized]
                 sz = sizes[sanitized]
-                out[out_idx, 0] = (x_ll + sz.width / 2.0) / scale
-                out[out_idx, 1] = (y_ll + sz.height / 2.0) / scale
+                x = (x_ll + sz.width / 2.0) / scale
+                y = (y_ll + sz.height / 2.0) / scale
+                if np.isfinite(x) and np.isfinite(y):
+                    out[out_idx, 0] = x
+                    out[out_idx, 1] = y
+                else:
+                    try:
+                        cur_x, cur_y = node.get_pos()
+                        out[out_idx, 0] = float(cur_x)
+                        out[out_idx, 1] = float(cur_y)
+                    except Exception:
+                        pass
             else:
                 try:
                     cur_x, cur_y = node.get_pos()

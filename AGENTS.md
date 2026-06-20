@@ -22,10 +22,20 @@ Current accepted hierarchy result: `uv run evaluate src/main.py --all` =
 `proxy=1.6133`, VALID.
 
 BeyondPPA-style work is integrated into the hierarchy path, not as a separate
-placer. The current shipped pieces are deterministic structural metrics,
+placer. The current shipped pieces are deterministic structural metrics and
 default-off hierarchy relocation candidate ordering
-(`V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0`), and default-off GNN trace logging
-(`V2_HIER_GNN_TRACE=0`). No learned GNN model or DQN policy is active.
+(`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant). The trace logger is
+default-off through the `HIER_GNN_TRACE=0` runtime environment variable.
+Stage-G3 offline baseline tooling lives in `scripts/gnn/train_gnn_baseline.py`, and
+the accepted default-off baseline artifact is
+`ml_data/beyondppa_gnn/models/20260619_g3_candidate_baseline_min4/`. Stage-G4
+offline macro-net ranker tooling lives in `scripts/gnn/train_gnn_ranker.py`, and
+the accepted default-off graph-ranker artifact is
+`ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/`. A default-off
+Stage-G5 relocation-only candidate reordering hook exists behind
+`HIER_GNN_RANK=1`; Stage G6 full-suite validation was legal but not promoted
+because average proxy and runtime regressed. No inference ranker is default-on,
+and no DQN policy is active in placement.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](docs/general/PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
 
@@ -37,7 +47,7 @@ git submodule update --init external/MacroPlacement
 uv sync
 # Optional mirror install if the environment was not created by uv sync. Numba is
 # a first-class pyproject dependency; missing numba now raises unless
-# V2_ALLOW_NUMBA_FALLBACK=1 is set for slow diagnostic-only runs.
+# ALLOW_NUMBA_FALLBACK=1 is set for slow diagnostic-only runs.
 uv pip install -r requirements.txt
 
 # Single benchmark - fastest feedback loop, use this while iterating
@@ -165,6 +175,7 @@ hierarchy output.
 ```md
 src/main.py         Evaluator-facing entrypoint - exposes MacroPlacer.
 src/placer/        Active hierarchy placer package: pipeline, scoring, routing, legalize, local_search.
+src/utils/         Runtime config, logging shim, and accepted placement constants.
 src/dreamplace_bridge/  pb.txt <-> Bookshelf converters + DREAMPlace launcher.
 src/eda_io/        Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR-report out.
 src/place_design.py CLI tying eda_io together - see src/eda_io/README.md.
@@ -189,7 +200,7 @@ scripts/                  Comparison + benchmark-conversion utilities.
 - **CPU contention slows scoring 3–5×.** ibm08 scores in 31s clean but 95–131s under load; ibm11 scored 263s under heat. Use a running-max `t_one_score` for budget estimation, not the baseline-only measurement.
 - **`docs/general/PAPERS_NOTES.md` describes the MaskRegulate regularity mask incorrectly.** The actual paper formula `min(x, X_max-x) + min(y, Y_max-y)` rewards placing macros near canvas *edges*. The notes describe distance-to-center, which is the opposite. The implementation in `_density_gradient_perturb` does neither - it is a pure occupancy-spreading gradient. If you see comments referencing "MaskRegulate centering", the comments are wrong, not the code.
 - **`initial.plc` is already a good seed.** It comes from a prior EDA flow with hand-tuned spread. The job of legalization is to resolve overlaps without destroying that spread. Restart from random or grid layouts has consistently lost to restarting from `initial.plc + small perturbation`.
-- **Soft macros must move with hierarchy.** The current path classifies soft macros as owned or bridge, gives them region boxes, lets grouped DREAMPlace place them, and uses soft relocation plus soft-heavy region swaps after hard legalization/relief. The accepted `V2_HIER_SOFT_SWAP_K=48` default is intentional; `24` was worse on ibm12/15/17, while `64` regressed ibm17.
+- **Soft macros must move with hierarchy.** The current path classifies soft macros as owned or bridge, gives them region boxes, lets grouped DREAMPlace place them, and uses soft relocation plus soft-heavy region swaps after hard legalization/relief. The accepted `HIER_SOFT_SWAP_K=48` default is intentional; `24` was worse on ibm12/15/17, while `64` regressed ibm17.
 - **BeyondPPA/GNN must stay inside hierarchy.** Structural metrics and future
   learned rankers may reorder candidates inside existing hierarchy operators,
   but accepted moves still need hard legality, fixed macro immobility, bounds,

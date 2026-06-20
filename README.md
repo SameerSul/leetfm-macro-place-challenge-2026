@@ -94,54 +94,64 @@ initial.plc / benchmark
   -> return macro centers
 ```
 
-Key environment knobs:
+Accepted hierarchy constants live in `src/utils/constants.py`:
 
 ```text
-V2_HIER_GROUP_WEIGHT=8
-V2_CLUSTER_MIN_EDGE=2
-V2_CLUSTER_MAX_FANOUT=8
-V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=1
-V2_HIER_RELOC_PROPOSE_ALL=0
-V2_HIER_RELOC_PROPOSE_TOP_M=64
-V2_HIER_RELOC_PROPOSE_HOT_K=32
-V2_HIER_RELOC_PROPOSE_DENSITY=0
-V2_HIER_POST_RELOC_PROPOSE_ALL=auto
-V2_HIER_POST_RELOC_PROPOSE_TOP_M=16
-V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
-V2_HIER_POST_SOFT_RELOC=1
-V2_HIER_POST_SOFT_RELOC_TOP_K=256
-V2_HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005
-V2_HIER_REGION_RELIEF=1
-V2_HIER_REGION_DENSITY=0.65
-V2_REGION_BIAS=1.0
-V2_HIER_REGION_ROUNDS=2
-V2_HIER_REGION_BUDGET_S=40
-V2_HIER_REGION_ESCAPE_MIN=0.002
-V2_HIER_CONG_EXPAND_REGIONS=1
-V2_HIER_MICRO_SHIFT=1
-V2_HIER_POST_SWAP_MICRO_SHIFT=1
-V2_HIER_POST_COLDSPOT_MICRO_SHIFT=1
-V2_HIER_DECOMPRESS=1
-V2_HIER_DECOMPRESS_ANISO=1
-V2_HIER_REGION_SWAPS=1
-V2_HIER_SOFT_SWAP_K=48
-V2_HIER_COLDSPOT_KICK=1
-V2_HIER_COLDSPOT_BUDGET=0.0
-V2_HIER_COLDSPOT_TOTAL=0.0
-V2_HIER_COLDSPOT_MIN_FIELD_GAP=0.02
-V2_HIER_COLDSPOT_ROUNDS=8
-V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
-V2_HIER_GNN_TRACE=0
+HIER_GROUP_WEIGHT=8
+CLUSTER_MIN_EDGE=2
+CLUSTER_MAX_FANOUT=8
+HIER_LEGALIZE_CONNECTIVITY_ORDER=1
+HIER_RELOC_PROPOSE_HOT_K=32
+HIER_POST_RELOC_PROPOSE_ALL=auto
+HIER_POST_RELOC_PROPOSE_TOP_M=16
+HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
+HIER_POST_SOFT_RELOC=1
+HIER_POST_SOFT_RELOC_TOP_K=256
+HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005
+HIER_REGION_RELIEF=1
+HIER_REGION_DENSITY=0.65
+REGION_BIAS=1.0
+HIER_REGION_ROUNDS=2
+HIER_REGION_BUDGET_S=40
+HIER_REGION_ESCAPE_MIN=0.002
+HIER_CONG_EXPAND_REGIONS=1
+HIER_MICRO_SHIFT=1
+HIER_POST_SWAP_MICRO_SHIFT=1
+HIER_POST_COLDSPOT_MICRO_SHIFT=1
+HIER_DECOMPRESS=1
+HIER_DECOMPRESS_ANISO=1
+HIER_REGION_SWAPS=1
+HIER_SOFT_SWAP_K=48
+HIER_COLDSPOT_KICK=1
+HIER_COLDSPOT_BUDGET=0.0
+HIER_COLDSPOT_TOTAL=0.0
+HIER_COLDSPOT_MIN_FIELD_GAP=0.02
+HIER_COLDSPOT_ROUNDS=8
+HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
 ```
 
-`V2_SEED` is still accepted by `src/main.py` for reproducible runs.
+Runtime environment variables are intentionally limited. `SEED` is accepted by
+`src/main.py` for reproducible runs, and `HIER_GNN_TRACE*` controls optional
+JSONL trace output.
 
-`V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT` is the opt-in BeyondPPA-style structural
-ranking weight inside the existing hierarchy relocation operators. It only
-reorders candidates; legality, fixed-macro, region, hierarchy-quality, and
-exact-proxy gates still decide accepted moves. `V2_HIER_GNN_TRACE=1` writes
-JSONL traces for future hierarchy-aware GNN training without changing placement
-output.
+`HIER_OBJECTIVE_STRUCTURAL_WEIGHT` is the BeyondPPA-style structural ranking
+constant inside the existing hierarchy relocation operators. It only reorders
+candidates; legality, fixed-macro, region, hierarchy-quality, and exact-proxy
+gates still decide accepted moves. `HIER_GNN_TRACE=1` writes JSONL traces for
+future hierarchy-aware GNN training without changing placement output. Offline
+Stage-G3 candidate baselines can be trained with
+`scripts/train_gnn_baseline.py`; the accepted G3 artifact is default-off and is
+not used at placement time. Offline Stage-G4 macro-net rankers can be trained
+with `scripts/train_gnn_ranker.py`; the accepted G4 artifact is also
+default-off. `HIER_GNN_RANK=1` enables the experimental Stage-G5
+relocation-only candidate reordering hook; it is default-off and not promoted
+after valid but regressive Stage-G6 closed-loop validation.
+Post-G6 GNN diagnostics are ongoing. Smaller top-k and guarded-prefix variants
+are valid but not accepted improvements.
+`HIER_DIAGNOSTIC_NO_DEADLINES=1` is available for repeatable GNN diagnostics
+only; it is not a production mode.
+`HIER_GNN_EXTRA_TOP_K` is also default-off and experimental; it is used for
+additive GNN diagnostics before timed smoke.
 
 ## Source Layout
 
@@ -152,6 +162,7 @@ src/placer/local_search/       cluster fields, relocation, coldspot kick helper
 src/placer/scoring/            exact and incremental proxy scoring
 src/placer/routing/            routing demand and congestion helpers
 src/placer/legalize/           hard-macro legalization
+src/utils/                     runtime config and accepted placement constants
 src/dreamplace_bridge/         pb.txt <-> Bookshelf bridge and DP launcher
 src/eda_io/                    LEF/DEF/Verilog/SDC/Liberty I/O layer
 test/verification/             focused correctness checks

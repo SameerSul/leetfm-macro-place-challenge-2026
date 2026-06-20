@@ -1,13 +1,14 @@
 """Vectorized routing demand and smoothing helpers."""
 
-import os
 import numpy as np
 import torch
 from macro_place.benchmark import Benchmark
 
-from placer.config import HAS_NUMBA, _GPU_DEVICE, _USE_GPU, _numba_njit
+from utils import constants as const
+from utils.config import HAS_NUMBA, _GPU_DEVICE, _USE_GPU, _numba_njit
 from placer.plc.placement import _ensure_pos_cache
 from placer.scoring.wirelength import _build_wl_cache
+
 
 def _build_cong_cache(plc, benchmark: Benchmark):
     """Build routing arrays that do not change with placement."""
@@ -56,18 +57,15 @@ def _build_cong_cache(plc, benchmark: Benchmark):
         sink_total_cache = int(sink_lens_cache.sum())
         B_cache = idx_big_cache.size
         if sink_total_cache > 0:
-            net_local_ids_cache = np.repeat(
-                np.arange(B_cache, dtype=np.int64), sink_lens_cache
-            )
+            net_local_ids_cache = np.repeat(np.arange(B_cache, dtype=np.int64), sink_lens_cache)
             cum_sink_starts_cache = np.zeros(B_cache + 1, dtype=np.int64)
             np.cumsum(sink_lens_cache, out=cum_sink_starts_cache[1:])
-            offset_in_sinks_cache = (
-                np.arange(sink_total_cache, dtype=np.int64)
-                - np.repeat(cum_sink_starts_cache[:-1], sink_lens_cache)
+            offset_in_sinks_cache = np.arange(sink_total_cache, dtype=np.int64) - np.repeat(
+                cum_sink_starts_cache[:-1], sink_lens_cache
             )
-            global_pin_idx_cache = (
-                (starts_big_cache + 1)[net_local_ids_cache] + offset_in_sinks_cache
-            )
+            global_pin_idx_cache = (starts_big_cache + 1)[
+                net_local_ids_cache
+            ] + offset_in_sinks_cache
         else:
             net_local_ids_cache = np.zeros(0, dtype=np.int64)
             cum_sink_starts_cache = np.zeros(1, dtype=np.int64)
@@ -113,6 +111,7 @@ def _build_cong_cache(plc, benchmark: Benchmark):
 
 
 if HAS_NUMBA:
+
     @_numba_njit(cache=True, fastmath=False)
     def _apply_h_strips_batch_jit(H_flat, row, col_lo, col_hi, weight, grid_col):
         """Add horizontal routing strips with numba."""
@@ -139,21 +138,19 @@ if HAS_NUMBA:
                 V_flat[r * grid_col + c] += w
 
 
-def _apply_h_strips_batch(H_flat: np.ndarray, row: np.ndarray,
-                           col_lo: np.ndarray, col_hi: np.ndarray,
-                           weight: np.ndarray, grid_row: int, grid_col: int) -> None:
+def _apply_h_strips_batch(
+    H_flat: np.ndarray,
+    row: np.ndarray,
+    col_lo: np.ndarray,
+    col_hi: np.ndarray,
+    weight: np.ndarray,
+    grid_row: int,
+    grid_col: int,
+) -> None:
     """Add a batch of horizontal routing strips."""
     if row.size == 0:
         return
-    if HAS_NUMBA and os.environ.get("V2_ROUTE_STRUCT_JIT", "0").strip() in {
-        "1",
-        "true",
-        "TRUE",
-        "yes",
-        "YES",
-        "on",
-        "ON",
-    }:
+    if HAS_NUMBA and const.ROUTE_STRUCT_JIT:
         _apply_h_strips_batch_jit(
             H_flat,
             np.ascontiguousarray(row, dtype=np.int64),
@@ -176,13 +173,19 @@ def _apply_h_strips_batch(H_flat: np.ndarray, row: np.ndarray,
     H_flat.reshape(grid_row, grid_col)[uniq] += cs
 
 
-def _apply_v_strips_batch(V_flat: np.ndarray, col: np.ndarray,
-                           row_lo: np.ndarray, row_hi: np.ndarray,
-                           weight: np.ndarray, grid_row: int, grid_col: int) -> None:
+def _apply_v_strips_batch(
+    V_flat: np.ndarray,
+    col: np.ndarray,
+    row_lo: np.ndarray,
+    row_hi: np.ndarray,
+    weight: np.ndarray,
+    grid_row: int,
+    grid_col: int,
+) -> None:
     """Add a batch of vertical routing strips."""
     if col.size == 0:
         return
-    if HAS_NUMBA:
+    if HAS_NUMBA and const.ROUTE_STRUCT_JIT:
         _apply_v_strips_batch_jit(
             V_flat,
             np.ascontiguousarray(col, dtype=np.int64),
@@ -205,10 +208,17 @@ def _apply_v_strips_batch(V_flat: np.ndarray, col: np.ndarray,
     V_flat.reshape(grid_row, grid_col)[:, uniq] += cs.T
 
 
-def _apply_2pin_routing(H_flat: np.ndarray, V_flat: np.ndarray,
-                         src_row: np.ndarray, src_col: np.ndarray,
-                         snk_row: np.ndarray, snk_col: np.ndarray,
-                         weight: np.ndarray, grid_row: int, grid_col: int) -> None:
+def _apply_2pin_routing(
+    H_flat: np.ndarray,
+    V_flat: np.ndarray,
+    src_row: np.ndarray,
+    src_col: np.ndarray,
+    snk_row: np.ndarray,
+    snk_col: np.ndarray,
+    weight: np.ndarray,
+    grid_row: int,
+    grid_col: int,
+) -> None:
     """Route 2-pin nets with one L-shaped path per net."""
     if src_row.size == 0:
         return
@@ -221,31 +231,49 @@ def _apply_2pin_routing(H_flat: np.ndarray, V_flat: np.ndarray,
 
 
 if HAS_NUMBA:
+
     @_numba_njit(cache=True, fastmath=False)
-    def _apply_3pin_routing_vec_jit(H_flat, V_flat, g0_flat, g1_flat, g2_flat,
-                                      weights, grid_col):
+    def _apply_3pin_routing_vec_jit(H_flat, V_flat, g0_flat, g1_flat, g2_flat, weights, grid_col):
         """Route 3-pin nets with numba."""
         n = g0_flat.shape[0]
         for k in range(n):
             # Decode each pin's grid cell.
-            ya = g0_flat[k] // grid_col; xa = g0_flat[k] % grid_col
-            yb = g1_flat[k] // grid_col; xb = g1_flat[k] % grid_col
-            yc = g2_flat[k] // grid_col; xc = g2_flat[k] % grid_col
+            ya = g0_flat[k] // grid_col
+            xa = g0_flat[k] % grid_col
+            yb = g1_flat[k] // grid_col
+            xb = g1_flat[k] % grid_col
+            yc = g2_flat[k] // grid_col
+            xc = g2_flat[k] % grid_col
             w = weights[k]
 
             # Sort three points by column, then row.
-            x1 = xa; y1 = ya
-            x2 = xb; y2 = yb
-            x3 = xc; y3 = yc
+            x1 = xa
+            y1 = ya
+            x2 = xb
+            y2 = yb
+            x3 = xc
+            y3 = yc
             if x1 > x2 or (x1 == x2 and y1 > y2):
-                tx = x1; x1 = x2; x2 = tx
-                ty = y1; y1 = y2; y2 = ty
+                tx = x1
+                x1 = x2
+                x2 = tx
+                ty = y1
+                y1 = y2
+                y2 = ty
             if x2 > x3 or (x2 == x3 and y2 > y3):
-                tx = x2; x2 = x3; x3 = tx
-                ty = y2; y2 = y3; y3 = ty
+                tx = x2
+                x2 = x3
+                x3 = tx
+                ty = y2
+                y2 = y3
+                y3 = ty
             if x1 > x2 or (x1 == x2 and y1 > y2):
-                tx = x1; x1 = x2; x2 = tx
-                ty = y1; y1 = y2; y2 = ty
+                tx = x1
+                x1 = x2
+                x2 = tx
+                ty = y1
+                y1 = y2
+                y2 = ty
 
             # Case 1: L-routing - x1<x2<x3 AND y2 strictly between y1 and y3.
             if x1 < x2 and x2 < x3:
@@ -301,18 +329,33 @@ if HAS_NUMBA:
 
             # Case 4: T-routing - re-sort by (row asc, col asc).
             # Restart from the ORIGINAL (xa, ya), (xb, yb), (xc, yc).
-            x1t = xa; y1t = ya
-            x2t = xb; y2t = yb
-            x3t = xc; y3t = yc
+            x1t = xa
+            y1t = ya
+            x2t = xb
+            y2t = yb
+            x3t = xc
+            y3t = yc
             if y1t > y2t or (y1t == y2t and x1t > x2t):
-                tx = x1t; x1t = x2t; x2t = tx
-                ty = y1t; y1t = y2t; y2t = ty
+                tx = x1t
+                x1t = x2t
+                x2t = tx
+                ty = y1t
+                y1t = y2t
+                y2t = ty
             if y2t > y3t or (y2t == y3t and x2t > x3t):
-                tx = x2t; x2t = x3t; x3t = tx
-                ty = y2t; y2t = y3t; y3t = ty
+                tx = x2t
+                x2t = x3t
+                x3t = tx
+                ty = y2t
+                y2t = y3t
+                y3t = ty
             if y1t > y2t or (y1t == y2t and x1t > x2t):
-                tx = x1t; x1t = x2t; x2t = tx
-                ty = y1t; y1t = y2t; y2t = ty
+                tx = x1t
+                x1t = x2t
+                x2t = tx
+                ty = y1t
+                y1t = y2t
+                y2t = ty
 
             # xmin/xmax over all 3 (= over the original 3 = the row-sorted 3).
             xmin = x1t if x1t < x2t else x2t
@@ -333,16 +376,23 @@ if HAS_NUMBA:
                 V_flat[r * grid_col + x3t] += w
 
 
-def _apply_3pin_routing_vec(H_flat: np.ndarray, V_flat: np.ndarray,
-                             g0_flat: np.ndarray, g1_flat: np.ndarray,
-                             g2_flat: np.ndarray, weights: np.ndarray,
-                             grid_row: int, grid_col: int) -> None:
+def _apply_3pin_routing_vec(
+    H_flat: np.ndarray,
+    V_flat: np.ndarray,
+    g0_flat: np.ndarray,
+    g1_flat: np.ndarray,
+    g2_flat: np.ndarray,
+    weights: np.ndarray,
+    grid_row: int,
+    grid_col: int,
+) -> None:
     """Route 3-pin nets using numba when available."""
     if g0_flat.size == 0:
         return
     if HAS_NUMBA:
         _apply_3pin_routing_vec_jit(
-            H_flat, V_flat,
+            H_flat,
+            V_flat,
             np.ascontiguousarray(g0_flat, dtype=np.int64),
             np.ascontiguousarray(g1_flat, dtype=np.int64),
             np.ascontiguousarray(g2_flat, dtype=np.int64),
@@ -350,20 +400,31 @@ def _apply_3pin_routing_vec(H_flat: np.ndarray, V_flat: np.ndarray,
             int(grid_col),
         )
         return
-    _apply_3pin_routing_vec_numpy(H_flat, V_flat, g0_flat, g1_flat, g2_flat,
-                                    weights, grid_row, grid_col)
+    _apply_3pin_routing_vec_numpy(
+        H_flat, V_flat, g0_flat, g1_flat, g2_flat, weights, grid_row, grid_col
+    )
 
 
-def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
-                                    g0_flat: np.ndarray, g1_flat: np.ndarray,
-                                    g2_flat: np.ndarray, weights: np.ndarray,
-                                    grid_row: int, grid_col: int) -> None:
+def _apply_3pin_routing_vec_numpy(
+    H_flat: np.ndarray,
+    V_flat: np.ndarray,
+    g0_flat: np.ndarray,
+    g1_flat: np.ndarray,
+    g2_flat: np.ndarray,
+    weights: np.ndarray,
+    grid_row: int,
+    grid_col: int,
+) -> None:
     """Numpy fallback for three-pin routing."""
     if g0_flat.size == 0:
         return
     # Convert flat cell ids into row/column pairs.
-    y_all = np.stack([g0_flat // grid_col, g1_flat // grid_col, g2_flat // grid_col], axis=1).astype(np.int64)
-    x_all = np.stack([g0_flat % grid_col, g1_flat % grid_col, g2_flat % grid_col], axis=1).astype(np.int64)
+    y_all = np.stack(
+        [g0_flat // grid_col, g1_flat // grid_col, g2_flat // grid_col], axis=1
+    ).astype(np.int64)
+    x_all = np.stack([g0_flat % grid_col, g1_flat % grid_col, g2_flat % grid_col], axis=1).astype(
+        np.int64
+    )
     w = np.asarray(weights, dtype=np.float64)
     # Sort each net's three pins by column, then row.
     BIG = int(max(grid_row, grid_col)) + 16
@@ -371,8 +432,12 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
     order = np.argsort(key, axis=1, kind="stable")
     y = np.take_along_axis(y_all, order, axis=1)
     x = np.take_along_axis(x_all, order, axis=1)
-    y1 = y[:, 0]; y2 = y[:, 1]; y3 = y[:, 2]
-    x1 = x[:, 0]; x2 = x[:, 1]; x3 = x[:, 2]
+    y1 = y[:, 0]
+    y2 = y[:, 1]
+    y3 = y[:, 2]
+    x1 = x[:, 0]
+    x2 = x[:, 1]
+    x3 = x[:, 2]
 
     # Case 1: L-routing - x1<x2<x3 AND y2 strictly between y1 and y3
     case1 = (x1 < x2) & (x2 < x3) & (np.minimum(y1, y3) < y2) & (np.maximum(y1, y3) > y2)
@@ -395,41 +460,82 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
         m = case1
         wm = w[m]
         # H y1 [x1..x2], y2 [x2..x3]
-        h_rows.append(y1[m]); h_los.append(x1[m]); h_his.append(x2[m]); h_ws.append(wm)
-        h_rows.append(y2[m]); h_los.append(x2[m]); h_his.append(x3[m]); h_ws.append(wm)
+        h_rows.append(y1[m])
+        h_los.append(x1[m])
+        h_his.append(x2[m])
+        h_ws.append(wm)
+        h_rows.append(y2[m])
+        h_los.append(x2[m])
+        h_his.append(x3[m])
+        h_ws.append(wm)
         # V x2 [min(y1,y2)..max(y1,y2)], x3 [min(y2,y3)..max(y2,y3)]
-        v_cols.append(x2[m]); v_los.append(np.minimum(y1[m], y2[m])); v_his.append(np.maximum(y1[m], y2[m])); v_ws.append(wm)
-        v_cols.append(x3[m]); v_los.append(np.minimum(y2[m], y3[m])); v_his.append(np.maximum(y2[m], y3[m])); v_ws.append(wm)
+        v_cols.append(x2[m])
+        v_los.append(np.minimum(y1[m], y2[m]))
+        v_his.append(np.maximum(y1[m], y2[m]))
+        v_ws.append(wm)
+        v_cols.append(x3[m])
+        v_los.append(np.minimum(y2[m], y3[m]))
+        v_his.append(np.maximum(y2[m], y3[m]))
+        v_ws.append(wm)
 
     if case2.any():
         m = case2
         wm = w[m]
-        h_rows.append(y1[m]); h_los.append(x1[m]); h_his.append(x2[m]); h_ws.append(wm)
-        v_cols.append(x2[m]); v_los.append(y1[m]); v_his.append(np.maximum(y2[m], y3[m])); v_ws.append(wm)
+        h_rows.append(y1[m])
+        h_los.append(x1[m])
+        h_his.append(x2[m])
+        h_ws.append(wm)
+        v_cols.append(x2[m])
+        v_los.append(y1[m])
+        v_his.append(np.maximum(y2[m], y3[m]))
+        v_ws.append(wm)
 
     if case3.any():
         m = case3
         wm = w[m]
-        h_rows.append(y1[m]); h_los.append(x1[m]); h_his.append(x2[m]); h_ws.append(wm)
-        h_rows.append(y2[m]); h_los.append(x2[m]); h_his.append(x3[m]); h_ws.append(wm)
-        v_cols.append(x2[m]); v_los.append(np.minimum(y2[m], y1[m])); v_his.append(np.maximum(y2[m], y1[m])); v_ws.append(wm)
+        h_rows.append(y1[m])
+        h_los.append(x1[m])
+        h_his.append(x2[m])
+        h_ws.append(wm)
+        h_rows.append(y2[m])
+        h_los.append(x2[m])
+        h_his.append(x3[m])
+        h_ws.append(wm)
+        v_cols.append(x2[m])
+        v_los.append(np.minimum(y2[m], y1[m]))
+        v_his.append(np.maximum(y2[m], y1[m]))
+        v_ws.append(wm)
 
     if case4.any():
         m = case4
         wm = w[m]
         # T-routes use row order.
-        y_t = y_all[m]; x_t = x_all[m]
+        y_t = y_all[m]
+        x_t = x_all[m]
         key_t = y_t * BIG + x_t
         order_t = np.argsort(key_t, axis=1, kind="stable")
         y_t = np.take_along_axis(y_t, order_t, axis=1)
         x_t = np.take_along_axis(x_t, order_t, axis=1)
-        y1t = y_t[:, 0]; y2t = y_t[:, 1]; y3t = y_t[:, 2]
-        x1t = x_t[:, 0]; x2t = x_t[:, 1]; x3t = x_t[:, 2]
+        y1t = y_t[:, 0]
+        y2t = y_t[:, 1]
+        y3t = y_t[:, 2]
+        x1t = x_t[:, 0]
+        x2t = x_t[:, 1]
+        x3t = x_t[:, 2]
         xmin_t = np.minimum(np.minimum(x1t, x2t), x3t)
         xmax_t = np.maximum(np.maximum(x1t, x2t), x3t)
-        h_rows.append(y2t); h_los.append(xmin_t); h_his.append(xmax_t); h_ws.append(wm)
-        v_cols.append(x1t); v_los.append(np.minimum(y1t, y2t)); v_his.append(np.maximum(y1t, y2t)); v_ws.append(wm)
-        v_cols.append(x3t); v_los.append(np.minimum(y2t, y3t)); v_his.append(np.maximum(y2t, y3t)); v_ws.append(wm)
+        h_rows.append(y2t)
+        h_los.append(xmin_t)
+        h_his.append(xmax_t)
+        h_ws.append(wm)
+        v_cols.append(x1t)
+        v_los.append(np.minimum(y1t, y2t))
+        v_his.append(np.maximum(y1t, y2t))
+        v_ws.append(wm)
+        v_cols.append(x3t)
+        v_los.append(np.minimum(y2t, y3t))
+        v_his.append(np.maximum(y2t, y3t))
+        v_ws.append(wm)
 
     if h_rows:
         rows = np.concatenate(h_rows)
@@ -446,7 +552,9 @@ def _apply_3pin_routing_vec_numpy(H_flat: np.ndarray, V_flat: np.ndarray,
         ws_v = np.concatenate(v_ws)
         nz = rlos != rhis
         if nz.any():
-            _apply_v_strips_batch(V_flat, cols[nz], rlos[nz], rhis[nz], ws_v[nz], grid_row, grid_col)
+            _apply_v_strips_batch(
+                V_flat, cols[nz], rlos[nz], rhis[nz], ws_v[nz], grid_row, grid_col
+            )
 
 
 if HAS_NUMBA:
@@ -641,9 +749,9 @@ if HAS_NUMBA:
                 V_flat[r * grid_col + x3t] += w
 
 
-def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
-                              grid_col: int, smooth_range: int,
-                              axis_h: bool) -> np.ndarray:
+def _smooth_routing_cong_vec(
+    routing_flat: np.ndarray, grid_row: int, grid_col: int, smooth_range: int, axis_h: bool
+) -> np.ndarray:
     """Smooth routing demand across nearby rows or columns."""
     grid_2d = routing_flat.reshape(grid_row, grid_col)
     sr = smooth_range
@@ -654,8 +762,9 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
             if axis_h:
                 # H demand spreads along rows.
                 rows = torch.arange(grid_row, dtype=torch.int64, device=dev)
-                cnts = (torch.clamp(rows + sr, max=grid_row - 1)
-                        - torch.clamp(rows - sr, min=0) + 1).to(g2d.dtype)
+                cnts = (
+                    torch.clamp(rows + sr, max=grid_row - 1) - torch.clamp(rows - sr, min=0) + 1
+                ).to(g2d.dtype)
                 w = g2d / cnts[:, None]
                 zero_row = torch.zeros(1, grid_col, dtype=g2d.dtype, device=dev)
                 cs = torch.cumsum(torch.cat([zero_row, w], dim=0), dim=0)
@@ -665,8 +774,9 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
             else:
                 # V demand spreads along columns.
                 cols = torch.arange(grid_col, dtype=torch.int64, device=dev)
-                cnts = (torch.clamp(cols + sr, max=grid_col - 1)
-                        - torch.clamp(cols - sr, min=0) + 1).to(g2d.dtype)
+                cnts = (
+                    torch.clamp(cols + sr, max=grid_col - 1) - torch.clamp(cols - sr, min=0) + 1
+                ).to(g2d.dtype)
                 w = g2d / cnts[None, :]
                 zero_col = torch.zeros(grid_row, 1, dtype=g2d.dtype, device=dev)
                 cs = torch.cumsum(torch.cat([zero_col, w], dim=1), dim=1)
@@ -705,22 +815,38 @@ def _smooth_routing_cong_vec(routing_flat: np.ndarray, grid_row: int,
 
 
 if HAS_NUMBA:
+
     @_numba_njit(cache=True, fastmath=False)
     def _apply_macro_routing_scatter_jit(
-        V_macro_flat, H_macro_flat,
-        bl_row, bl_col, ur_row, ur_col,
-        x_min, x_max, y_min, y_max,
-        grid_w, grid_h, grid_col, valloc, halloc,
+        V_macro_flat,
+        H_macro_flat,
+        bl_row,
+        bl_col,
+        ur_row,
+        ur_col,
+        x_min,
+        x_max,
+        y_min,
+        y_max,
+        grid_w,
+        grid_h,
+        grid_col,
+        valloc,
+        halloc,
     ):
         """Add hard-macro routing blockage with numba."""
         n = bl_row.shape[0]
         tol = 1e-5
         # Add overlap-based blockage.
         for m in range(n):
-            r0 = bl_row[m]; r1 = ur_row[m]
-            c0 = bl_col[m]; c1 = ur_col[m]
-            xmn = x_min[m]; xmx = x_max[m]
-            ymn = y_min[m]; ymx = y_max[m]
+            r0 = bl_row[m]
+            r1 = ur_row[m]
+            c0 = bl_col[m]
+            c1 = ur_col[m]
+            xmn = x_min[m]
+            xmx = x_max[m]
+            ymn = y_min[m]
+            ymx = y_max[m]
             for rr in range(r0, r1 + 1):
                 cy0 = grid_h * rr
                 cy1 = grid_h * (rr + 1)
@@ -739,15 +865,21 @@ if HAS_NUMBA:
                     H_macro_flat[idx] += yd * halloc
         # Correct partially covered top rows.
         for m in range(n):
-            r0 = bl_row[m]; r1 = ur_row[m]
+            r0 = bl_row[m]
+            r1 = ur_row[m]
             if r1 == r0:
                 continue
-            ymn = y_min[m]; ymx = y_max[m]
-            if not (abs((grid_h * (r0 + 1) - ymn) - grid_h) > tol
-                    or abs((ymx - grid_h * r1) - grid_h) > tol):
+            ymn = y_min[m]
+            ymx = y_max[m]
+            if not (
+                abs((grid_h * (r0 + 1) - ymn) - grid_h) > tol
+                or abs((ymx - grid_h * r1) - grid_h) > tol
+            ):
                 continue
-            c0 = bl_col[m]; c1 = ur_col[m]
-            xmn = x_min[m]; xmx = x_max[m]
+            c0 = bl_col[m]
+            c1 = ur_col[m]
+            xmn = x_min[m]
+            xmx = x_max[m]
             base = r1 * grid_col
             for cc in range(c0, c1 + 1):
                 cx0 = grid_w * cc
@@ -758,15 +890,21 @@ if HAS_NUMBA:
                 V_macro_flat[base + cc] -= xd * valloc
         # Correct partially covered right columns.
         for m in range(n):
-            c0 = bl_col[m]; c1 = ur_col[m]
+            c0 = bl_col[m]
+            c1 = ur_col[m]
             if c1 == c0:
                 continue
-            xmn = x_min[m]; xmx = x_max[m]
-            if not (abs((grid_w * (c0 + 1) - xmn) - grid_w) > tol
-                    or abs((xmx - grid_w * c1) - grid_w) > tol):
+            xmn = x_min[m]
+            xmx = x_max[m]
+            if not (
+                abs((grid_w * (c0 + 1) - xmn) - grid_w) > tol
+                or abs((xmx - grid_w * c1) - grid_w) > tol
+            ):
                 continue
-            r0 = bl_row[m]; r1 = ur_row[m]
-            ymn = y_min[m]; ymx = y_max[m]
+            r0 = bl_row[m]
+            r1 = ur_row[m]
+            ymn = y_min[m]
+            ymx = y_max[m]
             for rr in range(r0, r1 + 1):
                 cy0 = grid_h * rr
                 cy1 = grid_h * (rr + 1)
@@ -776,12 +914,20 @@ if HAS_NUMBA:
                 H_macro_flat[rr * grid_col + c1] -= yd * halloc
 
 
-def _apply_macro_routing(V_macro_flat: np.ndarray, H_macro_flat: np.ndarray,
-                          hard_x: np.ndarray, hard_y: np.ndarray,
-                          half_w: np.ndarray, half_h: np.ndarray,
-                          grid_w: float, grid_h: float,
-                          grid_row: int, grid_col: int,
-                          vrouting_alloc: float, hrouting_alloc: float) -> None:
+def _apply_macro_routing(
+    V_macro_flat: np.ndarray,
+    H_macro_flat: np.ndarray,
+    hard_x: np.ndarray,
+    hard_y: np.ndarray,
+    half_w: np.ndarray,
+    half_h: np.ndarray,
+    grid_w: float,
+    grid_h: float,
+    grid_row: int,
+    grid_col: int,
+    vrouting_alloc: float,
+    hrouting_alloc: float,
+) -> None:
     """Add hard-macro routing blockage to the congestion grids."""
     x_min = hard_x - half_w
     x_max = hard_x + half_w
@@ -814,13 +960,21 @@ def _apply_macro_routing(V_macro_flat: np.ndarray, H_macro_flat: np.ndarray,
 
     if HAS_NUMBA:
         _apply_macro_routing_scatter_jit(
-            V_macro_flat, H_macro_flat,
-            np.ascontiguousarray(bl_row_s), np.ascontiguousarray(bl_col_s),
-            np.ascontiguousarray(ur_row_s), np.ascontiguousarray(ur_col_s),
-            np.ascontiguousarray(x_min_s), np.ascontiguousarray(x_max_s),
-            np.ascontiguousarray(y_min_s), np.ascontiguousarray(y_max_s),
-            float(grid_w), float(grid_h), int(grid_col),
-            float(vrouting_alloc), float(hrouting_alloc),
+            V_macro_flat,
+            H_macro_flat,
+            np.ascontiguousarray(bl_row_s),
+            np.ascontiguousarray(bl_col_s),
+            np.ascontiguousarray(ur_row_s),
+            np.ascontiguousarray(ur_col_s),
+            np.ascontiguousarray(x_min_s),
+            np.ascontiguousarray(x_max_s),
+            np.ascontiguousarray(y_min_s),
+            np.ascontiguousarray(y_max_s),
+            float(grid_w),
+            float(grid_h),
+            int(grid_col),
+            float(vrouting_alloc),
+            float(hrouting_alloc),
         )
         return
 
@@ -909,9 +1063,8 @@ def _build_net_routing_struct(plc, net_indices: np.ndarray):
     if total_pins == 0:
         return None
     cumsum_lens = np.concatenate([[0], np.cumsum(lengths_s)[:-1]]).astype(np.int64)
-    sub_pin_idx_in_flat = (
-        np.repeat(starts_s, lengths_s)
-        + (np.arange(total_pins, dtype=np.int64) - np.repeat(cumsum_lens, lengths_s))
+    sub_pin_idx_in_flat = np.repeat(starts_s, lengths_s) + (
+        np.arange(total_pins, dtype=np.int64) - np.repeat(cumsum_lens, lengths_s)
     )
     struct = {
         "sub_pin_idx_in_flat": sub_pin_idx_in_flat,
@@ -920,10 +1073,8 @@ def _build_net_routing_struct(plc, net_indices: np.ndarray):
         "mask_l2": lengths_s == 2,
         "mask_l3": lengths_s == 3,
     }
-    struct["local_starts_l2"] = (
-        cumsum_lens[struct["mask_l2"]] if struct["mask_l2"].any() else None)
-    struct["local_starts_l3"] = (
-        cumsum_lens[struct["mask_l3"]] if struct["mask_l3"].any() else None)
+    struct["local_starts_l2"] = cumsum_lens[struct["mask_l2"]] if struct["mask_l2"].any() else None
+    struct["local_starts_l3"] = cumsum_lens[struct["mask_l3"]] if struct["mask_l3"].any() else None
 
     struct["l4"] = None
     mask_l4 = lengths_s >= 4
@@ -937,11 +1088,12 @@ def _build_net_routing_struct(plc, net_indices: np.ndarray):
             net_local_ids_local = np.repeat(np.arange(B_local, dtype=np.int64), sink_lens_local)
             cum_sink_starts_local = np.zeros(B_local + 1, dtype=np.int64)
             np.cumsum(sink_lens_local, out=cum_sink_starts_local[1:])
-            offset_in_sinks_local = (
-                np.arange(sink_total_local, dtype=np.int64)
-                - np.repeat(cum_sink_starts_local[:-1], sink_lens_local)
+            offset_in_sinks_local = np.arange(sink_total_local, dtype=np.int64) - np.repeat(
+                cum_sink_starts_local[:-1], sink_lens_local
             )
-            global_pin_idx_local = (starts_big_local + 1)[net_local_ids_local] + offset_in_sinks_local
+            global_pin_idx_local = (starts_big_local + 1)[
+                net_local_ids_local
+            ] + offset_in_sinks_local
             struct["l4"] = {
                 "sub_idx_big": sub_idx_big,
                 "starts_big_local": starts_big_local,
@@ -952,8 +1104,9 @@ def _build_net_routing_struct(plc, net_indices: np.ndarray):
     return struct
 
 
-def _apply_net_routing_struct(plc, struct, weight_mult: float,
-                              H_flat: np.ndarray, V_flat: np.ndarray):
+def _apply_net_routing_struct(
+    plc, struct, weight_mult: float, H_flat: np.ndarray, V_flat: np.ndarray
+):
     """Apply routing for a precomputed net set at current positions."""
     if struct is None:
         return None
@@ -1064,10 +1217,7 @@ def _apply_net_routing_struct(plc, struct, weight_mult: float,
             keep = np.empty(sg_sorted.size, dtype=bool)
             keep[0] = True
             if sg_sorted.size > 1:
-                keep[1:] = (
-                    (nli_sorted[1:] != nli_sorted[:-1])
-                    | (sg_sorted[1:] != sg_sorted[:-1])
-                )
+                keep[1:] = (nli_sorted[1:] != nli_sorted[:-1]) | (sg_sorted[1:] != sg_sorted[:-1])
             nli_uniq = nli_sorted[keep]
             sg_uniq = sg_sorted[keep]
             uniq_sink_counts = np.bincount(nli_uniq, minlength=B_local)
@@ -1094,10 +1244,15 @@ def _apply_net_routing_struct(plc, struct, weight_mult: float,
         snk_flat = np.concatenate(bucket_2_snk)
         w_arr = np.concatenate(bucket_2_w)
         _apply_2pin_routing(
-            H_flat, V_flat,
-            src_flat // grid_col, src_flat % grid_col,
-            snk_flat // grid_col, snk_flat % grid_col,
-            w_arr, grid_row, grid_col,
+            H_flat,
+            V_flat,
+            src_flat // grid_col,
+            src_flat % grid_col,
+            snk_flat // grid_col,
+            snk_flat % grid_col,
+            w_arr,
+            grid_row,
+            grid_col,
         )
     if bucket_3_g0:
         g0_arr = np.concatenate(bucket_3_g0)
@@ -1106,8 +1261,7 @@ def _apply_net_routing_struct(plc, struct, weight_mult: float,
         w_arr3 = np.concatenate(bucket_3_w)
         _apply_3pin_routing_vec(H_flat, V_flat, g0_arr, g1_arr, g2_arr, w_arr3, grid_row, grid_col)
 
-    return (int(pin_row.min()), int(pin_row.max()),
-            int(pin_col.min()), int(pin_col.max()))
+    return (int(pin_row.min()), int(pin_row.max()), int(pin_col.min()), int(pin_col.max()))
 
 
 def _apply_net_routing_subset(
@@ -1139,9 +1293,8 @@ def _apply_net_routing_subset(
     if total_pins == 0:
         return None
     cumsum_lens = np.concatenate([[0], np.cumsum(lengths_s)[:-1]]).astype(np.int64)
-    sub_pin_idx_in_flat = (
-        np.repeat(starts_s, lengths_s)
-        + (np.arange(total_pins, dtype=np.int64) - np.repeat(cumsum_lens, lengths_s))
+    sub_pin_idx_in_flat = np.repeat(starts_s, lengths_s) + (
+        np.arange(total_pins, dtype=np.int64) - np.repeat(cumsum_lens, lengths_s)
     )
 
     # Convert touched pins to grid cells.
@@ -1218,11 +1371,12 @@ def _apply_net_routing_subset(
             net_local_ids_local = np.repeat(np.arange(B_local, dtype=np.int64), sink_lens_local)
             cum_sink_starts_local = np.zeros(B_local + 1, dtype=np.int64)
             np.cumsum(sink_lens_local, out=cum_sink_starts_local[1:])
-            offset_in_sinks_local = (
-                np.arange(sink_total_local, dtype=np.int64)
-                - np.repeat(cum_sink_starts_local[:-1], sink_lens_local)
+            offset_in_sinks_local = np.arange(sink_total_local, dtype=np.int64) - np.repeat(
+                cum_sink_starts_local[:-1], sink_lens_local
             )
-            global_pin_idx_local = (starts_big_local + 1)[net_local_ids_local] + offset_in_sinks_local
+            global_pin_idx_local = (starts_big_local + 1)[
+                net_local_ids_local
+            ] + offset_in_sinks_local
             sink_gcells = pin_gcell[global_pin_idx_local]
             mask_not_src = sink_gcells != src_gcells_big[net_local_ids_local]
             if mask_not_src.any():
@@ -1234,9 +1388,8 @@ def _apply_net_routing_subset(
                 keep = np.empty(sg_sorted.size, dtype=bool)
                 keep[0] = True
                 if sg_sorted.size > 1:
-                    keep[1:] = (
-                        (nli_sorted[1:] != nli_sorted[:-1])
-                        | (sg_sorted[1:] != sg_sorted[:-1])
+                    keep[1:] = (nli_sorted[1:] != nli_sorted[:-1]) | (
+                        sg_sorted[1:] != sg_sorted[:-1]
                     )
                 nli_uniq = nli_sorted[keep]
                 sg_uniq = sg_sorted[keep]
@@ -1264,10 +1417,15 @@ def _apply_net_routing_subset(
         snk_flat = np.concatenate(bucket_2_snk)
         w_arr = np.concatenate(bucket_2_w)
         _apply_2pin_routing(
-            H_flat, V_flat,
-            src_flat // grid_col, src_flat % grid_col,
-            snk_flat // grid_col, snk_flat % grid_col,
-            w_arr, grid_row, grid_col,
+            H_flat,
+            V_flat,
+            src_flat // grid_col,
+            src_flat % grid_col,
+            snk_flat // grid_col,
+            snk_flat % grid_col,
+            w_arr,
+            grid_row,
+            grid_col,
         )
     if bucket_3_g0:
         g0_arr = np.concatenate(bucket_3_g0)
@@ -1276,8 +1434,7 @@ def _apply_net_routing_subset(
         w_arr3 = np.concatenate(bucket_3_w)
         _apply_3pin_routing_vec(H_flat, V_flat, g0_arr, g1_arr, g2_arr, w_arr3, grid_row, grid_col)
 
-    return (int(pin_row.min()), int(pin_row.max()),
-            int(pin_col.min()), int(pin_col.max()))
+    return (int(pin_row.min()), int(pin_row.max()), int(pin_col.min()), int(pin_col.max()))
 
 
 def _apply_macro_routing_subset(
@@ -1311,9 +1468,16 @@ def _apply_macro_routing_subset(
 
     # Flip the capacity sign to subtract blockage.
     _apply_macro_routing(
-        V_macro_flat, H_macro_flat, hard_x, hard_y,
-        hw_sub, hh_sub,
-        grid_w, grid_h, grid_row, grid_col,
+        V_macro_flat,
+        H_macro_flat,
+        hard_x,
+        hard_y,
+        hw_sub,
+        hh_sub,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
         float(plc.vrouting_alloc) * weight_mult,
         float(plc.hrouting_alloc) * weight_mult,
     )
@@ -1429,9 +1593,8 @@ def _vectorized_get_routing(plc) -> None:
                     keep = np.empty(sg_sorted.size, dtype=bool)
                     keep[0] = True
                     if sg_sorted.size > 1:
-                        keep[1:] = (
-                            (nli_sorted[1:] != nli_sorted[:-1])
-                            | (sg_sorted[1:] != sg_sorted[:-1])
+                        keep[1:] = (nli_sorted[1:] != nli_sorted[:-1]) | (
+                            sg_sorted[1:] != sg_sorted[:-1]
                         )
                     nli_uniq = nli_sorted[keep]
                     sg_uniq = sg_sorted[keep]
@@ -1459,17 +1622,24 @@ def _vectorized_get_routing(plc) -> None:
             snk_flat = np.concatenate(bucket_2_snk_flat)
             w_arr = np.concatenate(bucket_2_w_arrs)
             _apply_2pin_routing(
-                H_flat, V_flat,
-                src_flat // grid_col, src_flat % grid_col,
-                snk_flat // grid_col, snk_flat % grid_col,
-                w_arr, grid_row, grid_col,
+                H_flat,
+                V_flat,
+                src_flat // grid_col,
+                src_flat % grid_col,
+                snk_flat // grid_col,
+                snk_flat % grid_col,
+                w_arr,
+                grid_row,
+                grid_col,
             )
         if bucket_3_g0:
             g0_arr = np.concatenate(bucket_3_g0)
             g1_arr = np.concatenate(bucket_3_g1)
             g2_arr = np.concatenate(bucket_3_g2)
             w_arr3 = np.concatenate(bucket_3_w_arrs)
-            _apply_3pin_routing_vec(H_flat, V_flat, g0_arr, g1_arr, g2_arr, w_arr3, grid_row, grid_col)
+            _apply_3pin_routing_vec(
+                H_flat, V_flat, g0_arr, g1_arr, g2_arr, w_arr3, grid_row, grid_col
+            )
 
     # Hard-macro blockage.
     n_hard = cache["n_hard"]
@@ -1483,10 +1653,18 @@ def _vectorized_get_routing(plc) -> None:
         hard_x = pos_cache[hard_indices_arr, 0]
         hard_y = pos_cache[hard_indices_arr, 1]
         _apply_macro_routing(
-            V_macro_flat, H_macro_flat, hard_x, hard_y,
-            cache["hard_half_w"], cache["hard_half_h"],
-            grid_w, grid_h, grid_row, grid_col,
-            float(plc.vrouting_alloc), float(plc.hrouting_alloc),
+            V_macro_flat,
+            H_macro_flat,
+            hard_x,
+            hard_y,
+            cache["hard_half_w"],
+            cache["hard_half_h"],
+            grid_w,
+            grid_h,
+            grid_row,
+            grid_col,
+            float(plc.vrouting_alloc),
+            float(plc.hrouting_alloc),
         )
 
     # Normalize by routing capacity.
