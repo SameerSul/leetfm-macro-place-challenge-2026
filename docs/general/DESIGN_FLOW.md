@@ -275,13 +275,19 @@ HIER_GNN_TRACE=1 HIER_GNN_TRACE_RUN=ibm10_trace uv run evaluate src/main.py -b i
 Trace JSONL files are written under `ml_data/beyondppa_gnn/` unless
 `HIER_GNN_TRACE_PATH` is supplied. Logging does not change placement output.
 Schema-v1 traces can be converted into graph datasets with
-`scripts/build_gnn_dataset.py`.
+`scripts/gnn/build_gnn_dataset.py`. Stage-G3 offline baseline rankers can be trained
+and evaluated with `scripts/gnn/train_gnn_baseline.py`; this remains offline only
+and does not affect placement.
 
-The next implementation stage is G3 baseline non-GNN rankers. The long-term
-target is a default-off hierarchy-flow assistant that may rank, propose,
-select, budget, and diagnose work inside existing hierarchy operators while
-leaving legality, fixed-macro, bounds, hierarchy-region, hierarchy-quality, and
-exact-proxy gates authoritative. The dedicated GNN project plan is in
+Stage G3 has an accepted default-off offline baseline artifact, Stage G4 has an
+accepted default-off offline macro-net ranker artifact, and Stage G5 has a
+smoke-accepted default-off relocation-only candidate-reordering hook. The
+Stage G6 full-suite run was valid but not promoted because average proxy and
+runtime regressed. The long-term target is a default-off hierarchy-flow
+assistant that may rank, propose, select, budget, and diagnose work inside
+existing hierarchy operators while leaving legality, fixed-macro, bounds,
+hierarchy-region, hierarchy-quality, and exact-proxy gates authoritative. The
+dedicated GNN project plan is in
 [../ml_nn/gnn/README.md](../ml_nn/gnn/README.md), and the implementation record
 is in
 [../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md](../ml_nn/beyondppa_results/gnn_full_implementation_next_steps.md).

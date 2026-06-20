@@ -91,7 +91,7 @@ Completion requirements for future edits:
 Validation:
 
 ```bash
-uv run python scripts/build_gnn_dataset.py --trace-path /tmp/hier_gnn_trace_smoke.jsonl --out /tmp/hier_gnn_dataset.pt --benchmark ibm01
+uv run python scripts/gnn/build_gnn_dataset.py --trace-path /tmp/hier_gnn_trace_smoke.jsonl --out /tmp/hier_gnn_dataset.pt --benchmark ibm01
 uv run python test/verification/_verify_gnn_dataset_builder.py
 ```
 

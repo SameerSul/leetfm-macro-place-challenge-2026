@@ -327,25 +327,22 @@ def _try_hard_hard(
                 )
                 for j in cand
             ],
-            dtype=np.float64,
+            dtype=bool,
         )
-        rank = local[cand] + region_bias * span * outside
+        rank = local[cand] + region_bias * span * outside.astype(np.float64)
         ranked_idx = np.argsort(rank)[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_legal = legal_mask[ranked_idx]
+        ranked_outside = outside[ranked_idx]
         trace_rows = []
         trace_by_target = {}
-        for candidate_rank, (j_raw, is_legal) in enumerate(zip(ranked, ranked_legal)):
+        for candidate_rank, (j_raw, is_legal, outside_move) in enumerate(
+            zip(ranked, ranked_legal, ranked_outside)
+        ):
             j = int(j_raw)
             in_bounds = _in_bounds(
                 float(h_pos[j, 0]), float(h_pos[j, 1]), hw[i], hh[i], cw, ch
             ) and _in_bounds(float(h_pos[i, 0]), float(h_pos[i, 1]), hw[j], hh[j], cw, ch)
-            outside_move = any_outside_region(
-                [
-                    (hard_region, i, h_pos[j, 0], h_pos[j, 1]),
-                    (hard_region, j, h_pos[i, 0], h_pos[i, 1]),
-                ]
-            )
             row = {
                 "candidate_rank": int(candidate_rank),
                 "target": j,
@@ -367,19 +364,13 @@ def _try_hard_hard(
             trace_by_target[j] = row
             trace_rows.append(row)
         scored = []
-        for j_raw, is_legal in zip(ranked, ranked_legal):
+        for j_raw, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside):
             # ranked_legal is the legality mask in ranked candidate order.
             if deadline is not None and time.monotonic() > deadline:
                 break
             j = int(j_raw)
             if not bool(is_legal):
                 continue
-            outside_move = any_outside_region(
-                [
-                    (hard_region, i, h_pos[j, 0], h_pos[j, 1]),
-                    (hard_region, j, h_pos[i, 0], h_pos[i, 1]),
-                ]
-            )
             scored.append((j, outside_move))
         if scored and _batch_swap_scores():
             scores = scorer.score_swap_hard_hard_many(
@@ -471,21 +462,24 @@ def _try_soft_soft(
                 )
                 for b in cand
             ],
-            dtype=np.float64,
+            dtype=bool,
         )
-        rank = local[cand] + region_bias * span * outside
+        rank = local[cand] + region_bias * span * outside.astype(np.float64)
         scored = []
-        ranked = cand[np.argsort(rank)[:k_neighbors]]
+        ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked = cand[ranked_idx]
+        ranked_outside = outside[ranked_idx]
         trace_rows = []
         trace_by_target = {}
-        for candidate_rank, b_raw in enumerate(ranked):
+        for candidate_rank, (b_raw, outside_move) in enumerate(
+            zip(ranked, ranked_outside)
+        ):
             b = int(b_raw)
             ax, ay = float(s_pos[b, 0]), float(s_pos[b, 1])
             bx, by = float(s_pos[a, 0]), float(s_pos[a, 1])
             in_bounds = _in_bounds(ax, ay, soft_hw[a], soft_hh[a], cw, ch) and _in_bounds(
                 bx, by, soft_hw[b], soft_hh[b], cw, ch
             )
-            outside_move = any_outside_region([(soft_region, a, ax, ay), (soft_region, b, bx, by)])
             row = {
                 "candidate_rank": int(candidate_rank),
                 "target": b,
@@ -506,7 +500,7 @@ def _try_soft_soft(
             }
             trace_by_target[b] = row
             trace_rows.append(row)
-        for b_raw in ranked:
+        for b_raw, outside_move in zip(ranked, ranked_outside):
             if deadline is not None and time.monotonic() > deadline:
                 break
             b = int(b_raw)
@@ -516,7 +510,6 @@ def _try_soft_soft(
                 continue
             if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
                 continue
-            outside_move = any_outside_region([(soft_region, a, ax, ay), (soft_region, b, bx, by)])
             scored.append((b, outside_move))
         if scored and _batch_swap_scores():
             scores = scorer.score_swap_soft_soft_many(
@@ -615,9 +608,9 @@ def _try_hard_soft(
                 )
                 for k in cand
             ],
-            dtype=np.float64,
+            dtype=bool,
         )
-        rank = soft_local[cand] + region_bias * span * outside
+        rank = soft_local[cand] + region_bias * span * outside.astype(np.float64)
         legal_mask = _legal_hard_soft_candidates(
             h_pos,
             s_pos,
@@ -634,10 +627,12 @@ def _try_hard_soft(
             1e-6,
         )
         ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked = cand[ranked_idx]
+        ranked_outside = outside[ranked_idx]
         trace_rows = []
         trace_by_target = {}
         for candidate_rank, (k_raw, is_legal) in enumerate(
-            zip(cand[ranked_idx], legal_mask[ranked_idx])
+            zip(ranked, legal_mask[ranked_idx])
         ):
             k = int(k_raw)
             hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
@@ -645,7 +640,7 @@ def _try_hard_soft(
             in_bounds = _in_bounds(hx, hy, hw[i], hh[i], cw, ch) and _in_bounds(
                 sx, sy, soft_hw[k], soft_hh[k], cw, ch
             )
-            outside_move = any_outside_region([(hard_region, i, hx, hy), (soft_region, k, sx, sy)])
+            outside_move = bool(ranked_outside[candidate_rank])
             row = {
                 "candidate_rank": int(candidate_rank),
                 "target": k,
@@ -667,7 +662,7 @@ def _try_hard_soft(
             trace_by_target[k] = row
             trace_rows.append(row)
         scored = []
-        for k_raw, is_legal in zip(cand[ranked_idx], legal_mask[ranked_idx]):
+        for k_raw, is_legal, outside_move in zip(ranked, legal_mask[ranked_idx], ranked_outside):
             # legal_mask is aligned with `cand`; `ranked_idx` preserves ranking order.
             if deadline is not None and time.monotonic() > deadline:
                 break
@@ -680,7 +675,6 @@ def _try_hard_soft(
                 continue
             if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
                 continue
-            outside_move = any_outside_region([(hard_region, i, hx, hy), (soft_region, k, sx, sy)])
             scored.append((k, hx, hy, sx, sy, outside_move))
         if scored and _batch_swap_scores():
             scores = scorer.score_swap_hard_soft_many(

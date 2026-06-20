@@ -1,5 +1,6 @@
 """Main macro-placement pipeline."""
 
+import os
 import random
 import time
 from typing import List, Optional
@@ -138,6 +139,21 @@ class MacroPlacer:
                 return _GPU_BACKEND == "cuda"
             return bool(value)
 
+        diagnostic_no_deadlines = os.environ.get("HIER_DIAGNOSTIC_NO_DEADLINES", "0").strip() in {
+            "1",
+            "true",
+            "TRUE",
+            "yes",
+            "YES",
+            "on",
+        }
+
+        def _deadline(seconds: float, outer: "float | None" = None) -> "float | None":
+            if diagnostic_no_deadlines:
+                return None
+            now_deadline = time.monotonic() + float(seconds)
+            return min(outer, now_deadline) if outer is not None else now_deadline
+
         hier_post_reloc_top_m = const.HIER_POST_RELOC_PROPOSE_TOP_M
         hier_reloc_propose_hot_k = max(1, int(const.HIER_RELOC_PROPOSE_HOT_K))
         hier_post_reloc_propose = _auto_cuda_flag(const.HIER_POST_RELOC_PROPOSE_ALL)
@@ -182,6 +198,7 @@ class MacroPlacer:
                 proxy_after=float(after),
                 proxy_delta=float(after) - float(before),
                 accepts=int(accepts),
+                diagnostic_no_deadlines=bool(diagnostic_no_deadlines),
                 **extra,
             )
 
@@ -434,7 +451,7 @@ class MacroPlacer:
             bias = float(const.REGION_BIAS)
             escape_min = float(const.HIER_REGION_ESCAPE_MIN)
             rounds = max(1, int(const.HIER_REGION_ROUNDS))
-            rdeadline = time.monotonic() + float(const.HIER_REGION_BUDGET_S)
+            rdeadline = _deadline(float(const.HIER_REGION_BUDGET_S))
             h_pos = legal.copy()
             full = np.vstack([h_pos, s_pos]).astype(np.float64)
             r_score = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
@@ -457,7 +474,7 @@ class MacroPlacer:
                 return bool(ok.all())
 
             for _ in range(rounds):
-                if time.monotonic() >= rdeadline:
+                if rdeadline is not None and time.monotonic() >= rdeadline:
                     break
                 if hier_micro_shift:
                     before_micro = r_score
@@ -554,10 +571,7 @@ class MacroPlacer:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
             if const.HIER_DECOMPRESS:
                 pre_decomp_h, pre_decomp_s, pre_decomp_score = h_pos.copy(), s_pos.copy(), r_score
-                d_deadline = min(
-                    rdeadline,
-                    time.monotonic() + float(const.HIER_DECOMPRESS_BUDGET_S),
-                )
+                d_deadline = _deadline(float(const.HIER_DECOMPRESS_BUDGET_S), rdeadline)
                 h_pos, s_pos, d_acc, r_score, hq = _cluster_decompression_relief(
                     h_pos,
                     s_pos,
@@ -616,10 +630,7 @@ class MacroPlacer:
                 )
             if const.HIER_REGION_SWAPS:
                 swap_rounds = max(1, int(const.HIER_REGION_SWAP_ROUNDS))
-                swap_deadline = min(
-                    rdeadline,
-                    time.monotonic() + float(const.HIER_REGION_SWAP_BUDGET_S),
-                )
+                swap_deadline = _deadline(float(const.HIER_REGION_SWAP_BUDGET_S), rdeadline)
                 hard_k = max(1, int(const.HIER_HARD_SWAP_K))
                 soft_k = max(1, int(const.HIER_SOFT_SWAP_K))
                 swap_min_gain = float(const.HIER_SWAP_MIN_GAIN)
@@ -683,12 +694,17 @@ class MacroPlacer:
                     rscorer = IncrementalScorer(plc, benchmark, full.copy())
                 if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                     best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                escape_accepts = (
+                    swap_stats["hh_escape_accepts"]
+                    + swap_stats["hs_escape_accepts"]
+                    + swap_stats["ss_escape_accepts"]
+                )
                 _log(
                     f"  [hier] region swaps: {swap_acc} accepts "
                     f"(hh {swap_stats['hh_accepts']}/{swap_stats['hh_scores']}, "
                     f"hs {swap_stats['hs_accepts']}/{swap_stats['hs_scores']}, "
                     f"ss {swap_stats['ss_accepts']}/{swap_stats['ss_scores']}, "
-                    f"esc {swap_stats['hh_escape_accepts'] + swap_stats['hs_escape_accepts'] + swap_stats['ss_escape_accepts']}, "
+                    f"esc {escape_accepts}, "
                     f"gain {swap_stats['proxy_gain']:.4f}), proxy={r_score:.4f}"
                 )
                 _trace_pass(
@@ -700,9 +716,8 @@ class MacroPlacer:
                     quality=hierarchy_quality_metric(h_pos, clusters),
                 )
             if hier_post_swap_micro:
-                post_micro_deadline = min(
-                    rdeadline,
-                    time.monotonic() + float(const.HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S),
+                post_micro_deadline = _deadline(
+                    float(const.HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S), rdeadline
                 )
                 pre_post_micro_score = r_score
                 post_micro_acc = 0
@@ -752,10 +767,7 @@ class MacroPlacer:
                     quality=hierarchy_quality_metric(h_pos, clusters),
                 )
             if hier_post_reloc_propose:
-                post_deadline = min(
-                    rdeadline,
-                    time.monotonic() + float(const.HIER_POST_RELOC_PROPOSE_BUDGET_S),
-                )
+                post_deadline = _deadline(float(const.HIER_POST_RELOC_PROPOSE_BUDGET_S), rdeadline)
                 pre_post_score = r_score
                 h_pos, post_acc, r_score = _relocation_moves(
                     h_pos,
@@ -800,9 +812,8 @@ class MacroPlacer:
                     quality=hierarchy_quality_metric(h_pos, clusters),
                 )
             if hier_post_soft_reloc:
-                post_soft_deadline = min(
-                    rdeadline,
-                    time.monotonic() + float(const.HIER_POST_SOFT_RELOC_BUDGET_S),
+                post_soft_deadline = _deadline(
+                    float(const.HIER_POST_SOFT_RELOC_BUDGET_S), rdeadline
                 )
                 pre_post_soft_score = r_score
                 post_soft_acc = 0
@@ -851,7 +862,7 @@ class MacroPlacer:
                 cw,
                 ch,
                 n,
-                deadline=time.monotonic() + 30,
+                deadline=_deadline(30),
                 order=order,
             )
             legal_score = float(
@@ -881,7 +892,7 @@ class MacroPlacer:
             ck_quality_budget = float(const.HIER_COLDSPOT_QUALITY_BUDGET)
             ck_rounds = max(1, int(const.HIER_COLDSPOT_ROUNDS))
             ck_min_field_gap = float(const.HIER_COLDSPOT_MIN_FIELD_GAP)
-            ck_deadline = time.monotonic() + float(const.HIER_COLDSPOT_BUDGET_S)
+            ck_deadline = _deadline(float(const.HIER_COLDSPOT_BUDGET_S))
             nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
             soft_mov = movable[n : n + n_soft]
 
@@ -932,7 +943,7 @@ class MacroPlacer:
             ck_rng = np.random.default_rng(0)
             ck_acc = 0
             for _ in range(ck_rounds):
-                if time.monotonic() >= ck_deadline:
+                if ck_deadline is not None and time.monotonic() >= ck_deadline:
                     break
                 field = _congestion_field(ck_scorer, nr, nc)
                 if field is None:
@@ -1058,9 +1069,8 @@ class MacroPlacer:
             )
 
             if hier_post_coldspot_micro and region is not None and soft_region is not None:
-                post_ck_micro_deadline = min(
-                    ck_deadline,
-                    time.monotonic() + float(const.HIER_POST_COLDSPOT_MICRO_SHIFT_BUDGET_S),
+                post_ck_micro_deadline = _deadline(
+                    float(const.HIER_POST_COLDSPOT_MICRO_SHIFT_BUDGET_S), ck_deadline
                 )
                 post_ck_micro_acc = 0
                 pre_post_ck_micro_score = cur_proxy

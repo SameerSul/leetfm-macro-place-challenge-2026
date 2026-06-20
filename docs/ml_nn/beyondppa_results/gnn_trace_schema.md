@@ -46,6 +46,9 @@ The `candidates` list contains sampled rows with:
 - `target_field`
 - `structural_delta`
 - `x`, `y`
+- `gnn_score`: model score when `HIER_GNN_RANK=1`, otherwise `null`
+- `gnn_rank_error`: diagnostic rank-error field when available, otherwise
+  `null`
 
 ### `hier_relocation_result`
 

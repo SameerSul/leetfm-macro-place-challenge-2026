@@ -32,8 +32,27 @@ No learned GNN model or DQN policy is active in production. The shipped
 BeyondPPA-style pieces are deterministic structural metrics, default-off
 hierarchy candidate ordering, default-off schema-v1 GNN trace logging, and the
 schema-v1 trace-to-graph dataset builder. Trace logging is controlled by
-`HIER_GNN_TRACE*` runtime environment variables. The next implementation stage
-is G3 baseline non-GNN rankers.
+`HIER_GNN_TRACE*` runtime environment variables. Stage G3 has an accepted
+default-off offline baseline artifact at
+`ml_data/beyondppa_gnn/models/20260619_g3_candidate_baseline_min4/`. Stage G4
+has an accepted default-off offline macro-net ranker artifact at
+`ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/`. Stage G5 has a
+smoke-accepted default-off relocation-only inference hook. Stage G6 passed
+legality but was not promoted because full-suite average proxy and runtime
+regressed versus the accepted hierarchy baseline.
+
+Post-G6 diagnostics found that smaller GNN top-k prefixes and the experimental
+`HIER_GNN_PRESERVE_TOP_N` guarded-prefix mode were valid but worse on `ibm12`.
+Keep learned ranking default-off until repeatable closed-loop diagnostics show a
+real improvement.
+
+`HIER_DIAGNOSTIC_NO_DEADLINES=1` is now available for repeatable GNN diagnostics
+only. It made the `ibm12` GNN comparison repeatable and positive, but it is not
+a production mode.
+
+Default-off `HIER_GNN_EXTRA_TOP_K` supports additive GNN diagnostics that
+preserve deterministic candidates and append a small learned tail. It is ready
+for timed smoke, not promotion.
 
 The integration rule is mandatory: structural and learned signals may rank,
 propose, select, budget, and diagnose work inside existing hierarchy operators,

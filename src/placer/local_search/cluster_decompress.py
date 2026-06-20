@@ -109,6 +109,63 @@ def _cluster_centroids(hard_xy, clusters):
     return out
 
 
+def _prepare_cluster_metadata(clusters, sizes, movable_h):
+    metadata: dict[int, dict[str, np.ndarray | list[int]]] = {}
+    for cid, mem in clusters.items():
+        mem_all = np.asarray(mem, dtype=np.int64)
+        if mem_all.size == 0:
+            continue
+        movable_members = mem_all[movable_h[mem_all]] if mem_all.size else np.empty(0, dtype=np.int64)
+        order_by_area = list(mem_all[np.argsort(-sizes[mem_all, 0] * sizes[mem_all, 1])])
+        metadata[int(cid)] = {
+            "mem_all": mem_all,
+            "movable_members": movable_members,
+            "order_by_area": order_by_area,
+        }
+    return metadata
+
+
+def _prepare_cluster_soft_members(
+    cluster_softs,
+    soft_hw,
+    n,
+    soft_movable=None,
+):
+    out: dict[int, np.ndarray] = {}
+    if not cluster_softs:
+        return out
+    if soft_movable is not None:
+        soft_movable = np.asarray(soft_movable, dtype=np.bool_)
+    for cid, sidx in cluster_softs.items():
+        s_local = np.asarray(sidx, dtype=np.int64) - int(n)
+        s_local = s_local[(s_local >= 0) & (s_local < soft_hw.shape[0])]
+        if soft_movable is not None and s_local.size:
+            s_local = s_local[soft_movable[s_local]]
+        if s_local.size:
+            out[int(cid)] = s_local
+    return out
+
+
+def _prepare_bridge_soft_mapping(bridge_softs, soft_movable=None):
+    bridge_to_soft = {}
+    soft_to_bridge = {}
+    if not bridge_softs:
+        return bridge_to_soft, soft_to_bridge
+    if soft_movable is not None:
+        soft_movable = np.asarray(soft_movable, dtype=np.bool_)
+    for sk, cids in bridge_softs.items():
+        sk_i = int(sk)
+        if soft_movable is not None and not bool(soft_movable[sk_i]):
+            continue
+        cids_arr = np.unique(np.asarray(cids, dtype=np.int64))
+        if cids_arr.size == 0:
+            continue
+        soft_to_bridge[int(sk_i)] = cids_arr
+        for cid in cids_arr:
+            bridge_to_soft.setdefault(int(cid), []).append(sk_i)
+    return bridge_to_soft, soft_to_bridge
+
+
 def _full_tensor(hard_xy, soft_xy):
     return torch.tensor(np.vstack([hard_xy, soft_xy]).astype(np.float32), dtype=torch.float32)
 
@@ -187,6 +244,24 @@ def _cluster_decompression_relief(
     factors = const.HIER_DECOMPRESS_FACTORS
     trace_limit = gnn_trace_limit()
     trace_count = 0
+    cluster_meta = _prepare_cluster_metadata(clusters, sizes, movable_h)
+    if not cluster_meta:
+        return (
+            hard_xy,
+            soft_xy,
+            0,
+            float(initial_score),
+            hierarchy_quality_metric(hard_xy, clusters),
+        )
+    cluster_soft_members = _prepare_cluster_soft_members(
+        cluster_softs,
+        soft_hw,
+        n,
+        soft_movable=soft_movable,
+    )
+    bridge_to_soft, soft_to_bridge = _prepare_bridge_soft_mapping(
+        bridge_softs, soft_movable=soft_movable
+    )
 
     for _ in range(max(1, int(rounds))):
         if deadline is not None and time.monotonic() > deadline:
@@ -197,25 +272,26 @@ def _cluster_decompression_relief(
             break
         local = _cell_values(cur_h, field, cw, ch)
         heat = []
-        for cid, mem in clusters.items():
-            mem = np.asarray(mem, dtype=np.int64)
-            mov = mem[movable_h[mem]]
+        for cid, meta in cluster_meta.items():
+            mov = np.asarray(meta["movable_members"], dtype=np.int64)
             if mov.size >= 2:
                 heat.append((int(cid), float(local[mov].mean())))
         if not heat:
             break
         threshold = float(np.percentile([h for _, h in heat], hot_percentile))
         ordered = [cid for cid, h in sorted(heat, key=lambda x: -x[1]) if h >= threshold]
-        centroids = _cluster_centroids(cur_h, clusters)
+        centroids = {cid: cur_h[meta["mem_all"]].mean(axis=0) for cid, meta in cluster_meta.items()}
         accepted_round = False
         for cid in ordered:
             if deadline is not None and time.monotonic() > deadline:
                 break
-            mem_all = np.asarray(clusters[cid], dtype=np.int64)
-            mem = mem_all[movable_h[mem_all]]
+            meta = cluster_meta[cid]
+            mem_all = np.asarray(meta["mem_all"], dtype=np.int64)
+            mem = np.asarray(meta["movable_members"], dtype=np.int64)
             if mem.size < 2:
                 continue
             center = centroids[cid]
+            order = list(meta["order_by_area"])
             axis_x, axis_y = (1.0, 1.0)
             if anisotropic:
                 axis_x, axis_y = _axis_room_scale(
@@ -239,6 +315,8 @@ def _cluster_decompression_relief(
                 old_quality = float(cur_quality)
                 cand_h = cur_h.copy()
                 cand_s = cur_s.copy()
+                changed_h = False
+                changed_s = False
                 vec = cand_h[mem] - center
                 scale = np.array(
                     [1.0 + (factor - 1.0) * axis_x, 1.0 + (factor - 1.0) * axis_y],
@@ -246,34 +324,27 @@ def _cluster_decompression_relief(
                 )
                 cand_h[mem] = center + vec * scale
                 cand_h[mem] = _clip_to_region(cand_h[mem], hard_region, mem, hw, hh, cw, ch)
-                order = list(mem_all[np.argsort(-sizes[mem_all, 0] * sizes[mem_all, 1])])
-                cand_h = _will_legalize(
-                    cand_h, movable_h, sizes, hw, hh, cw, ch, n, deadline=deadline, order=order
-                )
-
-                soft_pidx = cluster_softs.get(cid)
-                if soft_pidx is not None and len(soft_pidx):
-                    sidx = np.asarray(soft_pidx, dtype=np.int64) - n
-                    if soft_movable is not None:
-                        sidx = sidx[soft_movable[sidx]]
+                soft_touched: list[int] = []
+                if cluster_soft_members.get(cid) is not None:
+                    sidx = cluster_soft_members[cid]
                     if sidx.size:
+                        soft_touched.extend(sidx.tolist())
                         svec = cand_s[sidx] - center
                         cand_s[sidx] = center + svec * scale
                         cand_s[sidx] = _clip_to_region(
                             cand_s[sidx], soft_region, sidx, soft_hw, soft_hh, cw, ch
                         )
 
-                for sk, cids in (bridge_softs or {}).items():
-                    sk = int(sk)
-                    if soft_movable is not None and not soft_movable[sk]:
-                        continue
-                    if cid not in set(int(c) for c in cids):
+                for sk in bridge_to_soft.get(cid, ()):
+                    cids = soft_to_bridge.get(sk, np.empty(0, dtype=np.int64))
+                    if cids.size == 0:
                         continue
                     pts = [centroids[int(c)] for c in cids if int(c) in centroids]
                     if not pts:
                         continue
                     target = np.asarray(pts, dtype=np.float64).mean(axis=0)
-                    cand_s[sk] = 0.55 * cand_s[sk] + 0.45 * target
+                    soft_touched.append(sk)
+                    cand_s[sk : sk + 1] = 0.55 * cand_s[sk : sk + 1] + 0.45 * target
                     cand_s[sk : sk + 1] = _clip_to_region(
                         cand_s[sk : sk + 1],
                         soft_region,
@@ -283,6 +354,19 @@ def _cluster_decompression_relief(
                         cw,
                         ch,
                     )
+
+                if np.any(cand_h[mem] != cur_h[mem]):
+                    changed_h = True
+                    cand_h = _will_legalize(
+                        cand_h, movable_h, sizes, hw, hh, cw, ch, n, deadline=deadline, order=order
+                    )
+                    changed_h = np.any(cand_h[mem] != cur_h[mem])
+                if not changed_h and soft_touched:
+                    moved_soft = np.unique(np.asarray(soft_touched, dtype=np.int64))
+                    if moved_soft.size:
+                        changed_s = np.any(cand_s[moved_soft] != cur_s[moved_soft])
+                if not changed_h and not changed_s:
+                    continue
 
                 reason = _hard_rejection_reason(cand_h, sizes, hw, hh, cw, ch)
                 q = hierarchy_quality_metric(cand_h, clusters)

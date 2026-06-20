@@ -16,8 +16,172 @@ Target: beat RePlAce avg of 1.4578.
 > proxy-score history below is retained as historical experiment context, not
 > the current production output.
 
+> **Status (2026-06-19 — GNN Stage G5 default-off relocation hook smoke
+> accepted):** added `src/placer/local_search/gnn_ranker.py`, a default-off
+> inference hook that can reorder the existing hard propose-all relocation
+> candidate list with the accepted G4 macro-net ranker. Runtime controls:
+> `HIER_GNN_RANK=1`,
+> `HIER_GNN_MODEL=ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/model.pt`,
+> `HIER_GNN_OPERATORS=relocation`, and `HIER_GNN_TOP_K=32`. The hook runs after
+> existing proposal scoring and before proposal truncation/exact checking; it
+> does not alter hard legality, fixed-macro immobility, bounds,
+> hierarchy-region constraints, hierarchy-quality gates, or exact-proxy
+> acceptance. Smoke pair on `ibm10`: default-off baseline VALID
+> `proxy=1.6192`, 45.80s; GNN-ranked relocation-only VALID `proxy=1.6180`,
+> 50.16s. This is smoke acceptance only, not default-on promotion. Next stage is
+> G6 multi-benchmark closed-loop validation before expanding operators.
+
+> **Status (2026-06-19 — GNN Stage G6 closed-loop validation valid but not
+> promoted):** ran the default-off relocation hook through the documented G6
+> sequence and full suite with
+> `HIER_GNN_RANK=1`,
+> `HIER_GNN_MODEL=ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/model.pt`,
+> `HIER_GNN_OPERATORS=relocation`, and `HIER_GNN_TOP_K=32`. Four-benchmark
+> sequence passed: `ibm10=1.6177` VALID in 50.00s, `ibm01=0.9434` VALID in
+> 35.03s, `ibm12=2.1718` VALID in 46.84s, and `ibm17=2.1007` VALID in 49.24s.
+> Full `--all` also passed legality: **AVG 1.3676**, 17/17 VALID, 0 overlaps,
+> 786.25s. Individual full-suite results were `ibm01=0.9434`,
+> `ibm02=1.1415`, `ibm03=1.0170`, `ibm04=1.0267`, `ibm06=1.2185`,
+> `ibm07=1.0640`, `ibm08=1.1483`, `ibm09=0.8685`, `ibm10=1.6181`,
+> `ibm11=1.0245`, `ibm12=2.1818`, `ibm13=1.0256`, `ibm14=1.6354`,
+> `ibm15=1.8447`, `ibm16=1.6671`, `ibm17=2.1054`, `ibm18=1.7187`.
+> Because AVG `1.3676` regresses versus the accepted hierarchy baseline
+> `1.3631` and runtime is higher, the GNN relocation hook is **not promoted**.
+> Keep `HIER_GNN_RANK=0` for production. Next GNN work should diagnose candidate
+> ordering/regression by benchmark and operator before any broader integration.
+
+> **Status (2026-06-19 — GNN post-G6 ranking diagnostics started):** added
+> `scripts/gnn/diagnose_gnn_ranking.py` to compare deterministic trace order, G3
+> MLP, and G4 macro-net rankings against both accepted labels and exact
+> proxy-gain labels inside candidate pools. Also added relocation trace fields
+> `gnn_score` and `gnn_rank_error` for default-off ranked runs. First diagnostic
+> report:
+> `ml_data/beyondppa_gnn/diagnostics/20260619_gnn_ranking_value_top4.json`.
+> Overall exact-gain recall@4: trace order `0.2513`, G3 MLP `0.5239`, G4
+> macro-net `0.6318`; G4 mean best-gain rank `7.37` versus trace order `13.17`;
+> G4 top-4 overlap with trace order only `0.1889`. Region swaps show the same
+> pattern: trace `0.1964`, G3 `0.4889`, G4 `0.6048`, overlap `0.1856`.
+> Interpretation: the G4 model is not merely learning accepted labels while
+> missing exact proxy-gain candidates; it improves local exact-gain ranking
+> offline but strongly changes the candidate order. The next improvement work
+> should use paired heuristic/GNN traces to isolate model-induced distribution
+> shift, downstream pass interactions, and runtime budget displacement before
+> expanding operators or promoting the hook.
+
+> **Status (2026-06-19 — GNN post-G6 paired trace comparison):** added
+> `scripts/gnn/compare_gnn_trace_pairs.py` and collected paired heuristic versus
+> `HIER_GNN_RANK=1` traces for `ibm01`, `ibm10`, `ibm12`, and `ibm17` with
+> `HIER_GNN_TRACE_MAX_CANDIDATES=64`. Pair reports live under
+> `ml_data/beyondppa_gnn/diagnostics/20260619_postg6_*_trace_pair.json`.
+> Final proxy deltas were effectively flat: `ibm01=-0.0001`,
+> `ibm10=-0.0001`, `ibm12=+0.0001`, `ibm17=+0.0002`. The important signal is
+> pass-level behavior: hard propose-all accepts changed `ibm01 0->0`,
+> `ibm10 1->0`, `ibm12 4->1`, `ibm17 0->0`; all GNN paired traces had scored
+> relocation samples and zero `gnn_rank_error` samples. `ibm12` is now the
+> targeted diagnostic benchmark because `HIER_GNN_TOP_K=32` suppresses three of
+> four deterministic hard propose-all accepts, and later coldspot/micro-shift
+> work only recovers the final proxy to a near tie. Next test: paired `ibm12`
+> traces with `HIER_GNN_TOP_K=8` and `16` before retraining or expanding
+> operators.
+
+> **Status (2026-06-19 — GNN ibm12 top-k and guarded-prefix variants
+> rejected):** ran `ibm12` follow-ups after the paired-trace finding.
+> `HIER_GNN_TOP_K=8` was VALID but worse (`2.1878`, delta `+0.0106`) with hard
+> propose-all accepts `4->3`; `HIER_GNN_TOP_K=16` matched the same worse result.
+> Added default-off `HIER_GNN_PRESERVE_TOP_N` to keep a deterministic prefix and
+> fill the tail with GNN-ranked candidates; `HIER_GNN_PRESERVE_TOP_N=12` plus
+> `HIER_GNN_TOP_K=4` was also VALID but worse (`2.1898`, delta `+0.0126`) with
+> hard propose-all accepts `4->3`, so it is not promoted. A controlled
+> `PYTHONHASHSEED=0` rerun did not fully stabilize upstream region-swap counts,
+> which means current paired trace reports are diagnostic but not clean causal
+> A/Bs. Next improvement work should create a repeatable diagnostic mode or use
+> repeated-run variance before retraining the GNN or expanding operators.
+
+> **Status (2026-06-20 — GNN repeatable diagnostic mode added):** added
+> `HIER_DIAGNOSTIC_NO_DEADLINES=1`, a diagnostic-only mode that disables local
+> hierarchy relief deadlines while preserving production defaults. This fixed
+> `ibm12` repeatability: two heuristic no-deadline traces both produced VALID
+> final `2.1719`, region swaps `391`, hard propose-all accepts `3`; two
+> GNN-ranked no-deadline traces both produced VALID final `2.1707`, region
+> swaps `391`, hard propose-all accepts `5`. Pair report:
+> `ml_data/beyondppa_gnn/diagnostics/20260620_diag_nodeadline_ibm12_topk32_trace_pair.json`.
+> Controlled delta is `-0.0012` proxy with upstream region swaps unchanged. This
+> means the GNN ranker has a real positive hard propose-all signal on `ibm12`
+> when timing noise is removed; the production G6 regression is more likely a
+> budget/timing displacement problem than a pure ranking-quality failure. This
+> mode is not production-safe or promoted. Next: run no-deadline paired
+> comparisons on `ibm01`, `ibm10`, and `ibm17`, then target the production
+> budget interaction if the controlled signal holds.
+
+> **Status (2026-06-20 — GNN additive controlled mode accepted for timed
+> smoke):** added default-off `HIER_GNN_EXTRA_TOP_K` so diagnostics can preserve
+> deterministic post-swap hard propose-all candidates and append extra
+> GNN-ranked candidates. Controlled no-deadline pure GNN top-k 32 results on the
+> four-benchmark set were mixed: `ibm01 +0.0000`, `ibm10 +0.0019`, `ibm12
+> -0.0012`, `ibm17 +0.0000` for total `+0.0007`. The additive setting
+> `HIER_GNN_PRESERVE_TOP_N=16`, `HIER_GNN_TOP_K=8`,
+> `HIER_GNN_EXTRA_TOP_K=8` produced `ibm01 +0.0000`, `ibm10 +0.0000`, `ibm12
+> -0.0024`, `ibm17 +0.0000`, total `-0.0024`. It preserved the `ibm10`
+> deterministic hard propose-all accept (`1->1`) and improved `ibm12` accepts
+> (`3->6`). This is not promoted because no-deadline diagnostics disable local
+> budgets and the additive mode increases exact checks from 16 to 24 in
+> no-gain cases. Next gate: timed production-mode smoke on `ibm10` and `ibm12`
+> with additive mode.
+
+> **Status (2026-06-20 — GNN additive timed smoke mixed, not promoted):** ran
+> timed production-mode smoke for additive GNN with
+> `HIER_GNN_PRESERVE_TOP_N=16`, `HIER_GNN_TOP_K=8`, and
+> `HIER_GNN_EXTRA_TOP_K=8` under normal local deadlines. Current timed
+> heuristic reruns: `ibm10=1.6184` VALID in 46.27s, `ibm12=2.1857` VALID in
+> 44.37s. Additive timed runs: `ibm10=1.6192` VALID in 50.93s, delta `+0.0008`
+> with hard propose-all accepts `1->1` and exact checks `15->23`; `ibm12=2.1703`
+> VALID in 48.93s, delta `-0.0154` with accepts `4->4` and exact checks `4->4`.
+> Decision: keep additive mode default-off and do not run promotion G6 yet. Next
+> useful step is a stricter production guard so additive GNN only consumes spare
+> post-swap hard-propose budget, or repeated timed smoke to quantify the
+> `ibm10` risk.
+
+> **Status (2026-06-19 — GNN Stage G4 offline macro-net ranker accepted,
+> default-off):** extended `scripts/gnn/build_gnn_dataset.py` to dataset schema v2
+> with MacroDiff+-inspired macro-net graph tensors: net nodes, macro-net
+> incidence edges, normalized pin-offset edge features, net degree/fanout, net
+> weight, normalized HPWL x/y, and weighted HPWL pressure. Added
+> `scripts/gnn/train_gnn_ranker.py`, a small CPU macro-net message-passing ranker,
+> and `test/verification/_verify_gnn_ranker.py`. Rebuilt the 4-benchmark G3
+> trace dataset as schema v2 with the same 183,452 examples and 1,082 accepted
+> labels. Trained artifact
+> `ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/` with
+> train=`ibm01,ibm17`, validation=`ibm10,ibm12`, hidden=32, 2 graph layers,
+> 80 epochs. Overall validation top-4 recall improved from accepted G3 MLP
+> artifact `0.5368` and same-split G3 MLP `0.5216` to G4 `0.7922`; overall MRR
+> improved from accepted G3 `0.4437` and same-split G3 `0.4199` to G4 `0.6412`.
+> Region-swap top-4 recall improved from accepted G3 `0.5328` and same-split G3
+> `0.5175` to G4 `0.7904`. CPU scoring smoke on the `ibm10` candidate pool
+> scored 37,414 candidates in `0.0336s` to `0.0500s` after warmup. Promotion
+> decision remains `default_off`: no inference integration or placement behavior
+> changed. The model's proxy-delta correlation is weaker than G3, so G5 must
+> use it only for candidate ordering and keep exact-proxy gates authoritative.
+
+> **Status (2026-06-19 — GNN Stage G3 offline baseline accepted,
+> default-off):** collected fresh schema-v1 traces for the minimum G3 split:
+> `ibm01`, `ibm10`, `ibm12`, and `ibm17`. All four trace runs were VALID:
+> `ibm01=0.9435` in 36.38s, `ibm10=1.6172` in 43.90s,
+> `ibm12=2.1797` in 55.10s, and `ibm17=2.1038` in 52.14s. The combined
+> Stage-G2 dataset contains 4 graphs, 183,452 candidate examples, and 1,082
+> accepted labels. Trained the Stage-G3 candidate-feature baselines with
+> train=`ibm01,ibm17` and validation=`ibm10,ibm12`; artifact:
+> `ml_data/beyondppa_gnn/models/20260619_g3_candidate_baseline_min4/`.
+> Overall validation top-4 recall improved from trace order `0.3268` to
+> logistic `0.5758` and MLP `0.5368`; overall MRR improved from `0.2611` to
+> logistic `0.4772` and MLP `0.4437`. Region swaps met the G3 acceptance gate:
+> top-4 recall improved from trace order `0.3210` to logistic `0.5721` and MLP
+> `0.5328`, with MLP MRR `0.4389` versus trace-order `0.2557`. Promotion
+> decision remains `default_off`: this proves offline label learnability and
+> does not enable inference or change placement. Next stage is G4 graph
+> extension and first GNN ranker training.
+
 > **Status (2026-06-19 — GNN Stage G2 graph dataset builder):** added
-> `scripts/build_gnn_dataset.py`, a deterministic schema-v1 JSONL-to-PyTorch
+> `scripts/gnn/build_gnn_dataset.py`, a deterministic schema-v1 JSONL-to-PyTorch
 > dataset builder. The output contains one graph per benchmark with hard macro,
 > soft macro, and inferred-cluster nodes; netlist clique, macro-cluster
 > membership, and spatial-neighbor edges; and a stacked candidate table with

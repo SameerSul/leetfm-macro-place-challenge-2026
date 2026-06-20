@@ -138,7 +138,20 @@ JSONL trace output.
 constant inside the existing hierarchy relocation operators. It only reorders
 candidates; legality, fixed-macro, region, hierarchy-quality, and exact-proxy
 gates still decide accepted moves. `HIER_GNN_TRACE=1` writes JSONL traces for
-future hierarchy-aware GNN training without changing placement output.
+future hierarchy-aware GNN training without changing placement output. Offline
+Stage-G3 candidate baselines can be trained with
+`scripts/train_gnn_baseline.py`; the accepted G3 artifact is default-off and is
+not used at placement time. Offline Stage-G4 macro-net rankers can be trained
+with `scripts/train_gnn_ranker.py`; the accepted G4 artifact is also
+default-off. `HIER_GNN_RANK=1` enables the experimental Stage-G5
+relocation-only candidate reordering hook; it is default-off and not promoted
+after valid but regressive Stage-G6 closed-loop validation.
+Post-G6 GNN diagnostics are ongoing. Smaller top-k and guarded-prefix variants
+are valid but not accepted improvements.
+`HIER_DIAGNOSTIC_NO_DEADLINES=1` is available for repeatable GNN diagnostics
+only; it is not a production mode.
+`HIER_GNN_EXTRA_TOP_K` is also default-off and experimental; it is used for
+additive GNN diagnostics before timed smoke.
 
 ## Source Layout
 
