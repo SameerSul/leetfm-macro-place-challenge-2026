@@ -548,16 +548,16 @@ class IncrementalScorer:
         new_ix, new_iy = float(new_xy[0]), float(new_xy[1])
 
         touched = self._touched_nets_only(i_module)
-        H_snap = self.H_flat.copy() if touched.size else None
-        V_snap = self.V_flat.copy() if touched.size else None
-        Hm_snap = self.H_macro_flat.copy()
-        Vm_snap = self.V_macro_flat.copy()
+        restore_nets = touched.size > 0
+        restore_macros = False
         struct = self._route_struct(i_module)
         macro_subset = (
             np.array([i_slot], dtype=np.int64)
             if i_slot is not None
             else np.empty(0, dtype=np.int64)
         )
+        if macro_subset.size > 0:
+            restore_macros = True
 
         bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if macro_subset.size > 0:
@@ -605,12 +605,22 @@ class IncrementalScorer:
             np.subtract.at(go, n_idx, n_area)
         if o_idx.size:
             np.add.at(go, o_idx, o_area)
-        self._apply_pos(i_module, old_ix, old_iy)
-        if touched.size:
-            self.H_flat[:] = H_snap
-            self.V_flat[:] = V_snap
-        self.H_macro_flat[:] = Hm_snap
-        self.V_macro_flat[:] = Vm_snap
+        if restore_nets:
+            self._apply_pos(i_module, new_ix, new_iy)
+            _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
+            self._apply_pos(i_module, old_ix, old_iy)
+            _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+        else:
+            self._apply_pos(i_module, old_ix, old_iy)
+        if restore_macros:
+            self._apply_pos(i_module, new_ix, new_iy)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, -1.0, self.V_macro_flat, self.H_macro_flat
+            )
+            self._apply_pos(i_module, old_ix, old_iy)
+            _apply_macro_routing_subset(
+                self.plc, macro_subset, +1.0, self.V_macro_flat, self.H_macro_flat
+            )
         if c_lo is not None:
             self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
             self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
@@ -673,8 +683,7 @@ class IncrementalScorer:
         new_x, new_y = float(new_xy[0]), float(new_xy[1])
 
         touched = self._touched_nets_only(s_module)
-        H_snap = self.H_flat.copy() if touched.size else None
-        V_snap = self.V_flat.copy() if touched.size else None
+        restore_nets = touched.size > 0
         struct = self._route_struct(s_module)
 
         bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
@@ -715,10 +724,13 @@ class IncrementalScorer:
             np.subtract.at(go, n_idx, n_area)
         if o_idx.size:
             np.add.at(go, o_idx, o_area)
-        self._apply_pos(s_module, old_x, old_y)
-        if touched.size:
-            self.H_flat[:] = H_snap
-            self.V_flat[:] = V_snap
+        if restore_nets:
+            self._apply_pos(s_module, new_x, new_y)
+            _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
+            self._apply_pos(s_module, old_x, old_y)
+            _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
+        else:
+            self._apply_pos(s_module, old_x, old_y)
         if c_lo is not None:
             self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
             self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
