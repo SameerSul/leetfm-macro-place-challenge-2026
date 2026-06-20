@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from placer.config import (
+from utils import constants as const
+from utils.config import (
     HAS_NUMBA,
     _CUDA_DEVICE_REQUESTED,
     _GPU_BACKEND,
@@ -15,7 +16,7 @@ from placer.config import (
     _GPU_DEVICE_NAME,
     _numba_njit,
 )
-from placer.geometry import separation_matrices
+from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.region_rules import accepts_region_score, point_in_region
@@ -27,31 +28,21 @@ if TYPE_CHECKING:
 
 
 def _proposal_scorer_mode() -> str:
-    mode = os.environ.get("V2_RELOC_PROPOSE_SCORER", "cuda_delta").strip().lower()
+    mode = const.RELOC_PROPOSE_SCORER.strip().lower()
     return mode if mode in {"exact", "tensor", "cuda_delta"} else "cuda_delta"
-
-
-def _env_enabled(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip() not in {"0", "false", "False", "no", "NO", "off"}
 
 
 def _structural_weights() -> tuple[float, float, float]:
     return (
-        float(os.environ.get("V2_HIER_KEEP_OUT_WEIGHT", "0.2")),
-        float(os.environ.get("V2_HIER_GRID_ALIGN_WEIGHT", "0.2")),
-        float(os.environ.get("V2_HIER_NOTCH_WEIGHT", "0.6")),
+        float(const.HIER_KEEP_OUT_WEIGHT),
+        float(const.HIER_GRID_ALIGN_WEIGHT),
+        float(const.HIER_NOTCH_WEIGHT),
     )
 
 
 def _hierarchy_structural_weight() -> float:
     """Weight for BeyondPPA-style structure inside hierarchy candidate ordering."""
-    raw = os.environ.get("V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT")
-    if raw is not None and raw.strip():
-        return max(0.0, float(raw))
-    # Backward-compatible opt-in from the first implementation pass.
-    if _env_enabled("V2_HIER_STRUCTURAL_RANK", "0"):
-        return 1.0
-    return 0.0
+    return max(0.0, float(const.HIER_OBJECTIVE_STRUCTURAL_WEIGHT))
 
 
 def _candidate_trace_sample(proposals: list[dict], limit: int) -> list[dict]:
@@ -71,6 +62,8 @@ def _candidate_trace_sample(proposals: list[dict], limit: int) -> list[dict]:
                 "structural_delta": float(p.get("structural_delta", 0.0)),
                 "x": float(p["xy"][0]),
                 "y": float(p["xy"][1]),
+                "gnn_score": float(p["gnn_score"]) if "gnn_score" in p else None,
+                "gnn_rank_error": p.get("gnn_rank_error"),
             }
         )
     return out
@@ -87,6 +80,20 @@ def _full_committed_pos(incremental_scorer) -> np.ndarray:
 
 def _full_macro_sizes(incremental_scorer) -> np.ndarray:
     return incremental_scorer.benchmark.macro_sizes.detach().cpu().numpy().astype(np.float64)
+
+
+def _dedupe_targets_xy(targets) -> np.ndarray:
+    arr = np.asarray(targets, dtype=np.float64)
+    if arr.size == 0:
+        return np.empty((0, 2), dtype=np.float64)
+    if arr.ndim == 1:
+        if arr.size == 0:
+            return arr.reshape(0, 2)
+        arr = arr.reshape(-1, 2)
+    if arr.shape[1] != 2:
+        raise ValueError("target coordinates must be [n,2]")
+    _, keep = np.unique(arr, axis=0, return_index=True)
+    return arr[np.sort(keep)]
 
 
 def _structural_penalty(
@@ -244,9 +251,7 @@ def _structural_candidate_order(
     structural_weight = _hierarchy_structural_weight()
     if cand.size == 0 or structural_weight <= 0.0:
         return np.argsort(base_rank)
-    base_struct = _structural_local_penalty(
-        full_pos, sizes, cw, ch, benchmark, module_index
-    )
+    base_struct = _structural_local_penalty(full_pos, sizes, cw, ch, benchmark, module_index)
     span2 = max(float(max(cw, ch)) ** 2, 1.0)
     adjusted = np.asarray(base_rank, dtype=np.float64).copy()
     local_scores = _structural_local_penalty_batch(
@@ -370,9 +375,8 @@ else:
             return np.ones(0, dtype=np.bool_)
         if blocked_x.size == 0:
             return np.ones(cand_x.size, dtype=np.bool_)
-        overlap = (
-            (np.abs(cand_x[:, None] - blocked_x[None, :]) < (blocked_sx[None, :] + eps))
-            & (np.abs(cand_y[:, None] - blocked_y[None, :]) < (blocked_sy[None, :] + eps))
+        overlap = (np.abs(cand_x[:, None] - blocked_x[None, :]) < (blocked_sx[None, :] + eps)) & (
+            np.abs(cand_y[:, None] - blocked_y[None, :]) < (blocked_sy[None, :] + eps)
         )
         return ~np.any(overlap, axis=1)
 
@@ -1227,7 +1231,9 @@ def _relocation_dynamic_byte_components(
 
 def _relocation_memory_safety_factor() -> float:
     try:
-        factor = float(os.environ.get("V2_RELOC_PROPOSE_MEM_SAFETY", "1.0"))
+        factor = float(
+            os.environ.get("RELOC_PROPOSE_MEM_SAFETY", str(const.RELOC_PROPOSE_MEM_SAFETY))
+        )
     except ValueError:
         return 1.0
     return max(1.0, factor)
@@ -1872,7 +1878,7 @@ def _score_relocation_proposals_cuda_delta(
         incremental_scorer,
         proposals,
     )
-    chunk_raw = os.environ.get("V2_RELOC_PROPOSE_CHUNK_SIZE")
+    chunk_raw = os.environ.get("RELOC_PROPOSE_CHUNK_SIZE")
     user_chunked = bool(chunk_raw)
     chunk_source = "env" if chunk_raw else ("cuda_default" if _GPU_DEVICE.type == "cuda" else "cpu")
     if chunk_raw:
@@ -1881,7 +1887,11 @@ def _score_relocation_proposals_cuda_delta(
         except ValueError:
             chunk_size = len(proposals)
     else:
-        chunk_size = 128 if _GPU_DEVICE.type == "cuda" else len(proposals)
+        chunk_size = (
+            const.RELOC_PROPOSE_DEFAULT_CUDA_CHUNK_SIZE
+            if _GPU_DEVICE.type == "cuda"
+            else len(proposals)
+        )
         default_chunk_size = chunk_size
         budget_chunk = None
         budget_mb = None
@@ -1897,42 +1907,43 @@ def _score_relocation_proposals_cuda_delta(
         )
         budget_adjusted_after_static = False
         budget_adjustment = "none"
-        if _GPU_DEVICE.type == "cuda":
-            max_mb_raw = os.environ.get("V2_RELOC_PROPOSE_MAX_MB", "")
-            (
-                budget_chunk,
-                budget_mb,
-                bytes_per_proposal,
-                budget_dynamic_bytes,
-                budget_total_bytes,
-            ) = _chunk_size_from_memory_budget(
-                proposals,
-                incremental_scorer,
-                max_mb_raw,
-                static_bytes_estimate,
+    if _GPU_DEVICE.type == "cuda":
+        max_mb_raw = os.environ.get("RELOC_PROPOSE_MAX_MB", "")
+        (
+            budget_chunk,
+            budget_mb,
+            bytes_per_proposal,
+            budget_dynamic_bytes,
+            budget_total_bytes,
+        ) = _chunk_size_from_memory_budget(
+            proposals,
+            incremental_scorer,
+            max_mb_raw,
+            static_bytes_estimate,
+        )
+        if budget_chunk is not None:
+            budget_source = "max_mb"
+        elif not max_mb_raw.strip():
+            auto_mem_frac_raw = os.environ.get(
+                "RELOC_PROPOSE_AUTO_MEM_FRAC", str(const.RELOC_PROPOSE_AUTO_MEM_FRAC)
             )
-            if budget_chunk is not None:
-                budget_source = "max_mb"
-            elif not max_mb_raw.strip():
-                auto_budget = _cuda_auto_memory_budget_mb(
-                    os.environ.get("V2_RELOC_PROPOSE_AUTO_MEM_FRAC", "")
+            auto_budget = _cuda_auto_memory_budget_mb(auto_mem_frac_raw)
+            if auto_budget is not None:
+                auto_budget_mb, auto_mem_frac, auto_free_bytes, auto_total_bytes = auto_budget
+                (
+                    budget_chunk,
+                    budget_mb,
+                    bytes_per_proposal,
+                    budget_dynamic_bytes,
+                    budget_total_bytes,
+                ) = _chunk_size_from_memory_budget(
+                    proposals,
+                    incremental_scorer,
+                    str(auto_budget_mb),
+                    static_bytes_estimate,
                 )
-                if auto_budget is not None:
-                    auto_budget_mb, auto_mem_frac, auto_free_bytes, auto_total_bytes = auto_budget
-                    (
-                        budget_chunk,
-                        budget_mb,
-                        bytes_per_proposal,
-                        budget_dynamic_bytes,
-                        budget_total_bytes,
-                    ) = _chunk_size_from_memory_budget(
-                        proposals,
-                        incremental_scorer,
-                        str(auto_budget_mb),
-                        static_bytes_estimate,
-                    )
-                    if budget_chunk is not None:
-                        budget_source = "auto_mem_frac"
+                if budget_chunk is not None:
+                    budget_source = "auto_mem_frac"
             if budget_chunk is not None:
                 chunk_size = min(chunk_size, budget_chunk)
                 natural_chunk_size = min(default_chunk_size, len(proposals))
@@ -2006,7 +2017,7 @@ def _score_relocation_proposals_cuda_delta(
         if _GPU_DEVICE.type == "cuda" and _is_torch_oom(exc):
             raise RuntimeError(
                 "CUDA OOM while building relocation static tensors; "
-                "reducing V2_RELOC_PROPOSE_CHUNK_SIZE will not reduce this allocation "
+                "reducing RELOC_PROPOSE_CHUNK_SIZE will not reduce this allocation "
                 "(estimated_static_bytes=%d)." % static_bytes_estimate
             ) from exc
         raise
@@ -2110,7 +2121,7 @@ def _score_relocation_proposals_cuda_delta(
             next_chunk = max(1, chunk_size // 2)
             if next_chunk == chunk_size:
                 raise
-            if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {
+            if os.environ.get("RELOC_PROPOSE_LOG", "").strip() in {
                 "1",
                 "true",
                 "TRUE",
@@ -2249,8 +2260,9 @@ def _micro_shift_polish(
                     if not point_in_region(hard_region, i, nx, ny):
                         continue
                 targets.append((nx, ny))
-            if targets:
-                scores = incremental_scorer._trial_many_at(prep, np.asarray(targets))
+            targets = _dedupe_targets_xy(targets)
+            if targets.size:
+                scores = incremental_scorer._trial_many_at(prep, targets)
             else:
                 scores = np.empty(0, dtype=np.float64)
             for (nx, ny), score in zip(targets, scores):
@@ -2291,8 +2303,9 @@ def _micro_shift_polish(
                 if soft_region is not None and not point_in_region(soft_region, k, nx, ny):
                     continue
                 targets.append((nx, ny))
-            if targets:
-                scores = incremental_scorer._trial_many_at_soft(prep, np.asarray(targets))
+            targets = _dedupe_targets_xy(targets)
+            if targets.size:
+                scores = incremental_scorer._trial_many_at_soft(prep, targets)
             else:
                 scores = np.empty(0, dtype=np.float64)
             for (nx, ny), score in zip(targets, scores):
@@ -2321,6 +2334,7 @@ def _relocation_moves_propose_all(
     ch: float,
     movable: np.ndarray,
     n: int,
+    plc,
     benchmark: "Benchmark",
     incremental_scorer,
     initial_score: float,
@@ -2497,8 +2511,28 @@ def _relocation_moves_propose_all(
             p["target_index"],
         )
     )
+    if getattr(benchmark, "name", ""):
+        from placer.local_search.gnn_ranker import reorder_hard_relocation_proposals
+
+        proposals = reorder_hard_relocation_proposals(
+            proposals,
+            benchmark_name=str(getattr(benchmark, "name", "")),
+            field=field,
+        )
     if propose_top_m is not None and propose_top_m > 0:
-        proposals = proposals[:propose_top_m]
+        top_m = int(propose_top_m)
+        gnn_rank_on = os.environ.get("HIER_GNN_RANK", "0").strip() not in {
+            "0",
+            "false",
+            "False",
+            "no",
+            "NO",
+            "off",
+            "",
+        }
+        if gnn_rank_on:
+            top_m += max(0, int(os.environ.get("HIER_GNN_EXTRA_TOP_K", "0") or "0"))
+        proposals = proposals[:top_m]
 
     log_gnn_event(
         "hier_relocation_candidates",
@@ -2586,7 +2620,7 @@ def _relocation_moves_propose_all(
         accepted=accepted_trace[: gnn_trace_limit()],
     )
 
-    if os.environ.get("V2_RELOC_PROPOSE_LOG", "").strip() in {
+    if os.environ.get("RELOC_PROPOSE_LOG", "").strip() in {
         "1",
         "true",
         "TRUE",
@@ -2771,6 +2805,7 @@ def _relocation_moves(
             ch=ch,
             movable=movable,
             n=n,
+            plc=plc,
             benchmark=benchmark,
             incremental_scorer=incremental_scorer,
             initial_score=initial_score,
@@ -3006,14 +3041,17 @@ def _soft_relocation_moves(
                 wl_d = 0.0
                 if wl_prefilter > 0.0:
                     wl_d = incremental_scorer.wl_delta_move_soft(k, (nx, ny))
-                    if wl_prefilter > 0.0 and wl_d > wl_prefilter:
-                        continue
+                if wl_prefilter > 0.0 and wl_d > wl_prefilter:
+                    continue
                 targets.append((nx, ny))
-            if targets:
-                scores = incremental_scorer._trial_many_at_soft(prep, np.asarray(targets))
+            targets = _dedupe_targets_xy(targets)
+            if targets.size:
+                scores = incremental_scorer._trial_many_at_soft(prep, targets)
             else:
                 scores = np.empty(0, dtype=np.float64)
-            for nx, ny, s in [(x, y, score) for (x, y), score in zip(targets, scores)]:
+            for nx, ny, s in [
+                (float(p[0]), float(p[1]), float(score)) for p, score in zip(targets, scores)
+            ]:
                 outside = not point_in_region(region_bbox, k, nx, ny)
                 min_gain = max(
                     1e-9,

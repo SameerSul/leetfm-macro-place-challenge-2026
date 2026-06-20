@@ -1,7 +1,7 @@
-"""Verify V2_REQUIRE_CUDA fails fast when CUDA is unavailable.
+"""Verify REQUIRE_CUDA fails fast when CUDA is unavailable.
 
 This intentionally only asserts behavior on CPU-backed runtimes. On machines
-where CUDA is visible, V2_REQUIRE_CUDA should allow import and this verifier
+where CUDA is visible, REQUIRE_CUDA should allow import and this verifier
 reports that state.
 
 Usage:
@@ -20,18 +20,19 @@ import torch
 
 def main() -> int:
     env = os.environ.copy()
-    env["V2_REQUIRE_CUDA"] = "1"
+    env["REQUIRE_CUDA"] = "1"
     requested_device = "cuda:0" if torch.cuda.is_available() else "cuda:7"
-    env["V2_CUDA_DEVICE"] = requested_device
+    env["CUDA_DEVICE"] = requested_device
     env["PYTHONPATH"] = os.pathsep.join(
-        part for part in [
+        part
+        for part in [
             "src",
             env.get("PYTHONPATH", ""),
         ]
         if part
     )
     proc = subprocess.run(
-        [sys.executable, "-c", "import placer.config; print(placer.config._GPU_BACKEND)"],
+        [sys.executable, "-c", "import utils.config; print(utils.config._GPU_BACKEND)"],
         env=env,
         text=True,
         capture_output=True,
@@ -47,8 +48,8 @@ def main() -> int:
         return 0
 
     if proc.returncode == 0:
-        raise AssertionError("expected V2_REQUIRE_CUDA import failure on CUDA-unavailable runtime")
-    if "V2_REQUIRE_CUDA=1" not in proc.stderr:
+        raise AssertionError("expected REQUIRE_CUDA import failure on CUDA-unavailable runtime")
+    if "REQUIRE_CUDA=1" not in proc.stderr:
         raise AssertionError(f"missing require-cuda error in stderr={proc.stderr!r}")
     if requested_device not in proc.stderr:
         raise AssertionError(f"missing requested-device detail in stderr={proc.stderr!r}")

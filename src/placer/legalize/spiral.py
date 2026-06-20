@@ -4,7 +4,7 @@ import time
 
 import numpy as np
 
-from placer.geometry import separation_matrices
+from placer.shared.geometry import separation_matrices
 
 
 def _ring_offsets(r: int) -> np.ndarray:

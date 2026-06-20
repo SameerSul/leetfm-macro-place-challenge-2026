@@ -1,14 +1,12 @@
-"""Verify the hierarchy-floorplan mode produces a VALID placement.
+"""Verify the hierarchy floorplan produces a VALID placement.
 
-Runs MacroPlacer with V2_HIER_FLOORPLAN=1 on a small benchmark and asserts the
-returned hard placement is overlap-free and in-bounds (the harness's hard
-requirements). Skips when DREAMPlace is unavailable, since the mode falls back
-to the normal pipeline in that case.
+Runs MacroPlacer on a small benchmark and asserts the returned hard placement
+is overlap-free and in-bounds. Skips when DREAMPlace is unavailable, since
+hierarchy placement requires it.
 
     uv run python test/verification/_verify_hier_floorplan.py [ibm01]
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -28,7 +26,6 @@ def main(bench):
     if not is_available():
         print("DREAMPlace unavailable; hier mode falls back to normal place(). SKIP.")
         return
-    os.environ["V2_HIER_FLOORPLAN"] = "1"
     import importlib
     import placer.pipeline.macro_placer as mp
 

@@ -5,7 +5,7 @@ production flow.
 
 As of 2026-06-16:
 
-- generic `V2_GPU_EXPLORE` LSMC is deleted,
+- generic `GPU_EXPLORE` LSMC is deleted,
 - generic cluster kicks are deleted,
 - ML ranker defaults are deleted,
 - the active `MacroPlacer.place()` path is hierarchy-only,

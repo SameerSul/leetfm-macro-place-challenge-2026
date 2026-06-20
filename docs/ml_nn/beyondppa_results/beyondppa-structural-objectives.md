@@ -93,19 +93,16 @@ The structural score affects proposal ordering only. Existing legality checks,
 fixed-macro rules, region constraints, and exact proxy accept gates remain the
 authority.
 
-Controls:
+Constants in `src/utils/constants.py`:
 
 ```bash
-V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
-V2_HIER_KEEP_OUT_WEIGHT=0.2
-V2_HIER_GRID_ALIGN_WEIGHT=0.2
-V2_HIER_NOTCH_WEIGHT=0.6
+HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
+HIER_KEEP_OUT_WEIGHT=0.2
+HIER_GRID_ALIGN_WEIGHT=0.2
+HIER_NOTCH_WEIGHT=0.6
 ```
 
-`V2_HIER_STRUCTURAL_RANK=1` remains a backward-compatible alias for structural
-weight `1.0` from the first implementation pass.
-
-Acceptance gate: `V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` is behaviorally
+Acceptance gate: `HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` is behaviorally
 unchanged. Opt-in runs must remain valid on `ibm10` before broader testing.
 
 ### Stage 4: Exact-Gated Hierarchy Polish Integration
@@ -158,7 +155,7 @@ Stage 3 and later:
 
 ```bash
 uv run evaluate src/main.py -b ibm10
-V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=1 uv run evaluate src/main.py -b ibm10
+HIER_OBJECTIVE_STRUCTURAL_WEIGHT=1 uv run evaluate src/main.py -b ibm10
 ```
 
 Only run `--all` after `ibm01`, `ibm10`, and `ibm17` justify the extra runtime.
@@ -170,7 +167,7 @@ Future GNN work should use opt-in hierarchy traces rather than changing the
 placement path first:
 
 ```bash
-V2_HIER_GNN_TRACE=1 V2_HIER_GNN_TRACE_RUN=ibm10_smoke uv run evaluate src/main.py -b ibm10
+HIER_GNN_TRACE=1 HIER_GNN_TRACE_RUN=ibm10_smoke uv run evaluate src/main.py -b ibm10
 ```
 
 Trace files are JSONL under `ml_data/beyondppa_gnn/` by default. They include

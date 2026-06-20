@@ -16,14 +16,210 @@ Target: beat RePlAce avg of 1.4578.
 > proxy-score history below is retained as historical experiment context, not
 > the current production output.
 
+> **Status (2026-06-19 — GNN Stage G5 default-off relocation hook smoke
+> accepted):** added `src/placer/local_search/gnn_ranker.py`, a default-off
+> inference hook that can reorder the existing hard propose-all relocation
+> candidate list with the accepted G4 macro-net ranker. Runtime controls:
+> `HIER_GNN_RANK=1`,
+> `HIER_GNN_MODEL=ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/model.pt`,
+> `HIER_GNN_OPERATORS=relocation`, and `HIER_GNN_TOP_K=32`. The hook runs after
+> existing proposal scoring and before proposal truncation/exact checking; it
+> does not alter hard legality, fixed-macro immobility, bounds,
+> hierarchy-region constraints, hierarchy-quality gates, or exact-proxy
+> acceptance. Smoke pair on `ibm10`: default-off baseline VALID
+> `proxy=1.6192`, 45.80s; GNN-ranked relocation-only VALID `proxy=1.6180`,
+> 50.16s. This is smoke acceptance only, not default-on promotion. Next stage is
+> G6 multi-benchmark closed-loop validation before expanding operators.
+
+> **Status (2026-06-19 — GNN Stage G6 closed-loop validation valid but not
+> promoted):** ran the default-off relocation hook through the documented G6
+> sequence and full suite with
+> `HIER_GNN_RANK=1`,
+> `HIER_GNN_MODEL=ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/model.pt`,
+> `HIER_GNN_OPERATORS=relocation`, and `HIER_GNN_TOP_K=32`. Four-benchmark
+> sequence passed: `ibm10=1.6177` VALID in 50.00s, `ibm01=0.9434` VALID in
+> 35.03s, `ibm12=2.1718` VALID in 46.84s, and `ibm17=2.1007` VALID in 49.24s.
+> Full `--all` also passed legality: **AVG 1.3676**, 17/17 VALID, 0 overlaps,
+> 786.25s. Individual full-suite results were `ibm01=0.9434`,
+> `ibm02=1.1415`, `ibm03=1.0170`, `ibm04=1.0267`, `ibm06=1.2185`,
+> `ibm07=1.0640`, `ibm08=1.1483`, `ibm09=0.8685`, `ibm10=1.6181`,
+> `ibm11=1.0245`, `ibm12=2.1818`, `ibm13=1.0256`, `ibm14=1.6354`,
+> `ibm15=1.8447`, `ibm16=1.6671`, `ibm17=2.1054`, `ibm18=1.7187`.
+> Because AVG `1.3676` regresses versus the accepted hierarchy baseline
+> `1.3631` and runtime is higher, the GNN relocation hook is **not promoted**.
+> Keep `HIER_GNN_RANK=0` for production. Next GNN work should diagnose candidate
+> ordering/regression by benchmark and operator before any broader integration.
+
+> **Status (2026-06-19 — GNN post-G6 ranking diagnostics started):** added
+> `scripts/gnn/diagnose_gnn_ranking.py` to compare deterministic trace order, G3
+> MLP, and G4 macro-net rankings against both accepted labels and exact
+> proxy-gain labels inside candidate pools. Also added relocation trace fields
+> `gnn_score` and `gnn_rank_error` for default-off ranked runs. First diagnostic
+> report:
+> `ml_data/beyondppa_gnn/diagnostics/20260619_gnn_ranking_value_top4.json`.
+> Overall exact-gain recall@4: trace order `0.2513`, G3 MLP `0.5239`, G4
+> macro-net `0.6318`; G4 mean best-gain rank `7.37` versus trace order `13.17`;
+> G4 top-4 overlap with trace order only `0.1889`. Region swaps show the same
+> pattern: trace `0.1964`, G3 `0.4889`, G4 `0.6048`, overlap `0.1856`.
+> Interpretation: the G4 model is not merely learning accepted labels while
+> missing exact proxy-gain candidates; it improves local exact-gain ranking
+> offline but strongly changes the candidate order. The next improvement work
+> should use paired heuristic/GNN traces to isolate model-induced distribution
+> shift, downstream pass interactions, and runtime budget displacement before
+> expanding operators or promoting the hook.
+
+> **Status (2026-06-19 — GNN post-G6 paired trace comparison):** added
+> `scripts/gnn/compare_gnn_trace_pairs.py` and collected paired heuristic versus
+> `HIER_GNN_RANK=1` traces for `ibm01`, `ibm10`, `ibm12`, and `ibm17` with
+> `HIER_GNN_TRACE_MAX_CANDIDATES=64`. Pair reports live under
+> `ml_data/beyondppa_gnn/diagnostics/20260619_postg6_*_trace_pair.json`.
+> Final proxy deltas were effectively flat: `ibm01=-0.0001`,
+> `ibm10=-0.0001`, `ibm12=+0.0001`, `ibm17=+0.0002`. The important signal is
+> pass-level behavior: hard propose-all accepts changed `ibm01 0->0`,
+> `ibm10 1->0`, `ibm12 4->1`, `ibm17 0->0`; all GNN paired traces had scored
+> relocation samples and zero `gnn_rank_error` samples. `ibm12` is now the
+> targeted diagnostic benchmark because `HIER_GNN_TOP_K=32` suppresses three of
+> four deterministic hard propose-all accepts, and later coldspot/micro-shift
+> work only recovers the final proxy to a near tie. Next test: paired `ibm12`
+> traces with `HIER_GNN_TOP_K=8` and `16` before retraining or expanding
+> operators.
+
+> **Status (2026-06-19 — GNN ibm12 top-k and guarded-prefix variants
+> rejected):** ran `ibm12` follow-ups after the paired-trace finding.
+> `HIER_GNN_TOP_K=8` was VALID but worse (`2.1878`, delta `+0.0106`) with hard
+> propose-all accepts `4->3`; `HIER_GNN_TOP_K=16` matched the same worse result.
+> Added default-off `HIER_GNN_PRESERVE_TOP_N` to keep a deterministic prefix and
+> fill the tail with GNN-ranked candidates; `HIER_GNN_PRESERVE_TOP_N=12` plus
+> `HIER_GNN_TOP_K=4` was also VALID but worse (`2.1898`, delta `+0.0126`) with
+> hard propose-all accepts `4->3`, so it is not promoted. A controlled
+> `PYTHONHASHSEED=0` rerun did not fully stabilize upstream region-swap counts,
+> which means current paired trace reports are diagnostic but not clean causal
+> A/Bs. Next improvement work should create a repeatable diagnostic mode or use
+> repeated-run variance before retraining the GNN or expanding operators.
+
+> **Status (2026-06-20 — GNN repeatable diagnostic mode added):** added
+> `HIER_DIAGNOSTIC_NO_DEADLINES=1`, a diagnostic-only mode that disables local
+> hierarchy relief deadlines while preserving production defaults. This fixed
+> `ibm12` repeatability: two heuristic no-deadline traces both produced VALID
+> final `2.1719`, region swaps `391`, hard propose-all accepts `3`; two
+> GNN-ranked no-deadline traces both produced VALID final `2.1707`, region
+> swaps `391`, hard propose-all accepts `5`. Pair report:
+> `ml_data/beyondppa_gnn/diagnostics/20260620_diag_nodeadline_ibm12_topk32_trace_pair.json`.
+> Controlled delta is `-0.0012` proxy with upstream region swaps unchanged. This
+> means the GNN ranker has a real positive hard propose-all signal on `ibm12`
+> when timing noise is removed; the production G6 regression is more likely a
+> budget/timing displacement problem than a pure ranking-quality failure. This
+> mode is not production-safe or promoted. Next: run no-deadline paired
+> comparisons on `ibm01`, `ibm10`, and `ibm17`, then target the production
+> budget interaction if the controlled signal holds.
+
+> **Status (2026-06-20 — GNN additive controlled mode accepted for timed
+> smoke):** added default-off `HIER_GNN_EXTRA_TOP_K` so diagnostics can preserve
+> deterministic post-swap hard propose-all candidates and append extra
+> GNN-ranked candidates. Controlled no-deadline pure GNN top-k 32 results on the
+> four-benchmark set were mixed: `ibm01 +0.0000`, `ibm10 +0.0019`, `ibm12
+> -0.0012`, `ibm17 +0.0000` for total `+0.0007`. The additive setting
+> `HIER_GNN_PRESERVE_TOP_N=16`, `HIER_GNN_TOP_K=8`,
+> `HIER_GNN_EXTRA_TOP_K=8` produced `ibm01 +0.0000`, `ibm10 +0.0000`, `ibm12
+> -0.0024`, `ibm17 +0.0000`, total `-0.0024`. It preserved the `ibm10`
+> deterministic hard propose-all accept (`1->1`) and improved `ibm12` accepts
+> (`3->6`). This is not promoted because no-deadline diagnostics disable local
+> budgets and the additive mode increases exact checks from 16 to 24 in
+> no-gain cases. Next gate: timed production-mode smoke on `ibm10` and `ibm12`
+> with additive mode.
+
+> **Status (2026-06-20 — GNN additive timed smoke mixed, not promoted):** ran
+> timed production-mode smoke for additive GNN with
+> `HIER_GNN_PRESERVE_TOP_N=16`, `HIER_GNN_TOP_K=8`, and
+> `HIER_GNN_EXTRA_TOP_K=8` under normal local deadlines. Current timed
+> heuristic reruns: `ibm10=1.6184` VALID in 46.27s, `ibm12=2.1857` VALID in
+> 44.37s. Additive timed runs: `ibm10=1.6192` VALID in 50.93s, delta `+0.0008`
+> with hard propose-all accepts `1->1` and exact checks `15->23`; `ibm12=2.1703`
+> VALID in 48.93s, delta `-0.0154` with accepts `4->4` and exact checks `4->4`.
+> Decision: keep additive mode default-off and do not run promotion G6 yet. Next
+> useful step is a stricter production guard so additive GNN only consumes spare
+> post-swap hard-propose budget, or repeated timed smoke to quantify the
+> `ibm10` risk.
+
+> **Status (2026-06-19 — GNN Stage G4 offline macro-net ranker accepted,
+> default-off):** extended `scripts/gnn/build_gnn_dataset.py` to dataset schema v2
+> with MacroDiff+-inspired macro-net graph tensors: net nodes, macro-net
+> incidence edges, normalized pin-offset edge features, net degree/fanout, net
+> weight, normalized HPWL x/y, and weighted HPWL pressure. Added
+> `scripts/gnn/train_gnn_ranker.py`, a small CPU macro-net message-passing ranker,
+> and `test/verification/_verify_gnn_ranker.py`. Rebuilt the 4-benchmark G3
+> trace dataset as schema v2 with the same 183,452 examples and 1,082 accepted
+> labels. Trained artifact
+> `ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/` with
+> train=`ibm01,ibm17`, validation=`ibm10,ibm12`, hidden=32, 2 graph layers,
+> 80 epochs. Overall validation top-4 recall improved from accepted G3 MLP
+> artifact `0.5368` and same-split G3 MLP `0.5216` to G4 `0.7922`; overall MRR
+> improved from accepted G3 `0.4437` and same-split G3 `0.4199` to G4 `0.6412`.
+> Region-swap top-4 recall improved from accepted G3 `0.5328` and same-split G3
+> `0.5175` to G4 `0.7904`. CPU scoring smoke on the `ibm10` candidate pool
+> scored 37,414 candidates in `0.0336s` to `0.0500s` after warmup. Promotion
+> decision remains `default_off`: no inference integration or placement behavior
+> changed. The model's proxy-delta correlation is weaker than G3, so G5 must
+> use it only for candidate ordering and keep exact-proxy gates authoritative.
+
+> **Status (2026-06-19 — GNN Stage G3 offline baseline accepted,
+> default-off):** collected fresh schema-v1 traces for the minimum G3 split:
+> `ibm01`, `ibm10`, `ibm12`, and `ibm17`. All four trace runs were VALID:
+> `ibm01=0.9435` in 36.38s, `ibm10=1.6172` in 43.90s,
+> `ibm12=2.1797` in 55.10s, and `ibm17=2.1038` in 52.14s. The combined
+> Stage-G2 dataset contains 4 graphs, 183,452 candidate examples, and 1,082
+> accepted labels. Trained the Stage-G3 candidate-feature baselines with
+> train=`ibm01,ibm17` and validation=`ibm10,ibm12`; artifact:
+> `ml_data/beyondppa_gnn/models/20260619_g3_candidate_baseline_min4/`.
+> Overall validation top-4 recall improved from trace order `0.3268` to
+> logistic `0.5758` and MLP `0.5368`; overall MRR improved from `0.2611` to
+> logistic `0.4772` and MLP `0.4437`. Region swaps met the G3 acceptance gate:
+> top-4 recall improved from trace order `0.3210` to logistic `0.5721` and MLP
+> `0.5328`, with MLP MRR `0.4389` versus trace-order `0.2557`. Promotion
+> decision remains `default_off`: this proves offline label learnability and
+> does not enable inference or change placement. Next stage is G4 graph
+> extension and first GNN ranker training.
+
+> **Status (2026-06-19 — GNN Stage G2 graph dataset builder):** added
+> `scripts/gnn/build_gnn_dataset.py`, a deterministic schema-v1 JSONL-to-PyTorch
+> dataset builder. The output contains one graph per benchmark with hard macro,
+> soft macro, and inferred-cluster nodes; netlist clique, macro-cluster
+> membership, and spatial-neighbor edges; and a stacked candidate table with
+> source/target node references, 27 candidate features, accepted labels,
+> proxy-delta labels with known-mask, rejection ids, and trace provenance.
+> Added the dataset contract in
+> `docs/ml_nn/beyondppa_results/gnn_dataset_schema.md` and the verifier
+> `test/verification/_verify_gnn_dataset_builder.py`. Smoke build from the
+> Stage-G1 `ibm01` trace produced 1 graph, 4526 examples, and 78 accepted
+> labels; repeated builds were tensor-identical. Verification: broad
+> `py_compile` over `src`, `scripts`, and `test/verification` passed
+> (with an unrelated existing regex escape warning in
+> `scripts/generate_macro_placement_tcl.py`); the G2 verifier passed.
+
+> **Status (2026-06-19 — GNN Stage G1 trace completeness and schema v1):**
+> completed candidate-level trace coverage for the active hierarchy GNN data
+> path without changing placement behavior. `log_gnn_event()` now emits
+> `schema_version=1`; `hier_decompression_candidate` records cluster expansion,
+> axis scale, hierarchy-quality delta, exact proxy delta when scored, accepted
+> flag, and rejection reason; `hier_swap_candidates` records sampled hard/hard,
+> hard/soft, and soft/soft region-swap candidate pools with legality, region,
+> score, proxy delta, accepted flag, and rejection reason; and
+> `hier_coldspot_candidate` records skipped, missing, rejected, and accepted
+> coldspot proposals with selected-cluster metadata, field gap, quality delta,
+> and proxy delta. Added the schema contract in
+> `docs/ml_nn/beyondppa_results/gnn_trace_schema.md`. Verification:
+> `py_compile` passed; focused structural tests passed (`4 passed`);
+> `_verify_score_region_swaps.py` passed on ibm01/04/10;
+> `_verify_coldspot_kick.py ibm10` passed; GNN trace smoke on `ibm01` was
+> VALID with proxy `0.9435` and wrote 1539 schema-v1 events with the new
+> decompression, swap, and coldspot candidate event families.
+
 > **Status (2026-06-18 — BeyondPPA structural objective and GNN trace logging
 > integrated, defaults unchanged):** added deterministic edge-keepout,
 > grid-alignment, notch, and combined structural metrics in
-> `src/placer/local_search/structural_fields.py`; added
-> `test/diagnostic/_structural_metrics.py`; and integrated the structural term
+> `src/placer/local_search/structural_fields.py`; and integrated the structural term
 > into existing hierarchy relocation candidate ordering behind
-> `V2_HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0`
-> (`V2_HIER_STRUCTURAL_RANK=1` remains an alias for weight `1.0`). This is not a
+> the `HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant. This is not a
 > second BeyondPPA path: legality, fixed-macro immobility, bounds,
 > hierarchy-region constraints, hierarchy-quality gates, and exact-proxy gates
 > still decide accepted moves. Added opt-in GNN JSONL tracing through
@@ -65,8 +261,8 @@ Target: beat RePlAce avg of 1.4578.
 > **Status (2026-06-18 — Stage 2 micro-shift + anisotropic decompression
 > accepted, `--all` avg = 1.3707):** promoted exact-gated one/two-grid-cell
 > micro-shift polish for hot hard and soft macros inside their hierarchy regions
-> (`V2_HIER_MICRO_SHIFT=1`, radius 2, top 96, min gain `1e-5`) and promoted
-> anisotropic cluster decompression (`V2_HIER_DECOMPRESS_ANISO=1`). Full
+> (`HIER_MICRO_SHIFT=1`, radius 2, top 96, min gain `1e-5`) and promoted
+> anisotropic cluster decompression (`HIER_DECOMPRESS_ANISO=1`). Full
 > `uv run evaluate src/main.py --all`: **AVG 1.3707**, 17/17 VALID, 0 overlaps,
 > 563.00s. Micro-shift alone was **AVG 1.3718**, 17/17 VALID, 0 overlaps,
 > 591.59s, so anisotropic decompression adds a small but real full-suite gain.
@@ -81,9 +277,9 @@ Target: beat RePlAce avg of 1.4578.
 
 > **Status (2026-06-16 — post-swap soft polish accepted, `--all`
 > avg = 1.3947):** promoted ordinary post-swap soft relocation with
-> `V2_HIER_POST_SOFT_RELOC=1`, `V2_HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005`, and
+> `HIER_POST_SOFT_RELOC=1`, `HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005`, and
 > lowered the post-swap hard propose-all margin to
-> `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.0005`. This is not the rejected soft
+> `HIER_RELOC_PROPOSE_MIN_GAIN=0.0005`. This is not the rejected soft
 > propose-all path; it is sequential exact-gated `_soft_relocation_moves()` after
 > swaps. Full `uv run evaluate src/main.py --all`: **AVG 1.3947**, 17/17 VALID,
 > 0 overlaps, 534.30s. Margin comparison on ibm10/12/15/17/14/18 favored
@@ -93,11 +289,11 @@ Target: beat RePlAce avg of 1.4578.
 > ibm01/06/07/09/11/16.
 
 > **Status (2026-06-16 — post-swap hard propose-all polish accepted, `--all`
-> avg = 1.3974):** kept `V2_HIER_RELOC_PROPOSE_ALL=0` for the pre-swap hard
+> avg = 1.3974):** kept `HIER_RELOC_PROPOSE_ALL=0` for the pre-swap hard
 > relocation loop, but promoted CUDA-only
-> `V2_HIER_POST_RELOC_PROPOSE_ALL=auto` after region swaps with footprint-averaged
-> hard-macro field ranking, `V2_HIER_POST_RELOC_PROPOSE_TOP_M=16`, and
-> `V2_HIER_RELOC_PROPOSE_MIN_GAIN=0.001`. Full
+> `HIER_POST_RELOC_PROPOSE_ALL=auto` after region swaps with footprint-averaged
+> hard-macro field ranking, `HIER_POST_RELOC_PROPOSE_TOP_M=16`, and
+> `HIER_RELOC_PROPOSE_MIN_GAIN=0.001`. Full
 > `uv run evaluate src/main.py --all`: **AVG 1.3974**, 17/17 VALID, 0 overlaps,
 > 526.21s. Accepted post-swap hard moves were sparse and helped the congestion
 > cases without reintroducing the earlier pre-swap basin regression: ibm10
@@ -105,7 +301,7 @@ Target: beat RePlAce avg of 1.4578.
 > run noise.
 
 > **Status (2026-06-16 — connectivity legalize order accepted, `--all`
-> avg = 1.3978):** promoted `V2_HIER_LEGALIZE_CONNECTIVITY_ORDER=1`, which keeps
+> avg = 1.3978):** promoted `HIER_LEGALIZE_CONNECTIVITY_ORDER=1`, which keeps
 > cluster-consecutive legalization but orders members by connectivity-pressure x
 > area instead of area alone. Full
 > `uv run evaluate src/main.py --all`: **AVG 1.3978**, 17/17 VALID, 0 overlaps,
@@ -113,8 +309,8 @@ Target: beat RePlAce avg of 1.4578.
 > result 1.4452 are broad and congestion-led: ibm12 2.3297→2.2535, ibm17
 > 2.2374→2.2109, ibm15 1.9494→1.8894, ibm14 1.6991→1.6790, ibm18
 > 1.7869→1.7832, and ibm10 1.6759→1.6506. The rejected Stage-1 bundle
-> (`V2_HIER_RELOC_PROPOSE_ALL=auto`, `V2_HIER_SOFT_RELOC_PROPOSE_ALL=auto`,
-> connectivity order, and `V2_HIER_SS_SWAP_MAX_SCORES=12000`) regressed badly:
+> (`HIER_RELOC_PROPOSE_ALL=auto`, `HIER_SOFT_RELOC_PROPOSE_ALL=auto`,
+> connectivity order, and `HIER_SS_SWAP_MAX_SCORES=12000`) regressed badly:
 > **AVG 1.6000**, 17/17 VALID, 0 overlaps, 1029.78s. Follow-up full ablations:
 > hard propose-all only **AVG 1.4019** / 546.26s; hard top-M 16 **AVG 1.4066** /
 > 545.26s; hard congestion-pass top-32 hot macros **AVG 1.4030** / 526.26s; soft
@@ -127,7 +323,7 @@ Target: beat RePlAce avg of 1.4578.
 > regions, exact-gated cluster decompression, proxy-aware coldspot tightening,
 > per-operator region-swap controls, strict hard-swap legality, and best-state
 > rollback; then raised the default soft swap candidate count
-> `V2_HIER_SOFT_SWAP_K` from 24 to 48. Full
+> `HIER_SOFT_SWAP_K` from 24 to 48. Full
 > `uv run evaluate src/main.py --all`: **AVG 1.4452**, 17/17 VALID, 0 overlaps,
 > 520.08s; beats RePlAce avg 1.4578 (+0.9% vs RePlAce). Net gain vs the prior
 > tuned region-swap `--all` 1.4471 is -0.0019, led by the intended congestion
@@ -153,9 +349,9 @@ Target: beat RePlAce avg of 1.4578.
 > LSMC then kicked a whole cluster as a unit — `gather` (collapse members to one
 > anchor, legalizer packed them) or `translate` (rigid relocate) — instead of
 > scattering random macros. It was enabled in the then-current `src/main.py`
-> through `_enable_cluster_kick_defaults` and `V2_GPU_EXPLORE_CLUSTER_*`; those
+> through `_enable_cluster_kick_defaults` and `GPU_EXPLORE_CLUSTER_*`; those
 > integration points were later deleted with the proxy path.
-> isolation-harness `V2_LSMC_ISOLATE=1` confirmed cluster kicks beat random
+> isolation-harness `LSMC_ISOLATE=1` confirmed cluster kicks beat random
 > 6/6 from an identical incumbent (−0.0053 avg, congestion-driven). The old
 > `test/verification/_verify_cluster_kick.py` verifier was deleted with that
 > code.
@@ -191,12 +387,12 @@ Target: beat RePlAce avg of 1.4578.
 > source.** Removed 272 lines from `macro_placer.py` + the whole
 > `local_search/workers.py` (and the `mp` import + `__init__` export): the
 > multi-seed 2-opt phase, Phase 5c (wide-from-best), and Phase 8 (TOP-K
-> cong-grad chains), plus their `V2_PRUNE_*` flags. These were all pruned-by-
+> cong-grad chains), plus their `PRUNE_*` flags. These were all pruned-by-
 > default already, so deletion is behaviorally equivalent — verified on ibm01/
 > 04/12/18 (seed1) within ±0.0003 of the flag-pruned references, all VALID.
 > Shipped `--all` stays ~1.1170–1.1176 (the all-pruned value); the lone real
 > score win in Stage 4 was multi-seed 2-opt removal (1.1169), 5c/8 were
-> near-noise simplification. NB: the "restore via V2_PRUNE_*=0" knobs no longer
+> near-noise simplification. NB: the "restore via PRUNE_*=0" knobs no longer
 > exist; ARCHITECTURE.md / README phase lists for these three are now superseded.
 
 > **Status (2026-06-14 — Stage 4: Phase 5c (wide-from-best) PRUNED by default
@@ -204,13 +400,13 @@ Target: beat RePlAce avg of 1.4578.
 > = **1.1170** (seed1, full 17/17). The paired gate actually favored KEEPING 5c
 > (keep seed1 1.1156 / seed2 1.1191 vs prune seed1 1.1170; 5c does real work on
 > ibm09/12/17), so its "pure insurance" label in older notes was stale. Pruned
-> anyway by directive to keep the pipeline lean; `V2_PRUNE_P5C=0` restores it.
+> anyway by directive to keep the pipeline lean; `PRUNE_P5C=0` restores it.
 > So 1.1156 (5c kept) is the lower achievable; the shipped lean default is 1.1170.
 > Gate stopped after 3/4 runs (decision was made); logs `ml_data/compare/stage4p5c_*`.
 
 > **Status (2026-06-13 — Stage 4: multi-seed 2-opt PRUNED by default; NEW BEST
 > `--all` 1.1169):** the pre-R2 multi-seed 2-opt phase is now skipped by default
-> (`V2_PRUNE_MULTISEED_2OPT=0` restores it). Paired gate keep-vs-prune,
+> (`PRUNE_MULTISEED_2OPT=0` restores it). Paired gate keep-vs-prune,
 > full-stack (dp=17 both arms): seed1 1.1175→1.1169 (−0.0006), seed2
 > 1.1229→1.1178 (−0.0051) — 2/2 prune-wins, mean −0.0029, and faster
 > (seed2 2816s vs 2926s). The phase was net-harmful: it steers R2 into worse
@@ -227,7 +423,7 @@ Target: beat RePlAce avg of 1.4578.
 
 > **Status (2026-06-13 — Stage 2b kick pre-screen SHIPPED AS DEFAULT
 > (PRESCREEN=8); on-arm best 1.1176 is the NEW BEST `--all`):** each LSMC
-> iteration now scores a batch of kicks (`V2_GPU_EXPLORE_PRESCREEN`, default 8)
+> iteration now scores a batch of kicks (`GPU_EXPLORE_PRESCREEN`, default 8)
 > and descends only the best one — the cuGenOpt evaluate→reduce→descend-one
 > pattern at the kick level, since descent dominates iteration cost.
 > **Full-stack paired gate (DP+ML active, dp=17 both arms; B8 vs B1=2a
@@ -246,7 +442,7 @@ Target: beat RePlAce avg of 1.4578.
 > seed-1 on-arm avg 1.1194 is the NEW BEST `--all`):** the post-R2 LSMC
 > kick/descent/accept phase (`local_search/lsmc_explore.py`, hook as the FINAL
 > quality phase in `macro_placer.py`) was default-on under CUDA
-> (`V2_GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice, in that
+> (`GPU_EXPLORE` unset/auto; opt out with 0), kick=0.02, 30s slice, in that
 > deleted proxy path —
 > exactly the measured gate config. **Full-stack paired gate (DP + ML filter
 > verified active in every log; user-authorized 2-seed bar): seed1 off 1.1245 /
@@ -276,7 +472,7 @@ Target: beat RePlAce avg of 1.4578.
 > machines are not reachable from this box yet — second half of Stage 0
 > (inventory, DP rebuild, re-baseline there) pending access.
 >
-> **Stage 1 (2026-06-12): `V2_RELOC_PROPOSE_ALL=auto` paired multi-seed A/B —
+> **Stage 1 (2026-06-12): `RELOC_PROPOSE_ALL=auto` paired multi-seed A/B —
 > WASH, stays opt-in.** Both verifiers PASS (in-loop scorer-vs-exact delta
 > 1.4e-11). Paired same-box sequential `--all` runs, seeds 1/2/3
 > (logs `ml_data/compare/all_20260612_propall_*`): seed1 off 1.1231 / auto
@@ -294,7 +490,7 @@ Target: beat RePlAce avg of 1.4578.
 > 35233s) with per-benchmark monotonic budgets unaffected. **Takeaway for
 > Stage 2:** the GPU pool-scoring machinery is validated and fast; the ±0.02
 > per-benchmark policy divergence is exactly what an exact-gated multi-candidate
-> selector can harvest. Next: Stage 2 exploration engine (V2_GPU_EXPLORE) per
+> selector can harvest. Next: Stage 2 exploration engine (GPU_EXPLORE) per
 > docs/gpu/GPU-ops.md §2–3.
 
 > **Status (2026-06-11 — ML hard-relocation ranker connected as production
@@ -362,7 +558,7 @@ Target: beat RePlAce avg of 1.4578.
 > −0.0107 only resolves above the noise floor at the 17-benchmark aggregate.
 >
 > **Also this session — LAHC disproven (reverted).** Late-Acceptance Hill Climbing
-> on the 2-opt-on-winner (env `V2_LAHC`=history length): strictly worse 2-opt on
+> on the 2-opt-on-winner (env `LAHC`=history length): strictly worse 2-opt on
 > ibm12/17/18 (ibm17 1.7299→1.7401 at L=1000, →1.7328 at L=50 — i.e. tighter L only
 > recovers greedy, never beats it), ~85% accept rate = random-walk on the plateau.
 > The deadline-bound 2-opt converges fast to a strong basin min, so non-monotonic
@@ -389,7 +585,7 @@ Target: beat RePlAce avg of 1.4578.
 > Installing numba 0.65.1 (supports py3.14): `--all` **3486s→2563s (~26% faster)**
 > *and* **1.1403→1.1380** (freed speed → more refinement on the deadline-bound
 > benchmarks). Without numba the placer still runs but ~25% slower (~58 min, near
-> the 1 h cap) — a config.py warning now fires when numba is missing. **Action: the
+> the 1 h cap) — a src/utils/config.py warning now fires when numba is missing. **Action: the
 > eval env must install `v2/requirements.txt` (or numba must reach `pyproject`)** to
 > realize 1.1380; the graceful fallback is 1.1403. Both still beat RePlAce (1.4578)
 > and the leaderboard (1.4076) on every benchmark.
@@ -404,7 +600,7 @@ Target: beat RePlAce avg of 1.4578.
 > **adaptive per-pass budget control** — yield-weighted deadline caps were
 > consistently worse on deadline-bound benchmarks (shrink → early termination;
 > boost → saturates), so the static caps + skip-if-empty stay. Env knobs:
-> `V2_SOFT_TGT` / `V2_SOFT_HOT`, `V2_ADAPTIVE_BUDGET` (off).
+> `SOFT_TGT` / `SOFT_HOT`, `ADAPTIVE_BUDGET` (off).
 
 > **Status (2026-06-06 — scoring-cost reduction in 2-opt + soft-relocation, ISSUES.md S11):**
 > **Avg 1.1423 — all 17 VALID / 0 overlaps, 3433.76s (new best, beats prior 1.1500
@@ -427,7 +623,7 @@ Target: beat RePlAce avg of 1.4578.
 > scorer methods `wl_delta_swap` / `wl_delta_move_soft` (verified). Env knobs:
 > `SOFT_RELOC_WL_PREFILTER` / `SOFT_2OPT_WL_PREFILTER` / `HARD_2OPT_K` /
 > `HARD_2OPT_WL_PREFILTER`. Tests: `_verify_wl_delta_swap.py`,
-> `_verify_wl_delta_move_soft.py`, `_calibrate_wl_prefilter.py`.
+> `_verify_wl_delta_move_soft.py`.
 
 > **Status (2026-06-04 — readability refactor, no algorithm change):**
 > **Avg 1.1500 — all 17 VALID / 0 overlaps, 3300.10s.** Pure code-simplification
@@ -577,7 +773,7 @@ Target: beat RePlAce avg of 1.4578.
 > benchmarks). Density `top_hot` boost still triggers, but adaptively (when
 > the cong empty-streak counter saturates).
 > **#3v2 time-shifted multi-seed 2-opt subprocess pool (drafted, env-gated
-> off):** `V2_MULTISEED_MP=1` runs the main "best" 2-opt inline first (full
+> off):** `MULTISEED_MP=1` runs the main "best" 2-opt inline first (full
 > solo CPU during the 15s deadline), then submits DP seed 2-opts to a
 > ProcessPoolExecutor afterward. Default off — direct subprocess parallelism
 > on the deadline-bound search caused regression due to CPU contention.

@@ -29,8 +29,8 @@ def main() -> int:
     original_device = relocation._GPU_DEVICE
     original_batch = relocation._score_relocation_proposals_cuda_delta_batch
     original_static = relocation._build_relocation_cuda_static_tensors
-    old_chunk = os.environ.get("V2_RELOC_PROPOSE_CHUNK_SIZE")
-    old_log = os.environ.get("V2_RELOC_PROPOSE_LOG")
+    old_chunk = os.environ.get("RELOC_PROPOSE_CHUNK_SIZE")
+    old_log = os.environ.get("RELOC_PROPOSE_LOG")
 
     def fake_batch(batch, **_kwargs):
         calls.append(len(batch))
@@ -48,8 +48,8 @@ def main() -> int:
         relocation._GPU_DEVICE = torch.device("cuda:0")
         relocation._score_relocation_proposals_cuda_delta_batch = fake_batch
         relocation._build_relocation_cuda_static_tensors = fake_static
-        os.environ["V2_RELOC_PROPOSE_CHUNK_SIZE"] = "4"
-        os.environ["V2_RELOC_PROPOSE_LOG"] = "1"
+        os.environ["RELOC_PROPOSE_CHUNK_SIZE"] = "4"
+        os.environ["RELOC_PROPOSE_LOG"] = "1"
 
         relocation._score_relocation_proposals_cuda_delta(
             proposals,
@@ -65,13 +65,13 @@ def main() -> int:
         relocation._score_relocation_proposals_cuda_delta_batch = original_batch
         relocation._build_relocation_cuda_static_tensors = original_static
         if old_chunk is None:
-            os.environ.pop("V2_RELOC_PROPOSE_CHUNK_SIZE", None)
+            os.environ.pop("RELOC_PROPOSE_CHUNK_SIZE", None)
         else:
-            os.environ["V2_RELOC_PROPOSE_CHUNK_SIZE"] = old_chunk
+            os.environ["RELOC_PROPOSE_CHUNK_SIZE"] = old_chunk
         if old_log is None:
-            os.environ.pop("V2_RELOC_PROPOSE_LOG", None)
+            os.environ.pop("RELOC_PROPOSE_LOG", None)
         else:
-            os.environ["V2_RELOC_PROPOSE_LOG"] = old_log
+            os.environ["RELOC_PROPOSE_LOG"] = old_log
 
     if calls != [4, 2, 2, 1]:
         raise AssertionError(f"unexpected retry chunk calls: {calls}")
