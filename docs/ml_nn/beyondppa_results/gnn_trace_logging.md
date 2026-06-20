@@ -22,6 +22,9 @@ Optional direct path:
 HIER_GNN_TRACE_PATH=/tmp/hier_gnn_trace.jsonl
 ```
 
+Use a fresh `HIER_GNN_TRACE_RUN` or `HIER_GNN_TRACE_PATH` for each collection
+run. The logger appends to the selected JSONL file.
+
 ## Events
 
 All events include `schema_version`. The current schema is documented in
@@ -30,7 +33,8 @@ All events include `schema_version`. The current schema is documented in
 - `hier_relocation_candidates`
   - hard propose-all candidate pool after proxy/structural candidate scoring
   - includes macro id, candidate rank, target location, field values, structural
-    delta, and candidate score
+    delta, candidate score, and default-off GNN ranking diagnostics when
+    `HIER_GNN_RANK=1`
 - `hier_relocation_result`
   - accepted hard/soft relocation moves with proxy deltas
 - `hier_decompression_candidate`
@@ -69,7 +73,7 @@ Smoke command:
 
 ```bash
 HIER_GNN_TRACE=1 \
-HIER_GNN_TRACE_PATH=/tmp/hier_gnn_trace_smoke.jsonl \
+HIER_GNN_TRACE_PATH=/tmp/hier_gnn_trace_smoke_1781894380.jsonl \
 HIER_GNN_TRACE_MAX_CANDIDATES=5 \
 uv run evaluate src/main.py -b ibm01
 ```
@@ -77,18 +81,22 @@ uv run evaluate src/main.py -b ibm01
 Result:
 
 ```text
-proxy=0.9435  (wl=0.082 den=0.640 cong=1.083)  VALID  [35.80s]
+proxy=0.9435  (wl=0.082 den=0.640 cong=1.082)  VALID  [35.85s]
 ```
 
 Current schema-v1 smoke summary:
 
 ```text
-1539 events
+1535 events
 hier_coldspot_candidate: 8
-hier_decompression_candidate: 3
+hier_decompression_candidate: 5
 hier_final: 1
 hier_pass_result: 9
 hier_relocation_candidates: 1
 hier_relocation_result: 13
-hier_swap_candidates: 1504
+hier_swap_candidates: 1498
 ```
+
+When `HIER_GNN_RANK=1`, sampled relocation candidates may also include
+`gnn_score` and `gnn_rank_error`. These fields are diagnostics only and do not
+replace exact legality, hierarchy, or proxy gates.

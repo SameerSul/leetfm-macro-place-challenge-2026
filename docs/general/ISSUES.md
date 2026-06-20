@@ -95,7 +95,7 @@ into a separate placer. Shipped pieces:
 - opt-in schema-v1 GNN JSONL traces through the `HIER_GNN_TRACE*` runtime
   environment variables;
 - deterministic schema-v1 trace-to-graph dataset builder in
-  `scripts/build_gnn_dataset.py`.
+  `scripts/gnn/build_gnn_dataset.py`.
 
 The structural term only reorders candidates. Hard legality, fixed macros,
 bounds, hierarchy regions, hierarchy-quality gates, and exact-proxy gates still

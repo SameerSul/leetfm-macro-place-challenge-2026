@@ -14,6 +14,10 @@ HIER_GNN_TRACE_MAX_CANDIDATES=512 \
 uv run evaluate src/main.py -b <benchmark>
 ```
 
+Use a fresh `HIER_GNN_TRACE_RUN` or `HIER_GNN_TRACE_PATH` for each collection
+run. The trace writer appends to the selected JSONL path, and the dataset
+builder validates every row in that file.
+
 Minimum benchmark set before G3:
 
 - `ibm01`
@@ -40,7 +44,7 @@ Use run ids that encode date, benchmark, and config, for example:
 Build datasets with:
 
 ```bash
-uv run python scripts/build_gnn_dataset.py \
+uv run python scripts/gnn/build_gnn_dataset.py \
   --trace-dir ml_data/beyondppa_gnn/traces \
   --out ml_data/beyondppa_gnn/dataset.pt
 ```
@@ -48,7 +52,7 @@ uv run python scripts/build_gnn_dataset.py \
 Single-trace smoke:
 
 ```bash
-uv run python scripts/build_gnn_dataset.py \
+uv run python scripts/gnn/build_gnn_dataset.py \
   --trace-path /tmp/hier_gnn_trace_smoke.jsonl \
   --out /tmp/hier_gnn_dataset.pt \
   --benchmark ibm01
@@ -58,6 +62,24 @@ Verifier:
 
 ```bash
 uv run python test/verification/_verify_gnn_dataset_builder.py
+```
+
+Stage-G3 baseline smoke:
+
+```bash
+uv run python test/verification/_verify_gnn_baseline.py
+```
+
+Held-out baseline run:
+
+```bash
+uv run python scripts/gnn/train_gnn_baseline.py \
+  --dataset ml_data/beyondppa_gnn/dataset.pt \
+  --train-benchmark ibm02 \
+  --train-benchmark ibm03 \
+  --val-benchmark ibm10 \
+  --val-benchmark ibm12 \
+  --out-dir ml_data/beyondppa_gnn/models/<model_id>
 ```
 
 ## MacroDiff+-Inspired Feature Work
@@ -133,6 +155,35 @@ Add trace fields for:
 
 Do not block G3 on these fields. Add them before training operator-selection,
 region-guidance, soft-role, or budget-allocation heads.
+
+## Post-G6 Improvement Data
+
+The next ranker needs data that explains why offline gains did not translate
+into a promoted closed-loop result.
+
+Collect and preserve:
+
+- heuristic traces and `HIER_GNN_RANK=1` traces for the same benchmark set;
+- `gnn_score` on sampled relocation candidates when ranking is enabled;
+- `gnn_rank_error` on sampled relocation candidates when ranker inference
+  fails and the deterministic order is preserved;
+- exact `proxy_delta` for accepted and rejected scored candidates;
+- trace provenance sufficient to compute the rank of the best exact-gain
+  candidate inside each pool;
+- per-pass accepted move count before and after GNN reordering;
+- pass-level runtime and exact-score count before and after GNN reordering;
+- final benchmark proxy, validity, overlap count, and runtime;
+- top-k overlap between deterministic trace order and GNN order.
+
+Use these labels to separate three failure modes:
+
+- model miss: the best exact-gain candidate is ranked below the tested prefix;
+- integration miss: the model ranks a locally good candidate, but downstream
+  passes get worse;
+- budget miss: inference or changed ordering displaces later useful work.
+
+Do not train a replacement model only on heuristic-generated traces if it is
+intended to run after `HIER_GNN_RANK=1` changes the state distribution.
 
 ## Leakage Rules
 

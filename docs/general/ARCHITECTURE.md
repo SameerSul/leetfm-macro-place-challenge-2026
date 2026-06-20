@@ -293,7 +293,7 @@ environment variables, not placement constants:
 ```text
 HIER_GNN_TRACE=0
 HIER_GNN_TRACE_DIR=ml_data/beyondppa_gnn
-HIER_GNN_TRACE_RUN=<timestamp-derived by default>
+HIER_GNN_TRACE_RUN=<optional run id; default file is trace.jsonl>
 HIER_GNN_TRACE_MAX_CANDIDATES=512
 HIER_GNN_TRACE_PATH=<optional direct JSONL path>
 ```
@@ -302,13 +302,17 @@ When enabled, the logger records schema-v1 hierarchy candidate labels for
 relocation, region swaps, cluster decompression, and coldspot tightening, plus
 pass summaries and final placement summaries as JSONL. It does not change
 candidate ordering or acceptance. A deterministic schema-v1 trace-to-graph
-dataset builder now lives at `scripts/build_gnn_dataset.py`.
+dataset builder now lives at `scripts/gnn/build_gnn_dataset.py`. The Stage-G3
+offline baseline entrypoint is `scripts/gnn/train_gnn_baseline.py`; it trains and
+evaluates candidate-feature-only rankers without changing placement behavior.
 
-The next required GNN work is Stage G3: train and evaluate baseline non-GNN
-rankers on held-out benchmark traces before implementing the hetero macro-net
-GNN. The broader target is a default-off hierarchy-flow assistant that can
-rank, propose, select, budget, and diagnose work inside existing hierarchy
-operators while preserving all deterministic placement gates.
+Stage G3 has an accepted default-off offline baseline artifact, Stage G4 has an
+accepted default-off offline macro-net ranker artifact, and Stage G5 has a
+smoke-accepted default-off relocation-only candidate-reordering hook. The
+Stage G6 full-suite run was legal but not promoted because average proxy and
+runtime regressed. The broader target is a default-off hierarchy-flow assistant
+that can rank, propose, select, budget, and diagnose work inside existing
+hierarchy operators while preserving all deterministic placement gates.
 
 ## Scoring And Legality
 

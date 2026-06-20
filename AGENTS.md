@@ -25,8 +25,17 @@ BeyondPPA-style work is integrated into the hierarchy path, not as a separate
 placer. The current shipped pieces are deterministic structural metrics and
 default-off hierarchy relocation candidate ordering
 (`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant). The trace logger is
-default-off through the `HIER_GNN_TRACE=0` runtime environment variable. No
-learned GNN model or DQN policy is active.
+default-off through the `HIER_GNN_TRACE=0` runtime environment variable.
+Stage-G3 offline baseline tooling lives in `scripts/gnn/train_gnn_baseline.py`, and
+the accepted default-off baseline artifact is
+`ml_data/beyondppa_gnn/models/20260619_g3_candidate_baseline_min4/`. Stage-G4
+offline macro-net ranker tooling lives in `scripts/gnn/train_gnn_ranker.py`, and
+the accepted default-off graph-ranker artifact is
+`ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/`. A default-off
+Stage-G5 relocation-only candidate reordering hook exists behind
+`HIER_GNN_RANK=1`; Stage G6 full-suite validation was legal but not promoted
+because average proxy and runtime regressed. No inference ranker is default-on,
+and no DQN policy is active in placement.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](docs/general/PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
 

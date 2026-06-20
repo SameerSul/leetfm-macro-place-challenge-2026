@@ -126,7 +126,7 @@ HIER_SWAP_SS = True
 # Runs swap relief against both congestion and density fields.
 HIER_SWAP_DENSITY_FIELD = True
 # Enables experimental batched swap scoring path.
-HIER_BATCH_SWAP_SCORES = False
+HIER_BATCH_SWAP_SCORES = True
 
 # Wall-clock budget for post-swap hard propose-all relocation.
 HIER_POST_RELOC_PROPOSE_BUDGET_S = 8.0
@@ -173,9 +173,11 @@ RELOC_PROPOSE_SCORER = "cuda_delta"
 RELOC_PROPOSE_DEFAULT_CUDA_CHUNK_SIZE = 128
 # Safety multiplier for estimated relocation proposal memory usage.
 RELOC_PROPOSE_MEM_SAFETY = 1.0
+# Default CUDA memory fraction used for automatic proposal scoring chunk sizing.
+RELOC_PROPOSE_AUTO_MEM_FRAC = 0.75
 
 # Enables numba strip-application path for routing congestion construction.
-ROUTE_STRUCT_JIT = False
+ROUTE_STRUCT_JIT = True
 # Enables aggregate profiling of exact proxy scoring calls.
 PROFILE_EXACT = False
 # Prefers the incremental scorer's cached congestion field when available.

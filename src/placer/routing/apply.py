@@ -185,7 +185,7 @@ def _apply_v_strips_batch(
     """Add a batch of vertical routing strips."""
     if col.size == 0:
         return
-    if HAS_NUMBA:
+    if HAS_NUMBA and const.ROUTE_STRUCT_JIT:
         _apply_v_strips_batch_jit(
             V_flat,
             np.ascontiguousarray(col, dtype=np.int64),

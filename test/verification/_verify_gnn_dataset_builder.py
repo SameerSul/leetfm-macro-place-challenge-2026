@@ -14,12 +14,15 @@ from pathlib import Path
 import torch
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts" / "gnn"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from scripts.build_gnn_dataset import (  # noqa: E402
+from build_gnn_dataset import (  # noqa: E402
     CANDIDATE_FEATURES,
     EDGE_FEATURES,
+    MACRO_NET_EDGE_FEATURES,
+    NET_NODE_FEATURES,
     NODE_FEATURES,
     build_dataset,
 )
@@ -184,12 +187,25 @@ def main() -> None:
     assert graph["node_features"].shape[1] == len(NODE_FEATURES)
     assert graph["edge_features"].shape[1] == len(EDGE_FEATURES)
     assert graph["edge_index"].shape[0] == 2
+    assert graph["net_node_features"].shape[1] == len(NET_NODE_FEATURES)
+    assert graph["macro_net_edge_index"].shape[0] == 2
+    assert graph["macro_net_edge_features"].shape[1] == len(MACRO_NET_EDGE_FEATURES)
+    assert graph["macro_net_edge_index"].shape[1] == graph["macro_net_edge_features"].shape[0]
     examples = first["examples"]
     assert examples["features"].shape == (4, len(CANDIDATE_FEATURES))
     assert examples["accepted"].tolist() == [True, False, True, False]
     assert examples["proxy_delta_known"].tolist() == [True, True, True, True]
 
-    for key in ("node_features", "edge_index", "edge_features", "macro_cluster", "cluster_node"):
+    for key in (
+        "node_features",
+        "edge_index",
+        "edge_features",
+        "net_node_features",
+        "macro_net_edge_index",
+        "macro_net_edge_features",
+        "macro_cluster",
+        "cluster_node",
+    ):
         _assert_equal(first["graphs"][0][key], second["graphs"][0][key], key)
     for key, val in examples.items():
         _assert_equal(val, second["examples"][key], key)

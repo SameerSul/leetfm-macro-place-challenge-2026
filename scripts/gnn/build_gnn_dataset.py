@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import torch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -30,7 +30,7 @@ from placer.local_search.clusters import (  # noqa: E402
 )
 from placer.scoring.wirelength import _build_wl_cache  # noqa: E402
 
-DATASET_SCHEMA_VERSION = 1
+DATASET_SCHEMA_VERSION = 2
 
 NODE_FEATURES = [
     "is_hard_macro",
@@ -60,6 +60,25 @@ EDGE_FEATURES = [
     "net_weight_norm",
     "fanout_norm",
     "distance_norm",
+]
+
+NET_NODE_FEATURES = [
+    "degree_norm",
+    "macro_degree_norm",
+    "net_weight_norm",
+    "hpwl_x_norm",
+    "hpwl_y_norm",
+    "hpwl_norm",
+]
+
+MACRO_NET_EDGE_FEATURES = [
+    "pin_offset_x_norm",
+    "pin_offset_y_norm",
+    "abs_pin_offset_x_norm",
+    "abs_pin_offset_y_norm",
+    "net_weight_norm",
+    "fanout_norm",
+    "is_driver_pin",
 ]
 
 CANDIDATE_FEATURES = [
@@ -196,6 +215,98 @@ def _spatial_edges(
     return edges
 
 
+def _module_xy(
+    plc: Any, ref: int, b_to_macro: dict[int, int], pos: np.ndarray
+) -> tuple[float, float]:
+    macro_i = b_to_macro.get(int(ref))
+    if macro_i is not None and 0 <= macro_i < pos.shape[0]:
+        return float(pos[macro_i, 0]), float(pos[macro_i, 1])
+    module = plc.modules_w_pins[int(ref)]
+    return float(getattr(module, "x", 0.0)), float(getattr(module, "y", 0.0))
+
+
+def _macro_net_graph(
+    plc: Any,
+    cache: dict[str, Any],
+    pos: np.ndarray,
+    cw: float,
+    ch: float,
+    b_to_macro: dict[int, int],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    max_fanout = max(int(cache["net_lengths"].max()) if cache["net_lengths"].size else 1, 1)
+    max_weight = max(float(cache["net_weights"].max()) if cache["net_weights"].size else 1.0, 1.0)
+    max_dim = max(cw, ch, 1e-9)
+    net_rows: list[list[float]] = []
+    incidence_rows: list[tuple[int, int, list[float]]] = []
+
+    for net_i, start_raw in enumerate(cache["net_starts"]):
+        start = int(start_raw)
+        length = int(cache["net_lengths"][net_i])
+        end = start + length
+        refs = [int(r) for r in cache["ref_idx"][start:end]]
+        pin_x = np.zeros(length, dtype=np.float64)
+        pin_y = np.zeros(length, dtype=np.float64)
+        macro_refs = []
+        for local_i, ref in enumerate(refs):
+            base_x, base_y = _module_xy(plc, ref, b_to_macro, pos)
+            pin_x[local_i] = base_x + float(cache["x_off"][start + local_i])
+            pin_y[local_i] = base_y + float(cache["y_off"][start + local_i])
+            if ref in b_to_macro:
+                macro_refs.append((local_i, b_to_macro[ref]))
+
+        hpwl_x = float((pin_x.max() - pin_x.min()) / max(cw, 1e-9)) if length else 0.0
+        hpwl_y = float((pin_y.max() - pin_y.min()) / max(ch, 1e-9)) if length else 0.0
+        weight = float(cache["net_weights"][net_i] / max_weight)
+        fanout = float(length / max_fanout)
+        macro_degree = float(len({m for _, m in macro_refs}) / max(max_fanout, 1))
+        net_rows.append(
+            [
+                fanout,
+                macro_degree,
+                weight,
+                hpwl_x,
+                hpwl_y,
+                float((hpwl_x + hpwl_y) * weight),
+            ]
+        )
+
+        seen_macro_pin: set[tuple[int, int]] = set()
+        for local_i, macro_i in macro_refs:
+            key = (int(macro_i), int(net_i))
+            if key in seen_macro_pin:
+                continue
+            seen_macro_pin.add(key)
+            x_off = float(cache["x_off"][start + local_i] / max_dim)
+            y_off = float(cache["y_off"][start + local_i] / max_dim)
+            incidence_rows.append(
+                (
+                    int(macro_i),
+                    int(net_i),
+                    [
+                        x_off,
+                        y_off,
+                        abs(x_off),
+                        abs(y_off),
+                        weight,
+                        fanout,
+                        1.0 if local_i == 0 else 0.0,
+                    ],
+                )
+            )
+
+    if incidence_rows:
+        incidence_rows.sort(key=lambda e: (e[0], e[1], e[2]))
+        edge_index = torch.tensor(
+            [[e[0], e[1]] for e in incidence_rows], dtype=torch.long
+        ).t().contiguous()
+        edge_features = torch.tensor([e[2] for e in incidence_rows], dtype=torch.float32)
+    else:
+        edge_index = torch.zeros((2, 0), dtype=torch.long)
+        edge_features = torch.zeros((0, len(MACRO_NET_EDGE_FEATURES)), dtype=torch.float32)
+
+    return torch.tensor(net_rows, dtype=torch.float32), edge_index, edge_features
+
+
 def _build_graph(name: str, bench_roots: list[Path]) -> dict[str, Any]:
     bench_dir = _benchmark_dir(name, bench_roots)
     benchmark, plc = load_benchmark_from_dir(str(bench_dir))
@@ -304,6 +415,9 @@ def _build_graph(name: str, bench_roots: list[Path]) -> dict[str, Any]:
     b_to_macro = {**hard_b_to_a, **soft_b_to_a}
     max_fanout = max(int(cache["net_lengths"].max()) if cache["net_lengths"].size else 1, 1)
     max_weight = max(float(cache["net_weights"].max()) if cache["net_weights"].size else 1.0, 1.0)
+    net_node_features, macro_net_edge_index, macro_net_edge_features = _macro_net_graph(
+        plc, cache, pos, cw, ch, b_to_macro
+    )
     for net_i, start in enumerate(cache["net_starts"]):
         length = int(cache["net_lengths"][net_i])
         refs = [int(r) for r in cache["ref_idx"][int(start) : int(start) + length]]
@@ -343,6 +457,9 @@ def _build_graph(name: str, bench_roots: list[Path]) -> dict[str, Any]:
         "node_features": torch.tensor(node_rows, dtype=torch.float32),
         "edge_index": edge_index,
         "edge_features": edge_attr,
+        "net_node_features": net_node_features,
+        "macro_net_edge_index": macro_net_edge_index,
+        "macro_net_edge_features": macro_net_edge_features,
         "macro_cluster": torch.tensor(macro_cluster, dtype=torch.long),
         "cluster_node": torch.tensor(
             [cluster_node.get(cid, -1) for cid in range(num_clusters)], dtype=torch.long
@@ -582,6 +699,8 @@ def _write_feature_schema(path: Path) -> None:
         "trace_schema_version": 1,
         "node_features": NODE_FEATURES,
         "edge_features": EDGE_FEATURES,
+        "net_node_features": NET_NODE_FEATURES,
+        "macro_net_edge_features": MACRO_NET_EDGE_FEATURES,
         "candidate_features": CANDIDATE_FEATURES,
         "operator_ids": OPERATOR_IDS,
         "kind_ids": KIND_IDS,
@@ -609,6 +728,7 @@ def build_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "metadata": {
             "dataset_schema_version": DATASET_SCHEMA_VERSION,
             "trace_schema_version": 1,
+            "graph_schema": "macro_cluster_plus_macro_net_v2",
             "trace_files": [str(p) for p in trace_paths],
             "benchmarks": sorted(graphs),
             "num_graphs": len(graph_list),
@@ -618,6 +738,8 @@ def build_dataset(args: argparse.Namespace) -> dict[str, Any]:
         "feature_schema": {
             "node_features": NODE_FEATURES,
             "edge_features": EDGE_FEATURES,
+            "net_node_features": NET_NODE_FEATURES,
+            "macro_net_edge_features": MACRO_NET_EDGE_FEATURES,
             "candidate_features": CANDIDATE_FEATURES,
             "operator_ids": OPERATOR_IDS,
             "kind_ids": KIND_IDS,

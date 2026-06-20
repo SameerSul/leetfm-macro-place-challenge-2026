@@ -14,15 +14,26 @@ Implemented:
 - Stage G1 trace completeness for schema v1.
 - Stage G2 JSONL-to-graph dataset builder.
 - Dataset and trace schema documentation.
+- Stage G3 offline baseline entrypoint:
+  `scripts/gnn/train_gnn_baseline.py`.
+- Stage G3 offline label-learnability gate accepted on the minimum
+  4-benchmark split.
+- Stage G4 dataset schema v2 macro-net graph extension.
+- Stage G4 offline macro-net ranker accepted on the minimum 4-benchmark split.
+- Stage G5 default-off relocation-only inference hook smoke-accepted on
+  `ibm10`.
+- Stage G6 closed-loop validation passed legality but was not promoted because
+  full-suite AVG and runtime regressed.
 
 Not implemented:
 
-- Baseline non-GNN ranker.
-- Learned GNN model.
-- Train/eval scripts.
-- Inference-time ranker integration.
 - Model artifact/version discipline.
 - Closed-loop benchmark acceptance package.
+- Promotion-quality closed-loop improvement.
+
+In progress:
+
+- GNN ranking diagnostics before any broader integration or promotion.
 
 ## Documentation
 
@@ -55,7 +66,15 @@ Related implementation docs:
 
 ## Immediate Next Step
 
-Start Stage G3. Train and evaluate baseline non-GNN rankers on the Stage-G2
-dataset before implementing a graph model. Keep the expanded roles in
-[expansion-plan.md](expansion-plan.md) as follow-on targets once the first
-ranker is validated.
+Diagnose why the default-off relocation hook regressed closed-loop average proxy
+despite offline recall wins. Do not expand operators or promote anything
+default-on until the regression is understood and fixed. Keep the expanded roles
+in [expansion-plan.md](expansion-plan.md) as follow-on targets.
+
+Current diagnostic focus:
+
+- Compare ranking by accepted labels against ranking by exact proxy-gain labels.
+- Measure top-k overlap between the G4 ranker and the deterministic trace order.
+- Split failures by benchmark and operator before retraining.
+- Collect closed-loop traces from `HIER_GNN_RANK=1` runs so the next model sees
+  the states it creates, not only heuristic-generated states.
