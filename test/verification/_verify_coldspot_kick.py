@@ -6,6 +6,7 @@ in-bounds, and that co-moved softs stay in-bounds.
 
     uv run python test/verification/_verify_coldspot_kick.py [ibm04 ibm10]
 """
+
 import sys
 from pathlib import Path
 
@@ -19,7 +20,10 @@ import torch
 from macro_place.loader import load_benchmark_from_dir
 from placer.local_search.clusters import derive_cluster_softs, derive_hard_clusters
 from placer.local_search.fields import _congestion_field
-from placer.local_search.lsmc_explore import _coldspot_cluster_kick
+from placer.local_search.lsmc_explore import (
+    _coldspot_cluster_kick,
+    _coldspot_cluster_kick_candidates,
+)
 from placer.scoring.exact import _exact_proxy
 
 TOL = 0.05
@@ -31,7 +35,7 @@ def _check(bench):
     n, n_soft = benchmark.num_hard_macros, benchmark.num_soft_macros
     sizes = benchmark.macro_sizes.numpy().astype(np.float64)
     hw, hh = sizes[:n, 0] / 2, sizes[:n, 1] / 2
-    soft_hw, soft_hh = sizes[n:n + n_soft, 0] / 2, sizes[n:n + n_soft, 1] / 2
+    soft_hw, soft_hh = sizes[n : n + n_soft, 0] / 2, sizes[n : n + n_soft, 1] / 2
     movable = benchmark.get_movable_mask().numpy()
     cw, ch = float(benchmark.canvas_width), float(benchmark.canvas_height)
     nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
@@ -44,23 +48,46 @@ def _check(bench):
     labels, clusters = derive_hard_clusters(plc, n, n_soft=n_soft, min_edge=2)
     csofts = derive_cluster_softs(plc, n, n_soft, labels)
     hard_xy = pos[:n]
-    soft_xy = pos[n:n + n_soft]
+    soft_xy = pos[n : n + n_soft]
     mv = np.flatnonzero(movable[:n])
 
     kicks = 0
+    pools = 0
     for s in range(25):
         rng = np.random.default_rng(s)
         for pk in ("hot", "random"):
             res = _coldspot_cluster_kick(
-                hard_xy, sizes[:n], hw, hh, cw, ch, movable[:n], n,
-                clusters, csofts, soft_xy, soft_hw, soft_hh, movable[n:n + n_soft],
-                field, nr, nc, rng, deadline=float("inf"), pick=pk)
+                hard_xy,
+                sizes[:n],
+                hw,
+                hh,
+                cw,
+                ch,
+                movable[:n],
+                n,
+                clusters,
+                csofts,
+                soft_xy,
+                soft_hw,
+                soft_hh,
+                movable[n : n + n_soft],
+                field,
+                nr,
+                nc,
+                rng,
+                deadline=float("inf"),
+                pick=pk,
+            )
             if res is None:
                 continue
             kicks += 1
             out, out_soft = res
-            assert np.all(out[:, 0] >= hw - TOL) and np.all(out[:, 0] <= cw - hw + TOL), "hard x oob"
-            assert np.all(out[:, 1] >= hh - TOL) and np.all(out[:, 1] <= ch - hh + TOL), "hard y oob"
+            assert np.all(out[:, 0] >= hw - TOL) and np.all(
+                out[:, 0] <= cw - hw + TOL
+            ), "hard x oob"
+            assert np.all(out[:, 1] >= hh - TOL) and np.all(
+                out[:, 1] <= ch - hh + TOL
+            ), "hard y oob"
             p = out[mv]
             sx = np.abs(p[:, None, 0] - p[None, :, 0]) + TOL >= (hw[mv][:, None] + hw[mv][None, :])
             sy = np.abs(p[:, None, 1] - p[None, :, 1]) + TOL >= (hh[mv][:, None] + hh[mv][None, :])
@@ -70,15 +97,81 @@ def _check(bench):
             if out_soft is not None:
                 moved = np.any(np.abs(out_soft - soft_xy) > TOL, axis=1)
                 m = out_soft[moved]
-                assert np.all(m[:, 0] >= soft_hw[moved] - TOL) and \
-                    np.all(m[:, 0] <= cw - soft_hw[moved] + TOL), "soft x oob"
-                assert np.all(m[:, 1] >= soft_hh[moved] - TOL) and \
-                    np.all(m[:, 1] <= ch - soft_hh[moved] + TOL), "soft y oob"
+                assert np.all(m[:, 0] >= soft_hw[moved] - TOL) and np.all(
+                    m[:, 0] <= cw - soft_hw[moved] + TOL
+                ), "soft x oob"
+                assert np.all(m[:, 1] >= soft_hh[moved] - TOL) and np.all(
+                    m[:, 1] <= ch - soft_hh[moved] + TOL
+                ), "soft y oob"
+
+    for s, pk in ((0, "hot"), (1, "random")):
+        pool = _coldspot_cluster_kick_candidates(
+            hard_xy,
+            sizes[:n],
+            hw,
+            hh,
+            cw,
+            ch,
+            movable[:n],
+            n,
+            clusters,
+            csofts,
+            soft_xy,
+            soft_hw,
+            soft_hh,
+            movable[n : n + n_soft],
+            field,
+            nr,
+            nc,
+            np.random.default_rng(s),
+            deadline=float("inf"),
+            pick=pk,
+            kick_count=2,
+        )
+        if not pool:
+            continue
+        pools += 1
+        cluster_ids = {int(trace["cluster"]) for _, _, trace in pool}
+        anchors = {
+            (round(float(trace["anchor_x"]), 6), round(float(trace["anchor_y"]), 6))
+            for _, _, trace in pool
+        }
+        assert len(cluster_ids) == 1, "candidate pool changed selected cluster"
+        assert len(anchors) == 1, "candidate pool changed selected coldspot anchor"
+        assert len(pool) <= 2, "candidate pool exceeded requested kick count"
+        for out, out_soft, trace in pool:
+            assert "cluster_bbox_before" in trace and "cluster_bbox_after" in trace
+            assert "hard_disp_mean" in trace and "target_field" in trace
+            assert np.all(out[:, 0] >= hw - TOL) and np.all(
+                out[:, 0] <= cw - hw + TOL
+            ), "pool hard x oob"
+            assert np.all(out[:, 1] >= hh - TOL) and np.all(
+                out[:, 1] <= ch - hh + TOL
+            ), "pool hard y oob"
+            p = out[mv]
+            sx = np.abs(p[:, None, 0] - p[None, :, 0]) + TOL >= (hw[mv][:, None] + hw[mv][None, :])
+            sy = np.abs(p[:, None, 1] - p[None, :, 1]) + TOL >= (hh[mv][:, None] + hh[mv][None, :])
+            ok = sx | sy
+            np.fill_diagonal(ok, True)
+            assert ok.all(), f"{pk} seed{s}: pool hard overlap"
+            if out_soft is not None:
+                moved = np.any(np.abs(out_soft - soft_xy) > TOL, axis=1)
+                m = out_soft[moved]
+                assert np.all(m[:, 0] >= soft_hw[moved] - TOL) and np.all(
+                    m[:, 0] <= cw - soft_hw[moved] + TOL
+                ), "pool soft x oob"
+                assert np.all(m[:, 1] >= soft_hh[moved] - TOL) and np.all(
+                    m[:, 1] <= ch - soft_hh[moved] + TOL
+                ), "pool soft y oob"
     assert kicks > 0, "no kicks fired (no usable cluster?)"
-    print(f"{bench}: coldspot-kick OK  {len(clusters)} clusters, {kicks} kicks, 0 overlaps, in-bounds")
+    assert pools > 0, "no candidate pools fired"
+    print(
+        f"{bench}: coldspot-kick OK  {len(clusters)} clusters, "
+        f"{kicks} kicks, {pools} pools, 0 overlaps, in-bounds"
+    )
 
 
 if __name__ == "__main__":
-    for b in (sys.argv[1:] or ["ibm04", "ibm10"]):
+    for b in sys.argv[1:] or ["ibm04", "ibm10"]:
         _check(b)
     print("COLDSPOT-KICK VERIFICATION PASSED")
