@@ -54,6 +54,21 @@ Default-off `HIER_GNN_EXTRA_TOP_K` supports additive GNN diagnostics that
 preserve deterministic candidates and append a small learned tail. It is ready
 for timed smoke, not promotion.
 
+Default-off `HIER_GNN_COLDSPOT_SELECT` supports additive coldspot diagnostics.
+It keeps heuristic hot-cluster/cold-window selection, generates multiple kicked
+outcomes plus a no-op, ranks those outcomes with `HIER_GNN_COLDSPOT_MODEL`, and
+then sends only the selected top slice through the existing hierarchy-quality
+and exact-proxy gates. It is not a production mode.
+
+Coldspot is not the primary learned-control target. The active GNN target is
+regional relocation and regional hard-hard, hard-soft, and soft-soft swaps.
+Default-off `HIER_GNN_OPERATORS=region_swaps` can rank regional swap candidates,
+and `HIER_SOFT_BARRIER_GAIN=0.01` can be used in diagnostics as a soft-macro
+barrier for soft relocation and soft-involving swaps. Closed-loop `ibm12` smoke
+showed that full sequential swap reordering is valid but worse, so future work
+should preserve deterministic swap order and add only budgeted GNN-ranked
+supplemental candidates.
+
 The integration rule is mandatory: structural and learned signals may rank,
 propose, select, budget, and diagnose work inside existing hierarchy operators,
 but they must not bypass hard legality, fixed macro immobility, bounds,
