@@ -139,6 +139,331 @@ def derive_hard_clusters(plc, n: int, n_soft: int = 0, max_fanout: int = 8, min_
     return labels, clusters
 
 
+def derive_path_tag_hard_clusters(plc, n: int):
+    """Partition hard macros by explicit slash-separated instance-path tags.
+
+    NG45 macro names carry real RTL hierarchy paths. When those paths produce
+    enough nontrivial groups, they are a stronger hierarchy signal than the
+    flat netlist's sparse low-fanout macro graph. Flat-name benchmarks return
+    ``None`` so connectivity-derived clustering remains the default.
+    """
+    if not bool(const.HIER_TAG_PREFIX_CLUSTERING):
+        return None
+    max_depth = max(1, int(const.HIER_TAG_PREFIX_MAX_DEPTH))
+    min_group = max(2, int(const.HIER_TAG_PREFIX_MIN_GROUP))
+    min_coverage = float(const.HIER_TAG_PREFIX_MIN_COVERAGE)
+    key = (int(n), max_depth, min_group, min_coverage, "path_tags")
+    cached = getattr(plc, "_hard_clusters_path_tags", None)
+    if cached is not None and cached[0] == key:
+        return cached[1], cached[2]
+    try:
+        hard_b = list(plc.hard_macro_indices[:n])
+        names = [plc.modules_w_pins[int(i)].get_name() for i in hard_b]
+    except Exception:
+        return None
+    if sum(1 for name in names if "/" in str(name)) < max(min_group, int(0.5 * n)):
+        return None
+
+    def _prefix(name: str, depth: int) -> str:
+        parts = [p for p in str(name).split("/") if p]
+        if len(parts) < depth:
+            return str(name)
+        return "/".join(parts[:depth])
+
+    best_groups = None
+    best_score = (-1, -1, 0)
+    for depth in range(1, max_depth + 1):
+        buckets: dict[str, list[int]] = {}
+        for i, name in enumerate(names):
+            buckets.setdefault(_prefix(name, depth), []).append(i)
+        groups = [
+            np.asarray(sorted(v), dtype=np.int64)
+            for v in buckets.values()
+            if min_group <= len(v) < n
+        ]
+        if not groups:
+            continue
+        covered = int(sum(len(g) for g in groups))
+        coverage = covered / max(1, n)
+        if coverage < min_coverage:
+            continue
+        score = (len(groups), covered, -max(int(len(g)) for g in groups))
+        if score > best_score:
+            best_groups = groups
+            best_score = score
+    if not best_groups:
+        return None
+
+    labels = np.full(n, -1, dtype=np.int64)
+    clusters: dict[int, np.ndarray] = {}
+    for cid, members in enumerate(best_groups):
+        labels[members] = int(cid)
+        clusters[int(cid)] = members
+    plc._hard_clusters_path_tags = (key, labels, clusters)
+    return labels, clusters
+
+
+def derive_oversized_hard_clusters(
+    plc,
+    n: int,
+    n_soft: int = 0,
+    max_fanout: int = 8,
+    min_edge: int = 2,
+    hard_sizes: "np.ndarray | None" = None,
+):
+    """Split only flat clusters that dominate the hard-macro population.
+
+    This is a conservative middle ground between flat inferred clusters and the
+    old absolute-size recursive clustering. A flat component must exceed
+    `HIER_OVERSIZE_CLUSTER_START_FRAC` of hard macros before bisection is even
+    considered; accepted splits then recurse until leaves are below
+    `HIER_OVERSIZE_CLUSTER_TARGET_FRAC` of hard macros.
+    """
+    start_frac = float(const.HIER_OVERSIZE_CLUSTER_START_FRAC)
+    target_frac = float(const.HIER_OVERSIZE_CLUSTER_TARGET_FRAC)
+    key = (
+        int(n),
+        int(n_soft),
+        int(max_fanout),
+        int(min_edge),
+        float(start_frac),
+        float(target_frac),
+        float(const.HIER_OVERSIZE_CLUSTER_TARGET_TOL),
+        int(const.HIER_OVERSIZE_CLUSTER_MIN_BRIDGE_SOFTS),
+        int(const.HIER_OVERSIZE_CLUSTER_MIN_SIZE),
+        float(const.HIER_OVERSIZE_CLUSTER_MAX_CUT_RATIO),
+        "oversized",
+    )
+    cached = getattr(plc, "_hard_clusters_oversized", None)
+    if cached is not None and cached[0] == key:
+        return cached[1], cached[2]
+
+    flat_labels, flat_clusters = derive_hard_clusters(
+        plc,
+        n,
+        n_soft=n_soft,
+        max_fanout=max_fanout,
+        min_edge=min_edge,
+    )
+    _edge_count, edge_weight = _hard_edge_maps(plc, n, max_fanout)
+    areas = _cluster_partition_areas(n, hard_sizes)
+    start_size = max(2, int(np.floor(max(0.0, start_frac) * float(n))))
+    target_size = max(2, int(np.floor(max(0.0, target_frac) * float(n))))
+    target_accept = max(target_size, int(np.ceil(target_size * float(const.HIER_OVERSIZE_CLUSTER_TARGET_TOL))))
+    min_size = max(2, int(const.HIER_OVERSIZE_CLUSTER_MIN_SIZE))
+    max_cut_ratio = float(const.HIER_OVERSIZE_CLUSTER_MAX_CUT_RATIO)
+    min_bridge_softs = max(0, int(const.HIER_OVERSIZE_CLUSTER_MIN_BRIDGE_SOFTS))
+    if min_bridge_softs > 0:
+        _owned_flat, bridge_flat = derive_soft_cluster_roles(
+            plc,
+            n,
+            n_soft,
+            flat_labels,
+            max_fanout=max_fanout,
+            bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
+        )
+        allow_split = len(bridge_flat) >= min_bridge_softs
+    else:
+        allow_split = True
+
+    leaves: list[np.ndarray] = []
+    for comp in flat_clusters.values():
+        comp = np.asarray(comp, dtype=np.int64)
+        if comp.size < 2:
+            continue
+        if not allow_split or comp.size <= start_size:
+            leaves.append(comp)
+            continue
+        split_leaves = _recursive_bisect_component(
+            comp,
+            edge_weight,
+            areas,
+            max_size=target_size,
+            min_size=min_size,
+            max_cut_ratio=max_cut_ratio,
+        )
+        if len(split_leaves) <= 1 or max(int(len(leaf)) for leaf in split_leaves) > target_accept:
+            leaves.append(comp)
+        else:
+            leaves.extend(split_leaves)
+
+    labels = np.full(n, -1, dtype=np.int64)
+    clusters: "dict[int, np.ndarray]" = {}
+    next_id = 0
+    for leaf in leaves:
+        leaf = np.asarray(sorted(int(x) for x in leaf), dtype=np.int64)
+        if leaf.size < 2:
+            continue
+        labels[leaf] = next_id
+        clusters[next_id] = leaf
+        next_id += 1
+
+    plc._hard_clusters_oversized = (key, labels, clusters)
+    return labels, clusters
+
+
+def _hard_edge_maps(plc, n: int, max_fanout: int):
+    cache = _build_wl_cache(plc)
+    ref_idx = cache["ref_idx"]
+    net_starts = cache["net_starts"]
+    net_lengths = cache["net_lengths"]
+    net_weights = cache["net_weights"]
+    b_to_a = {int(b): a for a, b in enumerate(plc.hard_macro_indices)}
+    edge_count: "dict[tuple[int, int], int]" = {}
+    edge_weight: "dict[tuple[int, int], float]" = {}
+    for net_i in range(len(net_starts)):
+        length = int(net_lengths[net_i])
+        if length < 2 or length > max_fanout:
+            continue
+        start = int(net_starts[net_i])
+        pin_refs = ref_idx[start : start + length]
+        hard_a = sorted({b_to_a[int(r)] for r in pin_refs if int(r) in b_to_a})
+        if len(hard_a) < 2:
+            continue
+        weight = float(net_weights[net_i])
+        for i in range(len(hard_a)):
+            for j in range(i + 1, len(hard_a)):
+                e = (hard_a[i], hard_a[j])
+                edge_count[e] = edge_count.get(e, 0) + 1
+                edge_weight[e] = edge_weight.get(e, 0.0) + weight
+    return edge_count, edge_weight
+
+
+def _flat_components_from_edges(n: int, edge_count: dict[tuple[int, int], int], min_edge: int):
+    parents = _union_find_parents(n)
+    for (a, b), w in edge_count.items():
+        if w >= min_edge:
+            parents[_find(parents, a)] = _find(parents, b)
+    roots: "dict[int, list[int]]" = {}
+    for i in range(n):
+        roots.setdefault(_find(parents, i), []).append(i)
+    return [np.array(sorted(v), dtype=np.int64) for v in roots.values() if len(v) >= 2]
+
+
+def _cluster_partition_areas(n: int, hard_sizes) -> np.ndarray:
+    if hard_sizes is None:
+        return np.ones(n, dtype=np.float64)
+    sizes = np.asarray(hard_sizes, dtype=np.float64)
+    if sizes.ndim != 2 or sizes.shape[0] < n or sizes.shape[1] < 2:
+        return np.ones(n, dtype=np.float64)
+    area = sizes[:n, 0] * sizes[:n, 1]
+    area = np.asarray(area, dtype=np.float64)
+    area[~np.isfinite(area) | (area <= 0.0)] = 1.0
+    return area
+
+
+def _edge_lookup(edge_weight: dict[tuple[int, int], float], a: int, b: int) -> float:
+    if a > b:
+        a, b = b, a
+    return float(edge_weight.get((int(a), int(b)), 0.0))
+
+
+def _recursive_bisect_component(
+    members: np.ndarray,
+    edge_weight: dict[tuple[int, int], float],
+    areas: np.ndarray,
+    *,
+    max_size: int,
+    min_size: int,
+    max_cut_ratio: float,
+) -> list[np.ndarray]:
+    members = np.asarray(members, dtype=np.int64)
+    if members.size <= max_size:
+        return [members]
+    split = _balanced_graph_split(members, edge_weight, areas, min_size=min_size)
+    if split is None:
+        return [members]
+    left, right, cut_ratio = split
+    if cut_ratio > max_cut_ratio:
+        return [members]
+    out: list[np.ndarray] = []
+    out.extend(
+        _recursive_bisect_component(
+            left,
+            edge_weight,
+            areas,
+            max_size=max_size,
+            min_size=min_size,
+            max_cut_ratio=max_cut_ratio,
+        )
+    )
+    out.extend(
+        _recursive_bisect_component(
+            right,
+            edge_weight,
+            areas,
+            max_size=max_size,
+            min_size=min_size,
+            max_cut_ratio=max_cut_ratio,
+        )
+    )
+    return out
+
+
+def _balanced_graph_split(
+    members: np.ndarray,
+    edge_weight: dict[tuple[int, int], float],
+    areas: np.ndarray,
+    *,
+    min_size: int,
+):
+    member_set = {int(x) for x in members}
+    degree = {}
+    total_weight = 0.0
+    for i_raw in members:
+        i = int(i_raw)
+        d = 0.0
+        for j_raw in members:
+            j = int(j_raw)
+            if j <= i:
+                continue
+            w = _edge_lookup(edge_weight, i, j)
+            if w <= 0.0:
+                continue
+            degree[i] = degree.get(i, 0.0) + w
+            degree[j] = degree.get(j, 0.0) + w
+            total_weight += w
+    if total_weight <= 0.0 or members.size < 2 * min_size:
+        return None
+
+    total_area = float(np.sum(areas[members]))
+    target = 0.5 * total_area
+    seed = int(max(members, key=lambda x: (degree.get(int(x), 0.0), areas[int(x)], -int(x))))
+    left = {seed}
+    right = set(member_set)
+    right.remove(seed)
+    left_area = float(areas[seed])
+
+    while len(left) < members.size - min_size and left_area < target:
+        best = None
+        for node in sorted(right):
+            to_left = sum(_edge_lookup(edge_weight, node, other) for other in left)
+            to_right = sum(_edge_lookup(edge_weight, node, other) for other in right if other != node)
+            balance_penalty = abs((left_area + float(areas[node])) - target) / max(target, 1.0)
+            score = to_left - 0.35 * to_right - 0.05 * balance_penalty
+            row = (score, degree.get(node, 0.0), -balance_penalty, -node, node)
+            if best is None or row > best:
+                best = row
+        if best is None:
+            break
+        node = int(best[-1])
+        left.add(node)
+        right.remove(node)
+        left_area += float(areas[node])
+
+    if len(left) < min_size or len(right) < min_size:
+        return None
+
+    left_arr = np.array(sorted(left), dtype=np.int64)
+    right_arr = np.array(sorted(right), dtype=np.int64)
+    cut = 0.0
+    for a in left_arr:
+        for b in right_arr:
+            cut += _edge_lookup(edge_weight, int(a), int(b))
+    cut_ratio = float(cut / max(total_weight, 1e-12))
+    return left_arr, right_arr, cut_ratio
+
+
 def derive_cluster_softs(plc, n: int, n_soft: int, labels: np.ndarray, max_fanout: int = 8):
     """Map each hard cluster to the soft macros it drives.
 

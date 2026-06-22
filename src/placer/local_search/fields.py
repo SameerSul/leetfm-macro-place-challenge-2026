@@ -44,6 +44,25 @@ def _density_field(incremental_scorer, nr: int, nc: int):
     return (go / incremental_scorer.dens_grid_area).reshape(nr, nc)
 
 
+def weighted_congestion_field(source, nr: int, nc: int):
+    """Congestion-heavy proposal field used only for candidate ranking."""
+    cong = _congestion_field(source, nr, nc)
+    if cong is None:
+        return None
+    dens = _density_field(source, nr, nc)
+    cong = np.asarray(cong, dtype=np.float64)
+    cong_norm = cong / max(float(np.max(cong)), 1e-12)
+    if dens is None:
+        dens_norm = np.zeros_like(cong_norm)
+    else:
+        dens = np.asarray(dens, dtype=np.float64)
+        dens_norm = dens / max(float(np.max(dens)), 1e-12)
+    return (
+        float(const.HIER_PROPOSAL_CONGESTION_WEIGHT) * cong_norm
+        + float(const.HIER_PROPOSAL_DENSITY_WEIGHT) * dens_norm
+    )
+
+
 def coldest_window_anchor(
     field, nr: int, nc: int, cw: float, ch: float, win_cells: int
 ) -> "tuple[float, float]":

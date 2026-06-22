@@ -17,7 +17,7 @@ from utils.config import (
     _numba_njit,
 )
 from placer.shared.geometry import separation_matrices
-from placer.local_search.fields import _congestion_field, _density_field
+from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.region_rules import accepts_region_score, point_in_region
 from placer.local_search.structural_fields import combined_structural_penalty
@@ -2155,6 +2155,75 @@ def _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, span2, region_bias):
     return d2 + region_bias * span2 * out
 
 
+def _hierarchy_aware_target_filter(
+    cand: np.ndarray,
+    *,
+    target_x: np.ndarray,
+    target_y: np.ndarray,
+    target_field: np.ndarray,
+    source_field: float,
+    region_bbox,
+    region_index: int,
+    region_mask,
+    cw: float,
+    ch: float,
+    field_span: float,
+    enabled: bool,
+) -> np.ndarray:
+    """Prefer in-region targets unless an outside target has much better relief."""
+    if not enabled or region_bbox is None or cand.size <= 1:
+        return cand
+    rb = region_bbox[int(region_index)]
+    inside = (
+        (target_x[cand] >= rb[0])
+        & (target_x[cand] <= rb[2])
+        & (target_y[cand] >= rb[1])
+        & (target_y[cand] <= rb[3])
+    )
+    if region_mask is not None and inside.any():
+        mask = np.asarray(region_mask, dtype=bool)
+        if mask.ndim == 2 and mask.size:
+            nr, nc = mask.shape
+            cols = np.clip((target_x[cand] / (cw / nc)).astype(np.int64), 0, nc - 1)
+            rows = np.clip((target_y[cand] / (ch / nr)).astype(np.int64), 0, nr - 1)
+            inside &= mask[rows, cols]
+    if not inside.any():
+        return cand
+    relief = float(source_field) - target_field[cand]
+    best_inside = float(np.max(relief[inside]))
+    margin = float(const.HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN) * max(float(field_span), 1e-12)
+    keep = inside | (relief >= best_inside + margin)
+    filtered = cand[keep]
+    return filtered if filtered.size else cand
+
+
+def _point_in_region_mask(region_mask, x: float, y: float, cw: float, ch: float) -> bool:
+    """Return whether a target center falls inside an optional grid-cell mask."""
+    if region_mask is None:
+        return True
+    mask = np.asarray(region_mask, dtype=bool)
+    if mask.ndim != 2 or mask.size == 0:
+        return True
+    nr, nc = mask.shape
+    c = int(np.clip(float(x) / (cw / nc), 0, nc - 1))
+    r = int(np.clip(float(y) / (ch / nr), 0, nr - 1))
+    return bool(mask[r, c])
+
+
+def _target_pool_from_override(target_pool, flat, n_targets: int) -> np.ndarray:
+    """Return sanitized flat grid target indices ordered by field value."""
+    if target_pool is None:
+        return np.zeros(0, dtype=np.int64)
+    pool = np.asarray(target_pool, dtype=np.int64).reshape(-1)
+    if pool.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    pool = np.unique(pool[(pool >= 0) & (pool < flat.size)])
+    if pool.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    order = np.argsort(flat[pool])
+    return pool[order[: max(pool.size, max(n_targets, 64))]]
+
+
 def _micro_shift_polish(
     hard_pos: np.ndarray,
     soft_pos: np.ndarray,
@@ -2357,6 +2426,8 @@ def _relocation_moves_propose_all(
     region_bias: float = 0.0,
     region_escape_min: float = 0.0,
     accept_min_gain: float = 0.0,
+    target_pool: "np.ndarray | None" = None,
+    region_mask: "np.ndarray | None" = None,
 ) -> "tuple[np.ndarray, int, float]":
     """Rank all hard-relocation proposals, then exact-check the best ones."""
     best_score = initial_score
@@ -2383,6 +2454,20 @@ def _relocation_moves_propose_all(
         cand = np.where(cand_field < local_field - 1e-9)[0]
         if cand.size == 0:
             continue
+        cand = _hierarchy_aware_target_filter(
+            cand,
+            target_x=tgt_x,
+            target_y=tgt_y,
+            target_field=cand_field,
+            source_field=local_field,
+            region_bbox=region_bbox,
+            region_index=i,
+            region_mask=region_mask,
+            cw=cw,
+            ch=ch,
+            field_span=max(float(np.max(tgt_cong) - np.min(tgt_cong)), 1e-12),
+            enabled=bool(field == "weighted_congestion" and const.HIER_PROPOSAL_HIERARCHY_AWARE),
+        )
         d2 = (tgt_x[cand] - pos[i, 0]) ** 2 + (tgt_y[cand] - pos[i, 1]) ** 2
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[i, 0]) ** 2 + (tgt_y[cand] - net_centroid[i, 1]) ** 2
@@ -2500,6 +2585,13 @@ def _relocation_moves_propose_all(
     )
 
     if not proposals:
+        _relocation_moves_propose_all.last_stats = {
+            "candidates": 0,
+            "legal": int(legal_count),
+            "scored": int(frozen_scores),
+            "verify_scores": int(verify_scores),
+            "accepts": 0,
+        }
         return pos, 0, best_score
 
     proposals.sort(
@@ -2520,7 +2612,14 @@ def _relocation_moves_propose_all(
             field=field,
         )
     if propose_top_m is not None and propose_top_m > 0:
-        top_m = int(propose_top_m)
+        base_top_m = int(propose_top_m)
+        top_m = base_top_m
+        additive_extra = 0
+        if const.HIER_ADDITIVE_CANDIDATE_POOLS and (
+            deadline is None
+            or time.monotonic() + float(const.HIER_ADDITIVE_MIN_SPARE_S) < float(deadline)
+        ):
+            additive_extra = max(0, int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K))
         gnn_rank_on = os.environ.get("HIER_GNN_RANK", "0").strip() not in {
             "0",
             "false",
@@ -2532,7 +2631,31 @@ def _relocation_moves_propose_all(
         }
         if gnn_rank_on:
             top_m += max(0, int(os.environ.get("HIER_GNN_EXTRA_TOP_K", "0") or "0"))
-        proposals = proposals[:top_m]
+        if additive_extra > 0 and bool(const.HIER_GPU_RANK_ADDITIVE_TAILS):
+            prefix = proposals[:top_m]
+            tail = proposals[top_m:]
+            if tail:
+                _score_relocation_proposals_tensor(
+                    tail,
+                    pos=pos,
+                    cw=cw,
+                    ch=ch,
+                    local_cong=local_cong,
+                    tgt_cong=tgt_cong,
+                )
+                tail.sort(
+                    key=lambda p: (
+                        p["score"],
+                        p["hot_rank"],
+                        p["candidate_rank"],
+                        p["i"],
+                        p["target_index"],
+                    )
+                )
+            proposals = prefix + tail[:additive_extra]
+        else:
+            top_m += additive_extra
+            proposals = proposals[:top_m]
 
     log_gnn_event(
         "hier_relocation_candidates",
@@ -2544,6 +2667,13 @@ def _relocation_moves_propose_all(
         proposal_count=int(len(proposals)),
         legal_count=int(legal_count),
         frozen_scores=int(frozen_scores),
+        additive_candidate_pools=bool(const.HIER_ADDITIVE_CANDIDATE_POOLS),
+        additive_extra_top_k=int(
+            const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K
+            if const.HIER_ADDITIVE_CANDIDATE_POOLS
+            else 0
+        ),
+        gpu_rank_additive_tails=bool(const.HIER_GPU_RANK_ADDITIVE_TAILS),
         structural_weight=float(_hierarchy_structural_weight()),
         candidates=_candidate_trace_sample(proposals, gnn_trace_limit()),
     )
@@ -2712,6 +2842,13 @@ def _relocation_moves_propose_all(
             ),
             flush=True,
         )
+    _relocation_moves_propose_all.last_stats = {
+        "candidates": int(len(proposals)),
+        "legal": int(legal_count),
+        "scored": int(frozen_scores),
+        "verify_scores": int(verify_scores),
+        "accepts": int(accepts),
+    }
     return pos, accepts, best_score
 
 
@@ -2741,6 +2878,8 @@ def _relocation_moves(
     region_bias: float = 0.0,
     region_escape_min: float = 0.0,
     propose_accept_min_gain: float = 0.0,
+    target_pool: "np.ndarray | None" = None,
+    region_mask: "np.ndarray | None" = None,
 ) -> "tuple[np.ndarray, int, float]":
     """Move hot hard macros to colder legal spots.
 
@@ -2750,8 +2889,14 @@ def _relocation_moves(
     can still exit when in-region cold cells run out). Bit-identical when
     `region_bbox is None` (the production pipeline never passes it).
     """
+    _relocation_moves.last_stats = {"candidates": 0, "legal": 0, "scored": 0, "accepts": 0}
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    trace_field = "combined" if use_combined else ("density" if use_density else "congestion")
+    weighted_rank = bool(const.HIER_CONGESTION_WEIGHTED_PROPOSALS and not use_density and not use_combined)
+    trace_field = (
+        "weighted_congestion"
+        if weighted_rank
+        else ("combined" if use_combined else ("density" if use_density else "congestion"))
+    )
     if use_combined:
         # A cell is hot only when both fields are high.
         cong_field = _congestion_field(incremental_scorer, nr, nc)
@@ -2765,7 +2910,11 @@ def _relocation_moves(
         cell_cong = (
             _density_field(incremental_scorer, nr, nc)
             if use_density
-            else _congestion_field(incremental_scorer, nr, nc)
+            else (
+                weighted_congestion_field(incremental_scorer, nr, nc)
+                if weighted_rank
+                else _congestion_field(incremental_scorer, nr, nc)
+            )
         )
     if cell_cong is None:
         return pos, 0, initial_score
@@ -2781,10 +2930,12 @@ def _relocation_moves(
 
     # Use low-field cells as possible targets.
     flat = cell_cong.ravel()
-    _thr = np.percentile(flat, 55)
-    pool = np.where(flat < _thr)[0]
-    if pool.size < max(n_targets, 64):
-        pool = np.argsort(flat)[: max(n_targets, 64)]
+    pool = _target_pool_from_override(target_pool, flat, n_targets)
+    if pool.size == 0:
+        _thr = np.percentile(flat, 55)
+        pool = np.where(flat < _thr)[0]
+        if pool.size < max(n_targets, 64):
+            pool = np.argsort(flat)[: max(n_targets, 64)]
     tgt_c = (pool % nc).astype(np.float64)
     tgt_r = (pool // nc).astype(np.float64)
     tgt_x = (tgt_c + 0.5) * cell_w
@@ -2796,7 +2947,7 @@ def _relocation_moves(
 
     # Optional path ranks all proposals before exact checking.
     if propose_all:
-        return _relocation_moves_propose_all(
+        result = _relocation_moves_propose_all(
             pos=pos,
             sizes=sizes,
             hw=hw,
@@ -2828,10 +2979,19 @@ def _relocation_moves(
             region_bias=region_bias,
             region_escape_min=region_escape_min,
             accept_min_gain=propose_accept_min_gain,
+            target_pool=target_pool,
+            region_mask=region_mask,
         )
+        _relocation_moves.last_stats = dict(
+            getattr(_relocation_moves_propose_all, "last_stats", {})
+        )
+        return result
 
     best_score = initial_score
     accepts = 0
+    candidate_count = 0
+    legal_count = 0
+    scored_count = 0
     all_idx = np.arange(n)
     _span2 = float(max(cw, ch)) ** 2
     full_pos_for_struct = _full_committed_pos(incremental_scorer)
@@ -2848,6 +3008,21 @@ def _relocation_moves(
         cand = np.where(cand_field < local_cong[i] - 1e-9)[0]
         if cand.size == 0:
             continue
+        candidate_count += int(cand.size)
+        cand = _hierarchy_aware_target_filter(
+            cand,
+            target_x=tgt_x,
+            target_y=tgt_y,
+            target_field=cand_field,
+            source_field=float(local_cong[i]),
+            region_bbox=region_bbox,
+            region_index=i,
+            region_mask=region_mask,
+            cw=cw,
+            ch=ch,
+            field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
+            enabled=bool(weighted_rank and const.HIER_PROPOSAL_HIERARCHY_AWARE),
+        )
         d2 = (tgt_x[cand] - pos[i, 0]) ** 2 + (tgt_y[cand] - pos[i, 1]) ** 2
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[i, 0]) ** 2 + (tgt_y[cand] - net_centroid[i, 1]) ** 2
@@ -2884,6 +3059,8 @@ def _relocation_moves(
                 # Keep the whole macro inside the canvas.
                 if nx - hw[i] < 0 or nx + hw[i] > cw or ny - hh[i] < 0 or ny + hh[i] > ch:
                     continue
+                if not _point_in_region_mask(region_mask, nx, ny, cw, ch):
+                    continue
                 # Hard macros cannot overlap.
                 if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
                     continue
@@ -2892,8 +3069,13 @@ def _relocation_moves(
                 scores = incremental_scorer._trial_many_at(prep, np.asarray(targets))
             else:
                 scores = np.empty(0, dtype=np.float64)
+            legal_count += int(len(targets))
+            scored_count += int(scores.size)
             for nx, ny, s in [(x, y, score) for (x, y), score in zip(targets, scores)]:
-                outside = not point_in_region(region_bbox, i, nx, ny)
+                outside = not (
+                    point_in_region(region_bbox, i, nx, ny)
+                    and _point_in_region_mask(region_mask, nx, ny, cw, ch)
+                )
                 if accepts_region_score(s, best_score, outside, region_escape_min):
                     best_score = s
                     best_i_xy = (nx, ny)
@@ -2930,6 +3112,12 @@ def _relocation_moves(
         structural_weight=float(_hierarchy_structural_weight()),
         accepted=accepted_trace[: gnn_trace_limit()],
     )
+    _relocation_moves.last_stats = {
+        "candidates": int(candidate_count),
+        "legal": int(legal_count),
+        "scored": int(scored_count),
+        "accepts": int(accepts),
+    }
     return pos, accepts, best_score
 
 
@@ -2956,8 +3144,16 @@ def _soft_relocation_moves(
     region_bias: float = 0.0,
     region_escape_min: float = 0.0,
     accept_min_gain: float = 0.0,
+    target_pool: "np.ndarray | None" = None,
+    region_mask: "np.ndarray | None" = None,
 ) -> "tuple[np.ndarray, int, float]":
     """Move hot soft macros to colder cells."""
+    _soft_relocation_moves.last_stats = {
+        "candidates": 0,
+        "legal": 0,
+        "scored": 0,
+        "accepts": 0,
+    }
     num_soft = incremental_scorer.num_soft
     if num_soft == 0:
         return soft_pos, 0, initial_score
@@ -2966,10 +3162,15 @@ def _soft_relocation_moves(
     if _env_wl not in (None, ""):
         wl_prefilter = float(_env_wl)
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    weighted_rank = bool(const.HIER_CONGESTION_WEIGHTED_PROPOSALS and not use_density)
     cell_field = (
         _density_field(incremental_scorer, nr, nc)
         if use_density
-        else _congestion_field(incremental_scorer, nr, nc)
+        else (
+            weighted_congestion_field(incremental_scorer, nr, nc)
+            if weighted_rank
+            else _congestion_field(incremental_scorer, nr, nc)
+        )
     )
     if cell_field is None:
         return soft_pos, 0, initial_score
@@ -2987,16 +3188,21 @@ def _soft_relocation_moves(
 
     flat = cell_field.ravel()
     # Use low-field cells as possible targets.
-    _thr = np.percentile(flat, 55)
-    pool = np.where(flat < _thr)[0]
-    if pool.size < max(n_targets, 64):
-        pool = np.argsort(flat)[: max(n_targets, 64)]
+    pool = _target_pool_from_override(target_pool, flat, n_targets)
+    if pool.size == 0:
+        _thr = np.percentile(flat, 55)
+        pool = np.where(flat < _thr)[0]
+        if pool.size < max(n_targets, 64):
+            pool = np.argsort(flat)[: max(n_targets, 64)]
     tgt_x = ((pool % nc).astype(np.float64) + 0.5) * cell_w
     tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
     tgt_cong = flat[pool]
 
     best_score = initial_score
     accepts = 0
+    candidate_count = 0
+    legal_count = 0
+    scored_count = 0
     full_pos_for_struct = _full_committed_pos(incremental_scorer)
     sizes_for_struct = _full_macro_sizes(incremental_scorer)
     accepted_trace = []
@@ -3007,6 +3213,21 @@ def _soft_relocation_moves(
         cand = np.where(tgt_cong < local_cong[k] - 1e-9)[0]
         if cand.size == 0:
             continue
+        candidate_count += int(cand.size)
+        cand = _hierarchy_aware_target_filter(
+            cand,
+            target_x=tgt_x,
+            target_y=tgt_y,
+            target_field=tgt_cong,
+            source_field=float(local_cong[k]),
+            region_bbox=region_bbox,
+            region_index=k,
+            region_mask=region_mask,
+            cw=cw,
+            ch=ch,
+            field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
+            enabled=bool(weighted_rank and const.HIER_PROPOSAL_HIERARCHY_AWARE),
+        )
         # Order targets by distance and optional wirelength anchor.
         d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
         if wl_blend > 0.0 and net_centroid is not None:
@@ -3037,6 +3258,8 @@ def _soft_relocation_moves(
             for t in cand:
                 nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
                 ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
+                if not _point_in_region_mask(region_mask, nx, ny, cw, ch):
+                    continue
                 # Cheaply skip targets with too much wirelength damage.
                 wl_d = 0.0
                 if wl_prefilter > 0.0:
@@ -3049,10 +3272,15 @@ def _soft_relocation_moves(
                 scores = incremental_scorer._trial_many_at_soft(prep, targets)
             else:
                 scores = np.empty(0, dtype=np.float64)
+            legal_count += int(targets.shape[0])
+            scored_count += int(scores.size)
             for nx, ny, s in [
                 (float(p[0]), float(p[1]), float(score)) for p, score in zip(targets, scores)
             ]:
-                outside = not point_in_region(region_bbox, k, nx, ny)
+                outside = not (
+                    point_in_region(region_bbox, k, nx, ny)
+                    and _point_in_region_mask(region_mask, nx, ny, cw, ch)
+                )
                 min_gain = max(
                     1e-9,
                     float(accept_min_gain),
@@ -3085,7 +3313,7 @@ def _soft_relocation_moves(
         "hier_relocation_result",
         benchmark=getattr(benchmark, "name", ""),
         kind="soft_sequential",
-        field="density" if use_density else "congestion",
+        field="density" if use_density else ("weighted_congestion" if weighted_rank else "congestion"),
         initial_proxy=float(initial_score),
         final_proxy=float(best_score),
         hot_count=int(len(hot)),
@@ -3093,4 +3321,10 @@ def _soft_relocation_moves(
         structural_weight=float(_hierarchy_structural_weight()),
         accepted=accepted_trace[: gnn_trace_limit()],
     )
+    _soft_relocation_moves.last_stats = {
+        "candidates": int(candidate_count),
+        "legal": int(legal_count),
+        "scored": int(scored_count),
+        "accepts": int(accepts),
+    }
     return soft_pos, accepts, best_score
