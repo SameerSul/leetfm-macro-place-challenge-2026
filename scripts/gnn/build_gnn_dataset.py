@@ -109,6 +109,27 @@ CANDIDATE_FEATURES = [
     "movable_count_norm",
     "member_count_norm",
     "soft_count_norm",
+    "candidate_pool_size_norm",
+    "selector_rank_norm",
+    "selected_by_gnn",
+    "gnn_score",
+    "gnn_score_known",
+    "is_noop",
+    "min_field_gap",
+    "field_gap_margin",
+    "window_microns_norm",
+    "target_density",
+    "soft_moved_norm",
+    "hard_disp_mean_norm",
+    "hard_disp_max_norm",
+    "soft_disp_mean_norm",
+    "soft_disp_max_norm",
+    "cluster_bbox_before_area_norm",
+    "cluster_bbox_after_area_norm",
+    "cluster_bbox_area_ratio",
+    "cluster_centroid_dx_norm",
+    "cluster_centroid_dy_norm",
+    "soft_barrier_gain",
 ]
 
 OPERATOR_IDS = {
@@ -125,6 +146,7 @@ KIND_IDS = {
     "hard_hard": 4,
     "hard_soft": 5,
     "soft_soft": 6,
+    "coldspot_kick": 7,
 }
 
 FIELD_IDS = {
@@ -143,6 +165,9 @@ REJECTION_IDS = {
     "field_gap_below_threshold": 7,
     "no_eligible_cluster": 8,
     "not_scored": 9,
+    "not_selected_by_gnn": 10,
+    "not_evaluated_after_accept": 11,
+    "no_op": 12,
 }
 
 
@@ -160,6 +185,14 @@ def _as_float(value: Any, default: float = 0.0) -> float:
 
 def _norm_xy(x: Any, y: Any, cw: float, ch: float) -> tuple[float, float]:
     return _as_float(x) / max(cw, 1e-9), _as_float(y) / max(ch, 1e-9)
+
+
+def _bbox_area_norm(value: Any, area_norm: float) -> float:
+    if not isinstance(value, (list, tuple)) or len(value) < 4:
+        return 0.0
+    width = max(0.0, _as_float(value[2]) - _as_float(value[0]))
+    height = max(0.0, _as_float(value[3]) - _as_float(value[1]))
+    return float((width * height) / max(area_norm, 1e-9))
 
 
 def _benchmark_dir(name: str, roots: list[Path]) -> Path:
@@ -301,9 +334,9 @@ def _macro_net_graph(
 
     if incidence_rows:
         incidence_rows.sort(key=lambda e: (e[0], e[1], e[2]))
-        edge_index = torch.tensor(
-            [[e[0], e[1]] for e in incidence_rows], dtype=torch.long
-        ).t().contiguous()
+        edge_index = (
+            torch.tensor([[e[0], e[1]] for e in incidence_rows], dtype=torch.long).t().contiguous()
+        )
         edge_features = torch.tensor([e[2] for e in incidence_rows], dtype=torch.float32)
     else:
         edge_index = torch.zeros((2, 0), dtype=torch.long)
@@ -478,11 +511,18 @@ def _build_graph(name: str, bench_roots: list[Path]) -> dict[str, Any]:
 
 def _candidate_feature(row: dict[str, Any], graph: dict[str, Any]) -> list[float]:
     cw, ch = [float(v) for v in graph["canvas"].tolist()]
+    area_norm = max(cw * ch, 1e-9)
+    max_dim = max(cw, ch, 1e-9)
     operator = row.get("operator") or row.get("event", "")
     if row.get("event") == "hier_relocation_candidate":
         operator = "relocation"
     target_x, target_y = _norm_xy(row.get("x"), row.get("y"), cw, ch)
     axis = row.get("axis_scale") or [0.0, 0.0]
+    bbox_before = _bbox_area_norm(row.get("cluster_bbox_before"), area_norm)
+    bbox_after = _bbox_area_norm(row.get("cluster_bbox_after"), area_norm)
+    field_gap = _as_float(row.get("field_gap"))
+    min_field_gap = _as_float(row.get("min_field_gap"))
+    gnn_score_known = row.get("gnn_score") is not None
     return [
         float(OPERATOR_IDS.get(str(operator), 0)),
         float(KIND_IDS.get(str(row.get("kind", "")), 0)),
@@ -511,6 +551,29 @@ def _candidate_feature(row: dict[str, Any], graph: dict[str, Any]) -> list[float
         _as_float(row.get("movable_count")) / max(int(graph["num_macros"]), 1),
         _as_float(row.get("member_count")) / max(int(graph["num_macros"]), 1),
         _as_float(row.get("soft_count")) / max(int(graph["num_soft_macros"]), 1),
+        _as_float(row.get("candidate_pool_size"), 1.0) / 64.0,
+        _as_float(row.get("selector_rank"), -1.0) / 64.0,
+        float(bool(row.get("selected_by_gnn", False))),
+        _as_float(row.get("gnn_score")),
+        float(gnn_score_known),
+        float(bool(row.get("is_noop", False))),
+        min_field_gap,
+        field_gap - min_field_gap,
+        _as_float(row.get("window_microns")) / max_dim,
+        _as_float(row.get("target_density"), 0.0),
+        _as_float(row.get("soft_moved")) / max(int(graph["num_soft_macros"]), 1),
+        _as_float(row.get("hard_disp_mean")) / max_dim,
+        _as_float(row.get("hard_disp_max")) / max_dim,
+        _as_float(row.get("soft_disp_mean")) / max_dim,
+        _as_float(row.get("soft_disp_max")) / max_dim,
+        bbox_before,
+        bbox_after,
+        bbox_after / max(bbox_before, 1e-9) if bbox_before > 0.0 else 0.0,
+        (_as_float(row.get("cluster_cx_after")) - _as_float(row.get("cluster_cx_before")))
+        / max(cw, 1e-9),
+        (_as_float(row.get("cluster_cy_after")) - _as_float(row.get("cluster_cy_before")))
+        / max(ch, 1e-9),
+        _as_float(row.get("soft_barrier_gain")),
     ]
 
 
@@ -589,6 +652,8 @@ def _flush_relocation_pending(
                 "proxy_delta": _as_float(row.get("proxy_delta")),
                 "proxy_delta_known": bool(row.get("proxy_delta") is not None),
                 "rejection_id": 0 if accepted_flag else REJECTION_IDS["not_scored"],
+                "candidate_id": int(row.get("candidate_id", row.get("candidate_rank", -1))),
+                "candidate_pool_id": int(row.get("candidate_pool_id", -1)),
                 "trace_file": pending.get("_trace_file", ""),
                 "trace_line": int(pending.get("_trace_line", 0)),
             }
@@ -654,6 +719,8 @@ def _build_examples(
                     "proxy_delta": _as_float(cand.get("proxy_delta")),
                     "proxy_delta_known": bool(cand.get("proxy_delta") is not None),
                     "rejection_id": REJECTION_IDS.get(cand.get("rejection_reason"), 0),
+                    "candidate_id": int(cand.get("candidate_id", cand.get("candidate_rank", -1))),
+                    "candidate_pool_id": int(cand.get("candidate_pool_id", -1)),
                     "trace_file": cand.get("_trace_file", ""),
                     "trace_line": int(cand.get("_trace_line", 0)),
                 }
@@ -673,6 +740,8 @@ def _stack_examples(examples: list[dict[str, Any]]) -> dict[str, Any]:
             "proxy_delta": torch.zeros(0, dtype=torch.float32),
             "proxy_delta_known": torch.zeros(0, dtype=torch.bool),
             "rejection_id": torch.zeros(0, dtype=torch.long),
+            "candidate_id": torch.zeros(0, dtype=torch.long),
+            "candidate_pool_id": torch.zeros(0, dtype=torch.long),
             "operator": [],
             "kind": [],
             "benchmark": [],
@@ -690,6 +759,10 @@ def _stack_examples(examples: list[dict[str, Any]]) -> dict[str, Any]:
             [e["proxy_delta_known"] for e in examples], dtype=torch.bool
         ),
         "rejection_id": torch.tensor([e["rejection_id"] for e in examples], dtype=torch.long),
+        "candidate_id": torch.tensor([e["candidate_id"] for e in examples], dtype=torch.long),
+        "candidate_pool_id": torch.tensor(
+            [e["candidate_pool_id"] for e in examples], dtype=torch.long
+        ),
         "operator": [e["operator"] for e in examples],
         "kind": [e["kind"] for e in examples],
         "benchmark": [e["benchmark"] for e in examples],

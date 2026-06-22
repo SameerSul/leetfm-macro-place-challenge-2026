@@ -125,7 +125,15 @@ def _write_trace(path: Path) -> None:
             "event": "hier_coldspot_candidate",
             "benchmark": "ibm01",
             "operator": "coldspot_tightening",
+            "kind": "coldspot_kick",
+            "field": "congestion",
             "candidate_id": 0,
+            "candidate_pool_id": 0,
+            "candidate_pool_size": 2,
+            "selector_enabled": True,
+            "selector_rank": 1,
+            "selected_by_gnn": False,
+            "is_noop": False,
             "cluster": 0,
             "field_gap": 0.2,
             "min_field_gap": 0.02,
@@ -144,7 +152,18 @@ def _write_trace(path: Path) -> None:
             "window_cells": 3,
             "target_density": 0.65,
             "pick": "random",
+            "soft_count": 2,
             "soft_moved": 1,
+            "hard_disp_mean": 0.4,
+            "hard_disp_max": 0.9,
+            "soft_disp_mean": 0.2,
+            "soft_disp_max": 0.5,
+            "cluster_cx_before": 1.0,
+            "cluster_cy_before": 2.0,
+            "cluster_cx_after": 1.4,
+            "cluster_cy_after": 2.2,
+            "cluster_bbox_before": [0.0, 0.0, 2.0, 2.0],
+            "cluster_bbox_after": [0.0, 0.0, 3.0, 2.0],
             "accepted": False,
             "rejection_reason": "proxy_budget_failed",
         },
@@ -195,6 +214,8 @@ def main() -> None:
     assert examples["features"].shape == (4, len(CANDIDATE_FEATURES))
     assert examples["accepted"].tolist() == [True, False, True, False]
     assert examples["proxy_delta_known"].tolist() == [True, True, True, True]
+    assert examples["candidate_pool_id"].tolist() == [-1, -1, -1, 0]
+    assert examples["candidate_id"].tolist() == [0, 0, 0, 0]
 
     for key in (
         "node_features",

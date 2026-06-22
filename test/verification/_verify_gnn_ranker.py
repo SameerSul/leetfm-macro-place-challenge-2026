@@ -13,7 +13,7 @@ from pathlib import Path
 import torch
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts" / "gnn" / "gnn"))
+sys.path.insert(0, str(ROOT / "scripts" / "gnn"))
 
 from train_gnn_ranker import train_and_evaluate  # noqa: E402
 
