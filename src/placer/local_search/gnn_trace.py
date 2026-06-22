@@ -11,12 +11,17 @@ from typing import Any
 import numpy as np
 
 TRACE_SCHEMA_VERSION = 1
+PLATEAU_SCHEMA_VERSION = 1
 
 _FALSE = {"0", "false", "False", "no", "NO", "off", ""}
 
 
 def gnn_trace_enabled() -> bool:
     return os.environ.get("HIER_GNN_TRACE", "0").strip() not in _FALSE
+
+
+def plateau_trace_enabled() -> bool:
+    return os.environ.get("HIER_PLATEAU_TRACE", "1").strip() not in _FALSE
 
 
 def gnn_trace_limit(default: int = 512) -> int:
@@ -30,6 +35,16 @@ def _trace_path() -> Path:
     root = Path(os.environ.get("HIER_GNN_TRACE_DIR", "ml_data/beyondppa_gnn"))
     run_id = os.environ.get("HIER_GNN_TRACE_RUN", "").strip()
     name = f"{run_id}.jsonl" if run_id else "trace.jsonl"
+    return root / name
+
+
+def _plateau_trace_path() -> Path:
+    raw = os.environ.get("HIER_PLATEAU_TRACE_PATH", "").strip()
+    if raw:
+        return Path(raw)
+    root = Path(os.environ.get("HIER_PLATEAU_TRACE_DIR", "ml_data/beyondppa_gnn/plateau"))
+    run_id = os.environ.get("HIER_PLATEAU_TRACE_RUN", "").strip()
+    name = f"{run_id}.jsonl" if run_id else "plateau_telemetry.jsonl"
     return root / name
 
 
@@ -55,6 +70,22 @@ def log_gnn_event(event: str, **payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {
         "schema_version": TRACE_SCHEMA_VERSION,
+        "time_s": time.time(),
+        "event": event,
+        **payload,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(_jsonable(row), sort_keys=True, separators=(",", ":")) + "\n")
+
+
+def log_plateau_event(event: str, **payload: Any) -> None:
+    """Append one lightweight plateau telemetry row unless disabled."""
+    if not plateau_trace_enabled():
+        return
+    path = _plateau_trace_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "schema_version": PLATEAU_SCHEMA_VERSION,
         "time_s": time.time(),
         "event": event,
         **payload,
