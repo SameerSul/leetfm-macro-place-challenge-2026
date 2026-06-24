@@ -3,13 +3,14 @@
 The current graph only expands coldspot-local region bounds. The next useful
 steps should make the graph directly steer candidate choice and target choice.
 
-## 1. Graph-Scored Coldspot Candidate Selection
+## 1. Learned Coldspot Candidate Selection
 
-Status: partially implemented.
+Status: future work.
 
-The current implementation ranks generated coldspot outcomes by graph features
-when the GNN selector is off. It generates several kicked outcomes, scores their
-available graph area, and exact-gates the top graph-ranked slice.
+The current implementation records graph features for generated coldspot
+outcomes, but non-GNN production commits from exact-proxy-ranked refined
+candidates. A future learned selector can use those features to avoid scoring
+unpromising pools.
 
 The kick generator still chooses the selected cluster/window primarily from
 field values. That can select a low-congestion target that has little usable

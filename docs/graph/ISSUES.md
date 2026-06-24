@@ -134,10 +134,10 @@ Status: closed for relocation, open for swaps under G-002.
 Coldspot-local hard and soft relocation now reject targets outside the
 graph-expanded mask.
 
-### G-008: No Graph-Aware Candidate Selection
+### G-008: Exact-Ranked Coldspot Candidate Selection
 
-Status: closed for generated outcomes, open for anchor enumeration under G-003.
+Status: closed for default commitment, open for learned selection under G-003.
 
-Generated coldspot outcomes are now graph-ranked when the GNN selector is off.
-The graph selector uses field relief, adaptive cold cells, graph region cells,
-and graph target cells.
+Generated coldspot outcomes now carry graph features, but non-GNN production
+commits from exact-proxy-ranked refined candidates. The graph features are kept
+for traces, tie-breakers, and future learned selection.

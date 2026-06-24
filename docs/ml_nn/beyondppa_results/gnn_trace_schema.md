@@ -126,12 +126,21 @@ Coldspot tightening candidate. Additional fields:
 
 - `field_gap`
 - `min_field_gap`
+- `opportunity_score`
+- `opportunity_min_score`
+- `opportunity_open_cold_cells`
+- `opportunity_min_cold_cells`
+- `opportunity_cluster`
+- `opportunity_cluster_ids`
+- `opportunity_displacement_windows`
 - `cluster`
 - `candidate_pool_size`
 - `selector_enabled`
 - `oracle_enabled`
 - `selector_rank`
 - `selected_by_gnn`
+- `exact_selector_enabled`
+- `selected_by_exact`
 - `selected_by_policy`
 - `gnn_score`
 - `gnn_rank_error`
@@ -142,6 +151,9 @@ Coldspot tightening candidate. Additional fields:
 - `cluster_heat`
 - `source_field`, `target_field`, `score`
 - `anchor_x`, `anchor_y`
+- whole-cluster variant fields such as `whole_variant`,
+  `whole_anchor_rank`, `whole_anchor_field`, `whole_orientation`,
+  `whole_shape_scale`, `whole_anchor_x`, and `whole_anchor_y`
 - `window_microns`
 - `window_cells`
 - `target_density`
@@ -155,6 +167,9 @@ Coldspot tightening candidate. Additional fields:
 - `committed`, indicating the candidate actually changed the placement
 
 Skipped coldspot rounds may omit cluster fields when no candidate was generated.
+They still include the cheap opportunity fields when a congestion field was
+available, so scheduling studies can distinguish weak field gap, insufficient
+open cold cells, low opportunity score, and dry-round-limit stops.
 When `HIER_GNN_COLDSPOT_SELECT=1`, each round may emit the no-op candidate plus
 all generated kick outcomes. Only selected candidates have exact proxy fields
 unless a candidate was evaluated before an earlier selected candidate accepted.

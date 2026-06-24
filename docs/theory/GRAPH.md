@@ -139,10 +139,10 @@ log(graph region cells)
 small displacement penalty
 ```
 
-The selector chooses the top `HIER_COLDSPOT_GRAPH_SELECT_TOP_K` non-noop
-outcomes for the normal exact-proxy and hierarchy-quality gates. It does not
-yet enumerate multiple anchor windows; it ranks generated outcomes for the
-selected cluster/window.
+The default non-GNN selector now commits from exact-proxy-ranked refined
+outcomes, using graph score only as a tie-breaker. The coldspot generator tries
+multiple opportunity-ranked clusters and multiple cold anchors before exact
+gating.
 
 `HIER_COLDSPOT_PARTIAL_FRONTIER=False` is a default-off generator experiment
 that can add one more outcome for that selected cluster/window. It estimates
@@ -154,9 +154,9 @@ between the source hotspot and the coldspot. Tiny source clusters are skipped
 by default because far 2-of-3 splits are normally hierarchy-quality failures.
 After partial hard legalization, a pre-exact split-shape predictor rejects
 candidates whose full source-cluster radius, bbox radius, or moved-vs-remaining
-centroid separation grows beyond the configured ratios. The graph selector and
-exact gates treat surviving partial candidates like any other generated
-coldspot outcome. Rejected partial attempts can emit
+centroid separation grows beyond the configured ratios. Exact gates treat
+surviving partial candidates like any other generated coldspot outcome.
+Rejected partial attempts can emit
 `hier_coldspot_partial_reject` trace rows, including selector, connectivity,
 and split-shape reasons, so default-off tuning can inspect candidates that never
 reach exact scoring.

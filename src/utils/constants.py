@@ -246,6 +246,16 @@ HIER_COLDSPOT_MIN_GAIN = 0.0001
 HIER_COLDSPOT_QUALITY_BUDGET = 0.01
 # Minimum hot-vs-cold field gap required before coldspot tightening runs.
 HIER_COLDSPOT_MIN_FIELD_GAP = 0.02
+# Cheap opportunity score required before a coldspot round spends candidate and
+# exact-scoring time. The score blends hot-cold relief, open cold capacity, and
+# source-to-cold displacement.
+HIER_COLDSPOT_OPPORTUNITY_MIN_SCORE = 0.0
+# Minimum open cold cells around the selected window before trying a whole-cluster kick.
+HIER_COLDSPOT_OPPORTUNITY_MIN_COLD_CELLS = 1
+# Stop coldspot tightening after this many generated-but-uncommitted rounds.
+HIER_COLDSPOT_MAX_DRY_ROUNDS = 2
+# Number of opportunity-ranked clusters tried in one coldspot round.
+HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS = 2
 # Number of coldspot tightening rounds to attempt.
 HIER_COLDSPOT_ROUNDS = 8
 # Wall-clock budget for coldspot tightening.
@@ -271,11 +281,16 @@ HIER_COLDSPOT_LOCAL_HARD_RELOC_TOP_K = 24
 HIER_COLDSPOT_LOCAL_SOFT_RELOC_TOP_K = 64
 # Candidate cold cells considered per local relocation source.
 HIER_COLDSPOT_LOCAL_RELOC_TARGETS = 8
-# Stage G1: rank generated coldspot candidates by graph availability before exact gating.
-# Number of generated kicked outcomes considered by graph-aware selection.
-HIER_COLDSPOT_GRAPH_SELECT_CANDIDATES = 4
-# Number of graph-ranked kicked outcomes exact-gated per coldspot round.
-HIER_COLDSPOT_GRAPH_SELECT_TOP_K = 2
+# Number of shape-preserving whole-cluster variants generated for each selected
+# opportunity-ranked coldspot cluster when the GNN selector is not driving the
+# candidate count.
+HIER_COLDSPOT_WHOLE_VARIANTS = 5
+# Number of distinct low-congestion anchors considered by whole-cluster variants.
+HIER_COLDSPOT_ANCHOR_VARIANTS = 3
+# Compacting scale used by shape-preserving whole-cluster layouts.
+HIER_COLDSPOT_COMPACT_SPREAD = 0.72
+# Blend toward the current cluster centroid for lower-displacement candidates.
+HIER_COLDSPOT_LOW_DISP_BLEND = 0.45
 # Stage G2/G6: use graph-derived cell pools and masks for local hard/soft
 # relocation targets. Graph-local fallback runs when coldspot kicks produce no
 # accepted move.
@@ -371,6 +386,10 @@ RELOC_PROPOSE_DEFAULT_CUDA_CHUNK_SIZE = 128
 RELOC_PROPOSE_MEM_SAFETY = 1.0
 # Default CUDA memory fraction used for automatic proposal scoring chunk sizing.
 RELOC_PROPOSE_AUTO_MEM_FRAC = 0.75
+# Reuse the exact CUDA delta scorer for bounded/local sequential relocation
+# target batches when CUDA is available. Falls back to the serial scorer.
+HIER_LOCAL_RELOC_CUDA_DELTA = "auto"
+HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS = 64
 
 # Enables aggregate profiling of exact proxy scoring calls.
 PROFILE_EXACT = False

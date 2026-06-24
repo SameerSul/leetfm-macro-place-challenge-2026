@@ -342,6 +342,13 @@ post-swap, and strong soft repair keep the accepted CPU hierarchy ordering by
 default. The CUDA prefix applies the same hierarchy-aware target filter before
 ranking and exact incremental scoring still decides all accepted moves.
 
+Bounded hard relocation, bounded soft relocation, and micro-shift can also call
+the exact CUDA delta scorer for larger per-source target batches. The default
+gate is `HIER_LOCAL_RELOC_CUDA_DELTA=auto` with
+`HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS=64`; smaller cleanup batches remain on
+the incremental CPU scorer because the CUDA static-tensor setup cost is larger
+than the scoring work.
+
 Stage 6 adds a final audit-only hard legality margin report using the same
 `0.05` separation tolerance as local legality tests. The evaluator can still
 report 0 overlaps when this strict margin is slightly negative; the audit makes
@@ -351,6 +358,8 @@ that near-contact visible in trace and summary logs.
 HIER_GPU_RANK_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_MIN_CANDIDATES=1024
+HIER_LOCAL_RELOC_CUDA_DELTA=auto
+HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS=64
 HIER_GPU_RANK_ADDITIVE_TAILS=0
 HIER_ADDITIVE_RELOC_EXTRA_TOP_K=8
 HIER_ADDITIVE_SWAP_EXTRA_K=4
@@ -389,14 +398,20 @@ HIER_COLDSPOT_TOTAL=0.0
 HIER_COLDSPOT_MIN_GAIN=0.0001
 HIER_COLDSPOT_QUALITY_BUDGET=0.01
 HIER_COLDSPOT_MIN_FIELD_GAP=0.02
+HIER_COLDSPOT_OPPORTUNITY_MIN_SCORE=0.0
+HIER_COLDSPOT_OPPORTUNITY_MIN_COLD_CELLS=1
+HIER_COLDSPOT_MAX_DRY_ROUNDS=2
+HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS=2
 HIER_COLDSPOT_ROUNDS=8
 HIER_COLDSPOT_BUDGET_S=30
 HIER_COLDSPOT_LOCAL_HARD_PAD_FRAC=0.50
 HIER_COLDSPOT_LOCAL_MIN_PAD_CELLS=1
 HIER_COLDSPOT_LOCAL_MAX_PAD_FRAC=0.12
 HIER_COLDSPOT_LOCAL_SOFT_ESCAPE_MIN=0.0025
-HIER_COLDSPOT_GRAPH_SELECT_CANDIDATES=4
-HIER_COLDSPOT_GRAPH_SELECT_TOP_K=2
+HIER_COLDSPOT_WHOLE_VARIANTS=5
+HIER_COLDSPOT_ANCHOR_VARIANTS=3
+HIER_COLDSPOT_COMPACT_SPREAD=0.72
+HIER_COLDSPOT_LOW_DISP_BLEND=0.45
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K=3
 HIER_COLDSPOT_SOFT_ONLY=0
 HIER_COLDSPOT_SOFT_ONLY_TOP_K=96
@@ -429,9 +444,19 @@ HIER_SURVIVOR_GPU_RANK=auto
 
 A round first requires a cheap congestion-field opportunity: an eligible cluster
 must be at least `HIER_COLDSPOT_MIN_FIELD_GAP` hotter than its best matching
-cold window. The local refinement pass runs hard-hard and hard-soft swaps with
-the kicked hard cluster locked inside the local box, then soft-soft swaps and
-soft relocation with a soft escape gate of
+cold window, have enough open cold cells near that window, and clear the cheap
+opportunity score that blends field relief, cold capacity, and displacement.
+Default production tries the top two opportunity-ranked clusters with five
+whole-cluster variants per cluster, then commits from exact-proxy-ranked
+refined candidates rather than from a graph-ranked prefix. Coldspot tightening
+stops after `HIER_COLDSPOT_MAX_DRY_ROUNDS` generated pools fail to commit;
+weak-opportunity and dry-limit exits also skip the graph-local and soft-only
+coldspot fallbacks. Cold-window integral images are cached per field/window
+inside the opportunity predictor, and generated kick anchors are cached per
+window size for the round, so repeated clusters do not rebuild the same window
+averages. The local refinement pass runs hard-hard and hard-soft swaps with the
+kicked hard cluster locked inside the local box, then soft-soft swaps and soft
+relocation with a soft escape gate of
 `HIER_COLDSPOT_LOCAL_SOFT_ESCAPE_MIN`. The local box includes owned/bridge soft
 macros, but its base pad is derived from the kicked hard-core max dimension, not
 from the soft-inclusive bbox. The pad is clamped by
@@ -445,17 +470,20 @@ cells up to `HIER_COLDSPOT_ADAPTIVE_MAX_CELLS` grid nodes away from the
 cluster-defined seed. The hard-core pad is applied after that graph expansion,
 giving swaps and soft-locked relocations room around the usable coldspot area. A
 graph-derived target pool and graph-expanded target mask are passed to
-coldspot-local hard and soft relocation. Generated outcomes are graph-ranked
-before exact gating when the GNN selector is disabled. A default-off
+coldspot-local hard and soft relocation. Default non-GNN candidate commitment
+uses exact-proxy-ranked refined outcomes. A default-off
 `HIER_COLDSPOT_SOFT_ONLY` fallback can run after hard coldspot movement and
 graph-local fallback both fail to commit. It holds hard macros fixed during the
 soft fallback, uses open remembered cold cells as the soft relocation target
 pool, keeps hierarchy region boxes and the cold-cell mask active, and accepts
 only exact-proxy improvements above `HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN`.
 Coldspot kick generation augments each cluster's owned softs with movable bridge
-soft macros tied to the same hierarchy cluster, places hard and soft members
-into the cold window together, and sends that full candidate through the same
-local refinement, exact-proxy, and hierarchy-quality gates. A default-off
+soft macros tied to the same hierarchy cluster. The default whole-cluster pool
+now includes multiple opportunity-ranked clusters, low-congestion anchors, and
+shape-preserving layouts: compact original orientation, rotated orientation,
+source-facing border compaction, and a lower-displacement centroid-blended
+candidate. Hard and soft members move as one cluster-level state and then pass
+through the same local refinement, exact-proxy, and hierarchy-quality gates. A default-off
 `HIER_COLDSPOT_PARTIAL_FRONTIER` prototype can add one capacity-aware partial
 frontier candidate to the generated pool. That candidate estimates connected
 coldspot capacity from the cold field, clamps it to a source-cluster area
@@ -593,9 +621,12 @@ The higher-level placement objectives behind these passes are documented in
 ## GPU Status
 
 The active hierarchy path uses CUDA through DREAMPlace when PyTorch can see a
-GPU. The archived `cuda_delta` scorer for hard-relocation proposal batches is
-still available and verified by diagnostics, but hierarchy region swaps and
-cluster decompression remain sequential exact-gated CPU/NumPy passes. The
-current region-swap speedups combine CPU vectorization/cache improvements with
-CUDA sorting for large rank arrays, not a GPU exact-scoring kernel. These
-passes do not yet implement cuGenOpt-style batched GPU proposal evaluation.
+GPU. The `cuda_delta` scorer is verified for hard and soft relocation proposal
+batches and is used by post-swap propose-all hard relocation. Bounded hard/soft
+relocation and micro-shift can reuse it for large local target batches, but the
+default threshold keeps tiny cleanup batches on the faster incremental CPU
+path. Hierarchy region swaps and cluster decompression remain sequential
+exact-gated CPU/NumPy passes. The current region-swap speedups combine CPU
+vectorization/cache improvements with CUDA sorting for large rank arrays, not a
+GPU exact-scoring kernel. These passes do not yet implement cuGenOpt-style
+batched GPU proposal evaluation.

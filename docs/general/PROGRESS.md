@@ -3,6 +3,35 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-23 — local CUDA scoring guards and cache cleanup):**
+> bounded hard relocation, bounded soft relocation, and micro-shift now have a
+> guarded path to reuse the exact `cuda_delta` relocation scorer for larger
+> per-source target batches (`HIER_LOCAL_RELOC_CUDA_DELTA=auto`,
+> `HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS=64`). The scorer is intentionally
+> dormant for the normal 8-24 target cleanup batches: a trial threshold of `8`
+> was VALID on `ibm10` but consumed cleanup budget and regressed to
+> `proxy=1.2896`, 89.62s. Restoring the high threshold recovered
+> `uv run evaluate src/main.py -b ibm10` = `proxy=1.1573` (wl=0.080, den=0.585,
+> cong=1.569), VALID, 89.36s. This turn also cached immutable legalizer spiral
+> rings and reused coldspot window-integral/anchor results per field/window.
+> Verification: bytecode compile passed; hard and soft CUDA delta parity
+> verifiers passed; `_verify_coldspot_kick.py ibm10` passed.
+
+> **Status (2026-06-23 — whole-cluster coldspot diversity and predictor):**
+> coldspot kick generation now adds default-on shape-preserving whole-cluster
+> variants across the top two opportunity-ranked clusters: multiple cold
+> anchors, compact original orientation, rotated layouts, source-facing border
+> compaction, and a lower-displacement centroid-blended candidate. The hard
+> cluster and owned/bridge softs still move as one state through legalization,
+> local refinement, exact-proxy gating, and hierarchy-quality gating. Coldspot
+> scheduling also has a cheap opportunity predictor that checks field relief,
+> open cold cells, and source-to-window displacement before generating
+> candidates, plus a dry-round limit for repeated no-commit pools.
+> Non-GNN production now commits from exact-proxy-ranked refined candidates
+> rather than graph-selected prefixes. Weak-opportunity and dry-limit exits skip
+> graph-local and soft-only coldspot fallbacks too. This is implemented but not
+> yet recorded as an accepted full-suite result.
+
 > **Status (2026-06-23 — promoted default-on gates to unconditional behavior):**
 > removed production constants that were always `True` and used only as feature
 > gates. The accepted hierarchy flow now runs those operators unconditionally:
