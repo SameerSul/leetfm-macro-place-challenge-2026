@@ -11,14 +11,6 @@ def point_in_region(region_bbox, idx: int, x: float, y: float) -> bool:
     return bool(rb[0] <= x <= rb[2] and rb[1] <= y <= rb[3])
 
 
-def any_outside_region(checks) -> bool:
-    """Return True when any proposed center leaves its assigned region."""
-    for region_bbox, idx, x, y in checks:
-        if not point_in_region(region_bbox, int(idx), float(x), float(y)):
-            return True
-    return False
-
-
 def accepts_region_score(
     score: float,
     best_score: float,

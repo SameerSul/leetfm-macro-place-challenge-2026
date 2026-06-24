@@ -17,10 +17,9 @@ from utils.config import (
     _numba_njit,
 )
 from placer.shared.geometry import separation_matrices
-from placer.local_search.fields import _congestion_field, _density_field
+from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.region_rules import accepts_region_score, point_in_region
-from placer.local_search.structural_fields import combined_structural_penalty
 from placer.plc.placement import _ensure_pos_cache
 
 if TYPE_CHECKING:
@@ -30,6 +29,205 @@ if TYPE_CHECKING:
 def _proposal_scorer_mode() -> str:
     mode = const.RELOC_PROPOSE_SCORER.strip().lower()
     return mode if mode in {"exact", "tensor", "cuda_delta"} else "cuda_delta"
+
+
+def _auto_gpu_enabled(value) -> bool:
+    if isinstance(value, str) and value.lower() == "auto":
+        return _GPU_BACKEND == "cuda"
+    return bool(value)
+
+
+def _gpu_rank_order(values: np.ndarray, *, enabled, largest: bool = False) -> np.ndarray:
+    """Return argsort-equivalent order using CUDA for large candidate arrays."""
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = int(arr.size)
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+    if (
+        not _auto_gpu_enabled(enabled)
+        or _GPU_BACKEND != "cuda"
+        or n < int(const.HIER_GPU_RANK_MIN_CANDIDATES)
+    ):
+        return np.argsort(-arr if largest else arr)
+    try:
+        with torch.inference_mode():
+            vals = torch.as_tensor(arr, device=_GPU_DEVICE, dtype=torch.float32)
+            order = torch.argsort(vals, descending=bool(largest), stable=True)
+            return order.cpu().numpy().astype(np.int64, copy=False)
+    except Exception:
+        return np.argsort(-arr if largest else arr)
+
+
+def _gpu_rank_soft_targets_batch(
+    *,
+    soft_pos: np.ndarray,
+    hot: np.ndarray,
+    local_cong: np.ndarray,
+    tgt_x: np.ndarray,
+    tgt_y: np.ndarray,
+    tgt_cong: np.ndarray,
+    cw: float,
+    ch: float,
+    n_targets: int,
+    wl_blend: float,
+    net_centroid: "np.ndarray | None",
+    region_bbox: "np.ndarray | None",
+    region_mask: "np.ndarray | None",
+    region_bias: float,
+    field_span: float,
+    hierarchy_filter_enabled: bool,
+) -> "dict[int, np.ndarray] | None":
+    """Rank soft-relocation targets in CUDA chunks while preserving exact gates later."""
+    hot = np.asarray(hot, dtype=np.int64).reshape(-1)
+    p = int(tgt_x.size)
+    h = int(hot.size)
+    if (
+        h == 0
+        or p == 0
+        or _hierarchy_structural_weight() > 0.0
+        or not _auto_gpu_enabled(const.HIER_GPU_RANK_SOFT_RELOCATION_TARGETS)
+        or _GPU_BACKEND != "cuda"
+        or h * p < int(const.HIER_GPU_RANK_SOFT_MIN_CANDIDATES)
+    ):
+        return None
+    keep = max(int(n_targets) * 8, int(n_targets) + 64, 96)
+    keep = min(keep, p)
+    if keep <= 0:
+        return None
+    max_chunk_elems = 2_000_000
+    chunk = max(256, min(p, max_chunk_elems // max(1, h)))
+    span2 = float(max(cw, ch)) ** 2
+    try:
+        with torch.inference_mode():
+            src_x = torch.as_tensor(soft_pos[hot, 0], device=_GPU_DEVICE, dtype=torch.float32)[
+                :, None
+            ]
+            src_y = torch.as_tensor(soft_pos[hot, 1], device=_GPU_DEVICE, dtype=torch.float32)[
+                :, None
+            ]
+            src_field = torch.as_tensor(local_cong[hot], device=_GPU_DEVICE, dtype=torch.float32)[
+                :, None
+            ]
+            best_scores = None
+            best_idx = None
+            if wl_blend > 0.0 and net_centroid is not None:
+                cen_x = torch.as_tensor(
+                    net_centroid[hot, 0], device=_GPU_DEVICE, dtype=torch.float32
+                )[:, None]
+                cen_y = torch.as_tensor(
+                    net_centroid[hot, 1], device=_GPU_DEVICE, dtype=torch.float32
+                )[:, None]
+            else:
+                cen_x = cen_y = None
+            if region_bbox is not None and region_bias > 0.0:
+                rb = torch.as_tensor(region_bbox[hot], device=_GPU_DEVICE, dtype=torch.float32)
+                rx0 = rb[:, 0:1]
+                ry0 = rb[:, 1:2]
+                rx1 = rb[:, 2:3]
+                ry1 = rb[:, 3:4]
+            else:
+                rx0 = ry0 = rx1 = ry1 = None
+            filter_by_hierarchy = bool(hierarchy_filter_enabled and region_bbox is not None)
+            if filter_by_hierarchy:
+                rb = torch.as_tensor(region_bbox[hot], device=_GPU_DEVICE, dtype=torch.float32)
+                hx0 = rb[:, 0:1]
+                hy0 = rb[:, 1:2]
+                hx1 = rb[:, 2:3]
+                hy1 = rb[:, 3:4]
+                margin = float(const.HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN) * max(
+                    float(field_span), 1e-12
+                )
+                best_inside = torch.full((h, 1), -float("inf"), device=_GPU_DEVICE)
+                mask_arr = np.asarray(region_mask, dtype=bool) if region_mask is not None else None
+                for start in range(0, p, chunk):
+                    end = min(p, start + chunk)
+                    tx = torch.as_tensor(tgt_x[start:end], device=_GPU_DEVICE, dtype=torch.float32)[
+                        None, :
+                    ]
+                    ty = torch.as_tensor(tgt_y[start:end], device=_GPU_DEVICE, dtype=torch.float32)[
+                        None, :
+                    ]
+                    field = torch.as_tensor(
+                        tgt_cong[start:end], device=_GPU_DEVICE, dtype=torch.float32
+                    )[None, :]
+                    inside = (tx >= hx0) & (tx <= hx1) & (ty >= hy0) & (ty <= hy1)
+                    if mask_arr is not None and mask_arr.ndim == 2 and mask_arr.size:
+                        nr, nc = mask_arr.shape
+                        cols = np.clip((tgt_x[start:end] / (cw / nc)).astype(np.int64), 0, nc - 1)
+                        rows = np.clip((tgt_y[start:end] / (ch / nr)).astype(np.int64), 0, nr - 1)
+                        mask_chunk = torch.as_tensor(
+                            mask_arr[rows, cols], device=_GPU_DEVICE, dtype=torch.bool
+                        )[None, :]
+                        inside = inside & mask_chunk
+                    relief = src_field - field
+                    chunk_best = torch.max(
+                        relief.masked_fill(~inside, -float("inf")), dim=1, keepdim=True
+                    ).values
+                    best_inside = torch.maximum(best_inside, chunk_best)
+            else:
+                hx0 = hy0 = hx1 = hy1 = None
+                margin = 0.0
+                best_inside = None
+                mask_arr = None
+            for start in range(0, p, chunk):
+                end = min(p, start + chunk)
+                tx = torch.as_tensor(tgt_x[start:end], device=_GPU_DEVICE, dtype=torch.float32)[
+                    None, :
+                ]
+                ty = torch.as_tensor(tgt_y[start:end], device=_GPU_DEVICE, dtype=torch.float32)[
+                    None, :
+                ]
+                field = torch.as_tensor(
+                    tgt_cong[start:end], device=_GPU_DEVICE, dtype=torch.float32
+                )[None, :]
+                scores = (tx - src_x).square() + (ty - src_y).square()
+                if wl_blend > 0.0 and cen_x is not None and cen_y is not None:
+                    anchored = (tx - cen_x).square() + (ty - cen_y).square()
+                    scores = (1.0 - float(wl_blend)) * scores + float(wl_blend) * anchored
+                if rx0 is not None:
+                    out = (tx < rx0) | (tx > rx1) | (ty < ry0) | (ty > ry1)
+                    scores = scores + out.to(torch.float32) * float(region_bias) * span2
+                valid = field < src_field - 1e-9
+                if filter_by_hierarchy and best_inside is not None:
+                    inside = (tx >= hx0) & (tx <= hx1) & (ty >= hy0) & (ty <= hy1)
+                    if mask_arr is not None and mask_arr.ndim == 2 and mask_arr.size:
+                        nr, nc = mask_arr.shape
+                        cols = np.clip((tgt_x[start:end] / (cw / nc)).astype(np.int64), 0, nc - 1)
+                        rows = np.clip((tgt_y[start:end] / (ch / nr)).astype(np.int64), 0, nr - 1)
+                        mask_chunk = torch.as_tensor(
+                            mask_arr[rows, cols], device=_GPU_DEVICE, dtype=torch.bool
+                        )[None, :]
+                        inside = inside & mask_chunk
+                    relief = src_field - field
+                    has_inside = torch.isfinite(best_inside)
+                    keep_hierarchy = inside | (relief >= best_inside + margin)
+                    valid = valid & (~has_inside | keep_hierarchy)
+                scores = scores.masked_fill(~valid, float("inf"))
+                take = min(keep, end - start)
+                chunk_scores, chunk_order = torch.topk(scores, k=take, dim=1, largest=False)
+                chunk_idx = chunk_order + int(start)
+                if best_scores is None:
+                    best_scores = chunk_scores
+                    best_idx = chunk_idx
+                else:
+                    merged_scores = torch.cat([best_scores, chunk_scores], dim=1)
+                    merged_idx = torch.cat([best_idx, chunk_idx], dim=1)
+                    take = min(keep, int(merged_scores.shape[1]))
+                    best_scores, order = torch.topk(merged_scores, k=take, dim=1, largest=False)
+                    best_idx = torch.gather(merged_idx, 1, order)
+            if best_scores is None or best_idx is None:
+                return None
+            finite = torch.isfinite(best_scores)
+            idx_cpu = best_idx.cpu().numpy().astype(np.int64, copy=False)
+            finite_cpu = finite.cpu().numpy()
+            ranked: dict[int, np.ndarray] = {}
+            for row, soft_i in enumerate(hot):
+                row_idx = idx_cpu[row][finite_cpu[row]]
+                if row_idx.size:
+                    ranked[int(soft_i)] = row_idx
+            return ranked or None
+    except Exception:
+        return None
 
 
 def _structural_weights() -> tuple[float, float, float]:
@@ -94,27 +292,6 @@ def _dedupe_targets_xy(targets) -> np.ndarray:
         raise ValueError("target coordinates must be [n,2]")
     _, keep = np.unique(arr, axis=0, return_index=True)
     return arr[np.sort(keep)]
-
-
-def _structural_penalty(
-    full_pos: np.ndarray,
-    sizes: np.ndarray,
-    cw: float,
-    ch: float,
-    benchmark: "Benchmark",
-) -> float:
-    kw, gw, nw = _structural_weights()
-    return combined_structural_penalty(
-        full_pos,
-        sizes,
-        cw,
-        ch,
-        grid_cols=int(benchmark.grid_cols),
-        grid_rows=int(benchmark.grid_rows),
-        keepout_weight=kw,
-        grid_align_weight=gw,
-        notch_weight=nw,
-    )
 
 
 def _structural_local_penalty(
@@ -2139,6 +2316,99 @@ def _score_relocation_proposals_cuda_delta(
             chunk_size = next_chunk
 
 
+def _local_cuda_delta_enabled(n_targets: int) -> bool:
+    """Whether local sequential relocation should try the exact CUDA delta scorer."""
+    if _proposal_scorer_mode() != "cuda_delta":
+        return False
+    if _GPU_BACKEND != "cuda":
+        return False
+    if not _auto_gpu_enabled(getattr(const, "HIER_LOCAL_RELOC_CUDA_DELTA", "auto")):
+        return False
+    min_targets = int(getattr(const, "HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS", 8))
+    return int(n_targets) >= max(1, min_targets)
+
+
+def _score_local_hard_targets_cuda_delta(
+    *,
+    i: int,
+    targets: np.ndarray,
+    pos: np.ndarray,
+    cw: float,
+    ch: float,
+    incremental_scorer,
+) -> "np.ndarray | None":
+    """Score one hard macro's local targets with the exact CUDA delta scorer."""
+    xy = np.asarray(targets, dtype=np.float64).reshape(-1, 2)
+    if not _local_cuda_delta_enabled(xy.shape[0]):
+        return None
+    proposals = [
+        {
+            "score": 0.0,
+            "i": int(i),
+            "candidate_rank": int(k),
+            "target_index": int(k),
+            "xy": (float(x), float(y)),
+        }
+        for k, (x, y) in enumerate(xy)
+    ]
+    try:
+        dummy = np.zeros(pos.shape[0], dtype=np.float64)
+        _score_relocation_proposals_cuda_delta(
+            proposals,
+            pos=pos,
+            cw=cw,
+            ch=ch,
+            local_cong=dummy,
+            tgt_cong=dummy,
+            incremental_scorer=incremental_scorer,
+        )
+        return np.asarray([p["score"] for p in proposals], dtype=np.float64)
+    except Exception:
+        return None
+
+
+def _score_local_soft_targets_cuda_delta(
+    *,
+    k: int,
+    targets: np.ndarray,
+    soft_pos: np.ndarray,
+    cw: float,
+    ch: float,
+    incremental_scorer,
+) -> "np.ndarray | None":
+    """Score one soft macro's local targets with the exact CUDA delta scorer."""
+    xy = np.asarray(targets, dtype=np.float64).reshape(-1, 2)
+    if not _local_cuda_delta_enabled(xy.shape[0]):
+        return None
+    proposals = [
+        {
+            "score": 0.0,
+            "i": int(k),
+            "module_idx": int(incremental_scorer.soft_indices[int(k)]),
+            "old_xy": (float(soft_pos[int(k), 0]), float(soft_pos[int(k), 1])),
+            "macro_route": False,
+            "candidate_rank": int(rank),
+            "target_index": int(rank),
+            "xy": (float(x), float(y)),
+        }
+        for rank, (x, y) in enumerate(xy)
+    ]
+    try:
+        dummy = np.zeros(soft_pos.shape[0], dtype=np.float64)
+        _score_relocation_proposals_cuda_delta(
+            proposals,
+            pos=soft_pos,
+            cw=cw,
+            ch=ch,
+            local_cong=dummy,
+            tgt_cong=dummy,
+            incremental_scorer=incremental_scorer,
+        )
+        return np.asarray([p["score"] for p in proposals], dtype=np.float64)
+    except Exception:
+        return None
+
+
 def _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, span2, region_bias):
     """Push out-of-region candidate cells to the back of the distance ranking.
 
@@ -2153,6 +2423,75 @@ def _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, span2, region_bias):
         | (tgt_y[cand] > rb[3])
     )
     return d2 + region_bias * span2 * out
+
+
+def _hierarchy_aware_target_filter(
+    cand: np.ndarray,
+    *,
+    target_x: np.ndarray,
+    target_y: np.ndarray,
+    target_field: np.ndarray,
+    source_field: float,
+    region_bbox,
+    region_index: int,
+    region_mask,
+    cw: float,
+    ch: float,
+    field_span: float,
+    enabled: bool,
+) -> np.ndarray:
+    """Prefer in-region targets unless an outside target has much better relief."""
+    if not enabled or region_bbox is None or cand.size <= 1:
+        return cand
+    rb = region_bbox[int(region_index)]
+    inside = (
+        (target_x[cand] >= rb[0])
+        & (target_x[cand] <= rb[2])
+        & (target_y[cand] >= rb[1])
+        & (target_y[cand] <= rb[3])
+    )
+    if region_mask is not None and inside.any():
+        mask = np.asarray(region_mask, dtype=bool)
+        if mask.ndim == 2 and mask.size:
+            nr, nc = mask.shape
+            cols = np.clip((target_x[cand] / (cw / nc)).astype(np.int64), 0, nc - 1)
+            rows = np.clip((target_y[cand] / (ch / nr)).astype(np.int64), 0, nr - 1)
+            inside &= mask[rows, cols]
+    if not inside.any():
+        return cand
+    relief = float(source_field) - target_field[cand]
+    best_inside = float(np.max(relief[inside]))
+    margin = float(const.HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN) * max(float(field_span), 1e-12)
+    keep = inside | (relief >= best_inside + margin)
+    filtered = cand[keep]
+    return filtered if filtered.size else cand
+
+
+def _point_in_region_mask(region_mask, x: float, y: float, cw: float, ch: float) -> bool:
+    """Return whether a target center falls inside an optional grid-cell mask."""
+    if region_mask is None:
+        return True
+    mask = np.asarray(region_mask, dtype=bool)
+    if mask.ndim != 2 or mask.size == 0:
+        return True
+    nr, nc = mask.shape
+    c = int(np.clip(float(x) / (cw / nc), 0, nc - 1))
+    r = int(np.clip(float(y) / (ch / nr), 0, nr - 1))
+    return bool(mask[r, c])
+
+
+def _target_pool_from_override(target_pool, flat, n_targets: int) -> np.ndarray:
+    """Return sanitized flat grid target indices ordered by field value."""
+    if target_pool is None:
+        return np.zeros(0, dtype=np.int64)
+    pool = np.asarray(target_pool, dtype=np.int64).reshape(-1)
+    if pool.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    pool = np.unique(pool[(pool >= 0) & (pool < flat.size)])
+    if pool.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    order = np.argsort(flat[pool])
+    return pool[order[: max(pool.size, max(n_targets, 64))]]
 
 
 def _micro_shift_polish(
@@ -2215,7 +2554,6 @@ def _micro_shift_polish(
         if deadline is not None and time.monotonic() > deadline:
             break
         i = int(i_raw)
-        prep = incremental_scorer._prepare_move(i)
         best_xy = None
         try:
             mask = all_h != i
@@ -2262,7 +2600,20 @@ def _micro_shift_polish(
                 targets.append((nx, ny))
             targets = _dedupe_targets_xy(targets)
             if targets.size:
-                scores = incremental_scorer._trial_many_at(prep, targets)
+                scores = _score_local_hard_targets_cuda_delta(
+                    i=i,
+                    targets=targets,
+                    pos=hard_pos,
+                    cw=cw,
+                    ch=ch,
+                    incremental_scorer=incremental_scorer,
+                )
+                if scores is None:
+                    prep = incremental_scorer._prepare_move(i)
+                    try:
+                        scores = incremental_scorer._trial_many_at(prep, targets)
+                    finally:
+                        incremental_scorer._revert_prep(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
             for (nx, ny), score in zip(targets, scores):
@@ -2270,13 +2621,11 @@ def _micro_shift_polish(
                     best_score = float(score)
                     best_xy = (nx, ny)
             if best_xy is not None:
+                prep = incremental_scorer._prepare_move(i)
                 incremental_scorer._commit_after_prep(prep, best_xy)
                 hard_pos[i, 0], hard_pos[i, 1] = best_xy
                 accepts += 1
-            else:
-                incremental_scorer._revert_prep(prep)
         except Exception:
-            incremental_scorer._revert_prep(prep)
             raise
 
     if soft_pos.shape[0] == 0:
@@ -2293,7 +2642,6 @@ def _micro_shift_polish(
         if deadline is not None and time.monotonic() > deadline:
             break
         k = int(k_raw)
-        prep = incremental_scorer._prepare_move_soft(k)
         best_xy = None
         try:
             targets = []
@@ -2305,7 +2653,20 @@ def _micro_shift_polish(
                 targets.append((nx, ny))
             targets = _dedupe_targets_xy(targets)
             if targets.size:
-                scores = incremental_scorer._trial_many_at_soft(prep, targets)
+                scores = _score_local_soft_targets_cuda_delta(
+                    k=k,
+                    targets=targets,
+                    soft_pos=soft_pos,
+                    cw=cw,
+                    ch=ch,
+                    incremental_scorer=incremental_scorer,
+                )
+                if scores is None:
+                    prep = incremental_scorer._prepare_move_soft(k)
+                    try:
+                        scores = incremental_scorer._trial_many_at_soft(prep, targets)
+                    finally:
+                        incremental_scorer._revert_prep_soft(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
             for (nx, ny), score in zip(targets, scores):
@@ -2313,13 +2674,11 @@ def _micro_shift_polish(
                     best_score = float(score)
                     best_xy = (nx, ny)
             if best_xy is not None:
+                prep = incremental_scorer._prepare_move_soft(k)
                 incremental_scorer._commit_after_prep_soft(prep, best_xy)
                 soft_pos[k, 0], soft_pos[k, 1] = best_xy
                 accepts += 1
-            else:
-                incremental_scorer._revert_prep_soft(prep)
         except Exception:
-            incremental_scorer._revert_prep_soft(prep)
             raise
     return hard_pos, soft_pos, accepts, best_score
 
@@ -2357,6 +2716,8 @@ def _relocation_moves_propose_all(
     region_bias: float = 0.0,
     region_escape_min: float = 0.0,
     accept_min_gain: float = 0.0,
+    target_pool: "np.ndarray | None" = None,
+    region_mask: "np.ndarray | None" = None,
 ) -> "tuple[np.ndarray, int, float]":
     """Rank all hard-relocation proposals, then exact-check the best ones."""
     best_score = initial_score
@@ -2383,13 +2744,27 @@ def _relocation_moves_propose_all(
         cand = np.where(cand_field < local_field - 1e-9)[0]
         if cand.size == 0:
             continue
+        cand = _hierarchy_aware_target_filter(
+            cand,
+            target_x=tgt_x,
+            target_y=tgt_y,
+            target_field=cand_field,
+            source_field=local_field,
+            region_bbox=region_bbox,
+            region_index=i,
+            region_mask=region_mask,
+            cw=cw,
+            ch=ch,
+            field_span=max(float(np.max(tgt_cong) - np.min(tgt_cong)), 1e-12),
+            enabled=field == "weighted_congestion",
+        )
         d2 = (tgt_x[cand] - pos[i, 0]) ** 2 + (tgt_y[cand] - pos[i, 1]) ** 2
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[i, 0]) ** 2 + (tgt_y[cand] - net_centroid[i, 1]) ** 2
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
         if region_bbox is not None and region_bias > 0.0:
             d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, _span2, region_bias)
-        cand = cand[np.argsort(d2)][:n_targets]
+        cand = cand[_gpu_rank_order(d2, enabled=const.HIER_GPU_RANK_RELOCATION_TARGETS)][:n_targets]
 
         mask = all_idx != i
         sxi = sep_x_mat[i, mask]
@@ -2500,6 +2875,13 @@ def _relocation_moves_propose_all(
     )
 
     if not proposals:
+        _relocation_moves_propose_all.last_stats = {
+            "candidates": 0,
+            "legal": int(legal_count),
+            "scored": int(frozen_scores),
+            "verify_scores": int(verify_scores),
+            "accepts": 0,
+        }
         return pos, 0, best_score
 
     proposals.sort(
@@ -2520,7 +2902,13 @@ def _relocation_moves_propose_all(
             field=field,
         )
     if propose_top_m is not None and propose_top_m > 0:
-        top_m = int(propose_top_m)
+        base_top_m = int(propose_top_m)
+        top_m = base_top_m
+        additive_extra = 0
+        if deadline is None or time.monotonic() + float(const.HIER_ADDITIVE_MIN_SPARE_S) < float(
+            deadline
+        ):
+            additive_extra = max(0, int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K))
         gnn_rank_on = os.environ.get("HIER_GNN_RANK", "0").strip() not in {
             "0",
             "false",
@@ -2532,7 +2920,31 @@ def _relocation_moves_propose_all(
         }
         if gnn_rank_on:
             top_m += max(0, int(os.environ.get("HIER_GNN_EXTRA_TOP_K", "0") or "0"))
-        proposals = proposals[:top_m]
+        if additive_extra > 0 and bool(const.HIER_GPU_RANK_ADDITIVE_TAILS):
+            prefix = proposals[:top_m]
+            tail = proposals[top_m:]
+            if tail:
+                _score_relocation_proposals_tensor(
+                    tail,
+                    pos=pos,
+                    cw=cw,
+                    ch=ch,
+                    local_cong=local_cong,
+                    tgt_cong=tgt_cong,
+                )
+                tail.sort(
+                    key=lambda p: (
+                        p["score"],
+                        p["hot_rank"],
+                        p["candidate_rank"],
+                        p["i"],
+                        p["target_index"],
+                    )
+                )
+            proposals = prefix + tail[:additive_extra]
+        else:
+            top_m += additive_extra
+            proposals = proposals[:top_m]
 
     log_gnn_event(
         "hier_relocation_candidates",
@@ -2544,6 +2956,9 @@ def _relocation_moves_propose_all(
         proposal_count=int(len(proposals)),
         legal_count=int(legal_count),
         frozen_scores=int(frozen_scores),
+        additive_candidate_pools=True,
+        additive_extra_top_k=int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K),
+        gpu_rank_additive_tails=bool(const.HIER_GPU_RANK_ADDITIVE_TAILS),
         structural_weight=float(_hierarchy_structural_weight()),
         candidates=_candidate_trace_sample(proposals, gnn_trace_limit()),
     )
@@ -2712,6 +3127,13 @@ def _relocation_moves_propose_all(
             ),
             flush=True,
         )
+    _relocation_moves_propose_all.last_stats = {
+        "candidates": int(len(proposals)),
+        "legal": int(legal_count),
+        "scored": int(frozen_scores),
+        "verify_scores": int(verify_scores),
+        "accepts": int(accepts),
+    }
     return pos, accepts, best_score
 
 
@@ -2741,6 +3163,8 @@ def _relocation_moves(
     region_bias: float = 0.0,
     region_escape_min: float = 0.0,
     propose_accept_min_gain: float = 0.0,
+    target_pool: "np.ndarray | None" = None,
+    region_mask: "np.ndarray | None" = None,
 ) -> "tuple[np.ndarray, int, float]":
     """Move hot hard macros to colder legal spots.
 
@@ -2750,8 +3174,14 @@ def _relocation_moves(
     can still exit when in-region cold cells run out). Bit-identical when
     `region_bbox is None` (the production pipeline never passes it).
     """
+    _relocation_moves.last_stats = {"candidates": 0, "legal": 0, "scored": 0, "accepts": 0}
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    trace_field = "combined" if use_combined else ("density" if use_density else "congestion")
+    weighted_rank = not use_density and not use_combined
+    trace_field = (
+        "weighted_congestion"
+        if weighted_rank
+        else ("combined" if use_combined else ("density" if use_density else "congestion"))
+    )
     if use_combined:
         # A cell is hot only when both fields are high.
         cong_field = _congestion_field(incremental_scorer, nr, nc)
@@ -2765,7 +3195,11 @@ def _relocation_moves(
         cell_cong = (
             _density_field(incremental_scorer, nr, nc)
             if use_density
-            else _congestion_field(incremental_scorer, nr, nc)
+            else (
+                weighted_congestion_field(incremental_scorer, nr, nc)
+                if weighted_rank
+                else _congestion_field(incremental_scorer, nr, nc)
+            )
         )
     if cell_cong is None:
         return pos, 0, initial_score
@@ -2781,10 +3215,12 @@ def _relocation_moves(
 
     # Use low-field cells as possible targets.
     flat = cell_cong.ravel()
-    _thr = np.percentile(flat, 55)
-    pool = np.where(flat < _thr)[0]
-    if pool.size < max(n_targets, 64):
-        pool = np.argsort(flat)[: max(n_targets, 64)]
+    pool = _target_pool_from_override(target_pool, flat, n_targets)
+    if pool.size == 0:
+        _thr = np.percentile(flat, 55)
+        pool = np.where(flat < _thr)[0]
+        if pool.size < max(n_targets, 64):
+            pool = np.argsort(flat)[: max(n_targets, 64)]
     tgt_c = (pool % nc).astype(np.float64)
     tgt_r = (pool // nc).astype(np.float64)
     tgt_x = (tgt_c + 0.5) * cell_w
@@ -2796,7 +3232,7 @@ def _relocation_moves(
 
     # Optional path ranks all proposals before exact checking.
     if propose_all:
-        return _relocation_moves_propose_all(
+        result = _relocation_moves_propose_all(
             pos=pos,
             sizes=sizes,
             hw=hw,
@@ -2828,10 +3264,19 @@ def _relocation_moves(
             region_bias=region_bias,
             region_escape_min=region_escape_min,
             accept_min_gain=propose_accept_min_gain,
+            target_pool=target_pool,
+            region_mask=region_mask,
         )
+        _relocation_moves.last_stats = dict(
+            getattr(_relocation_moves_propose_all, "last_stats", {})
+        )
+        return result
 
     best_score = initial_score
     accepts = 0
+    candidate_count = 0
+    legal_count = 0
+    scored_count = 0
     all_idx = np.arange(n)
     _span2 = float(max(cw, ch)) ** 2
     full_pos_for_struct = _full_committed_pos(incremental_scorer)
@@ -2848,6 +3293,21 @@ def _relocation_moves(
         cand = np.where(cand_field < local_cong[i] - 1e-9)[0]
         if cand.size == 0:
             continue
+        candidate_count += int(cand.size)
+        cand = _hierarchy_aware_target_filter(
+            cand,
+            target_x=tgt_x,
+            target_y=tgt_y,
+            target_field=cand_field,
+            source_field=float(local_cong[i]),
+            region_bbox=region_bbox,
+            region_index=i,
+            region_mask=region_mask,
+            cw=cw,
+            ch=ch,
+            field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
+            enabled=weighted_rank,
+        )
         d2 = (tgt_x[cand] - pos[i, 0]) ** 2 + (tgt_y[cand] - pos[i, 1]) ** 2
         if wl_blend > 0.0 and net_centroid is not None:
             d2c = (tgt_x[cand] - net_centroid[i, 0]) ** 2 + (tgt_y[cand] - net_centroid[i, 1]) ** 2
@@ -2873,8 +3333,6 @@ def _relocation_moves(
         syi = sep_y_mat[i, mask]
         ox = pos[mask, 0]
         oy = pos[mask, 1]
-        # Remove the macro once, then try several target cells.
-        prep = incremental_scorer._prepare_move(i)
         best_i_xy = None
         score_before_i = float(best_score)
         try:
@@ -2884,20 +3342,42 @@ def _relocation_moves(
                 # Keep the whole macro inside the canvas.
                 if nx - hw[i] < 0 or nx + hw[i] > cw or ny - hh[i] < 0 or ny + hh[i] > ch:
                     continue
+                if not _point_in_region_mask(region_mask, nx, ny, cw, ch):
+                    continue
                 # Hard macros cannot overlap.
                 if ((np.abs(nx - ox) < sxi + EPS) & (np.abs(ny - oy) < syi + EPS)).any():
                     continue
                 targets.append((nx, ny))
             if targets:
-                scores = incremental_scorer._trial_many_at(prep, np.asarray(targets))
+                targets_arr = np.asarray(targets, dtype=np.float64)
+                scores = _score_local_hard_targets_cuda_delta(
+                    i=i,
+                    targets=targets_arr,
+                    pos=pos,
+                    cw=cw,
+                    ch=ch,
+                    incremental_scorer=incremental_scorer,
+                )
+                if scores is None:
+                    prep = incremental_scorer._prepare_move(i)
+                    try:
+                        scores = incremental_scorer._trial_many_at(prep, targets_arr)
+                    finally:
+                        incremental_scorer._revert_prep(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
+            legal_count += int(len(targets))
+            scored_count += int(scores.size)
             for nx, ny, s in [(x, y, score) for (x, y), score in zip(targets, scores)]:
-                outside = not point_in_region(region_bbox, i, nx, ny)
+                outside = not (
+                    point_in_region(region_bbox, i, nx, ny)
+                    and _point_in_region_mask(region_mask, nx, ny, cw, ch)
+                )
                 if accepts_region_score(s, best_score, outside, region_escape_min):
                     best_score = s
                     best_i_xy = (nx, ny)
             if best_i_xy is not None:
+                prep = incremental_scorer._prepare_move(i)
                 incremental_scorer._commit_after_prep(prep, best_i_xy)
                 pos[i, 0], pos[i, 1] = best_i_xy
                 full_pos_for_struct[i, 0], full_pos_for_struct[i, 1] = best_i_xy
@@ -2912,11 +3392,8 @@ def _relocation_moves(
                         "proxy_delta": float(best_score) - score_before_i,
                     }
                 )
-            else:
-                incremental_scorer._revert_prep(prep)
         except Exception:
             # Restore committed state if a trial failed.
-            incremental_scorer._revert_prep(prep)
             raise
     log_gnn_event(
         "hier_relocation_result",
@@ -2930,6 +3407,12 @@ def _relocation_moves(
         structural_weight=float(_hierarchy_structural_weight()),
         accepted=accepted_trace[: gnn_trace_limit()],
     )
+    _relocation_moves.last_stats = {
+        "candidates": int(candidate_count),
+        "legal": int(legal_count),
+        "scored": int(scored_count),
+        "accepts": int(accepts),
+    }
     return pos, accepts, best_score
 
 
@@ -2956,8 +3439,19 @@ def _soft_relocation_moves(
     region_bias: float = 0.0,
     region_escape_min: float = 0.0,
     accept_min_gain: float = 0.0,
+    target_pool: "np.ndarray | None" = None,
+    region_mask: "np.ndarray | None" = None,
+    gpu_batch_rank: bool = False,
 ) -> "tuple[np.ndarray, int, float]":
     """Move hot soft macros to colder cells."""
+    _soft_relocation_moves.last_stats = {
+        "candidates": 0,
+        "legal": 0,
+        "scored": 0,
+        "accepts": 0,
+        "gpu_ranked_sources": 0,
+        "gpu_rank_fallbacks": 0,
+    }
     num_soft = incremental_scorer.num_soft
     if num_soft == 0:
         return soft_pos, 0, initial_score
@@ -2966,10 +3460,15 @@ def _soft_relocation_moves(
     if _env_wl not in (None, ""):
         wl_prefilter = float(_env_wl)
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
+    weighted_rank = not use_density
     cell_field = (
         _density_field(incremental_scorer, nr, nc)
         if use_density
-        else _congestion_field(incremental_scorer, nr, nc)
+        else (
+            weighted_congestion_field(incremental_scorer, nr, nc)
+            if weighted_rank
+            else _congestion_field(incremental_scorer, nr, nc)
+        )
     )
     if cell_field is None:
         return soft_pos, 0, initial_score
@@ -2987,19 +3486,46 @@ def _soft_relocation_moves(
 
     flat = cell_field.ravel()
     # Use low-field cells as possible targets.
-    _thr = np.percentile(flat, 55)
-    pool = np.where(flat < _thr)[0]
-    if pool.size < max(n_targets, 64):
-        pool = np.argsort(flat)[: max(n_targets, 64)]
+    pool = _target_pool_from_override(target_pool, flat, n_targets)
+    if pool.size == 0:
+        _thr = np.percentile(flat, 55)
+        pool = np.where(flat < _thr)[0]
+        if pool.size < max(n_targets, 64):
+            pool = np.argsort(flat)[: max(n_targets, 64)]
     tgt_x = ((pool % nc).astype(np.float64) + 0.5) * cell_w
     tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
     tgt_cong = flat[pool]
 
     best_score = initial_score
     accepts = 0
+    candidate_count = 0
+    legal_count = 0
+    scored_count = 0
+    gpu_ranked_sources = 0
+    gpu_rank_fallbacks = 0
     full_pos_for_struct = _full_committed_pos(incremental_scorer)
     sizes_for_struct = _full_macro_sizes(incremental_scorer)
     accepted_trace = []
+    gpu_soft_order = None
+    if gpu_batch_rank:
+        gpu_soft_order = _gpu_rank_soft_targets_batch(
+            soft_pos=soft_pos,
+            hot=hot,
+            local_cong=local_cong,
+            tgt_x=tgt_x,
+            tgt_y=tgt_y,
+            tgt_cong=tgt_cong,
+            cw=cw,
+            ch=ch,
+            n_targets=n_targets,
+            wl_blend=wl_blend,
+            net_centroid=net_centroid,
+            region_bbox=region_bbox,
+            region_mask=region_mask,
+            region_bias=region_bias,
+            field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
+            hierarchy_filter_enabled=weighted_rank,
+        )
     for k in hot:
         k = int(k)
         if deadline is not None and time.monotonic() > deadline:
@@ -3007,29 +3533,57 @@ def _soft_relocation_moves(
         cand = np.where(tgt_cong < local_cong[k] - 1e-9)[0]
         if cand.size == 0:
             continue
-        # Order targets by distance and optional wirelength anchor.
-        d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
-        if wl_blend > 0.0 and net_centroid is not None:
-            d2c = (tgt_x[cand] - net_centroid[k, 0]) ** 2 + (tgt_y[cand] - net_centroid[k, 1]) ** 2
-            d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
-        if region_bbox is not None and region_bias > 0.0:
-            _span2 = float(max(cw, ch)) ** 2
-            d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, k, _span2, region_bias)
-        order = _structural_candidate_order(
-            cand=cand,
-            base_rank=d2,
-            module_index=n + k,
+        candidate_count += int(cand.size)
+        cand = _hierarchy_aware_target_filter(
+            cand,
             target_x=tgt_x,
             target_y=tgt_y,
-            full_pos=full_pos_for_struct,
-            sizes=sizes_for_struct,
+            target_field=tgt_cong,
+            source_field=float(local_cong[k]),
+            region_bbox=region_bbox,
+            region_index=k,
+            region_mask=region_mask,
             cw=cw,
             ch=ch,
-            benchmark=benchmark,
+            field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
+            enabled=weighted_rank,
         )
-        cand = cand[order][:n_targets]
-        # Remove the soft macro once, then try several targets.
-        prep = incremental_scorer._prepare_move_soft(k)
+        used_gpu_rank = False
+        if gpu_soft_order is not None and k in gpu_soft_order:
+            cand_mask = np.zeros(tgt_cong.shape[0], dtype=bool)
+            cand_mask[cand] = True
+            ordered = gpu_soft_order[k]
+            ordered = ordered[cand_mask[ordered]]
+            if ordered.size >= min(int(n_targets), int(cand.size)):
+                cand = ordered[:n_targets]
+                used_gpu_rank = True
+                gpu_ranked_sources += 1
+            else:
+                gpu_rank_fallbacks += 1
+        if not used_gpu_rank:
+            # Order targets by distance and optional wirelength anchor.
+            d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
+            if wl_blend > 0.0 and net_centroid is not None:
+                d2c = (tgt_x[cand] - net_centroid[k, 0]) ** 2 + (
+                    tgt_y[cand] - net_centroid[k, 1]
+                ) ** 2
+                d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
+            if region_bbox is not None and region_bias > 0.0:
+                _span2 = float(max(cw, ch)) ** 2
+                d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, k, _span2, region_bias)
+            order = _structural_candidate_order(
+                cand=cand,
+                base_rank=d2,
+                module_index=n + k,
+                target_x=tgt_x,
+                target_y=tgt_y,
+                full_pos=full_pos_for_struct,
+                sizes=sizes_for_struct,
+                cw=cw,
+                ch=ch,
+                benchmark=benchmark,
+            )
+            cand = cand[order][:n_targets]
         best_k_xy = None
         score_before_k = float(best_score)
         try:
@@ -3037,6 +3591,8 @@ def _soft_relocation_moves(
             for t in cand:
                 nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
                 ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
+                if not _point_in_region_mask(region_mask, nx, ny, cw, ch):
+                    continue
                 # Cheaply skip targets with too much wirelength damage.
                 wl_d = 0.0
                 if wl_prefilter > 0.0:
@@ -3046,13 +3602,31 @@ def _soft_relocation_moves(
                 targets.append((nx, ny))
             targets = _dedupe_targets_xy(targets)
             if targets.size:
-                scores = incremental_scorer._trial_many_at_soft(prep, targets)
+                scores = _score_local_soft_targets_cuda_delta(
+                    k=k,
+                    targets=targets,
+                    soft_pos=soft_pos,
+                    cw=cw,
+                    ch=ch,
+                    incremental_scorer=incremental_scorer,
+                )
+                if scores is None:
+                    prep = incremental_scorer._prepare_move_soft(k)
+                    try:
+                        scores = incremental_scorer._trial_many_at_soft(prep, targets)
+                    finally:
+                        incremental_scorer._revert_prep_soft(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
+            legal_count += int(targets.shape[0])
+            scored_count += int(scores.size)
             for nx, ny, s in [
                 (float(p[0]), float(p[1]), float(score)) for p, score in zip(targets, scores)
             ]:
-                outside = not point_in_region(region_bbox, k, nx, ny)
+                outside = not (
+                    point_in_region(region_bbox, k, nx, ny)
+                    and _point_in_region_mask(region_mask, nx, ny, cw, ch)
+                )
                 min_gain = max(
                     1e-9,
                     float(accept_min_gain),
@@ -3062,6 +3636,7 @@ def _soft_relocation_moves(
                     best_score = s
                     best_k_xy = (nx, ny)
             if best_k_xy is not None:
+                prep = incremental_scorer._prepare_move_soft(k)
                 incremental_scorer._commit_after_prep_soft(prep, best_k_xy)
                 soft_pos[k, 0], soft_pos[k, 1] = best_k_xy
                 full_pos_for_struct[n + k, 0], full_pos_for_struct[n + k, 1] = best_k_xy
@@ -3076,16 +3651,15 @@ def _soft_relocation_moves(
                         "proxy_delta": float(best_score) - score_before_k,
                     }
                 )
-            else:
-                incremental_scorer._revert_prep_soft(prep)
         except Exception:
-            incremental_scorer._revert_prep_soft(prep)
             raise
     log_gnn_event(
         "hier_relocation_result",
         benchmark=getattr(benchmark, "name", ""),
         kind="soft_sequential",
-        field="density" if use_density else "congestion",
+        field=(
+            "density" if use_density else ("weighted_congestion" if weighted_rank else "congestion")
+        ),
         initial_proxy=float(initial_score),
         final_proxy=float(best_score),
         hot_count=int(len(hot)),
@@ -3093,4 +3667,12 @@ def _soft_relocation_moves(
         structural_weight=float(_hierarchy_structural_weight()),
         accepted=accepted_trace[: gnn_trace_limit()],
     )
+    _soft_relocation_moves.last_stats = {
+        "candidates": int(candidate_count),
+        "legal": int(legal_count),
+        "scored": int(scored_count),
+        "accepts": int(accepts),
+        "gpu_ranked_sources": int(gpu_ranked_sources),
+        "gpu_rank_fallbacks": int(gpu_rank_fallbacks),
+    }
     return soft_pos, accepts, best_score

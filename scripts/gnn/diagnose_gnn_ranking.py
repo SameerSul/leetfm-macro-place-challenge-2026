@@ -63,7 +63,9 @@ def _load_g3_scores(path: Path, dataset: dict[str, Any]) -> torch.Tensor:
     if state is None or mean is None or std is None:
         raise ValueError(f"{path} is not a compatible G3 baseline artifact")
     features = dataset["examples"]["features"].float()
-    model = MlpRanker(features.shape[1], int(artifact.get("config", {}).get("hidden_size", 32)))
+    feature_count = int(artifact.get("feature_mean", features).numel())
+    features = _adjust_features(features, feature_count)
+    model = MlpRanker(feature_count, int(artifact.get("config", {}).get("hidden_size", 32)))
     model.load_state_dict(state)
     model.eval()
     with torch.no_grad():
@@ -73,20 +75,36 @@ def _load_g3_scores(path: Path, dataset: dict[str, Any]) -> torch.Tensor:
 def _load_g4_scores(path: Path, dataset: dict[str, Any]) -> torch.Tensor:
     artifact = _load_dataset(path)
     config = artifact["config"]
+    feature_count = len(artifact["feature_schema"]["candidate_features"])
     graph0 = dataset["graphs"][0]
     model = MacroNetRanker(
         node_features=graph0["node_features"].shape[1],
         net_features=graph0["net_node_features"].shape[1],
         edge_features=graph0["macro_net_edge_features"].shape[1],
-        candidate_features=dataset["examples"]["features"].shape[1],
+        candidate_features=feature_count,
         hidden=int(config.get("hidden_size", 32)),
         layers=int(config.get("graph_layers", 2)),
     )
     model.load_state_dict(artifact["model"])
     model.eval()
+    scored_dataset = dict(dataset)
+    scored_examples = dict(dataset["examples"])
+    scored_examples["features"] = _adjust_features(
+        dataset["examples"]["features"].float(), feature_count
+    )
+    scored_dataset["examples"] = scored_examples
     idx = torch.arange(dataset["examples"]["features"].shape[0], dtype=torch.long)
     with torch.no_grad():
-        return model(dataset, idx).float()
+        return model(scored_dataset, idx).float()
+
+
+def _adjust_features(features: torch.Tensor, feature_count: int) -> torch.Tensor:
+    if features.shape[1] == feature_count:
+        return features
+    if features.shape[1] > feature_count:
+        return features[:, :feature_count].contiguous()
+    pad = torch.zeros((features.shape[0], feature_count - features.shape[1]), dtype=features.dtype)
+    return torch.cat([features, pad], dim=1)
 
 
 def _scope_indices(examples: dict[str, Any], benchmarks: set[str] | None) -> list[int]:

@@ -1,5 +1,6 @@
 """Vectorized greedy spiral legalizer."""
 
+from functools import lru_cache
 import time
 
 import numpy as np
@@ -7,6 +8,7 @@ import numpy as np
 from placer.shared.geometry import separation_matrices
 
 
+@lru_cache(maxsize=256)
 def _ring_offsets(r: int) -> np.ndarray:
     """Offsets (ddx, ddy) on the spiral ring at radius r, in the same lex
     order as the original nested-loop traversal: for ddx in -r..r, for ddy in
@@ -18,7 +20,9 @@ def _ring_offsets(r: int) -> np.ndarray:
     less-than semantics that kept the lex-first candidate.
     """
     if r == 0:
-        return np.array([[0, 0]], dtype=np.int64)
+        out = np.array([[0, 0]], dtype=np.int64)
+        out.setflags(write=False)
+        return out
     # Left edge: ddx = -r, ddy in [-r, r]
     e1_ddx = np.full(2 * r + 1, -r, dtype=np.int64)
     e1_ddy = np.arange(-r, r + 1, dtype=np.int64)
@@ -29,13 +33,15 @@ def _ring_offsets(r: int) -> np.ndarray:
     # Right edge: ddx = +r, ddy in [-r, r]
     e2_ddx = np.full(2 * r + 1, r, dtype=np.int64)
     e2_ddy = np.arange(-r, r + 1, dtype=np.int64)
-    return np.stack(
+    out = np.stack(
         [
             np.concatenate([e1_ddx, mid_ddx, e2_ddx]),
             np.concatenate([e1_ddy, mid_ddy, e2_ddy]),
         ],
         axis=1,
     )
+    out.setflags(write=False)
+    return out
 
 
 def _will_legalize(
@@ -146,4 +152,3 @@ def _will_legalize(
         legal[idx] = best
         placed[idx] = True
     return legal
-

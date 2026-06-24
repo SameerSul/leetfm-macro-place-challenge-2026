@@ -3,18 +3,512 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **CURRENT SYSTEM (2026-06-18): hierarchy-only.** The active code no longer
+> **Status (2026-06-24 — numba swap legality and no-trace swap fast path):**
+> hard-hard and hard-soft region-swap legality now use numba short-circuit
+> loops when available, avoiding repeated candidate-by-hard overlap matrix
+> allocations. Default production also skips per-candidate swap trace
+> dictionaries when both `HIER_GNN_TRACE` and region-swap GNN ranking are off,
+> and scores the ranked legal list directly. While adding that fast path, the
+> soft-soft trace path was corrected to use each row's own outside-region flag
+> instead of a stale loop variable, so traced/ranked and default modes now share
+> the same region gate. Verification: `_verify_score_region_swaps.py ibm01
+> ibm04 ibm10` passed; direct numba-vs-vectorized legality parity on `ibm10`
+> was 4096/4096 hard-hard and 4096/4096 hard-soft; `uv run evaluate
+> src/main.py -b ibm10` = `proxy=1.1493` (wl=0.078, den=0.586, cong=1.556),
+> VALID, 89.37s.
+
+> **Status (2026-06-23 — local CUDA scoring guards and cache cleanup):**
+> bounded hard relocation, bounded soft relocation, and micro-shift now have a
+> guarded path to reuse the exact `cuda_delta` relocation scorer for larger
+> per-source target batches (`HIER_LOCAL_RELOC_CUDA_DELTA=auto`,
+> `HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS=64`). The scorer is intentionally
+> dormant for the normal 8-24 target cleanup batches: a trial threshold of `8`
+> was VALID on `ibm10` but consumed cleanup budget and regressed to
+> `proxy=1.2896`, 89.62s. Restoring the high threshold recovered
+> `uv run evaluate src/main.py -b ibm10` = `proxy=1.1573` (wl=0.080, den=0.585,
+> cong=1.569), VALID, 89.36s. This turn also cached immutable legalizer spiral
+> rings and reused coldspot window-integral/anchor results per field/window.
+> Verification: bytecode compile passed; hard and soft CUDA delta parity
+> verifiers passed; `_verify_coldspot_kick.py ibm10` passed.
+
+> **Status (2026-06-23 — whole-cluster coldspot diversity and predictor):**
+> coldspot kick generation now adds default-on shape-preserving whole-cluster
+> variants across the top two opportunity-ranked clusters: multiple cold
+> anchors, compact original orientation, rotated layouts, source-facing border
+> compaction, and a lower-displacement centroid-blended candidate. The hard
+> cluster and owned/bridge softs still move as one state through legalization,
+> local refinement, exact-proxy gating, and hierarchy-quality gating. Coldspot
+> scheduling also has a cheap opportunity predictor that checks field relief,
+> open cold cells, and source-to-window displacement before generating
+> candidates, plus a dry-round limit for repeated no-commit pools.
+> Non-GNN production now commits from exact-proxy-ranked refined candidates
+> rather than graph-selected prefixes. Weak-opportunity and dry-limit exits skip
+> graph-local and soft-only coldspot fallbacks too. This is implemented but not
+> yet recorded as an accepted full-suite result.
+
+> **Status (2026-06-23 — promoted default-on gates to unconditional behavior):**
+> removed production constants that were always `True` and used only as feature
+> gates. The accepted hierarchy flow now runs those operators unconditionally:
+> tag-prefix/oversize clustering, connectivity-ordered legalization, seed
+> portfolio variants, bridge soft roles, region relief and expansion,
+> hierarchy-aware congestion proposal ranking, micro-shift replays, decompression,
+> region swaps, additive candidate pools, plateau/component scheduling,
+> strong/interleaved soft repair, coldspot local refinement and graph fallback,
+> survivor search, scorer congestion-field reuse, and numba routing/structural
+> paths when available. Numeric tuning constants and default-off experiments
+> remain configurable. Verification for this cleanup: Python bytecode compile
+> across `src/` and `test/` passes; benchmark smoke is tracked in the current
+> implementation turn rather than as a new accepted full-suite result.
+
+> **Status (2026-06-23 — default-off soft-only coldspot fallback):**
+> added `HIER_COLDSPOT_SOFT_ONLY=0`, which runs only when the hard coldspot kick
+> path and graph-local fallback commit no candidate. The pass keeps all hard
+> macros fixed, builds a soft relocation target pool from remembered open cold
+> cells, preserves hierarchy region boxes and the cold-cell mask, and accepts
+> only exact-proxy improvements above `HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN`.
+> This is intended as the next low-risk coldspot experiment because it cannot
+> alter hard legality or hard hierarchy quality by construction. It is not
+> promoted and does not change default production output.
+> Follow-up replaced the after-hard refill idea with always-on simultaneous
+> hard+soft coldspot candidates. Coldspot kick generation now includes movable
+> bridge soft macros tied to the same hierarchy cluster in the candidate's soft
+> set, so hard and soft positions are proposed together and accepted or rejected
+> as one exact-gated full placement.
+
+> **Status (2026-06-23 — default-off partial frontier coldspot prototype):**
+> added `HIER_COLDSPOT_PARTIAL_FRONTIER=0`, which can append one
+> capacity-aware partial frontier candidate to a coldspot candidate pool. The
+> prototype estimates connected cold area near the selected anchor, clamps the
+> moved area to a source-cluster fraction, selects frontier hard macros with a
+> low-fanout connectivity bias, optionally co-moves directly connected soft
+> macros, and relies on the existing legalization, local refinement,
+> exact-proxy, and hierarchy-quality gates. This is not promoted and does not
+> change default production output. Verification:
+> `uv run python test/verification/_verify_coldspot_kick.py ibm04 ibm10`
+> passed, including one partial frontier pool on each benchmark.
+> Follow-up enabled traces showed the first implementation was mostly
+> under-ranked by graph selection; on `ibm10`, widening graph top-k plus oracle
+> scoring exact-labeled the partial candidate as a proxy regression
+> (`proxy_delta=+0.0005`). A five-benchmark enabled smoke (`ibm04`, `ibm10`,
+> `ibm12`, `ibm15`, `ibm17`) was 5/5 VALID, 0 overlaps, AVG **1.3356**,
+> 431.44s, with per-benchmark proxies `1.0277`, `1.1577`, `1.6776`,
+> `1.4036`, `1.4112`. The only exact-improving partial candidate was on
+> `ibm15` (`proxy_delta=-0.0097`) but it failed hierarchy quality badly
+> (`0.8022 -> 2.9406`) because it moved two macros out of a three-macro
+> cluster. The prototype now skips tiny source clusters by default with
+> `HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD=6`; explicit source-hotspot
+> reorganization was not added because the hierarchy metric is dominated by the
+> far split itself, not by unfilled area left behind.
+> Follow-up implementation added a cheap pre-exact split-quality predictor for
+> surviving partial candidates: after hard legalization, the generator rejects
+> candidates whose full source-cluster radius, bbox radius, or moved-vs-remaining
+> centroid separation exceeds configured ratios
+> (`HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO=1.15`,
+> `HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO=1.20`,
+> `HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO=1.50`). This keeps obviously
+> hierarchy-damaging partial splits out of the expensive exact/refinement pool.
+> The generator now also rejects majority splits, splits that leave too few
+> hard macros behind, and disconnected selected subsets when local low-fanout
+> hard-hard edges exist. `HIER_GNN_TRACE=1` writes
+> `hier_coldspot_partial_reject` rows for generated-but-filtered partials, so
+> future threshold tuning can count rejected candidates by reason before
+> spending exact score time.
+> Capping the selected subset during construction, instead of only rejecting
+> majority splits after selection, was tested with another enabled trace smoke.
+> `ibm10` produced a smaller 10-of-21 split but the pre-exact predictor still
+> rejected it as a far stretch (`radius_ratio=2.10`, `bbox_ratio=1.64`,
+> `separation_ratio=1.79`). The five-benchmark enabled capped smoke was 5/5
+> VALID, 0 overlaps, AVG **1.3385**, 433.99s, with per-benchmark proxies
+> `ibm04=1.0277`, `ibm10=1.1609`, `ibm12=1.6858`, `ibm15=1.4051`,
+> `ibm17=1.4130`. It generated 11 rejected partial attempts and 0 surviving
+> partial candidates: most rejects were tiny clusters, with the only larger
+> attempt rejected by radius ratio. No source-hotspot reorganization was added;
+> the traced blocker remains far hierarchy splitting, not lack of source-side
+> area relaxation.
+
+> **Status (2026-06-23 — accepted swap-round micro-shift, stronger
+> opportunity gates, and component-aware scheduling):** promoted
+> `HIER_SWAP_ROUND_MICRO_SHIFT=1`, `HIER_STRONG_OPPORTUNITY_GATES=1`, and
+> `HIER_COMPONENT_AWARE_SCHEDULING=1`. Region swaps now replay exact-gated
+> micro-shift after each swap round as well as after the full swap pass.
+> Optional decompression/coldspot work now has stronger hot-vs-cold field gates;
+> this changes scheduling only, not exact acceptance. Late strong soft repair
+> records exact wirelength/density/congestion components and can treat
+> congestion-dominated states as useful cleanup opportunities. Rejected and
+> removed during the same audit: early strong-soft repair, early swap-lite,
+> early survivor search, and ArchGen-style seed top-k repair. Full verification:
+> `uv run evaluate src/main.py --all` = **AVG 1.1793**, 17/17 VALID,
+> 0 overlaps, 1421.12s. `ibm10` in the full sweep was `1.1576`, VALID.
+>
+> Full per-benchmark proxies:
+> `ibm01=0.9392`, `ibm02=1.1345`, `ibm03=1.0085`, `ibm04=1.0277`,
+> `ibm06=1.2092`, `ibm07=1.0698`, `ibm08=1.1593`, `ibm09=0.8692`,
+> `ibm10=1.1576`, `ibm11=1.0242`, `ibm12=1.6850`, `ibm13=1.0230`,
+> `ibm14=1.2889`, `ibm15=1.4043`, `ibm16=1.2093`, `ibm17=1.4141`,
+> `ibm18=1.4234`.
+
+> **Status (2026-06-22 — Archgen-inspired buffered telemetry, GPU proposal
+> ranking, and plateau escape proposal class):** added buffered default-on
+> plateau telemetry (`HIER_PLATEAU_TRACE_BUFFERED=1`) with per-benchmark flush
+> plus `atexit` fallback. Added CUDA sorting for large swap and relocation
+> target-rank arrays (`HIER_GPU_RANK_SWAP_CANDIDATES=auto`,
+> `HIER_GPU_RANK_RELOCATION_TARGETS=auto`,
+> `HIER_GPU_RANK_MIN_CANDIDATES=512`). Added a plateau escape proposal class:
+> if region swaps plateau and spare budget remains, the scheduler spends a
+> short exact-gated soft-relocation slice inside soft hierarchy regions before
+> post-swap polish. Verification: `uv run python -m py_compile $(find src -type
+> f -name '*.py')` passed; `_verify_score_region_swaps.py ibm01 ibm04 ibm10`
+> passed; `uv run evaluate src/main.py -b ibm10` was VALID with
+> `proxy=1.1539`, 0 overlaps, 92.17s. On that smoke, region swaps were not
+> plateaued, so the new escape pass did not trigger; post-swap hard/soft
+> relocation plateaus still scheduled strong soft repair as before. Follow-up
+> full sweep reported by the user: `uv run evaluate src/main.py --all` =
+> **AVG 1.1791**, 17/17 VALID, 0 overlaps, 1376.96s.
+> Follow-up plateau expansion scopes the escape proposal class to both
+> region-swap plateaus and post-swap hard/soft cleanup plateaus
+> (`HIER_PLATEAU_ESCAPE_AFTER_POST_POLISH=1`). The new soft-relocation GPU
+> batch ranker is used only by this plateau escape class by default, so normal
+> interleaved/post/strong soft repair keeps the previously accepted CPU
+> hierarchy ordering. The CUDA prefix applies the same hierarchy-aware target
+> filter before ranking, then exact incremental scoring remains the accept
+> gate. Verification after scoping: py-compile passed;
+> `_verify_score_region_swaps.py ibm01 ibm04 ibm10` passed; `uv run evaluate
+> src/main.py -b ibm10` was VALID with `proxy=1.1543` (wl=0.081, den=0.586,
+> cong=1.561), 0 overlaps, 89.97s. On that smoke, post-swap soft relocation
+> plateaued, `plateau_escape_post_soft_relocation` accepted 38 soft moves
+> (`1.1623 -> 1.1583`), and strong/coldspot cleanup finished at `1.1543`.
+> Staged GPU swap prescore follow-up: added a guarded CUDA swap-prescore helper
+> that can add a small distance-aware batch ranking term before exact swap
+> scoring. Soft-soft was tested first and left default-off after ibm10
+> regressed to `proxy=1.1553`, VALID, 91.22s. Hard-soft was tested second and
+> left default-off after ibm10 regressed to `proxy=1.1554`, VALID, 91.42s.
+> Hard-hard was tested last and kept default-on
+> (`HIER_GPU_SWAP_PRESCORE_HH=auto`) after ibm10 improved to `proxy=1.1525`
+> (wl=0.081, den=0.588, cong=1.555), VALID, 91.56s. Exact swap verification
+> still passed on ibm01/ibm04/ibm10.
+> Follow-up all-prescore validation promoted hard-hard, hard-soft, and soft-soft
+> to default `auto` rather than default-off gates. The condition is now runtime
+> capability and scale: CUDA must be available and the candidate list must meet
+> `HIER_GPU_SWAP_PRESCORE_MIN_CANDIDATES`. A temporary monkeypatched all-on
+> wrapper reached `proxy=1.1513` (wl=0.080, den=0.586, cong=1.557), VALID,
+> 90.21s, but after promoting the constants the normal command repeated at
+> `proxy=1.1599` (wl=0.077, den=0.587, cong=1.578), VALID, 91.47s and 91.58s.
+> The all-auto behavior remains per the no-default-off-gates direction, but the
+> stable normal-command smoke is weaker than the previous HH-only setting.
+> Exact reversible batched swap scoring was then tested for soft-soft,
+> hard-soft, and hard-hard `score_swap_*_many()` paths. Direct many-vs-scalar
+> checks on ibm01/ibm04/ibm10 matched to numerical precision, and the standard
+> `_verify_score_region_swaps.py ibm01 ibm04 ibm10` verifier passed. However,
+> the reversible scorer was slower than the current full-grid snapshot path on
+> ibm10: all swap types active finished `proxy=1.1633`, VALID, 92.00s; isolated
+> soft-soft reversible scoring finished `proxy=1.1613`, VALID, 90.30s. The
+> reversible exact batch scorer was not promoted and was removed from the active
+> code path. Current production remains the cached-struct exact scorer.
+
+> **Status (2026-06-22 — swap scoring throughput speedup, smoke-validated):**
+> added exact-equivalent cached routing structs for repeated multi-macro swap
+> scoring and vectorized region-bbox masks for hard-hard, hard-soft, and
+> soft-soft swap candidate outside-region flags. This does not change candidate
+> ranking, legality, hierarchy escape rules, or exact-proxy accept gates.
+> Verification: `uv run python -m py_compile $(find src -type f -name '*.py')`
+> passed; `uv run python test/verification/_verify_score_region_swaps.py ibm01
+> ibm04 ibm10` matched full exact proxy on all trial and sequential commit
+> checks; `uv run evaluate src/main.py -b ibm10` was VALID with
+> `proxy=1.1545`, 0 overlaps, 92.37s. Compared with the pre-speedup smoke
+> (`proxy=1.1598`, 91.55s), wall time is similar because region swaps are
+> deadline-bound, but the swap stage scored more soft-soft candidates
+> (`25860 -> 29194`) and improved proxy on the smoke. Additional smoke:
+> `uv run evaluate src/main.py -b ibm01` was VALID with `proxy=0.9448`,
+> 0 overlaps, 76.71s.
+
+> **CURRENT SYSTEM (2026-06-22): hierarchy path with exact-prescored seed
+> portfolio.** The active code no longer
 > ships the proxy-optimized production path. `MacroPlacer.place()` always routes
 > through `_hierarchy_floorplan()` and raises if grouped DREAMPlace is
 > unavailable. Deleted proxy-only pieces include candidate restarts, R2/2-opt,
 > hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
-> ranker defaults, and their verifiers. Current accepted Stage-3 full run:
-> **AVG 1.3631**, 17/17 VALID, 0 overlaps, 602.76s, with post-swap and
-> post-coldspot micro-shift replay. BeyondPPA-style structural metrics,
-> optional hierarchy candidate ordering, and opt-in GNN trace logging are now
-> integrated into the hierarchy flow with production defaults disabled. The
-> proxy-score history below is retained as historical experiment context, not
-> the current production output.
+> ranker defaults, and their verifiers. Current verified full run after adding
+> seed portfolio prescoring and hierarchy-aware congestion-weighted proposal
+> ranking: **AVG 1.1879**, 17/17 VALID, 0 overlaps, 1225.52s.
+> BeyondPPA-style structural metrics,
+> optional hierarchy candidate ordering, and opt-in GNN trace logging remain
+> integrated into the hierarchy flow with production defaults disabled where
+> noted. Current verified full run after adding strong soft repair, plateau
+> telemetry, and budget-aware pass scheduling: **AVG 1.1827**, 17/17 VALID,
+> 0 overlaps, 1328.33s. The older proxy-score history below is retained as
+> experiment context.
+
+> **Status (2026-06-22 — six-stage hierarchy-aware revamp):** applied the
+> staged revamp with full `uv run evaluate src/main.py --all` gates after each
+> active stage. Stage 1 verified NG45 path-tag hierarchy support on IBM with
+> **AVG 1.1822**, 17/17 VALID, 0 overlaps. Stage 2 added a hierarchy-safe
+> route-channel seed but gates it to explicit slash-separated hierarchy tags;
+> flat IBM uses the original seed portfolio. Stage 2 IBM verification remained
+> valid at **AVG 1.1824**, so the feature is useful for tagged designs but not
+> a promoted IBM proxy contributor. Stage 3 added interleaved exact-gated soft
+> repair after decompression and improved to **AVG 1.1815**, 17/17 VALID,
+> 0 overlaps. Stage 4 added plateau-driven strong-soft budget/round bonuses
+> and improved to **AVG 1.1808**, 17/17 VALID, 0 overlaps. Stage 5 implemented
+> GPU-ranked additive hard-relocation tails, but the direct sweep regressed to
+> **AVG 1.1810** and showed 0 post-swap hard propose-all accepts, so
+> `HIER_GPU_RANK_ADDITIVE_TAILS=0` remains default-off. With that default-off
+> setting, the recovery sweep produced **AVG 1.1796**, 17/17 VALID, 0 overlaps,
+> driven by normal coldspot variance rather than the disabled tail ranker.
+> Stage 6 added audit-only scorer-compatible legality margin telemetry
+> (`HIER_LEGALITY_MARGIN_AUDIT=1`, `HIER_LEGALITY_MARGIN_EPS=0.05`). Final
+> current-code verification was **AVG 1.1817**, 17/17 VALID, 0 overlaps,
+> 1383.28s. The audit found many evaluator-valid placements with strict
+> internal margins around `-0.045` to `-0.050`, while some large cases
+> (`ibm10`, `ibm12`, `ibm17`) were margin-clean. This gives future work a
+> concrete signal for optional clearance repair without changing current
+> placement behavior.
+
+> **Status (2026-06-22 — NG45 hierarchy-tag verification added and passed):**
+> ran `uv run evaluate src/main.py --ng45` after the strong soft repair changes:
+> all four NG45 designs were VALID with 0 overlaps, `AVG 0.7300`
+> (`ariane133=0.6845`, `ariane136=0.7283`, `mempool_tile=0.7730`,
+> `nvdla=0.7340`). A new tag-prefix verifier using NG45 hard macro instance
+> paths initially failed `nvdla`: fine-grained SRAM pair tags had
+> `radius_growth=1.421` and nearest-tag purity dropped by `0.102`, even though
+> legality and proxy were valid. This showed the hierarchy model was not using
+> NG45's explicit hierarchy tags strongly enough.
+>
+> Added `HIER_TAG_PREFIX_CLUSTERING=1` so `HierarchyModel.build()` first derives
+> hard clusters from slash-separated instance-path prefixes when those tags have
+> useful coverage; flat IBM names still fall back to connectivity clustering.
+> Added `test/verification/_verify_ng45_hierarchy_tags.py`, which checks hard
+> overlap count, same-tag normalized radius, and nearest-prefix purity. Final
+> verifier result passed all four designs:
+> `ariane133 radius_growth=1.018`, `ariane136=0.998`, `mempool_tile=0.900`,
+> `nvdla final_radius=0.0432` of die diagonal. Final canonical
+> `uv run evaluate src/main.py --ng45` after tag clustering = **AVG 0.7320**,
+> all four VALID, 0 overlaps:
+> `ariane133=0.6888`, `ariane136=0.7361`, `mempool_tile=0.7730`,
+> `nvdla=0.7303`. This trades a small NG45 average proxy increase for verified
+> explicit hierarchy-tag preservation; `nvdla` improves versus the pre-tag NG45
+> run while the Ariane designs become more hierarchy-constrained.
+
+> **Status (2026-06-22 — strong soft repair, plateau telemetry, and
+> budget-aware scheduling added):** added pass-level `PlateauTelemetry` records
+> for region relief, swaps, post-swap polish, decompression, split evacuation,
+> and the new strong soft repair. Plateau rows are stored by default under
+> `ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` and include pass
+> runtime, candidate/legal/scored counts, accepts, proxy gain, plateau flag, and
+> scheduler decisions. `HIER_PLATEAU_TRACE=0` disables the lightweight storage;
+> `HIER_PLATEAU_TRACE_PATH` redirects it. The existing opt-in GNN trace remains
+> separate.
+>
+> The new default-on strong soft repair spends spare local pass budget on larger
+> exact-gated soft relocation target pools after normal post-swap hard/soft
+> cleanup. `HIER_BUDGET_AWARE_SCHEDULING=1` starts it only when at least
+> `HIER_STRONG_SOFT_REPAIR_MIN_SPARE_S=2` seconds remain and recent telemetry
+> shows plateaued cleanup or useful soft movement. Verification:
+> `uv run python -m py_compile $(find src -type f -name '*.py')` passed.
+> Focused smokes improved two sensitive cases: `ibm10` improved from the prior
+> hierarchy-aware weighted ranking smoke/full entry `1.1699/1.1717` to
+> `proxy=1.1633` VALID (`wl=0.078`, `den=0.591`, `cong=1.579`, 91.86s), with
+> the strong repair accepting 69 soft moves and improving post-soft
+> `1.1716 -> 1.1633`; `ibm17` improved from `1.4118` to `proxy=1.4053` VALID
+> (`wl=0.066`, `den=0.677`, `cong=2.002`, 88.63s), with the strong repair
+> accepting 51 soft moves and coldspot tightening one additional move.
+>
+> Full `uv run evaluate src/main.py --all` = **AVG 1.1827**, 17/17 VALID,
+> 0 overlaps, 1328.33s. This improves the previous accepted full result
+> `1.1879 -> 1.1827` (-0.0052). `ibm17` was the only full-suite regression
+> because the scheduler skipped strong soft repair when less than 2s local
+> spare remained (`1.4118 -> 1.4128`); the aggregate gain was still positive.
+>
+> Full per-benchmark proxies:
+> `ibm01=0.9444`, `ibm02=1.1369`, `ibm03=1.0127`, `ibm04=1.0334`,
+> `ibm06=1.2152`, `ibm07=1.0684`, `ibm08=1.1617`, `ibm09=0.8690`,
+> `ibm10=1.1630`, `ibm11=1.0279`, `ibm12=1.6973`, `ibm13=1.0268`,
+> `ibm14=1.2853`, `ibm15=1.4161`, `ibm16=1.2138`, `ibm17=1.4128`,
+> `ibm18=1.4215`.
+
+> **Status (2026-06-22 — congestion-weighted ranking made hierarchy-aware):**
+> kept the first-place-inspired weighted proposal field, but added
+> `HIER_PROPOSAL_HIERARCHY_AWARE=1` so out-of-region candidates do not dominate
+> ranking merely because they are cold. In hard/soft relocation and region
+> swaps, when an in-region option exists, an out-of-region option must beat the
+> best in-region field relief by `HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08`
+> times the active proposal-field span before it can enter the truncated ranked
+> set. Exact proxy, legality, fixed-macro, bounds, region-escape, and
+> hierarchy-quality gates remain unchanged.
+>
+> Verification: `uv run python -m py_compile $(find src -type f -name '*.py')`
+> passed. Focused smokes improved versus the prior weighted-only portfolio
+> run: `ibm10 1.1729 -> 1.1699` VALID and `ibm17 1.4200 -> 1.4118` VALID.
+> Full `uv run evaluate src/main.py --all` = **AVG 1.1879**, 17/17 VALID,
+> 0 overlaps, 1225.52s. This slightly improves the prior `1.1880` portfolio
+> run while better preserving hierarchy in weighted proposal ranking.
+>
+> Full per-benchmark proxies:
+> `ibm01=0.9472`, `ibm02=1.1409`, `ibm03=1.0153`, `ibm04=1.0344`,
+> `ibm06=1.2190`, `ibm07=1.0718`, `ibm08=1.1651`, `ibm09=0.8693`,
+> `ibm10=1.1717`, `ibm11=1.0310`, `ibm12=1.7159`, `ibm13=1.0297`,
+> `ibm14=1.2904`, `ibm15=1.4232`, `ibm16=1.2231`, `ibm17=1.4118`,
+> `ibm18=1.4340`.
+
+> **Status (2026-06-22 — first-place lessons implemented: seed portfolio +
+> congestion-weighted proposal ranking):** added two ArchGen-inspired ideas
+> without restoring the deleted proxy-only path. `HIER_SEED_PORTFOLIO=1`
+> exact-prescores grouped DREAMPlace, legalized `initial.plc`, two
+> DREAMPlace/initial blends, radial expansion, and synthetic clearance before
+> region relief. `HIER_CONGESTION_WEIGHTED_PROPOSALS=1` makes hard/soft
+> relocation and region swaps rank their congestion pass by a normalized
+> `2.5*congestion + 1.0*density` proposal field while keeping exact proxy as
+> the only accept gate.
+>
+> Verification: `uv run python -m py_compile $(find src -type f -name '*.py')`
+> passed. Focused smokes: `ibm10=1.1729` VALID (selected `initial`,
+> `dreamplace=1.8080` prescore) and `ibm17=1.4200` VALID (selected `initial`,
+> `dreamplace=2.5025` prescore). Full `uv run evaluate src/main.py --all` =
+> **AVG 1.1880**, 17/17 VALID, 0 overlaps. The evaluator printed an anomalous
+> `ibm13` elapsed time (`35354.51s`), inflating reported total runtime to
+> `36564.51s`; wall-clock progress was normal and the suite completed.
+>
+> Full per-benchmark proxies:
+> `ibm01=0.9520`, `ibm02=1.1428`, `ibm03=1.0156`, `ibm04=1.0340`,
+> `ibm06=1.2190`, `ibm07=1.0710`, `ibm08=1.1650`, `ibm09=0.8697`,
+> `ibm10=1.1729`, `ibm11=1.0312`, `ibm12=1.6948`, `ibm13=1.0316`,
+> `ibm14=1.2994`, `ibm15=1.4006`, `ibm16=1.2299`, `ibm17=1.4284`,
+> `ibm18=1.4385`.
+>
+> Seed selections in the full run:
+> DREAMPlace selected on `ibm01`, `ibm02`, `ibm03`, `ibm04`, `ibm06`, `ibm08`,
+> `ibm09`, `ibm11`, and `ibm13`; synthetic clearance selected on `ibm07`;
+> `initial.plc` selected on `ibm10`, `ibm12`, `ibm14`, `ibm15`, `ibm16`,
+> `ibm17`, and `ibm18`. This confirms the portfolio is not merely reverting to
+> `initial.plc`; it selects different basins by exact prescore.
+
+> **Status (2026-06-21 — gated oversized-cluster split promoted over flat
+> default):** investigated whether `ibm17`'s loss after disabling recursive
+> clustering was random. It was deterministic: repeated focused toggles gave
+> `ibm17 flat/no-rooms=2.1529`, `recursive/no-rooms=2.1220`, and
+> `recursive+rooms=2.1073`. The correlated losers `ibm03`, `ibm11`, and
+> `ibm17` all had one oversized flat cluster that hid useful substructure
+> (`ibm03 234/290`, `ibm11 171/373`, `ibm17 351/760`). A naive 30%/15%
+> splitter improved those cases but was not safe globally: it regressed
+> `ibm07` by `+0.0129`, `ibm14` by `+0.0446`, and `ibm16` by `+0.0301`.
+> Accepted production rule is therefore gated: `HIER_OVERSIZE_CLUSTER_SPLIT=1`,
+> `HIER_OVERSIZE_CLUSTER_START_FRAC=0.40`,
+> `HIER_OVERSIZE_CLUSTER_TARGET_FRAC=0.15`,
+> `HIER_OVERSIZE_CLUSTER_TARGET_TOL=1.10`, and
+> `HIER_OVERSIZE_CLUSTER_MIN_BRIDGE_SOFTS=5`. Full recursive clustering and
+> cluster room/corridor branches were later deleted from production code.
+>
+> Verification: `uv run python -m py_compile $(find src -type f -name '*.py')`
+> passed. `uv run evaluate src/main.py --all` = **AVG 1.3781**, 17/17 VALID,
+> 0 overlaps, 1162.84s. This improves the flat/no-room default
+> `1.3798 -> 1.3781` (-0.0017) and recovers `ibm17` by `2.1529 -> 2.1241`
+> (-0.0288), while avoiding the large `ibm14`/`ibm16` regressions from the
+> naive 30% splitter. It is still worse than the lower-proxy accepted hierarchy
+> reference **AVG 1.3631**.
+>
+> Final gated per-benchmark proxies:
+> `ibm01=0.9558`, `ibm02=1.1520`, `ibm03=1.0135`, `ibm04=1.0343`,
+> `ibm06=1.2252`, `ibm07=1.0703`, `ibm08=1.1566`, `ibm09=0.8676`,
+> `ibm10=1.6185`, `ibm11=1.0286`, `ibm12=2.2064`, `ibm13=1.0358`,
+> `ibm14=1.6538`, `ibm15=1.8603`, `ibm16=1.6849`, `ibm17=2.1241`,
+> `ibm18=1.7395`.
+
+> **Status (2026-06-21 — recursive clustering and room/corridor regions removed
+> from production, then deleted):** removed the recursive weighted clustering
+> path and explicit room/corridor region boxes after the staged revamp showed
+> they were detrimental overall. The active system now keeps the first-class
+> `HierarchyModel`, additive candidate pools, composite hierarchy quality, and
+> pass state/context/result objects, but uses tag/oversized inferred clusters
+> plus the existing hard/soft congestion-expanded region boxes. Verification:
+> `uv run evaluate src/main.py --all` = **AVG 1.3798**, 17/17 VALID,
+> 0 overlaps, 1152.01s. This improves the Stage 6 revamp sweep
+> `1.3846 -> 1.3798` (-0.0048) while remaining worse than the lower-proxy
+> accepted hierarchy reference **AVG 1.3631**.
+>
+> Per-benchmark change versus Stage 6 revamp:
+> `ibm01 +0.0031`, `ibm02 +0.0000`, `ibm03 +0.0158`, `ibm04 -0.0011`,
+> `ibm06 +0.0000`, `ibm07 -0.0160`, `ibm08 +0.0016`, `ibm09 -0.0006`,
+> `ibm10 -0.0127`, `ibm11 +0.0114`, `ibm12 -0.0084`, `ibm13 +0.0012`,
+> `ibm14 -0.0226`, `ibm15 -0.0433`, `ibm16 -0.0604`, `ibm17 +0.0456`,
+> `ibm18 +0.0049`. The removal mostly helps dense packed cases
+> `ibm10`, `ibm12`, and `ibm14`-`ibm16`; it hurts `ibm03`, `ibm11`, and
+> especially `ibm17`.
+
+> **Status (2026-06-21 — six-stage hierarchy architecture revamp valid, not
+> lower-proxy promoted):** implemented the requested six revamp directions in
+> staged order and ran `uv run evaluate src/main.py --all` after each stage.
+> The new code introduces a first-class `HierarchyModel`, recursive hard-cluster
+> partitioning, cluster-room/bridge-corridor regions, spare-budget additive
+> candidate tails, a composite hierarchy-quality metric, and shared
+> `PlacementState` / `PassContext` / `PassResult` orchestration objects. Final
+> Stage 6 verification was **AVG 1.3846**, 17/17 VALID, 0 overlaps, 1170.17s.
+> This is valid, but it regresses proxy versus the lower-proxy accepted
+> hierarchy reference **AVG 1.3631**, so treat it as an architecture revamp and
+> diagnostic base rather than a proxy-score promotion.
+>
+> Stage contribution table, lower proxy is better:
+>
+> | Stage | Change | `--all` AVG | Delta vs prior |
+> |---|---:|---:|---:|
+> | 1 | First-class hierarchy model and trace metadata | 1.3803 | baseline for this revamp run |
+> | 2 | Recursive weighted hierarchy partitioning | 1.3839 | +0.0036 worse |
+> | 3 | Cluster rooms and bridge corridors before macro moves | 1.3864 | +0.0025 worse |
+> | 4 | Spare-budget additive candidate pools | 1.3849 | -0.0015 better |
+> | 5 | Composite hierarchy-quality objective | 1.3843 | -0.0006 better |
+> | 6 | Split pass orchestration into state/context/result objects | 1.3846 | +0.0003 worse |
+>
+> Final Stage 6 per-benchmark proxies:
+> `ibm01=0.9504`, `ibm02=1.1520`, `ibm03=1.0053`, `ibm04=1.0354`,
+> `ibm06=1.2252`, `ibm07=1.0863`, `ibm08=1.1549`, `ibm09=0.8719`,
+> `ibm10=1.6307`, `ibm11=1.0277`, `ibm12=2.2030`, `ibm13=1.0340`,
+> `ibm14=1.6764`, `ibm15=1.9036`, `ibm16=1.7436`, `ibm17=2.1073`,
+> `ibm18=1.7311`.
+
+> **Status (2026-06-20/21 — coldspot selector demoted; regional ops confirmed
+> as GNN target):** added default-off additive coldspot selector infrastructure:
+> `HIER_GNN_COLDSPOT_SELECT`, `HIER_GNN_COLDSPOT_MODEL`,
+> `HIER_GNN_COLDSPOT_KICKS`, `HIER_GNN_COLDSPOT_TOP_K`,
+> `HIER_GNN_COLDSPOT_SKIP_MICRO`, and trace-only
+> `HIER_GNN_COLDSPOT_ORACLE`. The selector ranks generated coldspot kick
+> outcomes; it does not generate coordinates, and all existing hard legality,
+> hierarchy-quality, budget, and exact-proxy gates remain mandatory. Default
+> production is unchanged. Full default `--all` after the implementation was
+> **AVG 1.3667**, 17/17 VALID, 0 overlaps, 634.76s, so this is not a new
+> accepted baseline versus **AVG 1.3631**. Oracle-pool traces were collected for
+> `ibm10`, `ibm12`, and `ibm17` with `HIER_GNN_COLDSPOT_ORACLE=1`,
+> `HIER_GNN_COLDSPOT_SELECT=0`, and `HIER_GNN_COLDSPOT_KICKS=8`; artifacts live
+> under `ml_data/beyondppa_gnn/traces/20260620_coldspot_oracle_k8/` and
+> `ml_data/beyondppa_gnn/datasets/20260620_coldspot_oracle_k8_only_*`. The
+> isolated dataset has 216 coldspot candidates across 24 pools and only 8
+> accepted/proxy-gain candidates, all in one `ibm12` pool. Diagnostic result:
+> `trace_order` and `field_delta` miss the best-gain candidate at top-1/top-4;
+> oracle top-1 succeeds by definition. This is too sparse and benchmark-specific
+> to train a meaningful coldspot GNN. Do not promote or train a coldspot model
+> from this dataset. Correction: the intended learned target is regional
+> relocation and regional hard-hard, hard-soft, and soft-soft swaps, with an
+> optional soft-macro barrier for soft-involving moves.
+
+> **Status (2026-06-21 — regional swap GNN hook added, closed-loop rejected for
+> sequential reordering):** added default-off `region_swaps` inference support
+> to `src/placer/local_search/gnn_ranker.py`, plus guarded-prefix controls
+> `HIER_GNN_SWAP_PRESERVE_TOP_N` and `HIER_GNN_SWAP_TOP_K`. Added
+> `HIER_SOFT_BARRIER_GAIN` (production default `0.0`; use `0.01` for soft
+> barrier diagnostics) and applied it only to soft relocation, hard-soft swaps,
+> and soft-soft swaps. Offline regional diagnostics on
+> `20260620_coldspot_oracle_k8_only_ibm10_12_17.pt` show real ranking signal:
+> `region_swaps` G4 exact-gain recall@4 `0.5984` versus trace order `0.1933`,
+> accepted recall@4 `0.7675` versus trace order `0.3259`. Closed-loop `ibm12`
+> smokes were all VALID but worse: full GNN region-swap reorder plus
+> `HIER_SOFT_BARRIER_GAIN=0.01` gave `2.3090`; full GNN reorder without the
+> barrier gave `2.2400`; guarded prefix
+> `HIER_GNN_SWAP_PRESERVE_TOP_N=8,HIER_GNN_SWAP_TOP_K=8` gave `2.2199`.
+> Deterministic/default `ibm12` in the same current stack is around
+> `2.1847-2.1855`. Conclusion: the GNN has useful regional-swap candidate
+> ranking signal offline, but sequentially reordering the swap stream changes
+> state too aggressively and is rejected. Next regional GNN work should be
+> additive or budgeted: preserve deterministic swap order, exact-score a small
+> GNN-ranked supplemental set only when budget remains, and keep
+> `HIER_SOFT_BARRIER_GAIN=0.01` as a diagnostic soft-macro gate rather than a
+> production default.
 
 > **Status (2026-06-19 — GNN Stage G5 default-off relocation hook smoke
 > accepted):** added `src/placer/local_search/gnn_ranker.py`, a default-off

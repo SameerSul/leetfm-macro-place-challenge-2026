@@ -16,27 +16,65 @@ from placer.scoring.exact import _exact_proxy
 
 def hierarchy_quality_metric(hard_xy, clusters) -> float:
     """Cluster separation quality: lower means better-contained hierarchy."""
+    return float(hierarchy_quality_breakdown(hard_xy, clusters)["quality"])
+
+
+def hierarchy_quality_breakdown(hard_xy, clusters) -> dict[str, float]:
+    """Composite hierarchy quality for local accept gates.
+
+    The original score was mean cluster radius divided by nearest-cluster
+    centroid distance. The composite keeps that term as the dominant signal and
+    adds bbox spread plus a small crowding penalty so elongated or nearly
+    touching hierarchy groups are not treated as equally good.
+    """
     if not clusters:
-        return 0.0
+        return {"quality": 0.0, "radius": 0.0, "bbox": 0.0, "crowd": 0.0}
     cids = list(clusters.keys())
     centroids = []
     radii = []
+    bbox_radii = []
     for cid in cids:
         p = hard_xy[np.asarray(clusters[cid], dtype=np.int64)]
         centroids.append(p.mean(axis=0))
         radii.append(float(np.mean(np.hypot(p[:, 0] - p[:, 0].mean(), p[:, 1] - p[:, 1].mean()))))
+        bbox_radii.append(0.5 * float(np.hypot(np.ptp(p[:, 0]), np.ptp(p[:, 1]))))
     centroids = np.asarray(centroids, dtype=np.float64)
     radii = np.asarray(radii, dtype=np.float64)
+    bbox_radii = np.asarray(bbox_radii, dtype=np.float64)
+    rw = max(0.0, float(const.HIER_QUALITY_RADIUS_WEIGHT))
+    bw = max(0.0, float(const.HIER_QUALITY_BBOX_WEIGHT))
+    cw = max(0.0, float(const.HIER_QUALITY_CROWD_WEIGHT))
+    wsum = max(rw + bw + cw, 1e-12)
     if len(cids) == 1:
         denom = max(float(np.hypot(np.ptp(hard_xy[:, 0]), np.ptp(hard_xy[:, 1]))), 1.0)
-        return float(radii[0] / denom)
+        radius_score = float(radii[0] / denom)
+        bbox_score = float(bbox_radii[0] / denom)
+        crowd_score = 0.0
+        quality = (rw * radius_score + bw * bbox_score + cw * crowd_score) / wsum
+        return {
+            "quality": float(quality),
+            "radius": radius_score,
+            "bbox": bbox_score,
+            "crowd": crowd_score,
+        }
     d = np.hypot(
         centroids[:, None, 0] - centroids[None, :, 0],
         centroids[:, None, 1] - centroids[None, :, 1],
     )
     np.fill_diagonal(d, np.inf)
     nearest = np.maximum(np.min(d, axis=1), 1.0)
-    return float(np.mean(radii / nearest))
+    radius_score = float(np.mean(radii / nearest))
+    bbox_score = float(np.mean(bbox_radii / nearest))
+    nearest_idx = np.argmin(d, axis=1)
+    combined = radii + radii[nearest_idx]
+    crowd_score = float(np.mean(np.maximum(0.0, combined / nearest - 1.0)))
+    quality = (rw * radius_score + bw * bbox_score + cw * crowd_score) / wsum
+    return {
+        "quality": float(quality),
+        "radius": radius_score,
+        "bbox": bbox_score,
+        "crowd": crowd_score,
+    }
 
 
 def _cell_values(pos: np.ndarray, field: np.ndarray, cw: float, ch: float) -> np.ndarray:
@@ -99,14 +137,6 @@ def _clip_to_region(xy, region, idx, hw, hh, cw, ch):
         xy[:, 0] = np.clip(xy[:, 0], region[idx, 0], region[idx, 2])
         xy[:, 1] = np.clip(xy[:, 1], region[idx, 1], region[idx, 3])
     return xy
-
-
-def _cluster_centroids(hard_xy, clusters):
-    out = {}
-    for cid, mem in clusters.items():
-        p = hard_xy[np.asarray(mem, dtype=np.int64)]
-        out[int(cid)] = p.mean(axis=0)
-    return out
 
 
 def _prepare_cluster_metadata(clusters, sizes, movable_h):
