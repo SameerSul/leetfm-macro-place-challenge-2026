@@ -320,6 +320,12 @@ candidates are computed with vectorized bbox masks rather than per-candidate
 Python `point_in_region()` calls. These are throughput optimizations only:
 candidate ordering, legality checks, hierarchy escape rules, and exact-proxy
 accept gates are unchanged.
+Hard-hard and hard-soft swap legality use numba short-circuit loops when numba
+is available, avoiding repeated candidate-by-hard boolean matrix allocation.
+When GNN candidate tracing and GNN swap ranking are disabled, swaps skip
+per-candidate trace dictionaries and exact-score the ranked legal list directly.
+The traced/ranked path remains available and now uses the same per-row
+outside-region flag as the default path for soft-soft swap gates.
 The `score_swap_*_many()` APIs still score exact candidates one at a time using
 the cached structs. A reversible exact batch scorer was verified against scalar
 scoring but was not promoted because inverse route reapplication was slower

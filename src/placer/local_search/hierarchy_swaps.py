@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from utils import constants as const
-from utils.config import _GPU_BACKEND, _GPU_DEVICE
+from utils.config import HAS_NUMBA, _GPU_BACKEND, _GPU_DEVICE, _numba_njit
 from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
@@ -196,6 +196,18 @@ def _rank_swap_candidates(
     )
 
 
+def _swap_trace_or_rank_enabled() -> bool:
+    """Whether swaps need per-candidate dictionaries before exact scoring."""
+    if gnn_trace_limit() > 0:
+        from placer.local_search.gnn_trace import gnn_trace_enabled
+
+        if gnn_trace_enabled():
+            return True
+    from placer.local_search.gnn_ranker import gnn_rank_enabled
+
+    return gnn_rank_enabled("region_swaps")
+
+
 def _hierarchy_aware_swap_filter(cand, outside, source_field, target_field, span, *, enabled: bool):
     """Prefer in-region swaps unless outside relief is materially stronger."""
     if not enabled or cand.size <= 1:
@@ -217,6 +229,118 @@ def _in_bounds(x: float, y: float, hw: float, hh: float, cw: float, ch: float) -
     return bool(hw <= x <= cw - hw and hh <= y <= ch - hh)
 
 
+if HAS_NUMBA:
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _legal_hard_hard_candidates_jit(
+        h_pos,
+        sep_x_mat,
+        sep_y_mat,
+        hw,
+        hh,
+        cw,
+        ch,
+        i,
+        cand,
+        eps,
+    ):
+        out = np.empty(cand.shape[0], dtype=np.bool_)
+        x_i_old = h_pos[i, 0]
+        y_i_old = h_pos[i, 1]
+        hw_i = hw[i]
+        hh_i = hh[i]
+        n = h_pos.shape[0]
+        for cidx in range(cand.shape[0]):
+            j = cand[cidx]
+            x_j_old = h_pos[j, 0]
+            y_j_old = h_pos[j, 1]
+            legal = True
+            if (
+                x_j_old - hw_i < 0.0
+                or x_j_old + hw_i > cw
+                or y_j_old - hh_i < 0.0
+                or y_j_old + hh_i > ch
+                or x_i_old - hw[j] < 0.0
+                or x_i_old + hw[j] > cw
+                or y_i_old - hh[j] < 0.0
+                or y_i_old + hh[j] > ch
+            ):
+                legal = False
+            if legal:
+                for k in range(n):
+                    if k == i or k == j:
+                        continue
+                    if (
+                        abs(x_j_old - h_pos[k, 0]) < sep_x_mat[i, k] + eps
+                        and abs(y_j_old - h_pos[k, 1]) < sep_y_mat[i, k] + eps
+                    ):
+                        legal = False
+                        break
+            if legal:
+                for k in range(n):
+                    if k == i or k == j:
+                        continue
+                    if (
+                        abs(x_i_old - h_pos[k, 0]) < sep_x_mat[j, k] + eps
+                        and abs(y_i_old - h_pos[k, 1]) < sep_y_mat[j, k] + eps
+                    ):
+                        legal = False
+                        break
+            out[cidx] = legal
+        return out
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _legal_hard_soft_candidates_jit(
+        h_pos,
+        s_pos,
+        sep_x_mat,
+        sep_y_mat,
+        hw,
+        hh,
+        soft_hw,
+        soft_hh,
+        cw,
+        ch,
+        i,
+        cand,
+        eps,
+    ):
+        out = np.empty(cand.shape[0], dtype=np.bool_)
+        x_i_old = h_pos[i, 0]
+        y_i_old = h_pos[i, 1]
+        hw_i = hw[i]
+        hh_i = hh[i]
+        n = h_pos.shape[0]
+        for cidx in range(cand.shape[0]):
+            k_soft = cand[cidx]
+            x_s_old = s_pos[k_soft, 0]
+            y_s_old = s_pos[k_soft, 1]
+            legal = True
+            if (
+                x_s_old - hw_i < 0.0
+                or x_s_old + hw_i > cw
+                or y_s_old - hh_i < 0.0
+                or y_s_old + hh_i > ch
+                or x_i_old - soft_hw[k_soft] < 0.0
+                or x_i_old + soft_hw[k_soft] > cw
+                or y_i_old - soft_hh[k_soft] < 0.0
+                or y_i_old + soft_hh[k_soft] > ch
+            ):
+                legal = False
+            if legal:
+                for j in range(n):
+                    if j == i:
+                        continue
+                    if (
+                        abs(x_s_old - h_pos[j, 0]) < sep_x_mat[i, j] + eps
+                        and abs(y_s_old - h_pos[j, 1]) < sep_y_mat[i, j] + eps
+                    ):
+                        legal = False
+                        break
+            out[cidx] = legal
+        return out
+
+
 def _legal_hard_hard_candidates(
     h_pos: np.ndarray,
     sep_x_mat: np.ndarray,
@@ -233,6 +357,19 @@ def _legal_hard_hard_candidates(
     cand = np.asarray(cand, dtype=np.int64)
     if cand.size == 0:
         return np.zeros(0, dtype=np.bool_)
+    if HAS_NUMBA:
+        return _legal_hard_hard_candidates_jit(
+            h_pos,
+            sep_x_mat,
+            sep_y_mat,
+            hw,
+            hh,
+            float(cw),
+            float(ch),
+            int(i),
+            cand,
+            float(eps),
+        )
 
     n = h_pos.shape[0]
     all_idx = np.arange(n, dtype=np.int64)
@@ -302,6 +439,22 @@ def _legal_hard_soft_candidates(
     cand = np.asarray(cand, dtype=np.int64)
     if cand.size == 0:
         return np.zeros(0, dtype=np.bool_)
+    if HAS_NUMBA:
+        return _legal_hard_soft_candidates_jit(
+            h_pos,
+            s_pos,
+            sep_x_mat,
+            sep_y_mat,
+            hw,
+            hh,
+            soft_hw,
+            soft_hh,
+            float(cw),
+            float(ch),
+            int(i),
+            cand,
+            float(eps),
+        )
 
     x_i = float(h_pos[i, 0])
     y_i = float(h_pos[i, 1])
@@ -413,6 +566,7 @@ def _try_hard_hard(
     sep_x_mat, sep_y_mat = separation_matrices(sizes)
     span = max(float(field.max()), 1e-12)
     hot = movable_idx[np.argsort(-local[movable_idx])][: min(128, movable_idx.size)]
+    use_trace_or_rank = _swap_trace_or_rank_enabled()
 
     for i_raw in hot:
         if deadline is not None and time.monotonic() > deadline:
@@ -466,6 +620,29 @@ def _try_hard_hard(
         ranked = cand[ranked_idx]
         ranked_legal = legal_mask[ranked_idx]
         ranked_outside = outside[ranked_idx]
+        if not use_trace_or_rank:
+            scored = [
+                (int(j), bool(outside_move))
+                for j, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside)
+                if bool(is_legal)
+            ]
+            scores = (
+                scorer.score_swap_hard_hard_many(
+                    i, np.asarray([j for j, _ in scored], dtype=np.int64)
+                )
+                if scored
+                else np.empty(0, dtype=np.float64)
+            )
+            for (j, outside_move), score in zip(scored, scores):
+                stats["hh_scores"] += 1
+                if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
+                    scorer.commit_swap_hard_hard(i, j)
+                    h_pos[[i, j]] = h_pos[[j, i]]
+                    _record_accept(stats, "hh", outside_move, best_score, score)
+                    best_score = float(score)
+                    accepts += 1
+                    break
+            continue
         trace_rows = []
         trace_by_target = {}
         for candidate_rank, (j_raw, is_legal, outside_move) in enumerate(
@@ -581,6 +758,7 @@ def _try_soft_soft(
         return 0, best_score
     span = max(float(field.max()), 1e-12)
     hot = movable_idx[np.argsort(-local[movable_idx])][: min(256, movable_idx.size)]
+    use_trace_or_rank = _swap_trace_or_rank_enabled()
 
     for a_raw in hot:
         if deadline is not None and time.monotonic() > deadline:
@@ -618,6 +796,35 @@ def _try_soft_soft(
         )[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_outside = outside[ranked_idx]
+        if not use_trace_or_rank:
+            scored = []
+            for b_raw, outside_move in zip(ranked, ranked_outside):
+                b = int(b_raw)
+                ax, ay = float(s_pos[b, 0]), float(s_pos[b, 1])
+                bx, by = float(s_pos[a, 0]), float(s_pos[a, 1])
+                if not _in_bounds(ax, ay, soft_hw[a], soft_hh[a], cw, ch):
+                    continue
+                if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
+                    continue
+                scored.append((b, bool(outside_move)))
+            scores = (
+                scorer.score_swap_soft_soft_many(
+                    a, np.asarray([b for b, _ in scored], dtype=np.int64)
+                )
+                if scored
+                else np.empty(0, dtype=np.float64)
+            )
+            for (b, outside_move), score in zip(scored, scores):
+                stats["ss_scores"] += 1
+                required_gain = max(min_gain, soft_barrier_gain)
+                if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
+                    scorer.commit_swap_soft_soft(a, b)
+                    s_pos[[a, b]] = s_pos[[b, a]]
+                    _record_accept(stats, "ss", outside_move, best_score, score)
+                    best_score = float(score)
+                    accepts += 1
+                    break
+            continue
         trace_rows = []
         trace_by_target = {}
         for candidate_rank, (b_raw, outside_move) in enumerate(zip(ranked, ranked_outside)):
@@ -666,7 +873,7 @@ def _try_soft_soft(
                 continue
             if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
                 continue
-            scored.append((b, outside_move))
+            scored.append((b, bool(row.get("outside_region", False))))
         if scored:
             scores = scorer.score_swap_soft_soft_many(
                 a, np.asarray([b for b, _ in scored], dtype=np.int64)
@@ -747,6 +954,7 @@ def _try_hard_soft(
     sep_x_mat, sep_y_mat = separation_matrices(sizes)
     span = max(float(field.max()), 1e-12)
     hot = hard_idx[np.argsort(-hard_local[hard_idx])][: min(128, hard_idx.size)]
+    use_trace_or_rank = _swap_trace_or_rank_enabled()
 
     for i_raw in hot:
         if deadline is not None and time.monotonic() > deadline:
@@ -797,9 +1005,42 @@ def _try_hard_soft(
         )[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_outside = outside[ranked_idx]
+        ranked_legal = legal_mask[ranked_idx]
+        if not use_trace_or_rank:
+            scored = []
+            for k_raw, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside):
+                if not bool(is_legal):
+                    continue
+                k = int(k_raw)
+                hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
+                sx, sy = float(h_pos[i, 0]), float(h_pos[i, 1])
+                if not _in_bounds(hx, hy, hw[i], hh[i], cw, ch):
+                    continue
+                if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
+                    continue
+                scored.append((k, hx, hy, sx, sy, bool(outside_move)))
+            scores = (
+                scorer.score_swap_hard_soft_many(
+                    i, np.asarray([k for k, *_ in scored], dtype=np.int64)
+                )
+                if scored
+                else np.empty(0, dtype=np.float64)
+            )
+            for (k, hx, hy, sx, sy, outside_move), score in zip(scored, scores):
+                stats["hs_scores"] += 1
+                required_gain = max(min_gain, soft_barrier_gain)
+                if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
+                    scorer.commit_swap_hard_soft(i, k)
+                    h_pos[i, 0], h_pos[i, 1] = hx, hy
+                    s_pos[k, 0], s_pos[k, 1] = sx, sy
+                    _record_accept(stats, "hs", outside_move, best_score, score)
+                    best_score = float(score)
+                    accepts += 1
+                    break
+            continue
         trace_rows = []
         trace_by_target = {}
-        for candidate_rank, (k_raw, is_legal) in enumerate(zip(ranked, legal_mask[ranked_idx])):
+        for candidate_rank, (k_raw, is_legal) in enumerate(zip(ranked, ranked_legal)):
             k = int(k_raw)
             hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
             sx, sy = float(h_pos[i, 0]), float(h_pos[i, 1])
