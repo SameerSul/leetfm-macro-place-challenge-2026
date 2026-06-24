@@ -199,6 +199,8 @@ class IncrementalScorer:
 
         # Cache per-macro net routing structures.
         self._route_struct_cache: "dict[int, object]" = {}
+        # Cache placement-independent routing structures for repeated swap module sets.
+        self._route_struct_many_cache: "dict[tuple[int, ...], object]" = {}
         # Cache touched nets for frequently repeated module sets.
         self._touched_cache2: "dict[tuple[int, int], np.ndarray]" = {}
         self._touched_cache_many: "dict[tuple[int, ...], np.ndarray]" = {}
@@ -508,6 +510,16 @@ class IncrementalScorer:
             cache[m] = _build_net_routing_struct(self.plc, self._macro_nets(m))
         return cache[m]
 
+    def _route_struct_many(self, modules):
+        """Cached topology routing-struct for a repeated multi-macro move."""
+        key = tuple(sorted({int(m) for m in modules}))
+        if not key:
+            return None
+        cache = self._route_struct_many_cache
+        if key not in cache:
+            cache[key] = _build_net_routing_struct(self.plc, self._touched_nets_many(key))
+        return cache[key]
+
     def soft_net_centroids(self) -> np.ndarray:
         """Return a connection-centered target point for each soft macro."""
         pos = _ensure_pos_cache(self.plc)
@@ -778,11 +790,12 @@ class IncrementalScorer:
         hard_slots = np.asarray(hard_slots, dtype=np.int64)
 
         touched = self._touched_nets_many(modules)
+        struct = self._route_struct_many(modules) if touched.size else None
         H_snap = self.H_flat.copy() if touched.size else None
         V_snap = self.V_flat.copy() if touched.size else None
         Hm_snap = self.H_macro_flat.copy() if hard_slots.size else None
         Vm_snap = self.V_macro_flat.copy() if hard_slots.size else None
-        bb_old = _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if hard_slots.size:
             _apply_macro_routing_subset(
                 self.plc, hard_slots, -1.0, self.V_macro_flat, self.H_macro_flat
@@ -797,7 +810,7 @@ class IncrementalScorer:
         for m, (x, y) in zip(modules, new_xy):
             self._apply_pos(m, x, y)
 
-        bb_new = _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if hard_slots.size:
             _apply_macro_routing_subset(
                 self.plc, hard_slots, +1.0, self.V_macro_flat, self.H_macro_flat
@@ -855,8 +868,9 @@ class IncrementalScorer:
         new_xy = [(float(x), float(y)) for x, y in new_xy]
         hard_slots = np.asarray(hard_slots, dtype=np.int64)
         touched = self._touched_nets_many(modules)
+        struct = self._route_struct_many(modules) if touched.size else None
 
-        bb_old = _apply_net_routing_subset(self.plc, touched, -1.0, self.H_flat, self.V_flat)
+        bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if hard_slots.size:
             _apply_macro_routing_subset(
                 self.plc, hard_slots, -1.0, self.V_macro_flat, self.H_macro_flat
@@ -874,7 +888,7 @@ class IncrementalScorer:
             if idx.size:
                 np.add.at(go, idx, area)
 
-        bb_new = _apply_net_routing_subset(self.plc, touched, +1.0, self.H_flat, self.V_flat)
+        bb_new = _apply_net_routing_struct(self.plc, struct, +1.0, self.H_flat, self.V_flat)
         if hard_slots.size:
             _apply_macro_routing_subset(
                 self.plc, hard_slots, +1.0, self.V_macro_flat, self.H_macro_flat
