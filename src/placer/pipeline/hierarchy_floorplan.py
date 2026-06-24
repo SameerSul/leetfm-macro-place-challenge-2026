@@ -2,7 +2,6 @@
 
 import os
 import time
-from typing import Optional
 
 import numpy as np
 import torch
@@ -621,7 +620,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             break
         if _hard_valid(h_pos) and r_score < best_score - 1e-9:
             best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-    pre_decomp_h, pre_decomp_s, pre_decomp_score = h_pos.copy(), s_pos.copy(), r_score
+    pre_decomp_score = r_score
     decomp_gap = float("inf")
     decomp_skip = False
     decomp_field = _congestion_field(rscorer, nr, nc)

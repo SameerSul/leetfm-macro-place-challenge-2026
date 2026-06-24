@@ -14,7 +14,7 @@ proxy-optimized production path (candidate restarts, R2/2-opt/LSMC, ML ranker
 defaults, and generic LSMC cluster kicks) has been deleted from active code.
 `MacroPlacer.place()` now always routes through `_hierarchy_floorplan()` and
 raises if that path is unavailable. Current smoke: `ibm10` proxy `1.1576`,
-VALID, ~93s locally. Current full IBM run:
+VALID, ~90s locally. Current full IBM run:
 `uv run evaluate src/main.py --all` = **AVG 1.1714**, 17/17 VALID, 0 overlaps,
 961.79s. The historical proxy table below is retained as context for the
 removed proxy path, not the current hierarchy-preserving output.
