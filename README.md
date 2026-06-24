@@ -27,7 +27,7 @@ Current smoke reference:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy≈1.15x  VALID  [~90s locally]
+proxy=1.1576  VALID  [~90s locally]
 ```
 
 Current full IBM reference:
