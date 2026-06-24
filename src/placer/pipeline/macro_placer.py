@@ -1,7 +1,6 @@
 """Macro placer entrypoint with hierarchy-only execution."""
 
 import random
-import time
 from typing import List, Optional
 
 import numpy as np
@@ -65,9 +64,6 @@ class MacroPlacer:
         self.seed = seed
         self.time_budget_s = time_budget_s
 
-        self._benchmarks_done: int = 0
-        self._total_place_time_s: float = 0.0
-
     @staticmethod
     def _clamp_in_bounds(pl: torch.Tensor, benchmark: Benchmark) -> torch.Tensor:
         """Keep movable macro centers inside the canvas."""
@@ -96,12 +92,9 @@ class MacroPlacer:
 
         _log(f"[GPU] backend={_GPU_BACKEND} device={_GPU_DEVICE_NAME} | benchmark={benchmark.name}")
 
-        t0 = time.monotonic()
         hier = self._hierarchy_floorplan(benchmark)
         if hier is None:
             raise RuntimeError(
                 "hierarchy floorplan path unavailable; proxy fallback has been removed"
             )
-        self._total_place_time_s += time.monotonic() - t0
-        self._benchmarks_done += 1
         return hier

@@ -20,7 +20,6 @@ from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.region_rules import accepts_region_score, point_in_region
-from placer.local_search.structural_fields import combined_structural_penalty
 from placer.plc.placement import _ensure_pos_cache
 
 if TYPE_CHECKING:
@@ -293,27 +292,6 @@ def _dedupe_targets_xy(targets) -> np.ndarray:
         raise ValueError("target coordinates must be [n,2]")
     _, keep = np.unique(arr, axis=0, return_index=True)
     return arr[np.sort(keep)]
-
-
-def _structural_penalty(
-    full_pos: np.ndarray,
-    sizes: np.ndarray,
-    cw: float,
-    ch: float,
-    benchmark: "Benchmark",
-) -> float:
-    kw, gw, nw = _structural_weights()
-    return combined_structural_penalty(
-        full_pos,
-        sizes,
-        cw,
-        ch,
-        grid_cols=int(benchmark.grid_cols),
-        grid_rows=int(benchmark.grid_rows),
-        keepout_weight=kw,
-        grid_align_weight=gw,
-        notch_weight=nw,
-    )
 
 
 def _structural_local_penalty(

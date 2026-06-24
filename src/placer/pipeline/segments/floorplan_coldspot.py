@@ -20,9 +20,8 @@ from placer.local_search.gnn_ranker import (
 from placer.local_search.gnn_trace import log_gnn_event
 from placer.local_search.lsmc_explore import _coldspot_cluster_kick_candidates
 from placer.local_search.relocation import (
-    _micro_shift_polish,
-    _relocation_moves,
     _soft_relocation_moves,
+    _micro_shift_polish,
 )
 from placer.pipeline.segments.floorplan_coldspot_candidates import (
     graph_candidate_score,
@@ -68,7 +67,6 @@ def run_coldspot_tightening(
     log_fn: Callable[[str], None],
     trace_pass_fn: Callable[..., None],
     record_plateau_fn: Callable[..., object],
-    is_plateau_fn: Callable[[object], bool],
     hard_valid_fn: Callable[[np.ndarray], bool],
     deadline_fn: Callable[[float, float | None], float | None],
     hierarchy_quality_metric_fn: Callable[[np.ndarray, dict], float],

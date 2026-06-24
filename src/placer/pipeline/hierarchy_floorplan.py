@@ -1,9 +1,8 @@
 """Hierarchy floorplan pipeline segment extracted from macro_placer."""
 
 import os
-import random
 import time
-from typing import List, Optional
+from typing import Optional
 
 import numpy as np
 import torch
@@ -25,7 +24,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     from dreamplace_bridge.run_bridge import (  # noqa: E402
         run_dreamplace,
         is_available as _dp_available,
-        dreamplace_design_name,
     )
     from placer.legalize.spiral import _will_legalize
     from placer.local_search.cluster_decompress import (
@@ -48,6 +46,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     from placer.pipeline.hierarchy_context import (
         PassContext,
         PassResult,
+        PlacementState,
         PlateauTelemetry,
     )
     from placer.scoring.incremental import IncrementalScorer
@@ -1443,7 +1442,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         log_fn=_log,
         trace_pass_fn=_trace_pass,
         record_plateau_fn=_record_plateau,
-        is_plateau_fn=_is_plateau,
         hard_valid_fn=_hard_valid,
         deadline_fn=_deadline,
         hierarchy_quality_metric_fn=hierarchy_quality_metric,

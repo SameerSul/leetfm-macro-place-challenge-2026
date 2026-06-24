@@ -19,14 +19,6 @@ class PlacementState:
     def full(self) -> np.ndarray:
         return np.vstack([self.hard, self.soft]).astype(np.float64)
 
-    def snapshot(self) -> "PlacementState":
-        return PlacementState(self.hard.copy(), self.soft.copy(), float(self.proxy))
-
-    def restore(self, other: "PlacementState") -> None:
-        self.hard = other.hard.copy()
-        self.soft = other.soft.copy()
-        self.proxy = float(other.proxy)
-
 
 @dataclass(frozen=True)
 class PassContext:
