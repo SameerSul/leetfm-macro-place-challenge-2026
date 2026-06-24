@@ -2,7 +2,7 @@
 
 ## Current Production System
 
-As of 2026-06-23, v2 is a hierarchy-preserving placer with exact-prescored
+As of 2026-06-24, v2 is a hierarchy-preserving placer with exact-prescored
 seed portfolio selection. The active
 `MacroPlacer.place()` path is:
 
@@ -51,10 +51,16 @@ benchmark input
        - generate hierarchy-safe cluster move variants from multiple states
        - GPU-rank cheap candidate scores when CUDA is available
        - exact-score the top candidates and keep the best survivor pool
+  -> adaptive pass gate: skip remaining repeats when latest exact gain <= HIER_PLATEAU_PROXY_GAIN
   -> final scorer-compatible hard legality margin audit
   -> final legality and bounds checks
   -> return center coordinates for hard and soft macros
 ```
+
+Passes in the production flow now advance on gain, not fixed repeat counts:
+relief, swap, post-swap cleanup, swap replay, micro-shift replay, and
+coldspot-related stages continue only while the most recent exact-proxy gain
+exceeds `HIER_PLATEAU_PROXY_GAIN`; otherwise the pipeline moves to the next stage.
 
 The former proxy-optimized path has been removed from active code. This includes
 candidate restarts, R2 interleaving, 2-opt, hard-soft swaps, soft swaps,
@@ -81,12 +87,12 @@ opportunity gates, and component-aware scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1793  17/17 VALID  0 overlaps  1421.12s
+AVG 1.1714  17/17 VALID  0 overlaps  961.79s
 ```
 
 The prior accepted Stage-6 audit sweep was `AVG 1.1817`, 17/17 VALID,
 0 overlaps, 1383.28s. A same-day audit-equivalent sweep reached `AVG 1.1796`,
-but the current documented code path is the `AVG 1.1793` sweep above.
+but the current documented code path is the `AVG 1.1714` sweep above.
 
 Historical accepted hierarchy full sweep before the graph-local and six-stage
 architecture revamps:
@@ -420,7 +426,7 @@ HIER_STRONG_SOFT_REPAIR_TARGETS=12
 HIER_STRONG_SOFT_REPAIR_MIN_GAIN=0.00005
 HIER_STRONG_SOFT_REPAIR_WL_PREFILTER=0.0005
 HIER_PLATEAU_ACCEPT_RATE=0.002
-HIER_PLATEAU_PROXY_GAIN=0.0005
+HIER_PLATEAU_PROXY_GAIN=0.00005
 HIER_GPU_RANK_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_MIN_CANDIDATES=1024

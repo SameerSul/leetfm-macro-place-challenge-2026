@@ -3,6 +3,15 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-24 — adaptive pass continuation by latest exact-gain):**
+> The hierarchy flow now uses gain-gated pass continuation for major plateaus and
+> stage transitions: interleaved soft repair, region swaps, post-swap hard/soft
+> cleanup, swap and post-coldspot micro-shift replay, and coldspot refinement now
+> skip to the next stage when the most recent exact-proxy gain is not above
+> `HIER_PLATEAU_PROXY_GAIN` (`0.00005`).
+> Full `uv run evaluate src/main.py --all` = **AVG 1.1714**, 17/17 VALID,
+> 0 overlaps, 961.79s.
+
 > **Status (2026-06-24 — numba swap legality and no-trace swap fast path):**
 > hard-hard and hard-soft region-swap legality now use numba short-circuit
 > loops when available, avoiding repeated candidate-by-hard overlap matrix

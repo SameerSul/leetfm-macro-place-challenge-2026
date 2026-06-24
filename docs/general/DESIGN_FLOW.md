@@ -24,8 +24,12 @@ stronger opportunity gates, and component-aware cleanup scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1793  17/17 VALID  0 overlaps  1421.12s
+AVG 1.1714  17/17 VALID  0 overlaps  961.79s
 ```
+
+Passes are now adaptive by gain. A stage exits and advances when the most recent
+full exact proxy gain is `<= HIER_PLATEAU_PROXY_GAIN` (`0.00005`), instead of
+running a fixed number of low-yield rounds.
 
 ## Flow
 
@@ -382,6 +386,7 @@ HIER_COMPONENT_CONG_DOMINANCE=0.10
 HIER_COMPONENT_RESERVED_CLEANUP_S=12
 HIER_PLATEAU_SOFT_REPAIR_BONUS_BUDGET_S=4
 HIER_PLATEAU_SOFT_REPAIR_BONUS_ROUNDS=1
+HIER_PLATEAU_PROXY_GAIN=0.00005
 HIER_PLATEAU_ESCAPE_BUDGET_S=4
 HIER_PLATEAU_ESCAPE_SOFT_TOP_K=384
 HIER_PLATEAU_ESCAPE_SOFT_TARGETS=10
