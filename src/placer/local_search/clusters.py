@@ -329,17 +329,6 @@ def _hard_edge_maps(plc, n: int, max_fanout: int):
     return edge_count, edge_weight
 
 
-def _flat_components_from_edges(n: int, edge_count: dict[tuple[int, int], int], min_edge: int):
-    parents = _union_find_parents(n)
-    for (a, b), w in edge_count.items():
-        if w >= min_edge:
-            parents[_find(parents, a)] = _find(parents, b)
-    roots: "dict[int, list[int]]" = {}
-    for i in range(n):
-        roots.setdefault(_find(parents, i), []).append(i)
-    return [np.array(sorted(v), dtype=np.int64) for v in roots.values() if len(v) >= 2]
-
-
 def _cluster_partition_areas(n: int, hard_sizes) -> np.ndarray:
     if hard_sizes is None:
         return np.ones(n, dtype=np.float64)
@@ -412,7 +401,6 @@ def _balanced_graph_split(
     total_weight = 0.0
     for i_raw in members:
         i = int(i_raw)
-        d = 0.0
         for j_raw in members:
             j = int(j_raw)
             if j <= i:
@@ -464,60 +452,6 @@ def _balanced_graph_split(
             cut += _edge_lookup(edge_weight, int(a), int(b))
     cut_ratio = float(cut / max(total_weight, 1e-12))
     return left_arr, right_arr, cut_ratio
-
-
-def derive_cluster_softs(plc, n: int, n_soft: int, labels: np.ndarray, max_fanout: int = 8):
-    """Map each hard cluster to the soft macros it drives.
-
-    For every low-fanout net, the soft pins are attributed to the cluster(s) of
-    the net's hard pins; each soft is then assigned to the single cluster it
-    shares the most such nets with. Returns dict cluster_id -> np.ndarray of
-    soft indices in PLACEMENT space (n + soft_order), so the kick can co-move a
-    subsystem's softs with its hard macros. Cached on plc.
-
-    Index spaces: hard pins via `hard_macro_indices` (space B) -> space A label;
-    soft pins via `soft_macro_indices` (space B) -> placement index n+order.
-    """
-    key = (int(n), int(n_soft), int(max_fanout), id(labels))
-    cached = getattr(plc, "_cluster_softs", None)
-    if cached is not None and cached[0] == key:
-        return cached[1]
-
-    cache = _build_wl_cache(plc)
-    ref_idx = cache["ref_idx"]
-    net_starts = cache["net_starts"]
-    net_lengths = cache["net_lengths"]
-    hb2a = {int(b): a for a, b in enumerate(plc.hard_macro_indices)}
-    sb2p = {int(b): n + a for a, b in enumerate(plc.soft_macro_indices)}
-
-    # Count (soft placement idx, cluster id) co-occurrences over low-fanout nets.
-    counts: "dict[tuple[int, int], int]" = {}
-    for net_i in range(len(net_starts)):
-        length = int(net_lengths[net_i])
-        if length < 2 or length > max_fanout:
-            continue
-        start = int(net_starts[net_i])
-        refs = [int(r) for r in ref_idx[start : start + length]]
-        cids = {int(labels[hb2a[r]]) for r in refs if r in hb2a and labels[hb2a[r]] >= 0}
-        if not cids:
-            continue
-        softs = [sb2p[r] for r in refs if r in sb2p]
-        for s in softs:
-            for cid in cids:
-                counts[(s, cid)] = counts.get((s, cid), 0) + 1
-
-    best: "dict[int, tuple[int, int]]" = {}  # soft -> (best_count, cid)
-    for (s, cid), c in counts.items():
-        if s not in best or c > best[s][0]:
-            best[s] = (c, cid)
-
-    cluster_softs: "dict[int, list[int]]" = {}
-    for s, (_c, cid) in best.items():
-        cluster_softs.setdefault(cid, []).append(s)
-    out = {cid: np.array(sorted(v), dtype=np.int64) for cid, v in cluster_softs.items()}
-
-    plc._cluster_softs = (key, out)
-    return out
 
 
 def derive_soft_cluster_roles(

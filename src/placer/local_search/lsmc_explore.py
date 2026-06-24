@@ -819,65 +819,6 @@ def _partial_frontier_candidate(
     return legal_hard, soft_new, trace
 
 
-def _coldspot_cluster_kick(
-    hard_xy,
-    sizes,
-    hw,
-    hh,
-    cw,
-    ch,
-    movable,
-    n,
-    clusters,
-    cluster_softs,
-    soft_xy,
-    soft_hw,
-    soft_hh,
-    soft_movable,
-    cong_field,
-    nr,
-    nc,
-    rng,
-    deadline,
-    target_density=0.65,
-    pick="hot",
-    max_size=64,
-    return_trace: bool = False,
-) -> "tuple[np.ndarray, np.ndarray | None] | tuple[np.ndarray, np.ndarray | None, dict] | None":
-    """Gather one cluster into a low-congestion window, then legalize hard macros."""
-    candidates = _coldspot_cluster_kick_candidates(
-        hard_xy,
-        sizes,
-        hw,
-        hh,
-        cw,
-        ch,
-        movable,
-        n,
-        clusters,
-        cluster_softs,
-        soft_xy,
-        soft_hw,
-        soft_hh,
-        soft_movable,
-        cong_field,
-        nr,
-        nc,
-        rng,
-        deadline,
-        target_density=target_density,
-        pick=pick,
-        max_size=max_size,
-        kick_count=1,
-    )
-    if not candidates:
-        return None
-    hard, soft, trace = candidates[0]
-    if return_trace:
-        return hard, soft, trace
-    return hard, soft
-
-
 def _coldspot_cluster_kick_candidates(
     hard_xy,
     sizes,

@@ -139,14 +139,6 @@ def _clip_to_region(xy, region, idx, hw, hh, cw, ch):
     return xy
 
 
-def _cluster_centroids(hard_xy, clusters):
-    out = {}
-    for cid, mem in clusters.items():
-        p = hard_xy[np.asarray(mem, dtype=np.int64)]
-        out[int(cid)] = p.mean(axis=0)
-    return out
-
-
 def _prepare_cluster_metadata(clusters, sizes, movable_h):
     metadata: dict[int, dict[str, np.ndarray | list[int]]] = {}
     for cid, mem in clusters.items():

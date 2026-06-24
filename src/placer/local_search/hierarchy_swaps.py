@@ -486,53 +486,6 @@ def _legal_hard_soft_candidates(
     return in_bounds_i & in_bounds_k & legal_i
 
 
-def _hard_at_legal(
-    pos: np.ndarray,
-    sep_x_mat: np.ndarray,
-    sep_y_mat: np.ndarray,
-    i: int,
-    x: float,
-    y: float,
-    ignore: "set[int] | None" = None,
-) -> bool:
-    ignore = ignore or set()
-    n = pos.shape[0]
-    mask = np.ones(n, dtype=bool)
-    mask[i] = False
-    for j in ignore:
-        mask[int(j)] = False
-    if not mask.any():
-        return True
-    return not (
-        (np.abs(x - pos[mask, 0]) < sep_x_mat[i, mask] + 1e-6)
-        & (np.abs(y - pos[mask, 1]) < sep_y_mat[i, mask] + 1e-6)
-    ).any()
-
-
-def _hard_swap_legal(
-    pos: np.ndarray,
-    sep_x_mat: np.ndarray,
-    sep_y_mat: np.ndarray,
-    hw: np.ndarray,
-    hh: np.ndarray,
-    cw: float,
-    ch: float,
-    i: int,
-    j: int,
-) -> bool:
-    ix, iy = float(pos[j, 0]), float(pos[j, 1])
-    jx, jy = float(pos[i, 0]), float(pos[i, 1])
-    if not _in_bounds(ix, iy, hw[i], hh[i], cw, ch):
-        return False
-    if not _in_bounds(jx, jy, hw[j], hh[j], cw, ch):
-        return False
-    if abs(ix - jx) < sep_x_mat[i, j] + 1e-6 and abs(iy - jy) < sep_y_mat[i, j] + 1e-6:
-        return False
-    return _hard_at_legal(pos, sep_x_mat, sep_y_mat, i, ix, iy, {j}) and _hard_at_legal(
-        pos, sep_x_mat, sep_y_mat, j, jx, jy, {i}
-    )
-
-
 def _try_hard_hard(
     h_pos,
     sizes,

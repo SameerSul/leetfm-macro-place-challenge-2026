@@ -12,7 +12,6 @@ from placer.local_search.clusters import (
     cluster_min_edge,
     compute_region_bbox,
     compute_soft_region_bbox,
-    derive_cluster_softs,
     derive_hard_clusters,
     derive_oversized_hard_clusters,
     derive_path_tag_hard_clusters,
@@ -31,7 +30,6 @@ class HierarchyEdge:
     src: int
     dst: int
     weight: float
-    net_count: int
 
 
 @dataclass
@@ -199,7 +197,6 @@ def _cluster_graph(plc, labels: np.ndarray, clusters: dict[int, np.ndarray], max
     internal = {int(cid): 0.0 for cid in clusters}
     external = {int(cid): 0.0 for cid in clusters}
     pair_weight: dict[tuple[int, int], float] = {}
-    pair_count: dict[tuple[int, int], int] = {}
 
     for net_i in range(len(net_starts)):
         length = int(net_lengths[net_i])
@@ -219,10 +216,9 @@ def _cluster_graph(plc, labels: np.ndarray, clusters: dict[int, np.ndarray], max
             for b in cids[pos + 1 :]:
                 key = (a, b)
                 pair_weight[key] = pair_weight.get(key, 0.0) + weight
-                pair_count[key] = pair_count.get(key, 0) + 1
 
     edges = [
-        HierarchyEdge(src=a, dst=b, weight=w, net_count=pair_count[(a, b)])
+        HierarchyEdge(src=a, dst=b, weight=w)
         for (a, b), w in sorted(pair_weight.items())
     ]
     confidence = {}

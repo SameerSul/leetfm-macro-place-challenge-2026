@@ -30,15 +30,6 @@ def graph_candidate_score(cand: dict) -> float:
     return float(score)
 
 
-def rank_graph_coldspot_candidates(candidates: list[dict]) -> list[dict]:
-    """Rank candidates by graph score descending."""
-    scored = []
-    for idx, cand in enumerate(candidates):
-        scored.append((graph_candidate_score(cand), idx, cand))
-    scored.sort(key=lambda row: (-row[0], row[1]))
-    return [cand for _score, _idx, cand in scored]
-
-
 def rank_exact_coldspot_candidates(
     candidates: list[dict],
     cur_proxy: float,
