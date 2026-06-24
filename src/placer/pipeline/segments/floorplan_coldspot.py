@@ -629,6 +629,11 @@ def run_coldspot_tightening(
         for cand in candidate_records:
             if "candidate_rank" not in cand["trace"]:
                 cand["trace"]["candidate_rank"] = int(cand.get("candidate_rank", 0))
+            candidate_proxy_val = cand.get("candidate_proxy")
+            if candidate_proxy_val is None:
+                candidate_proxy_val = float("nan")
+                if cand.get("proxy_delta") is None:
+                    cand["proxy_delta"] = 0.0
             log_gnn_event(
                 "hier_coldspot_candidate",
                 benchmark=benchmark.name,
@@ -663,7 +668,7 @@ def run_coldspot_tightening(
                 opportunity_cluster_ids=list(opportunity["cluster_ids"]),
                 opportunity_displacement_windows=float(opportunity["displacement_windows"]),
                 old_proxy=float(cur_proxy),
-                candidate_proxy=float(cand.get("candidate_proxy")),
+                candidate_proxy=float(candidate_proxy_val),
                 proxy_delta=cand.get("proxy_delta"),
                 hierarchy_quality_before=float(cur_quality),
                 hierarchy_quality_after=cand.get("hierarchy_quality_after"),
