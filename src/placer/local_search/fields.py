@@ -7,17 +7,7 @@ from utils import constants as const
 
 def _congestion_field(source, nr: int, nc: int):
     """max(H, V) routing congestion as an (nr, nc) grid, or None if unavailable."""
-    if const.USE_SCORER_CONGESTION_FIELD:
-        scorer_field = getattr(source, "congestion_field", None)
-        if scorer_field is not None:
-            try:
-                field = scorer_field()
-            except Exception:
-                field = None
-            if field is not None and field.shape == (nr, nc):
-                return field
-    else:
-        scorer_field = None
+    scorer_field = getattr(source, "congestion_field", None)
     if scorer_field is not None:
         try:
             field = scorer_field()

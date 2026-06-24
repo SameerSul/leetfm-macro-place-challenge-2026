@@ -28,13 +28,7 @@ def plateau_trace_enabled() -> bool:
 
 
 def plateau_trace_buffered() -> bool:
-    try:
-        from utils import constants as const
-
-        default_buffered = bool(getattr(const, "HIER_PLATEAU_TELEMETRY_BUFFERED", True))
-    except Exception:
-        default_buffered = True
-    raw = os.environ.get("HIER_PLATEAU_TRACE_BUFFERED", "1" if default_buffered else "0").strip()
+    raw = os.environ.get("HIER_PLATEAU_TRACE_BUFFERED", "1").strip()
     return raw not in _FALSE
 
 

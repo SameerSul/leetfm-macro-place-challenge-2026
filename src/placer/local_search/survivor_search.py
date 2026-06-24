@@ -31,9 +31,7 @@ def _hard_valid(hard_xy, hw, hh, cw: float, ch: float) -> bool:
         return False
     dx = np.abs(hard_xy[:, None, 0] - hard_xy[None, :, 0])
     dy = np.abs(hard_xy[:, None, 1] - hard_xy[None, :, 1])
-    ok = (dx + 1e-6 >= (hw[:, None] + hw[None, :])) | (
-        dy + 1e-6 >= (hh[:, None] + hh[None, :])
-    )
+    ok = (dx + 1e-6 >= (hw[:, None] + hw[None, :])) | (dy + 1e-6 >= (hh[:, None] + hh[None, :]))
     np.fill_diagonal(ok, True)
     return bool(ok.all())
 
@@ -47,7 +45,9 @@ def _inside_regions(pos: np.ndarray, regions, movable) -> bool:
         return True
     r = regions[idx]
     p = pos[idx]
-    inside = (p[:, 0] >= r[:, 0]) & (p[:, 0] <= r[:, 2]) & (p[:, 1] >= r[:, 1]) & (p[:, 1] <= r[:, 3])
+    inside = (
+        (p[:, 0] >= r[:, 0]) & (p[:, 0] <= r[:, 2]) & (p[:, 1] >= r[:, 1]) & (p[:, 1] <= r[:, 3])
+    )
     return bool(np.all(inside))
 
 
@@ -202,7 +202,7 @@ def _parallel_survivor_search(
         "accepts": 0,
         "gpu_rank": bool(_auto_cuda(const.HIER_SURVIVOR_GPU_RANK)),
     }
-    if not const.HIER_SURVIVOR_SEARCH or not clusters:
+    if not clusters:
         return hard_xy, soft_xy, 0, float(initial_score)
 
     movable_h = np.asarray(movable_h, dtype=np.bool_)

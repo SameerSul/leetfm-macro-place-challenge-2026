@@ -60,7 +60,7 @@ class HierarchyModel:
         tagged = derive_path_tag_hard_clusters(plc, n)
         if tagged is not None:
             labels, clusters = tagged
-        elif const.HIER_OVERSIZE_CLUSTER_SPLIT:
+        else:
             labels, clusters = derive_oversized_hard_clusters(
                 plc,
                 n,
@@ -68,14 +68,6 @@ class HierarchyModel:
                 max_fanout=max_fanout,
                 min_edge=min_edge,
                 hard_sizes=hard_sizes,
-            )
-        else:
-            labels, clusters = derive_hard_clusters(
-                plc,
-                n,
-                n_soft=n_soft,
-                max_fanout=max_fanout,
-                min_edge=min_edge,
             )
         split_parents = _derive_split_parents(
             plc,
@@ -85,18 +77,14 @@ class HierarchyModel:
             max_fanout,
             min_edge,
         )
-        if const.HIER_BRIDGE_SOFTS:
-            cluster_softs, bridge_softs = derive_soft_cluster_roles(
-                plc,
-                n,
-                n_soft,
-                labels,
-                max_fanout=max_fanout,
-                bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
-            )
-        else:
-            cluster_softs = derive_cluster_softs(plc, n, n_soft, labels, max_fanout=max_fanout)
-            bridge_softs = {}
+        cluster_softs, bridge_softs = derive_soft_cluster_roles(
+            plc,
+            n,
+            n_soft,
+            labels,
+            max_fanout=max_fanout,
+            bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
+        )
         edges, confidence = _cluster_graph(plc, labels, clusters, max_fanout)
         return cls(
             labels=labels,
@@ -254,8 +242,6 @@ def _derive_split_parents(
     min_edge: int,
 ) -> dict[int, list[int]]:
     """Map original flat clusters to child clusters created by oversized splitting."""
-    if not const.HIER_OVERSIZE_CLUSTER_SPLIT:
-        return {}
     _flat_labels, flat_clusters = derive_hard_clusters(
         plc,
         n,

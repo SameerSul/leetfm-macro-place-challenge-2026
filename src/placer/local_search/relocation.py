@@ -2665,7 +2665,7 @@ def _relocation_moves_propose_all(
             cw=cw,
             ch=ch,
             field_span=max(float(np.max(tgt_cong) - np.min(tgt_cong)), 1e-12),
-            enabled=bool(field == "weighted_congestion" and const.HIER_PROPOSAL_HIERARCHY_AWARE),
+            enabled=field == "weighted_congestion",
         )
         d2 = (tgt_x[cand] - pos[i, 0]) ** 2 + (tgt_y[cand] - pos[i, 1]) ** 2
         if wl_blend > 0.0 and net_centroid is not None:
@@ -2814,9 +2814,8 @@ def _relocation_moves_propose_all(
         base_top_m = int(propose_top_m)
         top_m = base_top_m
         additive_extra = 0
-        if const.HIER_ADDITIVE_CANDIDATE_POOLS and (
-            deadline is None
-            or time.monotonic() + float(const.HIER_ADDITIVE_MIN_SPARE_S) < float(deadline)
+        if deadline is None or time.monotonic() + float(const.HIER_ADDITIVE_MIN_SPARE_S) < float(
+            deadline
         ):
             additive_extra = max(0, int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K))
         gnn_rank_on = os.environ.get("HIER_GNN_RANK", "0").strip() not in {
@@ -2866,10 +2865,8 @@ def _relocation_moves_propose_all(
         proposal_count=int(len(proposals)),
         legal_count=int(legal_count),
         frozen_scores=int(frozen_scores),
-        additive_candidate_pools=bool(const.HIER_ADDITIVE_CANDIDATE_POOLS),
-        additive_extra_top_k=int(
-            const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K if const.HIER_ADDITIVE_CANDIDATE_POOLS else 0
-        ),
+        additive_candidate_pools=True,
+        additive_extra_top_k=int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K),
         gpu_rank_additive_tails=bool(const.HIER_GPU_RANK_ADDITIVE_TAILS),
         structural_weight=float(_hierarchy_structural_weight()),
         candidates=_candidate_trace_sample(proposals, gnn_trace_limit()),
@@ -3088,9 +3085,7 @@ def _relocation_moves(
     """
     _relocation_moves.last_stats = {"candidates": 0, "legal": 0, "scored": 0, "accepts": 0}
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    weighted_rank = bool(
-        const.HIER_CONGESTION_WEIGHTED_PROPOSALS and not use_density and not use_combined
-    )
+    weighted_rank = not use_density and not use_combined
     trace_field = (
         "weighted_congestion"
         if weighted_rank
@@ -3220,7 +3215,7 @@ def _relocation_moves(
             cw=cw,
             ch=ch,
             field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
-            enabled=bool(weighted_rank and const.HIER_PROPOSAL_HIERARCHY_AWARE),
+            enabled=weighted_rank,
         )
         d2 = (tgt_x[cand] - pos[i, 0]) ** 2 + (tgt_y[cand] - pos[i, 1]) ** 2
         if wl_blend > 0.0 and net_centroid is not None:
@@ -3364,7 +3359,7 @@ def _soft_relocation_moves(
     if _env_wl not in (None, ""):
         wl_prefilter = float(_env_wl)
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    weighted_rank = bool(const.HIER_CONGESTION_WEIGHTED_PROPOSALS and not use_density)
+    weighted_rank = not use_density
     cell_field = (
         _density_field(incremental_scorer, nr, nc)
         if use_density
@@ -3428,7 +3423,7 @@ def _soft_relocation_moves(
             region_mask=region_mask,
             region_bias=region_bias,
             field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
-            hierarchy_filter_enabled=bool(weighted_rank and const.HIER_PROPOSAL_HIERARCHY_AWARE),
+            hierarchy_filter_enabled=weighted_rank,
         )
     for k in hot:
         k = int(k)
@@ -3450,7 +3445,7 @@ def _soft_relocation_moves(
             cw=cw,
             ch=ch,
             field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
-            enabled=bool(weighted_rank and const.HIER_PROPOSAL_HIERARCHY_AWARE),
+            enabled=weighted_rank,
         )
         used_gpu_rank = False
         if gpu_soft_order is not None and k in gpu_soft_order:

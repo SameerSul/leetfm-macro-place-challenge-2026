@@ -3,6 +3,20 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-23 — promoted default-on gates to unconditional behavior):**
+> removed production constants that were always `True` and used only as feature
+> gates. The accepted hierarchy flow now runs those operators unconditionally:
+> tag-prefix/oversize clustering, connectivity-ordered legalization, seed
+> portfolio variants, bridge soft roles, region relief and expansion,
+> hierarchy-aware congestion proposal ranking, micro-shift replays, decompression,
+> region swaps, additive candidate pools, plateau/component scheduling,
+> strong/interleaved soft repair, coldspot local refinement and graph fallback,
+> survivor search, scorer congestion-field reuse, and numba routing/structural
+> paths when available. Numeric tuning constants and default-off experiments
+> remain configurable. Verification for this cleanup: Python bytecode compile
+> across `src/` and `test/` passes; benchmark smoke is tracked in the current
+> implementation turn rather than as a new accepted full-suite result.
+
 > **Status (2026-06-23 — default-off soft-only coldspot fallback):**
 > added `HIER_COLDSPOT_SOFT_ONLY=0`, which runs only when the hard coldspot kick
 > path and graph-local fallback commit no candidate. The pass keeps all hard
@@ -12,12 +26,11 @@ Target: beat RePlAce avg of 1.4578.
 > This is intended as the next low-risk coldspot experiment because it cannot
 > alter hard legality or hard hierarchy quality by construction. It is not
 > promoted and does not change default production output.
-> Follow-up replaced the after-hard refill idea with
-> `HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0`, a simultaneous hard+soft candidate
-> experiment. When enabled, coldspot kick generation includes bridge soft macros
-> tied to the same hierarchy cluster in the candidate's soft set, so hard and
-> soft positions are proposed together and accepted or rejected as one exact-gated
-> full placement.
+> Follow-up replaced the after-hard refill idea with always-on simultaneous
+> hard+soft coldspot candidates. Coldspot kick generation now includes movable
+> bridge soft macros tied to the same hierarchy cluster in the candidate's soft
+> set, so hard and soft positions are proposed together and accepted or rejected
+> as one exact-gated full placement.
 
 > **Status (2026-06-23 — default-off partial frontier coldspot prototype):**
 > added `HIER_COLDSPOT_PARTIAL_FRONTIER=0`, which can append one

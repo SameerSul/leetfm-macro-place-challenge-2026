@@ -39,31 +39,22 @@ flowchart TD
     F --> E1[Exact-prescore seed portfolio]
     E1 --> G[Default-order safety legalization]
     G --> H[Soft relocation cleanup]
-    H --> I{HIER_REGION_RELIEF enabled?}
-    I -->|Yes| R[Congestion-expanded hard/soft regions]
+    H --> R[Congestion-expanded hard/soft regions]
     R --> J[Region-locked hard relocation + soft cleanup]
-    I -->|No| K
     J --> A1[In-region micro-shift polish]
-    A1 --> U{HIER_DECOMPRESS enabled?}
-    U -->|Yes| V[Exact-gated cluster decompression]
-    U -->|No| S
-    V --> S{HIER_REGION_SWAPS enabled?}
-    S -->|Yes| T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
-    T --> T1[Optional per-round micro-shift replay]
-    S -->|No| P
+    A1 --> V[Exact-gated cluster decompression]
+    V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
+    T --> T1[Per-round micro-shift replay]
     T1 --> Y[Post-swap micro-shift replay]
     Y --> P{HIER_POST_RELOC_PROPOSE_ALL enabled?}
     P -->|Yes| Q[Post-swap hard propose-all polish]
     P -->|No| W
-    Q --> W{HIER_POST_SOFT_RELOC enabled?}
-    W -->|Yes| X[Post-swap soft relocation polish]
-    W -->|No| X1
+    Q --> X[Post-swap soft relocation polish]
+    W --> X
     X --> X1{Strong soft repair scheduled?}
     X1 -->|Yes| X2[Plateau/component-aware strong soft repair]
-    X1 -->|No| K
-    X2 --> K{HIER_COLDSPOT_KICK enabled?}
-    K -->|Yes| L[Coldspot cluster tightening with bounded proxy budget]
-    K -->|No| M[Clamp movable macros in bounds]
+    X1 -->|No| L
+    X2 --> L[Coldspot cluster tightening with bounded proxy budget]
     L --> Z[Post-coldspot micro-shift replay]
     Z --> Z1[Bounded survivor-pool search]
     Z1 --> M
@@ -89,8 +80,6 @@ Constants in `src/utils/constants.py`:
 ```text
 CLUSTER_MAX_FANOUT=8
 CLUSTER_MIN_EDGE=2
-HIER_OVERSIZE_CLUSTER_SPLIT=1
-HIER_TAG_PREFIX_CLUSTERING=1
 HIER_TAG_PREFIX_MAX_DEPTH=5
 HIER_TAG_PREFIX_MIN_GROUP=2
 HIER_TAG_PREFIX_MIN_COVERAGE=0.25
@@ -149,10 +138,8 @@ accept gates.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_SEED_PORTFOLIO=1
 HIER_SEED_BLEND_ALPHAS=0.35,0.65
 HIER_SEED_EXPANSION_FRAC=0.06
-HIER_SEED_SYNTHETIC_CLEARANCE=1
 HIER_SEED_CLEARANCE_FRAC=0.08
 HIER_SEED_CLEARANCE_ITERS=3
 HIER_SEED_CLEARANCE_AREA_PCT=97
@@ -163,8 +150,7 @@ HIER_SEED_CLEARANCE_AREA_PCT=97
 Hard macros are legalized with a cluster-consecutive order:
 
 1. Larger clusters first.
-2. Connectivity-pressure x area first within each cluster by default; set
-   `HIER_LEGALIZE_CONNECTIVITY_ORDER=False` restores larger-macro-first order.
+2. Connectivity-pressure x area first within each cluster.
 3. Unclustered macros last, with the same member ordering.
 
 A second default-order legalization pass is kept as a safety pass for validity.
@@ -185,7 +171,6 @@ bands so packed hierarchy blobs get room to create routing channels.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_REGION_RELIEF=1
 HIER_REGION_DENSITY=0.65
 REGION_BIAS=1.0
 HIER_REGION_ROUNDS=2
@@ -193,16 +178,12 @@ HIER_REGION_BUDGET_S=40
 HIER_REGION_MARGIN=0
 HIER_REGION_SINGLETON=0.05
 HIER_REGION_ESCAPE_MIN=0.002
-HIER_BRIDGE_SOFTS=1
 HIER_BRIDGE_SOFT_RATIO=0.6
-HIER_CONG_EXPAND_REGIONS=1
 HIER_REGION_EXPAND_HOT_PCT=60
 HIER_REGION_EXPAND_FRAC=0.08
 HIER_REGION_EXPAND_BAND=3
-HIER_CONGESTION_WEIGHTED_PROPOSALS=1
 HIER_PROPOSAL_CONGESTION_WEIGHT=2.5
 HIER_PROPOSAL_DENSITY_WEIGHT=1.0
-HIER_PROPOSAL_HIERARCHY_AWARE=1
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08
 ```
 
@@ -234,11 +215,9 @@ After each region-relief round, `_micro_shift_polish()` runs tiny exact-gated
 one/two-grid-cell moves inside the same hierarchy-region constraints:
 
 ```text
-HIER_MICRO_SHIFT=1
 HIER_MICRO_SHIFT_RADIUS=2
 HIER_MICRO_SHIFT_TOP=96
 HIER_MICRO_SHIFT_MIN_GAIN=0.00001
-HIER_SWAP_ROUND_MICRO_SHIFT=1
 ```
 
 ## Cluster Decompression
@@ -255,7 +234,6 @@ penalty.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_DECOMPRESS=1
 HIER_DECOMPRESS_BUDGET_S=18
 HIER_DECOMPRESS_ROUNDS=2
 HIER_DECOMPRESS_HOT_PCT=65
@@ -265,7 +243,6 @@ HIER_QUALITY_BUDGET=0.03
 HIER_QUALITY_RADIUS_WEIGHT=0.75
 HIER_QUALITY_BBOX_WEIGHT=0.20
 HIER_QUALITY_CROWD_WEIGHT=0.05
-HIER_DECOMPRESS_ANISO=1
 HIER_DECOMPRESS_ANISO_BAND=3
 HIER_DECOMPRESS_ANISO_SECONDARY=0.25
 ```
@@ -297,18 +274,12 @@ scoring and hierarchy escape gates still decide every accepted swap.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_REGION_SWAPS=1
 HIER_REGION_SWAP_ROUNDS=2
 HIER_REGION_SWAP_BUDGET_S=20
 HIER_HARD_SWAP_K=16
 HIER_SOFT_SWAP_K=48
 HIER_SWAP_MIN_GAIN=0.00001
 HIER_SWAP_MIN_FIELD_RELIEF=0.0
-HIER_SWAP_HH=1
-HIER_SWAP_HS=1
-HIER_SWAP_SS=1
-HIER_SWAP_DENSITY_FIELD=1
-HIER_SWAP_ROUND_MICRO_SHIFT=1
 HIER_GPU_RANK_SWAP_CANDIDATES=auto
 HIER_GPU_RANK_MIN_CANDIDATES=512
 HIER_GPU_SWAP_PRESCORE_HH=auto
@@ -320,9 +291,8 @@ HIER_GPU_SWAP_PRESCORE_DISTANCE_WEIGHT=0.02
 
 The pass logs per-operator score/accept counts.
 
-The accepted current flow can replay `_micro_shift_polish()` after each
-region-swap round with `HIER_SWAP_ROUND_MICRO_SHIFT=1`, then still replays the
-normal post-swap `_micro_shift_polish()` with `HIER_POST_SWAP_MICRO_SHIFT=1`.
+The accepted current flow replays `_micro_shift_polish()` after each
+region-swap round, then still replays the normal post-swap `_micro_shift_polish()`.
 Both passes are exact-gated one/two-grid-cell cleanups and recover small hard
 and soft congestion improvements left behind by swaps.
 
@@ -378,7 +348,6 @@ report 0 overlaps when this strict margin is slightly negative; the audit makes
 that near-contact visible in trace and summary logs.
 
 ```text
-HIER_ADDITIVE_CANDIDATE_POOLS=1
 HIER_GPU_RANK_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_MIN_CANDIDATES=1024
@@ -386,33 +355,21 @@ HIER_GPU_RANK_ADDITIVE_TAILS=0
 HIER_ADDITIVE_RELOC_EXTRA_TOP_K=8
 HIER_ADDITIVE_SWAP_EXTRA_K=4
 HIER_ADDITIVE_MIN_SPARE_S=2.0
-HIER_STRONG_OPPORTUNITY_GATES=1
-HIER_DECOMPRESS_FIELD_GATE=1
 HIER_DECOMPRESS_MIN_FIELD_GAP=0.08
-HIER_COLDSPOT_STRONG_FIELD_GATE=1
 HIER_COLDSPOT_STRONG_MIN_FIELD_GAP=0.04
-HIER_INTERLEAVED_SOFT_REPAIR=1
 HIER_INTERLEAVED_SOFT_REPAIR_BUDGET_S=3
 HIER_INTERLEAVED_SOFT_REPAIR_MIN_SPARE_S=12
-HIER_STRONG_SOFT_REPAIR=1
 HIER_STRONG_SOFT_REPAIR_BUDGET_S=12
 HIER_STRONG_SOFT_REPAIR_MIN_SPARE_S=2
 HIER_STRONG_SOFT_REPAIR_TOP_K=512
 HIER_STRONG_SOFT_REPAIR_TARGETS=12
-HIER_PLATEAU_TELEMETRY=1
-HIER_BUDGET_AWARE_SCHEDULING=1
-HIER_COMPONENT_AWARE_SCHEDULING=1
 HIER_COMPONENT_CONG_DOMINANCE=0.10
 HIER_COMPONENT_RESERVED_CLEANUP_S=12
-HIER_PLATEAU_SOFT_REPAIR_BONUS=1
 HIER_PLATEAU_SOFT_REPAIR_BONUS_BUDGET_S=4
 HIER_PLATEAU_SOFT_REPAIR_BONUS_ROUNDS=1
-HIER_PLATEAU_ESCAPE_PROPOSALS=1
 HIER_PLATEAU_ESCAPE_BUDGET_S=4
-HIER_PLATEAU_ESCAPE_AFTER_POST_POLISH=1
 HIER_PLATEAU_ESCAPE_SOFT_TOP_K=384
 HIER_PLATEAU_ESCAPE_SOFT_TARGETS=10
-HIER_LEGALITY_MARGIN_AUDIT=1
 HIER_LEGALITY_MARGIN_EPS=0.05
 ```
 
@@ -427,7 +384,6 @@ hierarchy-quality gates run.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_COLDSPOT_KICK=1
 HIER_COLDSPOT_BUDGET=0.0
 HIER_COLDSPOT_TOTAL=0.0
 HIER_COLDSPOT_MIN_GAIN=0.0001
@@ -435,24 +391,17 @@ HIER_COLDSPOT_QUALITY_BUDGET=0.01
 HIER_COLDSPOT_MIN_FIELD_GAP=0.02
 HIER_COLDSPOT_ROUNDS=8
 HIER_COLDSPOT_BUDGET_S=30
-HIER_COLDSPOT_LOCAL_REFINE=1
 HIER_COLDSPOT_LOCAL_HARD_PAD_FRAC=0.50
 HIER_COLDSPOT_LOCAL_MIN_PAD_CELLS=1
 HIER_COLDSPOT_LOCAL_MAX_PAD_FRAC=0.12
 HIER_COLDSPOT_LOCAL_SOFT_ESCAPE_MIN=0.0025
-HIER_COLDSPOT_GRAPH_SELECT=1
 HIER_COLDSPOT_GRAPH_SELECT_CANDIDATES=4
 HIER_COLDSPOT_GRAPH_SELECT_TOP_K=2
-HIER_COLDSPOT_GRAPH_TARGET_POOL=1
-HIER_COLDSPOT_GRAPH_MASK_GATING=1
-HIER_COLDSPOT_GRAPH_FALLBACK=1
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K=3
 HIER_COLDSPOT_SOFT_ONLY=0
 HIER_COLDSPOT_SOFT_ONLY_TOP_K=96
 HIER_COLDSPOT_SOFT_ONLY_TARGETS=10
 HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN=0.00005
-HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0
-HIER_COLDSPOT_ADAPTIVE_REGIONS=1
 HIER_COLDSPOT_MEMORY_COLD_PCT=35
 HIER_COLDSPOT_ADAPTIVE_MAX_CELLS=5
 HIER_COLDSPOT_PARTIAL_FRONTIER=0
@@ -464,11 +413,9 @@ HIER_COLDSPOT_PARTIAL_MIN_HARD=2
 HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD=3
 HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC=0.50
 HIER_COLDSPOT_PARTIAL_MAX_CUT_RATIO=0.85
-HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED=1
 HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO=1.15
 HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO=1.20
 HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO=1.50
-HIER_SURVIVOR_SEARCH=1
 HIER_SURVIVOR_BUDGET_S=12
 HIER_SURVIVOR_ROUNDS=2
 HIER_SURVIVOR_WIDTH=4
@@ -505,11 +452,10 @@ graph-local fallback both fail to commit. It holds hard macros fixed during the
 soft fallback, uses open remembered cold cells as the soft relocation target
 pool, keeps hierarchy region boxes and the cold-cell mask active, and accepts
 only exact-proxy improvements above `HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN`.
-`HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0` is the simultaneous hard+soft candidate
-experiment: coldspot kick generation augments each cluster's owned softs with
-bridge soft macros tied to the same hierarchy cluster, places hard and soft
-members into the cold window together, and sends that full candidate through the
-same local refinement, exact-proxy, and hierarchy-quality gates. A default-off
+Coldspot kick generation augments each cluster's owned softs with movable bridge
+soft macros tied to the same hierarchy cluster, places hard and soft members
+into the cold window together, and sends that full candidate through the same
+local refinement, exact-proxy, and hierarchy-quality gates. A default-off
 `HIER_COLDSPOT_PARTIAL_FRONTIER` prototype can add one capacity-aware partial
 frontier candidate to the generated pool. That candidate estimates connected
 coldspot capacity from the cold field, clamps it to a source-cluster area
@@ -539,10 +485,10 @@ move is accepted only when exact proxy improves and the hierarchy-quality metric
 stays within budget. This keeps the pass from undoing congestion relief for
 compactness alone.
 
-Production then replays `_micro_shift_polish()` once more with
-`HIER_POST_COLDSPOT_MICRO_SHIFT=1`. The paired post-swap and post-coldspot
-replays are the current accepted stack. Deterministic hot-cluster coldspot
-selection was tested separately and removed after regressing the full sweep.
+Production then replays `_micro_shift_polish()` once more after coldspot
+tightening. The paired post-swap and post-coldspot replays are the current
+accepted stack. Deterministic hot-cluster coldspot selection was tested
+separately and removed after regressing the full sweep.
 
 After coldspot cleanup, a bounded go-with-the-winners survivor search keeps a
 small pool of valid hierarchy-preserving states instead of continuing from only

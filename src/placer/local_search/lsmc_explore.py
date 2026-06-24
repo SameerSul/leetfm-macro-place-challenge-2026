@@ -283,11 +283,7 @@ def _select_partial_frontier(
             "partial_member_count": int(members.size),
             "partial_member_frac": float(member_frac),
         }
-    if (
-        bool(getattr(const, "HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED", True))
-        and hard_edges
-        and not _selected_subgraph_connected(selected_arr, hard_edges)
-    ):
+    if hard_edges and not _selected_subgraph_connected(selected_arr, hard_edges):
         return np.zeros(0, dtype=np.int64), {
             "partial_reject_reason": "selected_disconnected",
             "partial_selected_hard": int(selected_arr.size),

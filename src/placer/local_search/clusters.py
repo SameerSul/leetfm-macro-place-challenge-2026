@@ -147,8 +147,6 @@ def derive_path_tag_hard_clusters(plc, n: int):
     flat netlist's sparse low-fanout macro graph. Flat-name benchmarks return
     ``None`` so connectivity-derived clustering remains the default.
     """
-    if not bool(const.HIER_TAG_PREFIX_CLUSTERING):
-        return None
     max_depth = max(1, int(const.HIER_TAG_PREFIX_MAX_DEPTH))
     min_group = max(2, int(const.HIER_TAG_PREFIX_MIN_GROUP))
     min_coverage = float(const.HIER_TAG_PREFIX_MIN_COVERAGE)
@@ -249,7 +247,9 @@ def derive_oversized_hard_clusters(
     areas = _cluster_partition_areas(n, hard_sizes)
     start_size = max(2, int(np.floor(max(0.0, start_frac) * float(n))))
     target_size = max(2, int(np.floor(max(0.0, target_frac) * float(n))))
-    target_accept = max(target_size, int(np.ceil(target_size * float(const.HIER_OVERSIZE_CLUSTER_TARGET_TOL))))
+    target_accept = max(
+        target_size, int(np.ceil(target_size * float(const.HIER_OVERSIZE_CLUSTER_TARGET_TOL)))
+    )
     min_size = max(2, int(const.HIER_OVERSIZE_CLUSTER_MIN_SIZE))
     max_cut_ratio = float(const.HIER_OVERSIZE_CLUSTER_MAX_CUT_RATIO)
     min_bridge_softs = max(0, int(const.HIER_OVERSIZE_CLUSTER_MIN_BRIDGE_SOFTS))
@@ -438,7 +438,9 @@ def _balanced_graph_split(
         best = None
         for node in sorted(right):
             to_left = sum(_edge_lookup(edge_weight, node, other) for other in left)
-            to_right = sum(_edge_lookup(edge_weight, node, other) for other in right if other != node)
+            to_right = sum(
+                _edge_lookup(edge_weight, node, other) for other in right if other != node
+            )
             balance_penalty = abs((left_area + float(areas[node])) - target) / max(target, 1.0)
             score = to_left - 0.35 * to_right - 0.05 * balance_penalty
             row = (score, degree.get(node, 0.0), -balance_penalty, -node, node)

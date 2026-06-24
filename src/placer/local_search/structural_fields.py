@@ -13,8 +13,6 @@ from utils.config import HAS_NUMBA, _numba_njit
 
 
 def _notch_numba_enabled(n_idx: int, n_all: int) -> bool:
-    if not const.HIER_STRUCTURAL_NOTCH_NUMBA:
-        return False
     if n_all <= 1:
         return False
     min_pairs = int(const.HIER_STRUCTURAL_NOTCH_NUMBA_MIN_PAIRS)
