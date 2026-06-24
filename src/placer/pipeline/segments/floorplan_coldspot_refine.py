@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 
 import time
@@ -56,6 +57,15 @@ def refine_coldspot_candidate(
             plc,
         )
     )
+    adaptive_passes = (
+        os.environ.get("HIER_ADAPTIVE_PASSES", "1").strip().lower()
+        not in {"0", "false", "no", "off", "disable"}
+    )
+    adaptive_min_gain = float(const.HIER_PLATEAU_PROXY_GAIN)
+    def _adaptive_gain(before: float, after: float) -> bool:
+        if not adaptive_passes:
+            return True
+        return float(before) - float(after) > adaptive_min_gain
 
     if deadline is not None and time.monotonic() >= deadline:
         return hard_xy, soft_xy, score, {}
@@ -91,6 +101,13 @@ def refine_coldspot_candidate(
         "hard_reloc_accepts": 0,
         "soft_reloc_accepts": 0,
     }
+    local_swap_min_gain = float(const.HIER_SWAP_MIN_GAIN)
+    local_reloc_min_gain = float(const.HIER_RELOC_PROPOSE_MIN_GAIN)
+    local_soft_min_gain = float(hier_soft_barrier_gain)
+    if adaptive_passes:
+        local_swap_min_gain = max(local_swap_min_gain, adaptive_min_gain)
+        local_reloc_min_gain = max(local_reloc_min_gain, adaptive_min_gain)
+        local_soft_min_gain = max(local_soft_min_gain, adaptive_min_gain)
 
     local_hard_swap_k = max(1, int(const.HIER_COLDSPOT_LOCAL_HARD_SWAP_K))
     local_soft_swap_k = max(1, int(const.HIER_COLDSPOT_LOCAL_SOFT_SWAP_K))
@@ -99,7 +116,9 @@ def refine_coldspot_candidate(
         local_hard_swap_k += extra_k
         local_soft_swap_k += extra_k
 
+    hard_reloc_before = float(score)
     for use_density in (False, True):
+        swap_before = float(score)
         refined_h, refined_s, got, score, _stats = _region_bounded_swap_relief(
             refined_h,
             refined_s,
@@ -123,7 +142,7 @@ def refine_coldspot_candidate(
             soft_k=local_soft_swap_k,
             region_bias=region_bias,
             escape_min=hard_escape,
-            min_gain=float(const.HIER_SWAP_MIN_GAIN),
+            min_gain=float(local_swap_min_gain),
             soft_barrier_gain=hier_soft_barrier_gain,
             min_field_relief=float(const.HIER_SWAP_MIN_FIELD_RELIEF),
             enable_hh=True,
@@ -132,7 +151,10 @@ def refine_coldspot_candidate(
             use_density=use_density,
         )
         stats_total["swap_accepts"] += got
+        if not _adaptive_gain(swap_before, score):
+            return refined_h, refined_s, score, stats_total
 
+        soft_swap_before = float(score)
         refined_h, refined_s, got, score, _stats = _region_bounded_swap_relief(
             refined_h,
             refined_s,
@@ -156,7 +178,7 @@ def refine_coldspot_candidate(
             soft_k=local_soft_swap_k,
             region_bias=region_bias,
             escape_min=soft_escape,
-            min_gain=float(const.HIER_SWAP_MIN_GAIN),
+            min_gain=float(local_swap_min_gain),
             soft_barrier_gain=hier_soft_barrier_gain,
             min_field_relief=float(const.HIER_SWAP_MIN_FIELD_RELIEF),
             enable_hh=False,
@@ -165,6 +187,10 @@ def refine_coldspot_candidate(
             use_density=use_density,
         )
         stats_total["swap_accepts"] += got
+        if not _adaptive_gain(soft_swap_before, score):
+            return refined_h, refined_s, score, stats_total
+
+        hard_reloc_before = float(score)
 
     refined_h, got, score = _relocation_moves(
         refined_h,
@@ -186,13 +212,16 @@ def refine_coldspot_candidate(
         region_bbox=local_h_region,
         region_bias=region_bias,
         region_escape_min=hard_escape,
-        propose_accept_min_gain=float(const.HIER_RELOC_PROPOSE_MIN_GAIN),
+        propose_accept_min_gain=float(local_reloc_min_gain),
         target_pool=local_target_pool,
         region_mask=local_region_mask,
     )
     stats_total["hard_reloc_accepts"] += got
+    if not _adaptive_gain(hard_reloc_before, score):
+        return refined_h, refined_s, score, stats_total
 
     if local_s_mask.any():
+        soft_before = float(score)
         refined_s, got, score = _soft_relocation_moves(
             refined_s,
             soft_hw,
@@ -212,11 +241,13 @@ def refine_coldspot_candidate(
             region_bbox=local_s_region,
             region_bias=region_bias,
             region_escape_min=soft_escape,
-            accept_min_gain=hier_soft_barrier_gain,
+            accept_min_gain=float(local_soft_min_gain),
             target_pool=local_target_pool,
             region_mask=local_region_mask,
         )
         stats_total["soft_reloc_accepts"] += got
+        if not _adaptive_gain(soft_before, score):
+            return refined_h, refined_s, score, stats_total
 
     stats_total.update(
         {
