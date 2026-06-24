@@ -1782,17 +1782,23 @@ class MacroPlacer:
             ck_min_field_gap,
             float(const.HIER_COLDSPOT_STRONG_MIN_FIELD_GAP),
         )
+        ck_opportunity_min_score = float(const.HIER_COLDSPOT_OPPORTUNITY_MIN_SCORE)
+        ck_opportunity_min_cold_cells = max(
+            0,
+            int(const.HIER_COLDSPOT_OPPORTUNITY_MIN_COLD_CELLS),
+        )
+        ck_max_dry_rounds = max(1, int(const.HIER_COLDSPOT_MAX_DRY_ROUNDS))
+        ck_opportunity_top_clusters = max(
+            1,
+            int(const.HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS),
+        )
         ck_deadline = _deadline(float(const.HIER_COLDSPOT_BUDGET_S))
         ck_gnn_select = gnn_coldspot_select_enabled()
         ck_oracle = gnn_coldspot_oracle_enabled()
         ck_gnn_kicks = gnn_coldspot_kicks() if (ck_gnn_select or ck_oracle) else 1
         if not (ck_gnn_select or ck_oracle):
-            ck_gnn_kicks = max(
-                ck_gnn_kicks,
-                max(1, int(const.HIER_COLDSPOT_GRAPH_SELECT_CANDIDATES)),
-            )
+            ck_gnn_kicks = max(ck_gnn_kicks, max(1, int(const.HIER_COLDSPOT_WHOLE_VARIANTS)))
         ck_gnn_top_k = max(1, int(os.environ.get("HIER_GNN_COLDSPOT_TOP_K", "1") or "1"))
-        ck_graph_top_k = max(1, int(const.HIER_COLDSPOT_GRAPH_SELECT_TOP_K))
         ck_skip_micro = ck_gnn_select and gnn_coldspot_skip_micro()
         nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
         soft_mov = movable[n : n + n_soft]
@@ -1826,11 +1832,22 @@ class MacroPlacer:
         def _full(h, sft):
             return torch.tensor(np.vstack([h, sft]).astype(np.float32), dtype=torch.float32)
 
-        def _min_window_avg(field: np.ndarray, win_cells: int) -> float:
+        window_stats_cache: dict[tuple[int, int], tuple[float, float, float]] = {}
+
+        def _window_stats(field: np.ndarray, win_cells: int) -> tuple[float, float, float]:
+            field_key = id(field)
             w = int(max(1, min(win_cells, nr, nc)))
+            key = (field_key, w)
+            cached = window_stats_cache.get(key)
+            if cached is not None:
+                return cached
             rows, cols = nr - w + 1, nc - w + 1
             if rows <= 0 or cols <= 0:
-                return float(np.min(field))
+                r, c = divmod(int(np.argmin(field)), nc)
+                value = float(field[r, c])
+                out = (value, (c + 0.5) * (cw / nc), (r + 0.5) * (ch / nr))
+                window_stats_cache[key] = out
+                return out
             integ = np.zeros((nr + 1, nc + 1), dtype=np.float64)
             integ[1:, 1:] = np.cumsum(np.cumsum(field, axis=0), axis=1)
             win_sum = (
@@ -1839,7 +1856,16 @@ class MacroPlacer:
                 - integ[w : w + rows, 0:cols]
                 + integ[0:rows, 0:cols]
             )
-            return float(np.min(win_sum) / float(w * w))
+            flat_min = int(np.argmin(win_sum))
+            rr, cc = divmod(flat_min, cols)
+            avg = float(win_sum[rr, cc] / float(w * w))
+            out = (avg, (cc + 0.5 * w) * (cw / nc), (rr + 0.5 * w) * (ch / nr))
+            window_stats_cache[key] = out
+            return out
+
+        def _min_window_avg(field: np.ndarray, win_cells: int) -> float:
+            w = int(max(1, min(win_cells, nr, nc)))
+            return float(_window_stats(field, w)[0])
 
         def _coldspot_field_gap(field: np.ndarray) -> float:
             cell_w, cell_h = cw / nc, ch / nr
@@ -1858,6 +1884,95 @@ class MacroPlacer:
                 if gap > best_gap:
                     best_gap = gap
             return best_gap
+
+        def _coldspot_opportunity(
+            field: np.ndarray,
+            hard_xy: np.ndarray,
+            soft_xy: np.ndarray,
+        ) -> dict:
+            cell_w, cell_h = cw / nc, ch / nr
+            mcol = np.clip((hard_xy[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
+            mrow = np.clip((hard_xy[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
+            macro_cong = field[mrow, mcol]
+            cold_pct = float(const.HIER_COLDSPOT_MEMORY_COLD_PCT)
+            cold_mask = field <= float(np.percentile(field, np.clip(cold_pct, 0.0, 100.0)))
+            open_cold = cold_mask & ~_occupied_cells(hard_xy, soft_xy)
+
+            best: dict[str, float | int | bool] = {
+                "run": False,
+                "eligible_clusters": 0,
+                "score": -1.0e30,
+                "field_gap": -1.0e30,
+                "open_cold_cells": int(np.count_nonzero(open_cold)),
+                "cluster": -1,
+                "source_field": 0.0,
+                "target_field": 0.0,
+                "displacement_windows": 0.0,
+                "cluster_ids": [],
+            }
+            rows = []
+            for cid, raw_members in clusters.items():
+                members = np.asarray(raw_members, dtype=np.int64)
+                members = members[(members >= 0) & (members < n)]
+                members = members[movable[:n][members]]
+                if members.size < 2 or members.size > 64:
+                    continue
+                best["eligible_clusters"] = int(best["eligible_clusters"]) + 1
+                member_area = float(np.sum(sizes[members, 0] * sizes[members, 1]))
+                win_microns = float(np.sqrt(member_area / 0.65))
+                win_cells = max(1, int(np.ceil(win_microns / min(cell_w, cell_h))))
+                source = float(np.mean(macro_cong[members]))
+                target, ax, ay = _window_stats(field, win_cells)
+                gap = source - target
+                cm = hard_xy[members].mean(axis=0)
+                disp = float(np.hypot(cm[0] - ax, cm[1] - ay) / max(win_microns, 1.0))
+
+                ar = int(np.clip(ay / cell_h, 0, nr - 1))
+                ac = int(np.clip(ax / cell_w, 0, nc - 1))
+                radius = max(1, min(3, win_cells))
+                r0, r1 = max(0, ar - radius), min(nr, ar + radius + 1)
+                c0, c1 = max(0, ac - radius), min(nc, ac + radius + 1)
+                local_open = int(np.count_nonzero(open_cold[r0:r1, c0:c1]))
+
+                score = float(gap + 0.003 * np.log1p(local_open) - 0.002 * disp)
+                row = {
+                    "score": float(score),
+                    "field_gap": float(gap),
+                    "cluster": int(cid),
+                    "source_field": float(source),
+                    "target_field": float(target),
+                    "open_cold_cells": int(local_open),
+                    "displacement_windows": float(disp),
+                }
+                rows.append(row)
+                if score > float(best["score"]):
+                    best.update(row)
+            rows.sort(
+                key=lambda row: (
+                    -float(row["score"]),
+                    -float(row["field_gap"]),
+                    -int(row["open_cold_cells"]),
+                    int(row["cluster"]),
+                )
+            )
+            usable = [
+                row
+                for row in rows
+                if float(row["field_gap"]) >= ck_min_field_gap
+                and int(row["open_cold_cells"]) >= ck_opportunity_min_cold_cells
+                and float(row["score"]) >= ck_opportunity_min_score
+            ]
+            best["cluster_ids"] = [
+                int(row["cluster"]) for row in usable[:ck_opportunity_top_clusters]
+            ]
+            best["run"] = bool(
+                int(best["eligible_clusters"]) > 0
+                and float(best["field_gap"]) >= ck_min_field_gap
+                and int(best["open_cold_cells"]) >= ck_opportunity_min_cold_cells
+                and float(best["score"]) >= ck_opportunity_min_score
+                and len(best["cluster_ids"]) > 0
+            )
+            return best
 
         def _remember_cold_cells(field: np.ndarray) -> np.ndarray:
             cold_pct = float(const.HIER_COLDSPOT_MEMORY_COLD_PCT)
@@ -2158,6 +2273,15 @@ class MacroPlacer:
             scored.sort(key=lambda row: (-row[0], row[1]))
             return [cand for _score, _idx, cand in scored]
 
+        def _rank_exact_coldspot_candidates(candidates: list[dict]) -> list[dict]:
+            scored = []
+            for idx, cand in enumerate(candidates):
+                proxy = float(cand.get("candidate_proxy_precomputed", cur_proxy))
+                graph_score = _graph_candidate_score(cand)
+                scored.append((proxy, -graph_score, idx, cand))
+            scored.sort(key=lambda row: (row[0], row[1], row[2]))
+            return [cand for _proxy, _graph, _idx, cand in scored]
+
         def _hot_cluster_fallback_candidates(
             field: np.ndarray | None,
             hard_xy: np.ndarray,
@@ -2408,6 +2532,8 @@ class MacroPlacer:
         ck_candidate_id = 0
         ck_candidate_pool_id = 0
         cold_memory = np.zeros((nr, nc), dtype=bool)
+        ck_dry_rounds = 0
+        ck_run_fallbacks = True
         for _ in range(ck_rounds):
             if ck_deadline is not None and time.monotonic() >= ck_deadline:
                 break
@@ -2415,8 +2541,15 @@ class MacroPlacer:
             if field is None:
                 break
             cold_memory = _remember_cold_cells(field)
-            field_gap = _coldspot_field_gap(field)
-            if field_gap < ck_min_field_gap:
+            opportunity = _coldspot_opportunity(field, cur_h, cur_s)
+            field_gap = float(opportunity.get("field_gap", _coldspot_field_gap(field)))
+            if not bool(opportunity["run"]):
+                if field_gap < ck_min_field_gap:
+                    reason = "field_gap_below_threshold"
+                elif int(opportunity["open_cold_cells"]) < ck_opportunity_min_cold_cells:
+                    reason = "cold_capacity_below_threshold"
+                else:
+                    reason = "opportunity_score_below_threshold"
                 log_gnn_event(
                     "hier_coldspot_candidate",
                     benchmark=benchmark.name,
@@ -2424,6 +2557,13 @@ class MacroPlacer:
                     candidate_id=int(ck_acc),
                     field_gap=float(field_gap),
                     min_field_gap=float(ck_min_field_gap),
+                    opportunity_score=float(opportunity["score"]),
+                    opportunity_min_score=float(ck_opportunity_min_score),
+                    opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
+                    opportunity_min_cold_cells=int(ck_opportunity_min_cold_cells),
+                    opportunity_cluster=int(opportunity["cluster"]),
+                    opportunity_cluster_ids=list(opportunity["cluster_ids"]),
+                    opportunity_displacement_windows=float(opportunity["displacement_windows"]),
                     old_proxy=float(cur_proxy),
                     candidate_proxy=None,
                     proxy_delta=None,
@@ -2431,12 +2571,41 @@ class MacroPlacer:
                     hierarchy_quality_after=None,
                     hierarchy_quality_delta=None,
                     accepted=False,
-                    rejection_reason="field_gap_below_threshold",
+                    rejection_reason=reason,
                 )
                 _log(
                     f"  [hier] coldspot tightening: skipped, "
-                    f"field_gap={field_gap:.4f} < {ck_min_field_gap:.4f}"
+                    f"reason={reason}, field_gap={field_gap:.4f}, "
+                    f"opp={float(opportunity['score']):.4f}, "
+                    f"open_cold={int(opportunity['open_cold_cells'])}"
                 )
+                ck_run_fallbacks = False
+                break
+            if ck_dry_rounds >= ck_max_dry_rounds:
+                log_gnn_event(
+                    "hier_coldspot_candidate",
+                    benchmark=benchmark.name,
+                    operator="coldspot_tightening",
+                    candidate_id=int(ck_acc),
+                    field_gap=float(field_gap),
+                    min_field_gap=float(ck_min_field_gap),
+                    opportunity_score=float(opportunity["score"]),
+                    opportunity_min_score=float(ck_opportunity_min_score),
+                    opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
+                    opportunity_min_cold_cells=int(ck_opportunity_min_cold_cells),
+                    opportunity_cluster=int(opportunity["cluster"]),
+                    opportunity_cluster_ids=list(opportunity["cluster_ids"]),
+                    old_proxy=float(cur_proxy),
+                    candidate_proxy=None,
+                    proxy_delta=None,
+                    hierarchy_quality_before=float(cur_quality),
+                    hierarchy_quality_after=None,
+                    hierarchy_quality_delta=None,
+                    accepted=False,
+                    rejection_reason="dry_round_limit",
+                )
+                _log(f"  [hier] coldspot tightening: stopped after " f"{ck_dry_rounds} dry rounds")
+                ck_run_fallbacks = False
                 break
             generated = _coldspot_cluster_kick_candidates(
                 cur_h,
@@ -2462,6 +2631,12 @@ class MacroPlacer:
                 kick_count=ck_gnn_kicks,
                 plc=plc,
                 benchmark_name=benchmark.name,
+                preferred_cluster_ids=opportunity["cluster_ids"],
+                max_clusters=(
+                    1
+                    if (ck_gnn_select or ck_oracle)
+                    else min(ck_opportunity_top_clusters, len(opportunity["cluster_ids"]))
+                ),
             )
             if not generated:
                 log_gnn_event(
@@ -2471,6 +2646,10 @@ class MacroPlacer:
                     candidate_id=int(ck_acc),
                     field_gap=float(field_gap),
                     min_field_gap=float(ck_min_field_gap),
+                    opportunity_score=float(opportunity["score"]),
+                    opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
+                    opportunity_cluster=int(opportunity["cluster"]),
+                    opportunity_cluster_ids=list(opportunity["cluster_ids"]),
                     old_proxy=float(cur_proxy),
                     candidate_proxy=None,
                     proxy_delta=None,
@@ -2480,6 +2659,7 @@ class MacroPlacer:
                     accepted=False,
                     rejection_reason="no_eligible_cluster",
                 )
+                ck_dry_rounds += 1
                 continue
             candidate_records = []
             pool_id = ck_candidate_pool_id
@@ -2547,14 +2727,12 @@ class MacroPlacer:
             ranked_records = (
                 rank_coldspot_kick_candidates(candidate_records, benchmark_name=benchmark.name)
                 if ck_gnn_select
-                else _rank_graph_coldspot_candidates(candidate_records)
+                else _rank_exact_coldspot_candidates(candidate_records)
             )
             if ck_gnn_select:
                 policy_records = ranked_records[: min(ck_gnn_top_k, len(ranked_records))]
             else:
-                policy_records = [
-                    cand for cand in ranked_records if not cand.get("is_noop", False)
-                ][: min(ck_graph_top_k, len(ranked_records))]
+                policy_records = [cand for cand in ranked_records if not cand.get("is_noop", False)]
             selected_ids = {id(c) for c in policy_records}
             accepted_record = None
             accepted_any = False
@@ -2565,9 +2743,7 @@ class MacroPlacer:
                 should_score = bool(ck_oracle or selected)
                 if not should_score:
                     cand["accepted"] = False
-                    cand["rejection_reason"] = (
-                        "not_selected_by_gnn" if ck_gnn_select else "not_selected_by_graph"
-                    )
+                    cand["rejection_reason"] = "not_selected_by_gnn"
                     continue
                 if committed_any and selected and not ck_oracle:
                     cand["accepted"] = False
@@ -2627,16 +2803,25 @@ class MacroPlacer:
                     selector_enabled=bool(ck_gnn_select),
                     oracle_enabled=bool(ck_oracle),
                     selector_rank=cand.get("selector_rank"),
-                    selector_top_k=int(ck_gnn_top_k if ck_gnn_select else ck_graph_top_k),
+                    selector_top_k=int(ck_gnn_top_k if ck_gnn_select else len(policy_records)),
                     selected_by_gnn=bool(ck_gnn_select and id(cand) in selected_ids),
-                    graph_selector_enabled=bool(not ck_gnn_select),
-                    selected_by_graph=bool(not ck_gnn_select and id(cand) in selected_ids),
+                    graph_selector_enabled=False,
+                    exact_selector_enabled=bool(not ck_gnn_select),
+                    selected_by_graph=False,
+                    selected_by_exact=bool(not ck_gnn_select and id(cand) in selected_ids),
                     selected_by_policy=bool(id(cand) in selected_ids),
                     gnn_score=cand.get("gnn_score"),
                     gnn_rank_error=cand.get("gnn_rank_error"),
                     is_noop=bool(cand.get("is_noop", False)),
                     field_gap=float(field_gap),
                     min_field_gap=float(ck_min_field_gap),
+                    opportunity_score=float(opportunity["score"]),
+                    opportunity_min_score=float(ck_opportunity_min_score),
+                    opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
+                    opportunity_min_cold_cells=int(ck_opportunity_min_cold_cells),
+                    opportunity_cluster=int(opportunity["cluster"]),
+                    opportunity_cluster_ids=list(opportunity["cluster_ids"]),
+                    opportunity_displacement_windows=float(opportunity["displacement_windows"]),
                     old_proxy=float(cur_proxy),
                     candidate_proxy=cand.get("candidate_proxy"),
                     proxy_delta=cand.get("proxy_delta"),
@@ -2662,8 +2847,15 @@ class MacroPlacer:
                 if refreshed_field is not None:
                     cold_memory = _remember_cold_cells(refreshed_field)
                 ck_acc += 1
+                ck_dry_rounds = 0
+            else:
+                ck_dry_rounds += 1
         graph_fallback_acc = 0
-        if ck_acc == 0 and (ck_deadline is None or time.monotonic() < ck_deadline):
+        if (
+            ck_run_fallbacks
+            and ck_acc == 0
+            and (ck_deadline is None or time.monotonic() < ck_deadline)
+        ):
             fallback_field = _congestion_field(ck_scorer, nr, nc)
             if fallback_field is not None:
                 cold_memory = _remember_cold_cells(fallback_field)
@@ -2788,6 +2980,7 @@ class MacroPlacer:
         soft_only_acc = 0
         if (
             bool(const.HIER_COLDSPOT_SOFT_ONLY)
+            and ck_run_fallbacks
             and ck_acc == 0
             and n_soft
             and bool(np.any(soft_mov))

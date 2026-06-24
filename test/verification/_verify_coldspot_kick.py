@@ -138,12 +138,15 @@ def _check(bench):
             (round(float(trace["anchor_x"]), 6), round(float(trace["anchor_y"]), 6))
             for _, _, trace in pool
         }
+        variants = {str(trace.get("whole_variant", "")) for _, _, trace in pool}
         assert len(cluster_ids) == 1, "candidate pool changed selected cluster"
-        assert len(anchors) == 1, "candidate pool changed selected coldspot anchor"
+        assert 1 <= len(anchors) <= 2, "candidate pool anchor diversity outside request"
+        assert variants, "candidate pool did not report whole-cluster variants"
         assert len(pool) <= 2, "candidate pool exceeded requested kick count"
         for out, out_soft, trace in pool:
             assert "cluster_bbox_before" in trace and "cluster_bbox_after" in trace
             assert "hard_disp_mean" in trace and "target_field" in trace
+            assert "whole_anchor_rank" in trace and "whole_variant" in trace
             assert np.all(out[:, 0] >= hw - TOL) and np.all(
                 out[:, 0] <= cw - hw + TOL
             ), "pool hard x oob"

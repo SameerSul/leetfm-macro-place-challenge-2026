@@ -383,6 +383,13 @@ post-swap, and strong soft repair keep the accepted CPU hierarchy ordering. The
 batched soft ranker applies the same hierarchy-aware target filter before
 ranking and still feeds the normal exact incremental soft-move gate.
 
+Bounded hard relocation, bounded soft relocation, and micro-shift can reuse the
+exact CUDA delta relocation scorer for larger local target batches
+(`HIER_LOCAL_RELOC_CUDA_DELTA=auto`). The default minimum is intentionally high
+(`HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS=64`): normal 8-24 target cleanup stays
+on the incremental CPU scorer because the CUDA static-tensor setup cost consumes
+more budget than it saves on those tiny batches.
+
 When the region-swap pass or post-swap hard/soft cleanup plateaus and spare
 local budget remains, the scheduler can switch proposal class briefly to soft
 relocation. `plateau_escape_soft_relocation` runs after swap plateaus;
@@ -411,6 +418,8 @@ HIER_PLATEAU_PROXY_GAIN=0.0005
 HIER_GPU_RANK_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_MIN_CANDIDATES=1024
+HIER_LOCAL_RELOC_CUDA_DELTA=auto
+HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS=64
 HIER_ADDITIVE_RELOC_EXTRA_TOP_K=8
 HIER_ADDITIVE_SWAP_EXTRA_K=4
 HIER_ADDITIVE_MIN_SPARE_S=2.0
@@ -435,14 +444,20 @@ HIER_COLDSPOT_TOTAL=0.0
 HIER_COLDSPOT_MIN_GAIN=0.0001
 HIER_COLDSPOT_QUALITY_BUDGET=0.01
 HIER_COLDSPOT_MIN_FIELD_GAP=0.02
+HIER_COLDSPOT_OPPORTUNITY_MIN_SCORE=0.0
+HIER_COLDSPOT_OPPORTUNITY_MIN_COLD_CELLS=1
+HIER_COLDSPOT_MAX_DRY_ROUNDS=2
+HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS=2
 HIER_COLDSPOT_ROUNDS=8
 HIER_COLDSPOT_BUDGET_S=30
 HIER_COLDSPOT_LOCAL_HARD_PAD_FRAC=0.50
 HIER_COLDSPOT_LOCAL_MIN_PAD_CELLS=1
 HIER_COLDSPOT_LOCAL_MAX_PAD_FRAC=0.12
 HIER_COLDSPOT_LOCAL_SOFT_ESCAPE_MIN=0.0025
-HIER_COLDSPOT_GRAPH_SELECT_CANDIDATES=4
-HIER_COLDSPOT_GRAPH_SELECT_TOP_K=2
+HIER_COLDSPOT_WHOLE_VARIANTS=5
+HIER_COLDSPOT_ANCHOR_VARIANTS=3
+HIER_COLDSPOT_COMPACT_SPREAD=0.72
+HIER_COLDSPOT_LOW_DISP_BLEND=0.45
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K=3
 HIER_COLDSPOT_SOFT_ONLY=0
 HIER_COLDSPOT_SOFT_ONLY_TOP_K=96
@@ -464,8 +479,15 @@ HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO=1.20
 HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO=1.50
 ```
 
-Rounds with no cheap hot-cluster to cold-window field gap are skipped before
-candidate generation and exact candidate scoring.
+Rounds with no cheap hot-cluster to cold-window opportunity are skipped before
+candidate generation and exact candidate scoring. The predictor blends
+hot-to-cold field gap, open cold-cell capacity around the candidate window, and
+source-to-window displacement. Default production tries the top two opportunity
+clusters with five whole-cluster variants per cluster, then commits from
+exact-proxy-ranked refined candidates rather than from a graph-ranked prefix.
+Coldspot also stops after repeated generated pools fail to commit.
+Weak-opportunity and dry-limit exits skip graph-local and soft-only coldspot
+fallbacks too.
 
 This is not the old generic LSMC path. It is a narrow hierarchy-tightening
 helper. Candidate-local refinement runs hard-hard and hard-soft swaps with the
@@ -478,19 +500,23 @@ refreshes it after every finalized coldspot kick, masks out cells occupied by
 the candidate, and expands the pre-margin local border through adjacent open
 cold cells before applying the hard-core pad. This lets finalized cluster
 locations use nearby coldspots for local relief while preserving swap and
-soft-locked relocation room. The graph also supplies coldspot-local relocation
-target pools, gates relocation targets by graph mask, and ranks generated
-outcomes before exact gating when the GNN selector is disabled.
+soft-locked relocation room. The graph supplies coldspot-local relocation target
+pools and gates relocation targets by graph mask; default candidate commitment
+uses exact-proxy-ranked refined outcomes.
 `HIER_COLDSPOT_SOFT_ONLY=0` is a default-off fallback that runs only when hard
 coldspot kicks and graph-local fallback commit no candidate. It keeps all hard
 macros fixed, builds a target pool from remembered open cold cells, and invokes
 the exact-gated soft relocation pass with hierarchy region boxes and the cold
 cell mask still active.
 Coldspot kick candidate generation augments each cluster's owned soft set with
-movable bridge soft macros tied to the same hierarchy cluster. The hard cluster
-and those soft macros are placed into the cold window together, then the existing
-legalization, local refinement, exact-proxy gate, and hierarchy-quality gate
-accept or reject the resulting full candidate as one state.
+movable bridge soft macros tied to the same hierarchy cluster. The default pool
+now tries multiple opportunity-ranked clusters, with shape-preserving variants
+for each instead of only repeating one random gather: multiple cold anchors,
+compact original orientation, rotated orientation, source-facing border
+compaction, and a lower-displacement centroid-blended candidate. The hard
+cluster and those soft macros are placed into the cold window together, then the
+existing legalization, local refinement, exact-proxy gate, and hierarchy-quality
+gate accept or reject the resulting full candidate as one state.
 `HIER_COLDSPOT_PARTIAL_FRONTIER=0` is a default-off experiment that can add one
 capacity-aware partial frontier candidate to the same pool: it estimates the
 connected cold area around the chosen anchor, selects a true subset of the hot

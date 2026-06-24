@@ -2338,6 +2338,99 @@ def _score_relocation_proposals_cuda_delta(
             chunk_size = next_chunk
 
 
+def _local_cuda_delta_enabled(n_targets: int) -> bool:
+    """Whether local sequential relocation should try the exact CUDA delta scorer."""
+    if _proposal_scorer_mode() != "cuda_delta":
+        return False
+    if _GPU_BACKEND != "cuda":
+        return False
+    if not _auto_gpu_enabled(getattr(const, "HIER_LOCAL_RELOC_CUDA_DELTA", "auto")):
+        return False
+    min_targets = int(getattr(const, "HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS", 8))
+    return int(n_targets) >= max(1, min_targets)
+
+
+def _score_local_hard_targets_cuda_delta(
+    *,
+    i: int,
+    targets: np.ndarray,
+    pos: np.ndarray,
+    cw: float,
+    ch: float,
+    incremental_scorer,
+) -> "np.ndarray | None":
+    """Score one hard macro's local targets with the exact CUDA delta scorer."""
+    xy = np.asarray(targets, dtype=np.float64).reshape(-1, 2)
+    if not _local_cuda_delta_enabled(xy.shape[0]):
+        return None
+    proposals = [
+        {
+            "score": 0.0,
+            "i": int(i),
+            "candidate_rank": int(k),
+            "target_index": int(k),
+            "xy": (float(x), float(y)),
+        }
+        for k, (x, y) in enumerate(xy)
+    ]
+    try:
+        dummy = np.zeros(pos.shape[0], dtype=np.float64)
+        _score_relocation_proposals_cuda_delta(
+            proposals,
+            pos=pos,
+            cw=cw,
+            ch=ch,
+            local_cong=dummy,
+            tgt_cong=dummy,
+            incremental_scorer=incremental_scorer,
+        )
+        return np.asarray([p["score"] for p in proposals], dtype=np.float64)
+    except Exception:
+        return None
+
+
+def _score_local_soft_targets_cuda_delta(
+    *,
+    k: int,
+    targets: np.ndarray,
+    soft_pos: np.ndarray,
+    cw: float,
+    ch: float,
+    incremental_scorer,
+) -> "np.ndarray | None":
+    """Score one soft macro's local targets with the exact CUDA delta scorer."""
+    xy = np.asarray(targets, dtype=np.float64).reshape(-1, 2)
+    if not _local_cuda_delta_enabled(xy.shape[0]):
+        return None
+    proposals = [
+        {
+            "score": 0.0,
+            "i": int(k),
+            "module_idx": int(incremental_scorer.soft_indices[int(k)]),
+            "old_xy": (float(soft_pos[int(k), 0]), float(soft_pos[int(k), 1])),
+            "macro_route": False,
+            "candidate_rank": int(rank),
+            "target_index": int(rank),
+            "xy": (float(x), float(y)),
+        }
+        for rank, (x, y) in enumerate(xy)
+    ]
+    try:
+        dummy = np.zeros(soft_pos.shape[0], dtype=np.float64)
+        _score_relocation_proposals_cuda_delta(
+            proposals,
+            pos=soft_pos,
+            cw=cw,
+            ch=ch,
+            local_cong=dummy,
+            tgt_cong=dummy,
+            incremental_scorer=incremental_scorer,
+        )
+        return np.asarray([p["score"] for p in proposals], dtype=np.float64)
+    except Exception:
+        return None
+
+
 def _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, span2, region_bias):
     """Push out-of-region candidate cells to the back of the distance ranking.
 
@@ -2483,7 +2576,6 @@ def _micro_shift_polish(
         if deadline is not None and time.monotonic() > deadline:
             break
         i = int(i_raw)
-        prep = incremental_scorer._prepare_move(i)
         best_xy = None
         try:
             mask = all_h != i
@@ -2530,7 +2622,20 @@ def _micro_shift_polish(
                 targets.append((nx, ny))
             targets = _dedupe_targets_xy(targets)
             if targets.size:
-                scores = incremental_scorer._trial_many_at(prep, targets)
+                scores = _score_local_hard_targets_cuda_delta(
+                    i=i,
+                    targets=targets,
+                    pos=hard_pos,
+                    cw=cw,
+                    ch=ch,
+                    incremental_scorer=incremental_scorer,
+                )
+                if scores is None:
+                    prep = incremental_scorer._prepare_move(i)
+                    try:
+                        scores = incremental_scorer._trial_many_at(prep, targets)
+                    finally:
+                        incremental_scorer._revert_prep(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
             for (nx, ny), score in zip(targets, scores):
@@ -2538,13 +2643,11 @@ def _micro_shift_polish(
                     best_score = float(score)
                     best_xy = (nx, ny)
             if best_xy is not None:
+                prep = incremental_scorer._prepare_move(i)
                 incremental_scorer._commit_after_prep(prep, best_xy)
                 hard_pos[i, 0], hard_pos[i, 1] = best_xy
                 accepts += 1
-            else:
-                incremental_scorer._revert_prep(prep)
         except Exception:
-            incremental_scorer._revert_prep(prep)
             raise
 
     if soft_pos.shape[0] == 0:
@@ -2561,7 +2664,6 @@ def _micro_shift_polish(
         if deadline is not None and time.monotonic() > deadline:
             break
         k = int(k_raw)
-        prep = incremental_scorer._prepare_move_soft(k)
         best_xy = None
         try:
             targets = []
@@ -2573,7 +2675,20 @@ def _micro_shift_polish(
                 targets.append((nx, ny))
             targets = _dedupe_targets_xy(targets)
             if targets.size:
-                scores = incremental_scorer._trial_many_at_soft(prep, targets)
+                scores = _score_local_soft_targets_cuda_delta(
+                    k=k,
+                    targets=targets,
+                    soft_pos=soft_pos,
+                    cw=cw,
+                    ch=ch,
+                    incremental_scorer=incremental_scorer,
+                )
+                if scores is None:
+                    prep = incremental_scorer._prepare_move_soft(k)
+                    try:
+                        scores = incremental_scorer._trial_many_at_soft(prep, targets)
+                    finally:
+                        incremental_scorer._revert_prep_soft(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
             for (nx, ny), score in zip(targets, scores):
@@ -2581,13 +2696,11 @@ def _micro_shift_polish(
                     best_score = float(score)
                     best_xy = (nx, ny)
             if best_xy is not None:
+                prep = incremental_scorer._prepare_move_soft(k)
                 incremental_scorer._commit_after_prep_soft(prep, best_xy)
                 soft_pos[k, 0], soft_pos[k, 1] = best_xy
                 accepts += 1
-            else:
-                incremental_scorer._revert_prep_soft(prep)
         except Exception:
-            incremental_scorer._revert_prep_soft(prep)
             raise
     return hard_pos, soft_pos, accepts, best_score
 
@@ -3242,8 +3355,6 @@ def _relocation_moves(
         syi = sep_y_mat[i, mask]
         ox = pos[mask, 0]
         oy = pos[mask, 1]
-        # Remove the macro once, then try several target cells.
-        prep = incremental_scorer._prepare_move(i)
         best_i_xy = None
         score_before_i = float(best_score)
         try:
@@ -3260,7 +3371,21 @@ def _relocation_moves(
                     continue
                 targets.append((nx, ny))
             if targets:
-                scores = incremental_scorer._trial_many_at(prep, np.asarray(targets))
+                targets_arr = np.asarray(targets, dtype=np.float64)
+                scores = _score_local_hard_targets_cuda_delta(
+                    i=i,
+                    targets=targets_arr,
+                    pos=pos,
+                    cw=cw,
+                    ch=ch,
+                    incremental_scorer=incremental_scorer,
+                )
+                if scores is None:
+                    prep = incremental_scorer._prepare_move(i)
+                    try:
+                        scores = incremental_scorer._trial_many_at(prep, targets_arr)
+                    finally:
+                        incremental_scorer._revert_prep(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
             legal_count += int(len(targets))
@@ -3274,6 +3399,7 @@ def _relocation_moves(
                     best_score = s
                     best_i_xy = (nx, ny)
             if best_i_xy is not None:
+                prep = incremental_scorer._prepare_move(i)
                 incremental_scorer._commit_after_prep(prep, best_i_xy)
                 pos[i, 0], pos[i, 1] = best_i_xy
                 full_pos_for_struct[i, 0], full_pos_for_struct[i, 1] = best_i_xy
@@ -3288,11 +3414,8 @@ def _relocation_moves(
                         "proxy_delta": float(best_score) - score_before_i,
                     }
                 )
-            else:
-                incremental_scorer._revert_prep(prep)
         except Exception:
             # Restore committed state if a trial failed.
-            incremental_scorer._revert_prep(prep)
             raise
     log_gnn_event(
         "hier_relocation_result",
@@ -3483,8 +3606,6 @@ def _soft_relocation_moves(
                 benchmark=benchmark,
             )
             cand = cand[order][:n_targets]
-        # Remove the soft macro once, then try several targets.
-        prep = incremental_scorer._prepare_move_soft(k)
         best_k_xy = None
         score_before_k = float(best_score)
         try:
@@ -3503,7 +3624,20 @@ def _soft_relocation_moves(
                 targets.append((nx, ny))
             targets = _dedupe_targets_xy(targets)
             if targets.size:
-                scores = incremental_scorer._trial_many_at_soft(prep, targets)
+                scores = _score_local_soft_targets_cuda_delta(
+                    k=k,
+                    targets=targets,
+                    soft_pos=soft_pos,
+                    cw=cw,
+                    ch=ch,
+                    incremental_scorer=incremental_scorer,
+                )
+                if scores is None:
+                    prep = incremental_scorer._prepare_move_soft(k)
+                    try:
+                        scores = incremental_scorer._trial_many_at_soft(prep, targets)
+                    finally:
+                        incremental_scorer._revert_prep_soft(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
             legal_count += int(targets.shape[0])
@@ -3524,6 +3658,7 @@ def _soft_relocation_moves(
                     best_score = s
                     best_k_xy = (nx, ny)
             if best_k_xy is not None:
+                prep = incremental_scorer._prepare_move_soft(k)
                 incremental_scorer._commit_after_prep_soft(prep, best_k_xy)
                 soft_pos[k, 0], soft_pos[k, 1] = best_k_xy
                 full_pos_for_struct[n + k, 0], full_pos_for_struct[n + k, 1] = best_k_xy
@@ -3538,10 +3673,7 @@ def _soft_relocation_moves(
                         "proxy_delta": float(best_score) - score_before_k,
                     }
                 )
-            else:
-                incremental_scorer._revert_prep_soft(prep)
         except Exception:
-            incremental_scorer._revert_prep_soft(prep)
             raise
     log_gnn_event(
         "hier_relocation_result",

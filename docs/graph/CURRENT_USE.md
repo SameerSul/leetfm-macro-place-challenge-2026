@@ -113,16 +113,15 @@ HIER_COLDSPOT_LOCAL_HARD_PAD_FRAC=0.50
 HIER_COLDSPOT_LOCAL_MIN_PAD_CELLS=1
 HIER_COLDSPOT_LOCAL_MAX_PAD_FRAC=0.12
 HIER_COLDSPOT_LOCAL_SOFT_ESCAPE_MIN=0.0025
-HIER_COLDSPOT_GRAPH_SELECT_CANDIDATES=4
-HIER_COLDSPOT_GRAPH_SELECT_TOP_K=2
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K=3
 HIER_COLDSPOT_MEMORY_COLD_PCT=35.0
 HIER_COLDSPOT_ADAPTIVE_MAX_CELLS=5
 ```
 
-Local refinement, graph selection, graph target pools, graph mask gating,
-graph-local fallback, and adaptive cold-cell expansion are now unconditional
-parts of the coldspot path.
+Local refinement, graph target pools, graph mask gating, graph-local fallback,
+and adaptive cold-cell expansion are now unconditional parts of the coldspot
+path. Default non-GNN candidate commitment uses exact-proxy-ranked refined
+outcomes; graph features remain in traces and as tie-breakers.
 
 ## Current Limitations
 
