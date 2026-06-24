@@ -35,6 +35,19 @@ Every learned scorer must be compared against:
 - simple score/rank fields already present in the trace;
 - the G3 non-GNN baseline.
 
+For coldspot selector traces, use the dedicated pool-level diagnostic:
+
+```bash
+uv run python scripts/gnn/diagnose_coldspot_selector.py \
+  --dataset ml_data/beyondppa_gnn/dataset.pt \
+  --model ml_data/beyondppa_gnn/models/path/to/model.pt \
+  --top-k 1 --top-k 4
+```
+
+This compares trace order, cheap field-delta order, stable random order,
+exact-proxy oracle order, and the optional GNN model using
+`candidate_pool_id` groups.
+
 Do not move to G4 unless the non-GNN baseline shows the labels are learnable.
 
 For the MacroDiff+-inspired graph upgrade, also compare:

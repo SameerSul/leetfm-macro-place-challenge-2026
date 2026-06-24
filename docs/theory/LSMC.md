@@ -31,7 +31,6 @@ proposal:
 drops and proxy stays within the configured budget:
 
 ```text
-HIER_COLDSPOT_KICK=1
 HIER_COLDSPOT_BUDGET=0.05
 HIER_COLDSPOT_TOTAL=0.15
 HIER_COLDSPOT_ROUNDS=8

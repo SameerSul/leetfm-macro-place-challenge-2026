@@ -5,12 +5,14 @@ from __future__ import annotations
 import time
 
 import numpy as np
+import torch
 
 from utils import constants as const
+from utils.config import HAS_NUMBA, _GPU_BACKEND, _GPU_DEVICE, _numba_njit
 from placer.shared.geometry import separation_matrices
-from placer.local_search.fields import _congestion_field, _density_field
+from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
-from placer.local_search.region_rules import accepts_region_score, any_outside_region
+from placer.local_search.region_rules import accepts_region_score
 
 
 def _new_stats() -> dict:
@@ -26,10 +28,6 @@ def _new_stats() -> dict:
         "ss_escape_accepts": 0,
         "proxy_gain": 0.0,
     }
-
-
-def _batch_swap_scores() -> bool:
-    return const.HIER_BATCH_SWAP_SCORES
 
 
 def _accept_swap(score, best_score, outside_region, escape_min, min_gain) -> bool:
@@ -51,6 +49,87 @@ def _cell_values(pos: np.ndarray, field: np.ndarray, cw: float, ch: float) -> np
     ci = np.clip((pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
     return field[ri, ci]
+
+
+def _auto_gpu_enabled(value) -> bool:
+    if isinstance(value, str) and value.lower() == "auto":
+        return _GPU_BACKEND == "cuda"
+    return bool(value)
+
+
+def _rank_smallest(values: np.ndarray) -> np.ndarray:
+    """Return ascending rank order, using CUDA only for large arrays."""
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = int(arr.size)
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+    if (
+        not _auto_gpu_enabled(const.HIER_GPU_RANK_SWAP_CANDIDATES)
+        or _GPU_BACKEND != "cuda"
+        or n < int(const.HIER_GPU_RANK_MIN_CANDIDATES)
+    ):
+        return np.argsort(arr)
+    try:
+        with torch.inference_mode():
+            vals = torch.as_tensor(arr, device=_GPU_DEVICE, dtype=torch.float32)
+            return torch.argsort(vals, stable=True).cpu().numpy().astype(np.int64, copy=False)
+    except Exception:
+        return np.argsort(arr)
+
+
+def _gpu_swap_prescore_order(
+    base_rank: np.ndarray,
+    *,
+    enabled,
+    src_x: float,
+    src_y: float,
+    tgt_x: np.ndarray,
+    tgt_y: np.ndarray,
+    field_span: float,
+    distance_span: float,
+) -> np.ndarray:
+    """Rank swap candidates with a lightweight CUDA heuristic before exact scoring."""
+    base = np.asarray(base_rank, dtype=np.float64).reshape(-1)
+    n = int(base.size)
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+    if (
+        not _auto_gpu_enabled(enabled)
+        or _GPU_BACKEND != "cuda"
+        or n < int(const.HIER_GPU_SWAP_PRESCORE_MIN_CANDIDATES)
+    ):
+        return _rank_smallest(base)
+    try:
+        with torch.inference_mode():
+            tx = torch.as_tensor(tgt_x, device=_GPU_DEVICE, dtype=torch.float32)
+            ty = torch.as_tensor(tgt_y, device=_GPU_DEVICE, dtype=torch.float32)
+            rank = torch.as_tensor(base, device=_GPU_DEVICE, dtype=torch.float32)
+            dx = tx - float(src_x)
+            dy = ty - float(src_y)
+            span2 = max(float(distance_span) ** 2, 1.0)
+            dist = (dx.square() + dy.square()) / span2
+            rank = (
+                rank
+                + float(const.HIER_GPU_SWAP_PRESCORE_DISTANCE_WEIGHT)
+                * max(float(field_span), 1e-12)
+                * dist
+            )
+            return torch.argsort(rank, stable=True).cpu().numpy().astype(np.int64, copy=False)
+    except Exception:
+        return _rank_smallest(base)
+
+
+def _outside_region_mask(region_bbox, idx, x, y) -> np.ndarray:
+    """Vectorized equivalent of `not point_in_region(...)`."""
+    idx_arr = np.asarray(idx, dtype=np.int64).reshape(-1)
+    if idx_arr.size == 0:
+        return np.zeros(0, dtype=np.bool_)
+    if region_bbox is None:
+        return np.zeros(idx_arr.size, dtype=np.bool_)
+    rb = region_bbox[idx_arr]
+    x_arr = np.broadcast_to(np.asarray(x, dtype=np.float64), idx_arr.shape)
+    y_arr = np.broadcast_to(np.asarray(y, dtype=np.float64), idx_arr.shape)
+    return (x_arr < rb[:, 0]) | (x_arr > rb[:, 2]) | (y_arr < rb[:, 1]) | (y_arr > rb[:, 3])
 
 
 def _swap_rejection_reason(
@@ -96,8 +175,170 @@ def _log_swap_candidates(
     )
 
 
+def _rank_swap_candidates(
+    rows: list[dict],
+    *,
+    benchmark_name: str,
+    kind: str,
+    field_name: str,
+    source: int,
+) -> list[dict]:
+    if not rows:
+        return rows
+    from placer.local_search.gnn_ranker import reorder_region_swap_candidates
+
+    return reorder_region_swap_candidates(
+        rows,
+        benchmark_name=benchmark_name,
+        kind=kind,
+        field=field_name,
+        source=int(source),
+    )
+
+
+def _swap_trace_or_rank_enabled() -> bool:
+    """Whether swaps need per-candidate dictionaries before exact scoring."""
+    if gnn_trace_limit() > 0:
+        from placer.local_search.gnn_trace import gnn_trace_enabled
+
+        if gnn_trace_enabled():
+            return True
+    from placer.local_search.gnn_ranker import gnn_rank_enabled
+
+    return gnn_rank_enabled("region_swaps")
+
+
+def _hierarchy_aware_swap_filter(cand, outside, source_field, target_field, span, *, enabled: bool):
+    """Prefer in-region swaps unless outside relief is materially stronger."""
+    if not enabled or cand.size <= 1:
+        return cand, outside
+    outside = np.asarray(outside, dtype=bool)
+    inside = ~outside
+    if not inside.any():
+        return cand, outside
+    relief = float(source_field) - np.asarray(target_field, dtype=np.float64)
+    best_inside = float(np.max(relief[inside]))
+    margin = float(const.HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN) * max(float(span), 1e-12)
+    keep = inside | (relief >= best_inside + margin)
+    if not keep.any():
+        return cand, outside
+    return cand[keep], outside[keep]
+
+
 def _in_bounds(x: float, y: float, hw: float, hh: float, cw: float, ch: float) -> bool:
     return bool(hw <= x <= cw - hw and hh <= y <= ch - hh)
+
+
+if HAS_NUMBA:
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _legal_hard_hard_candidates_jit(
+        h_pos,
+        sep_x_mat,
+        sep_y_mat,
+        hw,
+        hh,
+        cw,
+        ch,
+        i,
+        cand,
+        eps,
+    ):
+        out = np.empty(cand.shape[0], dtype=np.bool_)
+        x_i_old = h_pos[i, 0]
+        y_i_old = h_pos[i, 1]
+        hw_i = hw[i]
+        hh_i = hh[i]
+        n = h_pos.shape[0]
+        for cidx in range(cand.shape[0]):
+            j = cand[cidx]
+            x_j_old = h_pos[j, 0]
+            y_j_old = h_pos[j, 1]
+            legal = True
+            if (
+                x_j_old - hw_i < 0.0
+                or x_j_old + hw_i > cw
+                or y_j_old - hh_i < 0.0
+                or y_j_old + hh_i > ch
+                or x_i_old - hw[j] < 0.0
+                or x_i_old + hw[j] > cw
+                or y_i_old - hh[j] < 0.0
+                or y_i_old + hh[j] > ch
+            ):
+                legal = False
+            if legal:
+                for k in range(n):
+                    if k == i or k == j:
+                        continue
+                    if (
+                        abs(x_j_old - h_pos[k, 0]) < sep_x_mat[i, k] + eps
+                        and abs(y_j_old - h_pos[k, 1]) < sep_y_mat[i, k] + eps
+                    ):
+                        legal = False
+                        break
+            if legal:
+                for k in range(n):
+                    if k == i or k == j:
+                        continue
+                    if (
+                        abs(x_i_old - h_pos[k, 0]) < sep_x_mat[j, k] + eps
+                        and abs(y_i_old - h_pos[k, 1]) < sep_y_mat[j, k] + eps
+                    ):
+                        legal = False
+                        break
+            out[cidx] = legal
+        return out
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _legal_hard_soft_candidates_jit(
+        h_pos,
+        s_pos,
+        sep_x_mat,
+        sep_y_mat,
+        hw,
+        hh,
+        soft_hw,
+        soft_hh,
+        cw,
+        ch,
+        i,
+        cand,
+        eps,
+    ):
+        out = np.empty(cand.shape[0], dtype=np.bool_)
+        x_i_old = h_pos[i, 0]
+        y_i_old = h_pos[i, 1]
+        hw_i = hw[i]
+        hh_i = hh[i]
+        n = h_pos.shape[0]
+        for cidx in range(cand.shape[0]):
+            k_soft = cand[cidx]
+            x_s_old = s_pos[k_soft, 0]
+            y_s_old = s_pos[k_soft, 1]
+            legal = True
+            if (
+                x_s_old - hw_i < 0.0
+                or x_s_old + hw_i > cw
+                or y_s_old - hh_i < 0.0
+                or y_s_old + hh_i > ch
+                or x_i_old - soft_hw[k_soft] < 0.0
+                or x_i_old + soft_hw[k_soft] > cw
+                or y_i_old - soft_hh[k_soft] < 0.0
+                or y_i_old + soft_hh[k_soft] > ch
+            ):
+                legal = False
+            if legal:
+                for j in range(n):
+                    if j == i:
+                        continue
+                    if (
+                        abs(x_s_old - h_pos[j, 0]) < sep_x_mat[i, j] + eps
+                        and abs(y_s_old - h_pos[j, 1]) < sep_y_mat[i, j] + eps
+                    ):
+                        legal = False
+                        break
+            out[cidx] = legal
+        return out
 
 
 def _legal_hard_hard_candidates(
@@ -116,6 +357,19 @@ def _legal_hard_hard_candidates(
     cand = np.asarray(cand, dtype=np.int64)
     if cand.size == 0:
         return np.zeros(0, dtype=np.bool_)
+    if HAS_NUMBA:
+        return _legal_hard_hard_candidates_jit(
+            h_pos,
+            sep_x_mat,
+            sep_y_mat,
+            hw,
+            hh,
+            float(cw),
+            float(ch),
+            int(i),
+            cand,
+            float(eps),
+        )
 
     n = h_pos.shape[0]
     all_idx = np.arange(n, dtype=np.int64)
@@ -185,6 +439,22 @@ def _legal_hard_soft_candidates(
     cand = np.asarray(cand, dtype=np.int64)
     if cand.size == 0:
         return np.zeros(0, dtype=np.bool_)
+    if HAS_NUMBA:
+        return _legal_hard_soft_candidates_jit(
+            h_pos,
+            s_pos,
+            sep_x_mat,
+            sep_y_mat,
+            hw,
+            hh,
+            soft_hw,
+            soft_hh,
+            float(cw),
+            float(ch),
+            int(i),
+            cand,
+            float(eps),
+        )
 
     x_i = float(h_pos[i, 0])
     y_i = float(h_pos[i, 1])
@@ -214,53 +484,6 @@ def _legal_hard_soft_candidates(
     legal_i = ~np.any(overlap_i, axis=1)
 
     return in_bounds_i & in_bounds_k & legal_i
-
-
-def _hard_at_legal(
-    pos: np.ndarray,
-    sep_x_mat: np.ndarray,
-    sep_y_mat: np.ndarray,
-    i: int,
-    x: float,
-    y: float,
-    ignore: "set[int] | None" = None,
-) -> bool:
-    ignore = ignore or set()
-    n = pos.shape[0]
-    mask = np.ones(n, dtype=bool)
-    mask[i] = False
-    for j in ignore:
-        mask[int(j)] = False
-    if not mask.any():
-        return True
-    return not (
-        (np.abs(x - pos[mask, 0]) < sep_x_mat[i, mask] + 1e-6)
-        & (np.abs(y - pos[mask, 1]) < sep_y_mat[i, mask] + 1e-6)
-    ).any()
-
-
-def _hard_swap_legal(
-    pos: np.ndarray,
-    sep_x_mat: np.ndarray,
-    sep_y_mat: np.ndarray,
-    hw: np.ndarray,
-    hh: np.ndarray,
-    cw: float,
-    ch: float,
-    i: int,
-    j: int,
-) -> bool:
-    ix, iy = float(pos[j, 0]), float(pos[j, 1])
-    jx, jy = float(pos[i, 0]), float(pos[i, 1])
-    if not _in_bounds(ix, iy, hw[i], hh[i], cw, ch):
-        return False
-    if not _in_bounds(jx, jy, hw[j], hh[j], cw, ch):
-        return False
-    if abs(ix - jx) < sep_x_mat[i, j] + 1e-6 and abs(iy - jy) < sep_y_mat[i, j] + 1e-6:
-        return False
-    return _hard_at_legal(pos, sep_x_mat, sep_y_mat, i, ix, iy, {j}) and _hard_at_legal(
-        pos, sep_x_mat, sep_y_mat, j, jx, jy, {i}
-    )
 
 
 def _try_hard_hard(
@@ -296,6 +519,7 @@ def _try_hard_hard(
     sep_x_mat, sep_y_mat = separation_matrices(sizes)
     span = max(float(field.max()), 1e-12)
     hot = movable_idx[np.argsort(-local[movable_idx])][: min(128, movable_idx.size)]
+    use_trace_or_rank = _swap_trace_or_rank_enabled()
 
     for i_raw in hot:
         if deadline is not None and time.monotonic() > deadline:
@@ -317,23 +541,61 @@ def _try_hard_hard(
             cand,
             1e-6,
         )
-        outside = np.array(
-            [
-                any_outside_region(
-                    [
-                        (hard_region, i, h_pos[j, 0], h_pos[j, 1]),
-                        (hard_region, int(j), h_pos[i, 0], h_pos[i, 1]),
-                    ]
-                )
-                for j in cand
-            ],
-            dtype=bool,
+        outside = _outside_region_mask(
+            hard_region,
+            np.full(cand.size, i, dtype=np.int64),
+            h_pos[cand, 0],
+            h_pos[cand, 1],
+        ) | _outside_region_mask(hard_region, cand, h_pos[i, 0], h_pos[i, 1])
+        cand_before = cand
+        cand, outside = _hierarchy_aware_swap_filter(
+            cand,
+            outside,
+            float(local[i]),
+            local[cand],
+            span,
+            enabled=field_name == "weighted_congestion",
         )
+        if cand.size != cand_before.size:
+            keep = np.isin(cand_before, cand)
+            legal_mask = legal_mask[keep]
         rank = local[cand] + region_bias * span * outside.astype(np.float64)
-        ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked_idx = _gpu_swap_prescore_order(
+            rank,
+            enabled=const.HIER_GPU_SWAP_PRESCORE_HH,
+            src_x=float(h_pos[i, 0]),
+            src_y=float(h_pos[i, 1]),
+            tgt_x=h_pos[cand, 0],
+            tgt_y=h_pos[cand, 1],
+            field_span=span,
+            distance_span=max(float(max(cw, ch)), 1.0),
+        )[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_legal = legal_mask[ranked_idx]
         ranked_outside = outside[ranked_idx]
+        if not use_trace_or_rank:
+            scored = [
+                (int(j), bool(outside_move))
+                for j, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside)
+                if bool(is_legal)
+            ]
+            scores = (
+                scorer.score_swap_hard_hard_many(
+                    i, np.asarray([j for j, _ in scored], dtype=np.int64)
+                )
+                if scored
+                else np.empty(0, dtype=np.float64)
+            )
+            for (j, outside_move), score in zip(scored, scores):
+                stats["hh_scores"] += 1
+                if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
+                    scorer.commit_swap_hard_hard(i, j)
+                    h_pos[[i, j]] = h_pos[[j, i]]
+                    _record_accept(stats, "hh", outside_move, best_score, score)
+                    best_score = float(score)
+                    accepts += 1
+                    break
+            continue
         trace_rows = []
         trace_by_target = {}
         for candidate_rank, (j_raw, is_legal, outside_move) in enumerate(
@@ -363,24 +625,29 @@ def _try_hard_hard(
             }
             trace_by_target[j] = row
             trace_rows.append(row)
+        trace_rows = _rank_swap_candidates(
+            trace_rows,
+            benchmark_name=benchmark_name,
+            kind="hard_hard",
+            field_name=field_name,
+            source=i,
+        )
         scored = []
-        for j_raw, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside):
+        for row in trace_rows:
             # ranked_legal is the legality mask in ranked candidate order.
             if deadline is not None and time.monotonic() > deadline:
                 break
-            j = int(j_raw)
-            if not bool(is_legal):
+            j = int(row["target"])
+            if not bool(row.get("legal", False)):
                 continue
-            scored.append((j, outside_move))
-        if scored and _batch_swap_scores():
+            scored.append((j, bool(row.get("outside_region", False))))
+        if scored:
             scores = scorer.score_swap_hard_hard_many(
                 i, np.asarray([j for j, _ in scored], dtype=np.int64)
             )
             scored_iter = zip(scored, scores)
         else:
-            scored_iter = (
-                ((j, outside_move), scorer.score_swap_hard_hard(i, j)) for j, outside_move in scored
-            )
+            scored_iter = ()
         for (j, outside_move), score in scored_iter:
             stats["hh_scores"] += 1
             region_ok = accepts_region_score(
@@ -424,6 +691,7 @@ def _try_soft_soft(
     region_bias,
     escape_min,
     min_gain,
+    soft_barrier_gain,
     min_field_relief,
     stats,
     deadline,
@@ -443,6 +711,7 @@ def _try_soft_soft(
         return 0, best_score
     span = max(float(field.max()), 1e-12)
     hot = movable_idx[np.argsort(-local[movable_idx])][: min(256, movable_idx.size)]
+    use_trace_or_rank = _swap_trace_or_rank_enabled()
 
     for a_raw in hot:
         if deadline is not None and time.monotonic() > deadline:
@@ -452,28 +721,66 @@ def _try_soft_soft(
         cand = cand[(local[a] - local[cand]) > min_field_relief * span]
         if cand.size == 0:
             continue
-        outside = np.array(
-            [
-                any_outside_region(
-                    [
-                        (soft_region, a, s_pos[b, 0], s_pos[b, 1]),
-                        (soft_region, int(b), s_pos[a, 0], s_pos[a, 1]),
-                    ]
-                )
-                for b in cand
-            ],
-            dtype=bool,
+        outside = _outside_region_mask(
+            soft_region,
+            np.full(cand.size, a, dtype=np.int64),
+            s_pos[cand, 0],
+            s_pos[cand, 1],
+        ) | _outside_region_mask(soft_region, cand, s_pos[a, 0], s_pos[a, 1])
+        cand, outside = _hierarchy_aware_swap_filter(
+            cand,
+            outside,
+            float(local[a]),
+            local[cand],
+            span,
+            enabled=field_name == "weighted_congestion",
         )
         rank = local[cand] + region_bias * span * outside.astype(np.float64)
         scored = []
-        ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked_idx = _gpu_swap_prescore_order(
+            rank,
+            enabled=const.HIER_GPU_SWAP_PRESCORE_SS,
+            src_x=float(s_pos[a, 0]),
+            src_y=float(s_pos[a, 1]),
+            tgt_x=s_pos[cand, 0],
+            tgt_y=s_pos[cand, 1],
+            field_span=span,
+            distance_span=max(float(max(cw, ch)), 1.0),
+        )[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_outside = outside[ranked_idx]
+        if not use_trace_or_rank:
+            scored = []
+            for b_raw, outside_move in zip(ranked, ranked_outside):
+                b = int(b_raw)
+                ax, ay = float(s_pos[b, 0]), float(s_pos[b, 1])
+                bx, by = float(s_pos[a, 0]), float(s_pos[a, 1])
+                if not _in_bounds(ax, ay, soft_hw[a], soft_hh[a], cw, ch):
+                    continue
+                if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
+                    continue
+                scored.append((b, bool(outside_move)))
+            scores = (
+                scorer.score_swap_soft_soft_many(
+                    a, np.asarray([b for b, _ in scored], dtype=np.int64)
+                )
+                if scored
+                else np.empty(0, dtype=np.float64)
+            )
+            for (b, outside_move), score in zip(scored, scores):
+                stats["ss_scores"] += 1
+                required_gain = max(min_gain, soft_barrier_gain)
+                if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
+                    scorer.commit_swap_soft_soft(a, b)
+                    s_pos[[a, b]] = s_pos[[b, a]]
+                    _record_accept(stats, "ss", outside_move, best_score, score)
+                    best_score = float(score)
+                    accepts += 1
+                    break
+            continue
         trace_rows = []
         trace_by_target = {}
-        for candidate_rank, (b_raw, outside_move) in enumerate(
-            zip(ranked, ranked_outside)
-        ):
+        for candidate_rank, (b_raw, outside_move) in enumerate(zip(ranked, ranked_outside)):
             b = int(b_raw)
             ax, ay = float(s_pos[b, 0]), float(s_pos[b, 1])
             bx, by = float(s_pos[a, 0]), float(s_pos[a, 1])
@@ -500,41 +807,50 @@ def _try_soft_soft(
             }
             trace_by_target[b] = row
             trace_rows.append(row)
-        for b_raw, outside_move in zip(ranked, ranked_outside):
+        trace_rows = _rank_swap_candidates(
+            trace_rows,
+            benchmark_name=benchmark_name,
+            kind="soft_soft",
+            field_name=field_name,
+            source=a,
+        )
+        for row in trace_rows:
             if deadline is not None and time.monotonic() > deadline:
                 break
-            b = int(b_raw)
+            if not bool(row.get("legal", False)):
+                continue
+            b = int(row["target"])
             ax, ay = float(s_pos[b, 0]), float(s_pos[b, 1])
             bx, by = float(s_pos[a, 0]), float(s_pos[a, 1])
             if not _in_bounds(ax, ay, soft_hw[a], soft_hh[a], cw, ch):
                 continue
             if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
                 continue
-            scored.append((b, outside_move))
-        if scored and _batch_swap_scores():
+            scored.append((b, bool(row.get("outside_region", False))))
+        if scored:
             scores = scorer.score_swap_soft_soft_many(
                 a, np.asarray([b for b, _ in scored], dtype=np.int64)
             )
             scored_iter = zip(scored, scores)
         else:
-            scored_iter = (
-                ((b, outside_move), scorer.score_swap_soft_soft(a, b)) for b, outside_move in scored
-            )
+            scored_iter = ()
         for (b, outside_move), score in scored_iter:
             stats["ss_scores"] += 1
+            required_gain = max(min_gain, soft_barrier_gain)
             region_ok = accepts_region_score(
-                score, best_score, outside_move, max(escape_min, min_gain)
+                score, best_score, outside_move, max(escape_min, required_gain)
             )
             row = trace_by_target.get(int(b))
             if row is not None:
                 row["candidate_proxy"] = float(score)
                 row["proxy_delta"] = float(score) - float(best_score)
+                row["soft_barrier_gain"] = float(soft_barrier_gain)
                 row["rejection_reason"] = _swap_rejection_reason(
                     legal=True,
                     outside_region=bool(outside_move),
                     accepted_by_region_gate=bool(region_ok),
                 )
-            if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
+            if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
                 if row is not None:
                     row["accepted"] = True
                     row["rejection_reason"] = None
@@ -569,6 +885,7 @@ def _try_hard_soft(
     region_bias,
     escape_min,
     min_gain,
+    soft_barrier_gain,
     min_field_relief,
     stats,
     deadline,
@@ -590,6 +907,7 @@ def _try_hard_soft(
     sep_x_mat, sep_y_mat = separation_matrices(sizes)
     span = max(float(field.max()), 1e-12)
     hot = hard_idx[np.argsort(-hard_local[hard_idx])][: min(128, hard_idx.size)]
+    use_trace_or_rank = _swap_trace_or_rank_enabled()
 
     for i_raw in hot:
         if deadline is not None and time.monotonic() > deadline:
@@ -598,17 +916,19 @@ def _try_hard_soft(
         cand = soft_idx[(hard_local[i] - soft_local[soft_idx]) > min_field_relief * span]
         if cand.size == 0:
             continue
-        outside = np.array(
-            [
-                any_outside_region(
-                    [
-                        (hard_region, i, s_pos[k, 0], s_pos[k, 1]),
-                        (soft_region, int(k), h_pos[i, 0], h_pos[i, 1]),
-                    ]
-                )
-                for k in cand
-            ],
-            dtype=bool,
+        outside = _outside_region_mask(
+            hard_region,
+            np.full(cand.size, i, dtype=np.int64),
+            s_pos[cand, 0],
+            s_pos[cand, 1],
+        ) | _outside_region_mask(soft_region, cand, h_pos[i, 0], h_pos[i, 1])
+        cand, outside = _hierarchy_aware_swap_filter(
+            cand,
+            outside,
+            float(hard_local[i]),
+            soft_local[cand],
+            span,
+            enabled=field_name == "weighted_congestion",
         )
         rank = soft_local[cand] + region_bias * span * outside.astype(np.float64)
         legal_mask = _legal_hard_soft_candidates(
@@ -626,14 +946,54 @@ def _try_hard_soft(
             cand,
             1e-6,
         )
-        ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked_idx = _gpu_swap_prescore_order(
+            rank,
+            enabled=const.HIER_GPU_SWAP_PRESCORE_HS,
+            src_x=float(h_pos[i, 0]),
+            src_y=float(h_pos[i, 1]),
+            tgt_x=s_pos[cand, 0],
+            tgt_y=s_pos[cand, 1],
+            field_span=span,
+            distance_span=max(float(max(cw, ch)), 1.0),
+        )[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_outside = outside[ranked_idx]
+        ranked_legal = legal_mask[ranked_idx]
+        if not use_trace_or_rank:
+            scored = []
+            for k_raw, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside):
+                if not bool(is_legal):
+                    continue
+                k = int(k_raw)
+                hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
+                sx, sy = float(h_pos[i, 0]), float(h_pos[i, 1])
+                if not _in_bounds(hx, hy, hw[i], hh[i], cw, ch):
+                    continue
+                if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
+                    continue
+                scored.append((k, hx, hy, sx, sy, bool(outside_move)))
+            scores = (
+                scorer.score_swap_hard_soft_many(
+                    i, np.asarray([k for k, *_ in scored], dtype=np.int64)
+                )
+                if scored
+                else np.empty(0, dtype=np.float64)
+            )
+            for (k, hx, hy, sx, sy, outside_move), score in zip(scored, scores):
+                stats["hs_scores"] += 1
+                required_gain = max(min_gain, soft_barrier_gain)
+                if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
+                    scorer.commit_swap_hard_soft(i, k)
+                    h_pos[i, 0], h_pos[i, 1] = hx, hy
+                    s_pos[k, 0], s_pos[k, 1] = sx, sy
+                    _record_accept(stats, "hs", outside_move, best_score, score)
+                    best_score = float(score)
+                    accepts += 1
+                    break
+            continue
         trace_rows = []
         trace_by_target = {}
-        for candidate_rank, (k_raw, is_legal) in enumerate(
-            zip(ranked, legal_mask[ranked_idx])
-        ):
+        for candidate_rank, (k_raw, is_legal) in enumerate(zip(ranked, ranked_legal)):
             k = int(k_raw)
             hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
             sx, sy = float(h_pos[i, 0]), float(h_pos[i, 1])
@@ -661,46 +1021,52 @@ def _try_hard_soft(
             }
             trace_by_target[k] = row
             trace_rows.append(row)
+        trace_rows = _rank_swap_candidates(
+            trace_rows,
+            benchmark_name=benchmark_name,
+            kind="hard_soft",
+            field_name=field_name,
+            source=i,
+        )
         scored = []
-        for k_raw, is_legal, outside_move in zip(ranked, legal_mask[ranked_idx], ranked_outside):
+        for row in trace_rows:
             # legal_mask is aligned with `cand`; `ranked_idx` preserves ranking order.
             if deadline is not None and time.monotonic() > deadline:
                 break
-            k = int(k_raw)
-            if not bool(is_legal):
+            if not bool(row.get("legal", False)):
                 continue
+            k = int(row["target"])
             hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
             sx, sy = float(h_pos[i, 0]), float(h_pos[i, 1])
             if not _in_bounds(hx, hy, hw[i], hh[i], cw, ch):
                 continue
             if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
                 continue
-            scored.append((k, hx, hy, sx, sy, outside_move))
-        if scored and _batch_swap_scores():
+            scored.append((k, hx, hy, sx, sy, bool(row.get("outside_region", False))))
+        if scored:
             scores = scorer.score_swap_hard_soft_many(
                 i, np.asarray([k for k, *_ in scored], dtype=np.int64)
             )
             scored_iter = zip(scored, scores)
         else:
-            scored_iter = (
-                ((k, hx, hy, sx, sy, outside_move), scorer.score_swap_hard_soft(i, k))
-                for k, hx, hy, sx, sy, outside_move in scored
-            )
+            scored_iter = ()
         for (k, hx, hy, sx, sy, outside_move), score in scored_iter:
             stats["hs_scores"] += 1
+            required_gain = max(min_gain, soft_barrier_gain)
             region_ok = accepts_region_score(
-                score, best_score, outside_move, max(escape_min, min_gain)
+                score, best_score, outside_move, max(escape_min, required_gain)
             )
             row = trace_by_target.get(int(k))
             if row is not None:
                 row["candidate_proxy"] = float(score)
                 row["proxy_delta"] = float(score) - float(best_score)
+                row["soft_barrier_gain"] = float(soft_barrier_gain)
                 row["rejection_reason"] = _swap_rejection_reason(
                     legal=True,
                     outside_region=bool(outside_move),
                     accepted_by_region_gate=bool(region_ok),
                 )
-            if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
+            if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
                 if row is not None:
                     row["accepted"] = True
                     row["rejection_reason"] = None
@@ -739,6 +1105,7 @@ def _region_bounded_swap_relief(
     region_bias: float = 1.0,
     escape_min: float = 0.002,
     min_gain: float = 1e-5,
+    soft_barrier_gain: float = 0.0,
     min_field_relief: float = 0.0,
     enable_hh: bool = True,
     enable_hs: bool = True,
@@ -755,13 +1122,21 @@ def _region_bounded_swap_relief(
     for _ in range(rounds):
         if deadline is not None and time.monotonic() > deadline:
             break
+        weighted_rank = not use_density
         field = (
             _density_field(incremental_scorer, nr, nc)
             if use_density
-            else _congestion_field(incremental_scorer, nr, nc)
+            else (
+                weighted_congestion_field(incremental_scorer, nr, nc)
+                if weighted_rank
+                else _congestion_field(incremental_scorer, nr, nc)
+            )
         )
         if field is None:
             break
+        field_name = (
+            "density" if use_density else ("weighted_congestion" if weighted_rank else "congestion")
+        )
         if enable_hh:
             got, best_score = _try_hard_hard(
                 hard_pos,
@@ -783,7 +1158,7 @@ def _region_bounded_swap_relief(
                 stats,
                 deadline,
                 getattr(benchmark, "name", ""),
-                "density" if use_density else "congestion",
+                field_name,
             )
             accepts += got
         if enable_hs:
@@ -808,11 +1183,12 @@ def _region_bounded_swap_relief(
                 region_bias,
                 escape_min,
                 min_gain,
+                soft_barrier_gain,
                 min_field_relief,
                 stats,
                 deadline,
                 getattr(benchmark, "name", ""),
-                "density" if use_density else "congestion",
+                field_name,
             )
             accepts += got
         if enable_ss:
@@ -831,11 +1207,12 @@ def _region_bounded_swap_relief(
                 region_bias,
                 escape_min,
                 min_gain,
+                soft_barrier_gain,
                 min_field_relief,
                 stats,
                 deadline,
                 getattr(benchmark, "name", ""),
-                "density" if use_density else "congestion",
+                field_name,
             )
             accepts += got
 

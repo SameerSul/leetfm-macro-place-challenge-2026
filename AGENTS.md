@@ -11,21 +11,33 @@ The active submission now lives at the repository root: `src/`, `docs/`,
 absent after the root-layout migration; if present, treat it as frozen /
 read-only.
 
-**Current production mode (2026-06-18): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-06-23): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py` and raises if grouped DREAMPlace is not
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 Current accepted hierarchy result: `uv run evaluate src/main.py --all` =
-**AVG 1.3631**, 17/17 VALID, 0 overlaps, 602.76s; `ibm10` smoke is
-`proxy=1.6133`, VALID.
+**AVG 1.1793**, 17/17 VALID, 0 overlaps, 1421.12s. The accepted post-Stage-6
+cleanup adds swap-round micro-shift replay, stronger opportunity gates for
+expensive decompression/coldspot work, and component-aware scheduling telemetry
+for late cleanup. Early strong-soft repair, early swap-lite, early survivor
+search, and ArchGen-style seed top-k repair were tested and rejected/removed
+because they regressed final proxy or consumed budget needed by late cleanup.
+NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
+**AVG 0.7320**, 4/4 VALID, 0 overlaps; `uv run python
+test/verification/_verify_ng45_hierarchy_tags.py` passes. The hierarchy model
+uses slash-separated instance-path prefixes when macro names provide useful
+coverage, then falls back to inferred connectivity on flat-name benchmarks.
 
 BeyondPPA-style work is integrated into the hierarchy path, not as a separate
 placer. The current shipped pieces are deterministic structural metrics and
 default-off hierarchy relocation candidate ordering
 (`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant). The trace logger is
 default-off through the `HIER_GNN_TRACE=0` runtime environment variable.
+Pass-level plateau telemetry is default-on for future ML/DL scheduling work and
+writes to `ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` unless
+`HIER_PLATEAU_TRACE=0` or `HIER_PLATEAU_TRACE_PATH` is supplied.
 Stage-G3 offline baseline tooling lives in `scripts/gnn/train_gnn_baseline.py`, and
 the accepted default-off baseline artifact is
 `ml_data/beyondppa_gnn/models/20260619_g3_candidate_baseline_min4/`. Stage-G4
@@ -222,7 +234,8 @@ scripts/                  Comparison + benchmark-conversion utilities.
 - Iterate on one benchmark (`-b ibm10` is the current hierarchy smoke) until the change is sound; run `--all` only when you need a full benchmark sweep.
 - When a change alters hierarchy quality or proxy cost, verify it on more than one benchmark before treating it as a system improvement.
 - Record concrete numbers in `docs/general/PROGRESS.md` when a change becomes a new accepted system result - that file is the source of truth for "what works", not commit messages.
-- Once a change has been accepted and verified, ensure that all relevant documentation, such as `README.md`, `docs/general/ARCHITECTURE.md`, `docs/general/ISSUES.md`, `docs/general/PROGRESS.md`, and `docs/general/DESIGN_FLOW.md`, has been updated with the latest changes to avoid stale documentation.
+- Documentation updates are part of every system modification. If a change alters placement flow, operator order, acceptance gates, constants, default behavior, diagnostics, graph/GNN hooks, verification status, or user-facing commands, update `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and all other relevant docs in the same turn. Relevant docs may include `README.md`, `docs/general/ISSUES.md`, `docs/general/PROGRESS.md`, `docs/graph/**`, `docs/theory/**`, `docs/ml_nn/**`, or test/diagnostic READMEs. If no documentation needs an update, explicitly note why in the final response.
+- Once a change has been accepted and verified as a new system result, record concrete numbers in `docs/general/PROGRESS.md` and make sure `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and any related subsystem docs describe the accepted behavior instead of stale experiment behavior.
 - **All v2-specific tests, diagnostics, and probes live under `test/`** (current subdirs: `benchmarks/`, `diagnostic/`, `eda_io/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks an agent to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `test/` under the matching subdirectory - and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.
 - Never commit unless asked.
 - Do not push, force-push, or create PRs unless asked.

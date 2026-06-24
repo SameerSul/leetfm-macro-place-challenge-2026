@@ -2,7 +2,7 @@
 
 Active placer for the Partcl/HRT Macro Placement Challenge.
 
-**Current production mode (2026-06-18): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-06-23): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py`. The previous proxy-optimized production
 path has been deleted: random candidate restarts, R2/2-opt/swap/cycle search,
@@ -14,9 +14,10 @@ DREAMPlace to form a hierarchical global placement, legalizes hard macros in
 cluster-consecutive order, classifies soft macros as owned or bridge, expands
 hot cluster regions by congestion, runs bounded hard/soft relief, applies
 exact-gated cluster decompression, and finishes with region-bounded swaps plus
-post-swap hard and soft polish passes, proxy-aware coldspot tightening, and two
-micro-shift replay passes. The exact proxy is still used for evaluation and
-local gates, but it is no longer the primary design objective.
+round-level and post-swap micro-shift replay, post-swap hard and soft polish
+passes, component-aware late cleanup scheduling, proxy-aware coldspot
+tightening, and bounded survivor search. The exact proxy is still used for
+evaluation and local gates, but it is no longer the primary design objective.
 
 The placement objective note is in [docs/general/OBJECTIVES.md](docs/general/OBJECTIVES.md).
 The hierarchy-integrated BeyondPPA structural objective notes and GNN trace
@@ -26,14 +27,14 @@ Current smoke reference:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.6133  VALID  [~41s locally]
+proxy=1.1576  VALID  [~93s locally]
 ```
 
 Current full IBM reference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.3631  17/17 VALID  0 overlaps  [602.76s locally]
+AVG 1.1793  17/17 VALID  0 overlaps  [1421.12s locally]
 ```
 
 Historical proxy leaderboard numbers remain in `docs/general/PROGRESS.md` and
@@ -85,11 +86,14 @@ initial.plc / benchmark
   -> exact-gated in-region micro-shift polish
   -> exact-gated cluster decompression
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
+  -> optional swap-round micro-shift replay
   -> post-swap micro-shift replay
   -> post-swap hard propose-all polish
   -> post-swap soft relocation polish
+  -> component-aware strong soft repair scheduling
   -> proxy-aware coldspot tightening
   -> post-coldspot micro-shift replay
+  -> bounded survivor-pool search
   -> final movable-macro in-bounds clamp
   -> return macro centers
 ```
@@ -100,35 +104,28 @@ Accepted hierarchy constants live in `src/utils/constants.py`:
 HIER_GROUP_WEIGHT=8
 CLUSTER_MIN_EDGE=2
 CLUSTER_MAX_FANOUT=8
-HIER_LEGALIZE_CONNECTIVITY_ORDER=1
 HIER_RELOC_PROPOSE_HOT_K=32
 HIER_POST_RELOC_PROPOSE_ALL=auto
 HIER_POST_RELOC_PROPOSE_TOP_M=16
 HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
-HIER_POST_SOFT_RELOC=1
 HIER_POST_SOFT_RELOC_TOP_K=256
 HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005
-HIER_REGION_RELIEF=1
 HIER_REGION_DENSITY=0.65
 REGION_BIAS=1.0
 HIER_REGION_ROUNDS=2
 HIER_REGION_BUDGET_S=40
 HIER_REGION_ESCAPE_MIN=0.002
-HIER_CONG_EXPAND_REGIONS=1
-HIER_MICRO_SHIFT=1
-HIER_POST_SWAP_MICRO_SHIFT=1
-HIER_POST_COLDSPOT_MICRO_SHIFT=1
-HIER_DECOMPRESS=1
-HIER_DECOMPRESS_ANISO=1
-HIER_REGION_SWAPS=1
 HIER_SOFT_SWAP_K=48
-HIER_COLDSPOT_KICK=1
 HIER_COLDSPOT_BUDGET=0.0
 HIER_COLDSPOT_TOTAL=0.0
 HIER_COLDSPOT_MIN_FIELD_GAP=0.02
 HIER_COLDSPOT_ROUNDS=8
 HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0
 ```
+
+Default-on hierarchy behavior is no longer represented as constants; those
+operators run unconditionally unless an explicit default-off experiment or
+runtime environment variable says otherwise.
 
 Runtime environment variables are intentionally limited. `SEED` is accepted by
 `src/main.py` for reproducible runs, and `HIER_GNN_TRACE*` controls optional

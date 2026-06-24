@@ -72,13 +72,24 @@ Stage G4:
 - `graph_id`: graph index for each candidate.
 - `source_node`: source macro or cluster node.
 - `target_node`: target macro node when applicable, otherwise `-1`.
-- `features`: `[num_examples, 27]` candidate feature tensor.
+- `features`: `[num_examples, len(feature_schema["candidate_features"])]`
+  candidate feature tensor. The original 27-feature prefix is stable for older
+  G3/G4 artifacts; coldspot selector features are appended as a suffix.
 - `accepted`: boolean label.
 - `proxy_delta`: exact proxy delta when known, otherwise `0`.
 - `proxy_delta_known`: boolean mask for `proxy_delta`.
 - `rejection_id`: categorical rejection reason.
+- `candidate_id`: candidate id from the trace when present.
+- `candidate_pool_id`: selector-pool id from the trace when present, otherwise
+  `-1`.
 - string sidecars: `operator`, `kind`, `benchmark`, `trace_file`.
 - `trace_line`: source JSONL line number.
+
+Coldspot selector traces append features for pool size, selector rank, no-op
+status, field-gap margin, window size, target density, hard/soft displacement
+summaries, and before/after cluster bbox and centroid movement. Inference pads
+or truncates feature vectors to the feature count declared by each model
+artifact, so older 27-feature relocation artifacts remain usable.
 
 ## Determinism
 

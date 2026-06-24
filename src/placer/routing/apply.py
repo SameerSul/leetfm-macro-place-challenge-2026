@@ -150,7 +150,7 @@ def _apply_h_strips_batch(
     """Add a batch of horizontal routing strips."""
     if row.size == 0:
         return
-    if HAS_NUMBA and const.ROUTE_STRUCT_JIT:
+    if HAS_NUMBA:
         _apply_h_strips_batch_jit(
             H_flat,
             np.ascontiguousarray(row, dtype=np.int64),
@@ -185,7 +185,7 @@ def _apply_v_strips_batch(
     """Add a batch of vertical routing strips."""
     if col.size == 0:
         return
-    if HAS_NUMBA and const.ROUTE_STRUCT_JIT:
+    if HAS_NUMBA:
         _apply_v_strips_batch_jit(
             V_flat,
             np.ascontiguousarray(col, dtype=np.int64),
