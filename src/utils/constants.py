@@ -81,7 +81,7 @@ HIER_COMPONENT_RESERVED_CLEANUP_S = 12.0
 # Accept-rate threshold below which a pass is considered plateaued.
 HIER_PLATEAU_ACCEPT_RATE = 0.002
 # Proxy-gain threshold below which a pass is considered low-yield.
-HIER_PLATEAU_PROXY_GAIN = 0.0005
+HIER_PLATEAU_PROXY_GAIN = 0.00005
 # When local hard/swap operators plateau, spend a small bonus on soft-only repair.
 HIER_PLATEAU_SOFT_REPAIR_BONUS_BUDGET_S = 4.0
 HIER_PLATEAU_SOFT_REPAIR_BONUS_ROUNDS = 1

@@ -79,10 +79,17 @@ def run_coldspot_tightening(
     _additive_spare = lambda deadline: deadline is None or time.monotonic() + float(
         const.HIER_ADDITIVE_MIN_SPARE_S
     ) < deadline
+    adaptive_passes = (
+        os.environ.get("HIER_ADAPTIVE_PASSES", "1").strip().lower()
+        not in {"0", "false", "no", "off", "disable"}
+    )
+    adaptive_min_gain = float(const.HIER_PLATEAU_PROXY_GAIN)
 
     ck_budget = float(const.HIER_COLDSPOT_BUDGET)
     ck_total = float(const.HIER_COLDSPOT_TOTAL)
     ck_min_gain = float(const.HIER_COLDSPOT_MIN_GAIN)
+    if adaptive_passes:
+        ck_min_gain = max(ck_min_gain, adaptive_min_gain)
     ck_quality_budget = float(const.HIER_COLDSPOT_QUALITY_BUDGET)
     ck_rounds = max(1, int(const.HIER_COLDSPOT_ROUNDS))
     ck_min_field_gap = max(
@@ -108,6 +115,18 @@ def run_coldspot_tightening(
         ck_gnn_kicks = max(ck_gnn_kicks, max(1, int(const.HIER_COLDSPOT_WHOLE_VARIANTS)))
     ck_gnn_top_k = max(1, int(os.environ.get("HIER_GNN_COLDSPOT_TOP_K", "1") or "1"))
     ck_skip_micro = ck_gnn_select and gnn_coldspot_skip_micro()
+
+    def _adaptive_gain(
+        before: float,
+        after: float,
+    ) -> bool:
+        if not adaptive_passes:
+            return True
+        return float(before) - float(after) > adaptive_min_gain
+
+    ck_soft_only_min_gain = float(const.HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN)
+    if adaptive_passes:
+        ck_soft_only_min_gain = max(ck_soft_only_min_gain, adaptive_min_gain)
 
     nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
     soft_mov = movable[n : n + n_soft]
@@ -323,6 +342,7 @@ def run_coldspot_tightening(
         if ck_deadline is not None and time.monotonic() >= ck_deadline:
             break
 
+        ck_round_start = float(cur_proxy)
         field = _congestion_field(ck_scorer, nr, nc)
         if field is None:
             break
@@ -671,6 +691,9 @@ def run_coldspot_tightening(
             ck_dry_rounds = 0
         else:
             ck_dry_rounds += 1
+        if not _adaptive_gain(ck_round_start, float(cur_proxy)):
+            ck_run_fallbacks = False
+            break
 
     graph_fallback_acc = 0
     if (
@@ -844,7 +867,7 @@ def run_coldspot_tightening(
                     region_escape_min=float(const.HIER_COLDSPOT_LOCAL_SOFT_ESCAPE_MIN),
                     accept_min_gain=max(
                         hier_soft_barrier_gain,
-                        float(const.HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN),
+                        float(ck_soft_only_min_gain),
                     ),
                     target_pool=target_pool,
                     region_mask=target_mask,
@@ -888,6 +911,7 @@ def run_coldspot_tightening(
         full = np.vstack([legal, s_pos]).astype(np.float64)
         ck_scorer = IncrementalScorer(plc, benchmark, full.copy())
         for use_density in (False, True):
+            pre_ck_micro = float(cur_proxy)
             legal, s_pos, got, cur_proxy = _micro_shift_polish(
                 legal,
                 s_pos,
@@ -914,6 +938,11 @@ def run_coldspot_tightening(
                 use_density=use_density,
             )
             post_ck_micro_acc += got
+            if adaptive_passes and (
+                pre_ck_micro - float(cur_proxy)
+                <= adaptive_min_gain
+            ):
+                break
         log_fn(
             f"  [hier] post-coldspot micro-shift replay: {post_ck_micro_acc} accepts, "
             f"proxy {pre_post_ck_micro_score:.4f}->{cur_proxy:.4f}"
