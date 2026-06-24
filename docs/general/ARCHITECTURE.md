@@ -150,8 +150,6 @@ Constants in `src/utils/constants.py`:
 ```text
 CLUSTER_MAX_FANOUT=8
 CLUSTER_MIN_EDGE=2
-HIER_OVERSIZE_CLUSTER_SPLIT=1
-HIER_TAG_PREFIX_CLUSTERING=1
 HIER_TAG_PREFIX_MAX_DEPTH=5
 HIER_TAG_PREFIX_MIN_GROUP=2
 HIER_TAG_PREFIX_MIN_COVERAGE=0.25
@@ -208,10 +206,8 @@ quality checks, and exact-proxy gates still constrain later moves.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_SEED_PORTFOLIO=1
 HIER_SEED_BLEND_ALPHAS=0.35,0.65
 HIER_SEED_EXPANSION_FRAC=0.06
-HIER_SEED_SYNTHETIC_CLEARANCE=1
 HIER_SEED_CLEARANCE_FRAC=0.08
 HIER_SEED_CLEARANCE_ITERS=3
 HIER_SEED_CLEARANCE_AREA_PCT=97
@@ -226,8 +222,8 @@ cluster members adjacent:
 largest clusters -> connectivity-pressure x area inside each cluster -> unclustered macros
 ```
 
-Set `HIER_LEGALIZE_CONNECTIVITY_ORDER=0` to restore the prior larger-macro-first
-ordering inside each cluster.
+Connectivity-pressure ordering is now the production legalizer order inside
+each cluster.
 
 A default-order safety pass follows to guarantee hard legality.
 
@@ -250,7 +246,6 @@ Out-of-region moves are only accepted when the exact proxy gain clears
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_REGION_RELIEF=1
 HIER_REGION_DENSITY=0.65
 REGION_BIAS=1.0
 HIER_REGION_ROUNDS=2
@@ -258,12 +253,8 @@ HIER_REGION_BUDGET_S=40
 HIER_REGION_MARGIN=0
 HIER_REGION_SINGLETON=0.05
 HIER_REGION_ESCAPE_MIN=0.002
-HIER_BRIDGE_SOFTS=1
-HIER_CONG_EXPAND_REGIONS=1
-HIER_CONGESTION_WEIGHTED_PROPOSALS=1
 HIER_PROPOSAL_CONGESTION_WEIGHT=2.5
 HIER_PROPOSAL_DENSITY_WEIGHT=1.0
-HIER_PROPOSAL_HIERARCHY_AWARE=1
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08
 ```
 
@@ -306,7 +297,6 @@ nearest-cluster crowding penalty, keeping the scale near the prior gate.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_DECOMPRESS=1
 HIER_DECOMPRESS_ROUNDS=2
 HIER_DECOMPRESS_BUDGET_S=18
 HIER_QUALITY_BUDGET=0.03
@@ -345,13 +335,9 @@ selection only; exact swap scoring remains the acceptance authority.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_REGION_SWAPS=1
 HIER_HARD_SWAP_K=16
 HIER_SOFT_SWAP_K=48
 HIER_SWAP_MIN_GAIN=0.00001
-HIER_SWAP_DENSITY_FIELD=1
-HIER_CONGESTION_WEIGHTED_PROPOSALS=1
-HIER_PROPOSAL_HIERARCHY_AWARE=1
 HIER_GPU_RANK_SWAP_CANDIDATES=auto
 HIER_GPU_RANK_MIN_CANDIDATES=512
 HIER_GPU_SWAP_PRESCORE_HH=auto
@@ -407,15 +393,12 @@ accept only exact-proxy improvements.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_POST_SWAP_MICRO_SHIFT=1
 HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S=8
 HIER_POST_RELOC_PROPOSE_ALL=auto
 HIER_POST_RELOC_PROPOSE_TOP_M=16
 HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
-HIER_POST_SOFT_RELOC=1
 HIER_POST_SOFT_RELOC_TOP_K=256
 HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005
-HIER_STRONG_SOFT_REPAIR=1
 HIER_STRONG_SOFT_REPAIR_BUDGET_S=12
 HIER_STRONG_SOFT_REPAIR_MIN_SPARE_S=2
 HIER_STRONG_SOFT_REPAIR_ROUNDS=2
@@ -423,20 +406,15 @@ HIER_STRONG_SOFT_REPAIR_TOP_K=512
 HIER_STRONG_SOFT_REPAIR_TARGETS=12
 HIER_STRONG_SOFT_REPAIR_MIN_GAIN=0.00005
 HIER_STRONG_SOFT_REPAIR_WL_PREFILTER=0.0005
-HIER_PLATEAU_TELEMETRY=1
-HIER_BUDGET_AWARE_SCHEDULING=1
 HIER_PLATEAU_ACCEPT_RATE=0.002
 HIER_PLATEAU_PROXY_GAIN=0.0005
-HIER_ADDITIVE_CANDIDATE_POOLS=1
 HIER_GPU_RANK_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_RELOCATION_TARGETS=auto
 HIER_GPU_RANK_SOFT_MIN_CANDIDATES=1024
 HIER_ADDITIVE_RELOC_EXTRA_TOP_K=8
 HIER_ADDITIVE_SWAP_EXTRA_K=4
 HIER_ADDITIVE_MIN_SPARE_S=2.0
-HIER_PLATEAU_ESCAPE_PROPOSALS=1
 HIER_PLATEAU_ESCAPE_BUDGET_S=4
-HIER_PLATEAU_ESCAPE_AFTER_POST_POLISH=1
 HIER_PLATEAU_ESCAPE_SOFT_TOP_K=384
 HIER_PLATEAU_ESCAPE_SOFT_TARGETS=10
 ```
@@ -452,7 +430,6 @@ hierarchy-quality metric remains within budget.
 Constants in `src/utils/constants.py`:
 
 ```text
-HIER_COLDSPOT_KICK=1
 HIER_COLDSPOT_BUDGET=0.0
 HIER_COLDSPOT_TOTAL=0.0
 HIER_COLDSPOT_MIN_GAIN=0.0001
@@ -460,24 +437,17 @@ HIER_COLDSPOT_QUALITY_BUDGET=0.01
 HIER_COLDSPOT_MIN_FIELD_GAP=0.02
 HIER_COLDSPOT_ROUNDS=8
 HIER_COLDSPOT_BUDGET_S=30
-HIER_COLDSPOT_LOCAL_REFINE=1
 HIER_COLDSPOT_LOCAL_HARD_PAD_FRAC=0.50
 HIER_COLDSPOT_LOCAL_MIN_PAD_CELLS=1
 HIER_COLDSPOT_LOCAL_MAX_PAD_FRAC=0.12
 HIER_COLDSPOT_LOCAL_SOFT_ESCAPE_MIN=0.0025
-HIER_COLDSPOT_GRAPH_SELECT=1
 HIER_COLDSPOT_GRAPH_SELECT_CANDIDATES=4
 HIER_COLDSPOT_GRAPH_SELECT_TOP_K=2
-HIER_COLDSPOT_GRAPH_TARGET_POOL=1
-HIER_COLDSPOT_GRAPH_MASK_GATING=1
-HIER_COLDSPOT_GRAPH_FALLBACK=1
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K=3
 HIER_COLDSPOT_SOFT_ONLY=0
 HIER_COLDSPOT_SOFT_ONLY_TOP_K=96
 HIER_COLDSPOT_SOFT_ONLY_TARGETS=10
 HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN=0.00005
-HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0
-HIER_COLDSPOT_ADAPTIVE_REGIONS=1
 HIER_COLDSPOT_MEMORY_COLD_PCT=35
 HIER_COLDSPOT_ADAPTIVE_MAX_CELLS=5
 HIER_COLDSPOT_PARTIAL_FRONTIER=0
@@ -489,7 +459,6 @@ HIER_COLDSPOT_PARTIAL_MIN_HARD=2
 HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD=3
 HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC=0.50
 HIER_COLDSPOT_PARTIAL_MAX_CUT_RATIO=0.85
-HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED=1
 HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO=1.15
 HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO=1.20
 HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO=1.50
@@ -517,12 +486,11 @@ coldspot kicks and graph-local fallback commit no candidate. It keeps all hard
 macros fixed, builds a target pool from remembered open cold cells, and invokes
 the exact-gated soft relocation pass with hierarchy region boxes and the cold
 cell mask still active.
-`HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0` is the simultaneous hard+soft experiment:
-when enabled, coldspot kick candidate generation augments each cluster's owned
-soft set with bridge soft macros tied to the same hierarchy cluster. The hard
-cluster and those soft macros are placed into the cold window together, then the
-existing legalization, local refinement, exact-proxy gate, and hierarchy-quality
-gate accept or reject the resulting full candidate as one state.
+Coldspot kick candidate generation augments each cluster's owned soft set with
+movable bridge soft macros tied to the same hierarchy cluster. The hard cluster
+and those soft macros are placed into the cold window together, then the existing
+legalization, local refinement, exact-proxy gate, and hierarchy-quality gate
+accept or reject the resulting full candidate as one state.
 `HIER_COLDSPOT_PARTIAL_FRONTIER=0` is a default-off experiment that can add one
 capacity-aware partial frontier candidate to the same pool: it estimates the
 connected cold area around the chosen anchor, selects a true subset of the hot
@@ -544,9 +512,9 @@ not only after selection, so the partial generator can try smaller frontier
 groups before rejecting. When no coldspot kick commits, the
 graph-local fallback runs the same bordered swaps and relocations on the
 current placement for the hottest eligible clusters.
-Production then reruns `_micro_shift_polish()` once more with
-`HIER_POST_COLDSPOT_MICRO_SHIFT=1`; deterministic hot-cluster coldspot
-selection was tested and removed after regressing the full sweep.
+Production then reruns `_micro_shift_polish()` once more after coldspot
+tightening; deterministic hot-cluster coldspot selection was tested and removed
+after regressing the full sweep.
 
 ### 11. Trace Logging And Plateau Telemetry
 

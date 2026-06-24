@@ -124,22 +124,20 @@ and proxy-budget gates before committing.
 
 Status: closed.
 
-Coldspot-local hard and soft relocation now accept a graph-derived flat cell
-target pool. When `HIER_COLDSPOT_GRAPH_TARGET_POOL=True`, local relocation uses
-targets from the graph-expanded candidate region.
+Coldspot-local hard and soft relocation now accept and use a graph-derived flat
+cell target pool from the graph-expanded candidate region.
 
 ### G-007: Relocation Targets Were Only Bbox-Gated
 
 Status: closed for relocation, open for swaps under G-002.
 
-Coldspot-local hard and soft relocation can now reject targets outside the
-graph-expanded mask when `HIER_COLDSPOT_GRAPH_MASK_GATING=True`.
+Coldspot-local hard and soft relocation now reject targets outside the
+graph-expanded mask.
 
 ### G-008: No Graph-Aware Candidate Selection
 
 Status: closed for generated outcomes, open for anchor enumeration under G-003.
 
-Generated coldspot outcomes are now graph-ranked when
-`HIER_COLDSPOT_GRAPH_SELECT=True` and the GNN selector is off. The graph selector
-uses field relief, adaptive cold cells, graph region cells, and graph target
-cells.
+Generated coldspot outcomes are now graph-ranked when the GNN selector is off.
+The graph selector uses field relief, adaptive cold cells, graph region cells,
+and graph target cells.

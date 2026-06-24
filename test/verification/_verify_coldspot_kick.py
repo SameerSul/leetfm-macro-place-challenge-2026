@@ -170,7 +170,6 @@ def _check(bench):
     old_min_cluster = int(const.HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD)
     old_min_remaining = int(const.HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD)
     old_max_member_frac = float(const.HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC)
-    old_require_connected = bool(const.HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED)
     old_radius_ratio = float(const.HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO)
     old_bbox_ratio = float(const.HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO)
     old_sep_ratio = float(const.HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO)
@@ -178,7 +177,6 @@ def _check(bench):
     const.HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD = 2
     const.HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD = 1
     const.HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC = 1.0
-    const.HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED = False
     const.HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = 1.0e9
     const.HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = 1.0e9
     const.HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = 1.0e9
@@ -212,7 +210,6 @@ def _check(bench):
         const.HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD = old_min_cluster
         const.HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD = old_min_remaining
         const.HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC = old_max_member_frac
-        const.HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED = old_require_connected
         const.HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = old_radius_ratio
         const.HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = old_bbox_ratio
         const.HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = old_sep_ratio

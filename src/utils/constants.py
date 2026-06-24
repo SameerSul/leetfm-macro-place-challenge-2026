@@ -7,11 +7,8 @@ TIME_BUDGET_S = 150.0
 CLUSTER_MAX_FANOUT = 8
 # Minimum shared low-fanout net count required to merge two hard macros.
 CLUSTER_MIN_EDGE = 2
-# Splits only oversized flat clusters, leaving ordinary inferred clusters intact.
-HIER_OVERSIZE_CLUSTER_SPLIT = True
 # Prefer explicit slash-separated instance-path hierarchy when benchmark macro
 # names provide it. This auto no-ops on flat-name IBM benchmarks.
-HIER_TAG_PREFIX_CLUSTERING = True
 HIER_TAG_PREFIX_MAX_DEPTH = 5
 HIER_TAG_PREFIX_MIN_GROUP = 2
 HIER_TAG_PREFIX_MIN_COVERAGE = 0.25
@@ -30,26 +27,18 @@ HIER_OVERSIZE_CLUSTER_MAX_CUT_RATIO = 0.45
 
 # DREAMPlace group attraction weight for cluster grouping constraints.
 HIER_GROUP_WEIGHT = 8
-# Orders legalization by connectivity pressure inside clusters instead of area only.
-HIER_LEGALIZE_CONNECTIVITY_ORDER = True
-
-# Enables a small hierarchy-compatible seed portfolio around the grouped
+# A small hierarchy-compatible seed portfolio around the grouped
 # DREAMPlace candidate. Seeds are legalized and prescored before region relief.
-HIER_SEED_PORTFOLIO = True
 # Blend ratios from DREAMPlace toward initial.plc for prescored seed basins.
 HIER_SEED_BLEND_ALPHAS = (0.35, 0.65)
 # Radial expansion applied to the grouped DREAMPlace basin.
 HIER_SEED_EXPANSION_FRAC = 0.06
-# Enables temporary separation pressure as one prescored seed basin.
-HIER_SEED_SYNTHETIC_CLEARANCE = True
 # Extra temporary half-extent fraction used by synthetic-clearance push-apart.
 HIER_SEED_CLEARANCE_FRAC = 0.08
 # Number of Jacobi-style synthetic-clearance push-apart iterations.
 HIER_SEED_CLEARANCE_ITERS = 3
 # Percentile of hard-macro area eligible for synthetic clearance.
 HIER_SEED_CLEARANCE_AREA_PCT = 97.0
-# Enables a cluster-local route-channel seed in the exact-prescored portfolio.
-HIER_SEED_ROUTE_CHANNEL = True
 # Minimum hard macros required before a hierarchy cluster receives route lanes.
 HIER_SEED_ROUTE_CHANNEL_MIN_CLUSTER = 4
 # Center-lane half-width as a fraction of the cluster local span.
@@ -59,13 +48,11 @@ HIER_SEED_ROUTE_CHANNEL_PUSH_FRAC = 0.35
 # Maximum route-channel push as a fraction of the cluster local span.
 HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
 # Congestion-heavy proposal ranking. Exact proxy remains the accept gate.
-HIER_CONGESTION_WEIGHTED_PROPOSALS = True
 HIER_PROPOSAL_CONGESTION_WEIGHT = 2.5
 HIER_PROPOSAL_DENSITY_WEIGHT = 1.0
 # Keeps congestion-weighted proposal ranking hierarchy-aware. Out-of-region
 # targets can still compete, but only when their field relief beats the best
 # in-region relief by this fraction of the active proposal-field span.
-HIER_PROPOSAL_HIERARCHY_AWARE = True
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN = 0.08
 
 # Enables post-swap hard propose-all relocation automatically on CUDA backends.
@@ -74,8 +61,6 @@ HIER_POST_RELOC_PROPOSE_ALL = "auto"
 HIER_POST_RELOC_PROPOSE_TOP_M = 16
 # Number of hottest hard macros considered for post-swap propose-all relocation.
 HIER_RELOC_PROPOSE_HOT_K = 32
-# Enables post-swap soft macro relocation inside soft hierarchy regions.
-HIER_POST_SOFT_RELOC = True
 # Number of hottest soft macros considered by post-swap soft relocation.
 HIER_POST_SOFT_RELOC_TOP_K = 256
 # Minimum exact-proxy gain required to accept a post-swap soft relocation.
@@ -83,14 +68,9 @@ HIER_POST_SOFT_RELOC_MIN_GAIN = 0.0005
 # Minimum exact-proxy gain required to accept hard propose-all relocation.
 HIER_RELOC_PROPOSE_MIN_GAIN = 0.0005
 
-# Emits pass-level candidate/accept/gain/time telemetry for plateau analysis.
-HIER_PLATEAU_TELEMETRY = True
-# Buffers plateau telemetry rows and flushes once per benchmark / process exit.
-HIER_PLATEAU_TELEMETRY_BUFFERED = True
-# Enables simple budget-aware pass scheduling from plateau telemetry.
-HIER_BUDGET_AWARE_SCHEDULING = True
-# Enables component-aware scheduling from exact proxy component snapshots.
-HIER_COMPONENT_AWARE_SCHEDULING = True
+# Pass-level candidate/accept/gain/time telemetry is emitted for plateau analysis.
+# Rows are buffered and flushed once per benchmark / process exit.
+# Budget-aware and component-aware scheduling use telemetry and exact proxy snapshots.
 # If normalized congestion dominates density by this margin, preserve budget
 # for soft/coldspot cleanup and allow strong-soft repair to run even when
 # plateau telemetry is ambiguous.
@@ -103,22 +83,18 @@ HIER_PLATEAU_ACCEPT_RATE = 0.002
 # Proxy-gain threshold below which a pass is considered low-yield.
 HIER_PLATEAU_PROXY_GAIN = 0.0005
 # When local hard/swap operators plateau, spend a small bonus on soft-only repair.
-HIER_PLATEAU_SOFT_REPAIR_BONUS = True
 HIER_PLATEAU_SOFT_REPAIR_BONUS_BUDGET_S = 4.0
 HIER_PLATEAU_SOFT_REPAIR_BONUS_ROUNDS = 1
 HIER_PLATEAU_SOFT_REPAIR_BONUS_MIN_SPARE_S = 6.0
 # Adds a short alternate soft-relocation proposal class after plateaued swaps.
-HIER_PLATEAU_ESCAPE_PROPOSALS = True
 HIER_PLATEAU_ESCAPE_BUDGET_S = 4.0
 HIER_PLATEAU_ESCAPE_MIN_SPARE_S = 5.0
-HIER_PLATEAU_ESCAPE_AFTER_POST_POLISH = True
 HIER_PLATEAU_ESCAPE_SOFT_TOP_K = 384
 HIER_PLATEAU_ESCAPE_SOFT_TARGETS = 10
 HIER_PLATEAU_ESCAPE_MIN_GAIN = 0.00005
 
 # Stronger exact-gated late soft repair. This spends spare budget on soft
 # macros, which can relieve congestion without reopening hard legality.
-HIER_STRONG_SOFT_REPAIR = True
 HIER_STRONG_SOFT_REPAIR_BUDGET_S = 12.0
 HIER_STRONG_SOFT_REPAIR_MIN_SPARE_S = 2.0
 HIER_STRONG_SOFT_REPAIR_ROUNDS = 2
@@ -126,16 +102,14 @@ HIER_STRONG_SOFT_REPAIR_TOP_K = 512
 HIER_STRONG_SOFT_REPAIR_TARGETS = 12
 HIER_STRONG_SOFT_REPAIR_MIN_GAIN = 0.00005
 HIER_STRONG_SOFT_REPAIR_WL_PREFILTER = 0.0005
-# Optional soft-only repair interleaved before hard/soft swap search.
-HIER_INTERLEAVED_SOFT_REPAIR = True
+# Soft-only repair interleaved before hard/soft swap search.
 HIER_INTERLEAVED_SOFT_REPAIR_BUDGET_S = 3.0
 HIER_INTERLEAVED_SOFT_REPAIR_MIN_SPARE_S = 12.0
 HIER_INTERLEAVED_SOFT_REPAIR_TOP_K = 256
 HIER_INTERLEAVED_SOFT_REPAIR_TARGETS = 8
 HIER_INTERLEAVED_SOFT_REPAIR_MIN_GAIN = 0.00005
 
-# Enables region-locked hard and soft congestion relief.
-HIER_REGION_RELIEF = True
+# Region-locked hard and soft congestion relief.
 # Target packing density used to size cluster region boxes.
 HIER_REGION_DENSITY = 0.65
 # Optional canvas-fraction margin fallback for region sizing.
@@ -148,8 +122,7 @@ HIER_REGION_HEAT_FRAC = 0.04
 HIER_REGION_HEAT_HOT_PCT = 70.0
 # Minimum normalized heat scale applied when expanding hot regions.
 HIER_REGION_HEAT_ESCAPE_MIN = 0.25
-# Enables directional region expansion toward colder congestion bands.
-HIER_CONG_EXPAND_REGIONS = True
+# Directional region expansion toward colder congestion bands.
 # Congestion percentile used to select clusters for directional expansion.
 HIER_REGION_EXPAND_HOT_PCT = 60.0
 # Maximum fractional side expansion applied by congestion-band expansion.
@@ -164,13 +137,11 @@ HIER_REGION_ESCAPE_MIN = 0.002
 HIER_REGION_ROUNDS = 2
 # Wall-clock budget for region relief and its nested passes.
 HIER_REGION_BUDGET_S = 40.0
-# Enables bridge-soft classification instead of assigning every soft to one owner.
-HIER_BRIDGE_SOFTS = True
+# Bridge-soft classification instead of assigning every soft to one owner.
 # Relative affinity threshold for classifying soft macros as bridge softs.
 HIER_BRIDGE_SOFT_RATIO = 0.6
 
-# Enables tiny exact-gated hard/soft shifts inside hierarchy regions.
-HIER_MICRO_SHIFT = True
+# Tiny exact-gated hard/soft shifts inside hierarchy regions.
 # Maximum grid-cell radius considered by micro-shift polish.
 HIER_MICRO_SHIFT_RADIUS = 2
 # Number of hottest macros considered by each micro-shift pass.
@@ -178,26 +149,19 @@ HIER_MICRO_SHIFT_TOP = 96
 # Minimum exact-proxy gain required for a micro-shift move.
 HIER_MICRO_SHIFT_MIN_GAIN = 0.00001
 # Replays micro-shift polish after region swaps.
-HIER_POST_SWAP_MICRO_SHIFT = True
-# Experiment 2: when region swaps run multiple rounds, replay micro-shift after
+# When region swaps run multiple rounds, replay micro-shift after
 # each swap round instead of waiting until the full swap pass completes.
-HIER_SWAP_ROUND_MICRO_SHIFT = True
 # Wall-clock budget for the post-swap micro-shift replay.
 HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S = 8.0
 # Replays micro-shift polish after coldspot tightening.
-HIER_POST_COLDSPOT_MICRO_SHIFT = True
 # Wall-clock budget for the post-coldspot micro-shift replay.
 HIER_POST_COLDSPOT_MICRO_SHIFT_BUDGET_S = 8.0
 
-# Enables exact-gated decompression of congested hierarchy clusters.
-HIER_DECOMPRESS = True
+# Exact-gated decompression of congested hierarchy clusters.
 # Stronger opportunity gates for expensive decompression/coldspot
 # passes. These gates skip optional passes when the current congestion field has
 # too little hot-vs-cold separation to justify spending runtime.
-HIER_STRONG_OPPORTUNITY_GATES = True
-HIER_DECOMPRESS_FIELD_GATE = True
 HIER_DECOMPRESS_MIN_FIELD_GAP = 0.08
-HIER_COLDSPOT_STRONG_FIELD_GATE = True
 HIER_COLDSPOT_STRONG_MIN_FIELD_GAP = 0.04
 # Wall-clock budget for cluster decompression inside a region-relief round.
 HIER_DECOMPRESS_BUDGET_S = 18.0
@@ -215,17 +179,12 @@ HIER_QUALITY_BUDGET = 0.03
 HIER_QUALITY_RADIUS_WEIGHT = 0.75
 HIER_QUALITY_BBOX_WEIGHT = 0.20
 HIER_QUALITY_CROWD_WEIGHT = 0.05
-# Enables anisotropic decompression toward the colder axis.
-HIER_DECOMPRESS_ANISO = True
+# Anisotropic decompression toward the colder axis.
 # Grid-cell band sampled to choose anisotropic decompression direction.
 HIER_DECOMPRESS_ANISO_BAND = 3
 # Secondary-axis expansion ratio during anisotropic decompression.
 HIER_DECOMPRESS_ANISO_SECONDARY = 0.25
-# Rolls back decompression when accepted moves fail to clear minimum gain.
-HIER_ROLLBACK_WEAK_DECOMP = True
-
-# Enables region-bounded hard-hard, hard-soft, and soft-soft swap relief.
-HIER_REGION_SWAPS = True
+# Region-bounded hard-hard, hard-soft, and soft-soft swap relief.
 # Number of region-bounded swap rounds to attempt.
 HIER_REGION_SWAP_ROUNDS = 2
 # Wall-clock budget for region-bounded swap relief.
@@ -241,16 +200,8 @@ HIER_SWAP_MIN_GAIN = 0.00001
 HIER_SOFT_BARRIER_GAIN = 0.0
 # Minimum congestion-field relief required for a swap move.
 HIER_SWAP_MIN_FIELD_RELIEF = 0.0
-# Enables hard-hard swaps in region-bounded swap relief.
-HIER_SWAP_HH = True
-# Enables hard-soft swaps in region-bounded swap relief.
-HIER_SWAP_HS = True
-# Enables soft-soft swaps in region-bounded swap relief.
-HIER_SWAP_SS = True
-# Runs swap relief against both congestion and density fields.
-HIER_SWAP_DENSITY_FIELD = True
-# Enables experimental batched swap scoring path.
-HIER_BATCH_SWAP_SCORES = True
+# Region-bounded swap relief uses hard-hard, hard-soft, soft-soft,
+# congestion-field, density-field, and batched exact scoring paths.
 
 # Uses CUDA top-k/order kernels for large candidate-ranking arrays when available.
 HIER_GPU_RANK_SWAP_CANDIDATES = "auto"
@@ -265,7 +216,6 @@ HIER_GPU_SWAP_PRESCORE_MIN_CANDIDATES = 512
 HIER_GPU_SWAP_PRESCORE_DISTANCE_WEIGHT = 0.02
 
 # Adds supplemental candidates after the deterministic prefix when local budget remains.
-HIER_ADDITIVE_CANDIDATE_POOLS = True
 # Rank only additive relocation tails with the lightweight torch/GPU heuristic.
 # Default-off on IBM: the Stage 5 sweep saw no hard propose-all accepts and a
 # small aggregate regression, so keep this as infrastructure for opt-in runs.
@@ -278,7 +228,6 @@ HIER_ADDITIVE_SWAP_EXTRA_K = 4
 HIER_ADDITIVE_MIN_SPARE_S = 2.0
 
 # Final audit of hard-macro clearance using the same tolerance as local legality tests.
-HIER_LEGALITY_MARGIN_AUDIT = True
 HIER_LEGALITY_MARGIN_EPS = 0.05
 
 # Wall-clock budget for post-swap hard propose-all relocation.
@@ -286,8 +235,7 @@ HIER_POST_RELOC_PROPOSE_BUDGET_S = 8.0
 # Wall-clock budget for post-swap soft relocation.
 HIER_POST_SOFT_RELOC_BUDGET_S = 8.0
 
-# Enables proxy-aware coldspot tightening for hot clusters.
-HIER_COLDSPOT_KICK = True
+# Proxy-aware coldspot tightening for hot clusters.
 # Per-move proxy slack allowed during coldspot tightening.
 HIER_COLDSPOT_BUDGET = 0.0
 # Total proxy slack allowed versus coldspot baseline.
@@ -303,7 +251,6 @@ HIER_COLDSPOT_ROUNDS = 8
 # Wall-clock budget for coldspot tightening.
 HIER_COLDSPOT_BUDGET_S = 30.0
 # Refines each coldspot-kick candidate inside a local region before exact gating.
-HIER_COLDSPOT_LOCAL_REFINE = True
 # Fraction of the kicked hard-core max dimension used as local-region pad.
 HIER_COLDSPOT_LOCAL_HARD_PAD_FRAC = 0.50
 # Minimum local-region pad in grid cells.
@@ -325,17 +272,13 @@ HIER_COLDSPOT_LOCAL_SOFT_RELOC_TOP_K = 64
 # Candidate cold cells considered per local relocation source.
 HIER_COLDSPOT_LOCAL_RELOC_TARGETS = 8
 # Stage G1: rank generated coldspot candidates by graph availability before exact gating.
-HIER_COLDSPOT_GRAPH_SELECT = True
 # Number of generated kicked outcomes considered by graph-aware selection.
 HIER_COLDSPOT_GRAPH_SELECT_CANDIDATES = 4
 # Number of graph-ranked kicked outcomes exact-gated per coldspot round.
 HIER_COLDSPOT_GRAPH_SELECT_TOP_K = 2
-# Stage G2: use graph-derived cell pools for local hard/soft relocation targets.
-HIER_COLDSPOT_GRAPH_TARGET_POOL = True
-# Stage G6: gate local relocation targets by graph-expanded masks, not only bbox.
-HIER_COLDSPOT_GRAPH_MASK_GATING = True
-# Runs graph-local swaps/relocations when coldspot kicks produce no accepted move.
-HIER_COLDSPOT_GRAPH_FALLBACK = True
+# Stage G2/G6: use graph-derived cell pools and masks for local hard/soft
+# relocation targets. Graph-local fallback runs when coldspot kicks produce no
+# accepted move.
 # Number of hot clusters considered by graph-local fallback.
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K = 3
 # Default-off soft-only fallback for coldspot cleanup. When no hard coldspot
@@ -348,11 +291,7 @@ HIER_COLDSPOT_SOFT_ONLY_TOP_K = 96
 HIER_COLDSPOT_SOFT_ONLY_TARGETS = 10
 # Minimum exact-proxy gain required by the soft-only coldspot fallback.
 HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN = 0.00005
-# Include bridge soft macros in coldspot kick generation, so the hard cluster
-# and its owned/bridge softs move together as one exact-gated candidate.
-HIER_COLDSPOT_JOINT_BRIDGE_SOFTS = False
-# Enables remembered cold-cell graph expansion for local coldspot refinement.
-HIER_COLDSPOT_ADAPTIVE_REGIONS = True
+# Remembered cold-cell graph expansion for local coldspot refinement.
 # Field percentile used to remember cold cells for adaptive local regions.
 HIER_COLDSPOT_MEMORY_COLD_PCT = 35.0
 # Maximum grid-cell distance flooded from a cluster box into adjacent cold cells.
@@ -379,19 +318,17 @@ HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD = 3
 HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC = 0.50
 # Maximum selected-vs-remaining connectivity cut ratio before rejecting a split.
 HIER_COLDSPOT_PARTIAL_MAX_CUT_RATIO = 0.85
-# Require selected hard macros to form one local low-fanout connectivity
-# component when such edges are available.
-HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED = True
+# Selected hard macros must form one local low-fanout connectivity component
+# when such edges are available.
 # Cheap pre-exact split-shape guard. Reject partial candidates predicted to
 # stretch the source hierarchy cluster beyond these local shape ratios.
 HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = 1.15
 HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = 1.20
 HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = 1.50
 
-# Enables a bounded go-with-the-winners survivor search after coldspot cleanup.
-# The pass keeps a small pool of valid hierarchy-preserving states instead of
-# continuing from one greedy state.
-HIER_SURVIVOR_SEARCH = True
+# Bounded go-with-the-winners survivor search after coldspot cleanup. The pass
+# keeps a small pool of valid hierarchy-preserving states instead of continuing
+# from one greedy state.
 # Wall-clock budget for survivor search.
 HIER_SURVIVOR_BUDGET_S = 12.0
 # Number of survivor generations.
@@ -419,8 +356,6 @@ HIER_KEEP_OUT_WEIGHT = 0.2
 HIER_GRID_ALIGN_WEIGHT = 0.2
 # Relative weight for notch-avoidance structural penalty.
 HIER_NOTCH_WEIGHT = 0.6
-# Enables numba acceleration for structural notch scoring.
-HIER_STRUCTURAL_NOTCH_NUMBA = True
 # Minimum pair count before structural notch scoring uses numba.
 HIER_STRUCTURAL_NOTCH_NUMBA_MIN_PAIRS = 24
 # Enables experimental GPU path for structural notch scoring.
@@ -437,9 +372,7 @@ RELOC_PROPOSE_MEM_SAFETY = 1.0
 # Default CUDA memory fraction used for automatic proposal scoring chunk sizing.
 RELOC_PROPOSE_AUTO_MEM_FRAC = 0.75
 
-# Enables numba strip-application path for routing congestion construction.
-ROUTE_STRUCT_JIT = True
 # Enables aggregate profiling of exact proxy scoring calls.
 PROFILE_EXACT = False
-# Prefers the incremental scorer's cached congestion field when available.
-USE_SCORER_CONGESTION_FIELD = True
+# Routing congestion uses numba strip application when available. Incremental
+# scoring reuses cached congestion fields when available.

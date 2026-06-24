@@ -125,9 +125,9 @@ across the full canvas unless that constant is intentionally raised.
 
 ### Graph Candidate Ranking
 
-When `HIER_COLDSPOT_GRAPH_SELECT=True`, the coldspot phase generates multiple
-kicked outcomes and ranks them by graph features before exact gating. This is a
-separate stage from the exact accept rule.
+The coldspot phase generates multiple kicked outcomes and ranks them by graph
+features before exact gating. This is a separate stage from the exact accept
+rule.
 
 The graph score currently includes:
 
@@ -163,30 +163,27 @@ reach exact scoring.
 
 ### Graph Target Pools
 
-When `HIER_COLDSPOT_GRAPH_TARGET_POOL=True`, coldspot-local hard and soft
-relocation receive a flat grid-cell target pool derived from the graph-expanded
-candidate region. The relocation helpers still use exact scoring before any
-commit.
+Coldspot-local hard and soft relocation receive a flat grid-cell target pool
+derived from the graph-expanded candidate region. The relocation helpers still
+use exact scoring before any commit.
 
 If the graph target pool is empty, relocation falls back to its normal low-field
 target selection.
 
 ### Graph Mask Gating
 
-When `HIER_COLDSPOT_GRAPH_MASK_GATING=True`, coldspot-local hard and soft
-relocation reject targets outside the graph-expanded mask. This keeps relocation
-closer to the actual connected graph shape rather than only the rectangle that
-encloses it.
+Coldspot-local hard and soft relocation reject targets outside the graph-expanded
+mask. This keeps relocation closer to the actual connected graph shape rather
+than only the rectangle that encloses it.
 
 Current limitation: swaps still use bbox-style region checks.
 
 ### Graph-Local Fallback
 
-When `HIER_COLDSPOT_GRAPH_FALLBACK=True`, the coldspot phase does not stop when
-no kicked candidate commits. It selects the hottest eligible clusters in the
-current placement, builds the same graph-expanded local border, and runs the
-same local swaps and relocations without moving the cluster to a new cold
-window first.
+The coldspot phase does not stop when no kicked candidate commits. It selects
+the hottest eligible clusters in the current placement, builds the same
+graph-expanded local border, and runs the same local swaps and relocations
+without moving the cluster to a new cold window first.
 
 This fallback is still exact-gated. A move commits only if hard legality,
 hierarchy quality, proxy budget, and minimum exact-proxy improvement all pass.

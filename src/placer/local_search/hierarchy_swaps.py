@@ -30,10 +30,6 @@ def _new_stats() -> dict:
     }
 
 
-def _batch_swap_scores() -> bool:
-    return const.HIER_BATCH_SWAP_SCORES
-
-
 def _accept_swap(score, best_score, outside_region, escape_min, min_gain) -> bool:
     if not accepts_region_score(score, best_score, outside_region, max(escape_min, min_gain)):
         return False
@@ -202,12 +198,7 @@ def _rank_swap_candidates(
 
 def _hierarchy_aware_swap_filter(cand, outside, source_field, target_field, span, *, enabled: bool):
     """Prefer in-region swaps unless outside relief is materially stronger."""
-    if (
-        not enabled
-        or not const.HIER_CONGESTION_WEIGHTED_PROPOSALS
-        or not const.HIER_PROPOSAL_HIERARCHY_AWARE
-        or cand.size <= 1
-    ):
+    if not enabled or cand.size <= 1:
         return cand, outside
     outside = np.asarray(outside, dtype=bool)
     inside = ~outside
@@ -520,15 +511,13 @@ def _try_hard_hard(
             if not bool(row.get("legal", False)):
                 continue
             scored.append((j, bool(row.get("outside_region", False))))
-        if scored and _batch_swap_scores():
+        if scored:
             scores = scorer.score_swap_hard_hard_many(
                 i, np.asarray([j for j, _ in scored], dtype=np.int64)
             )
             scored_iter = zip(scored, scores)
         else:
-            scored_iter = (
-                ((j, outside_move), scorer.score_swap_hard_hard(i, j)) for j, outside_move in scored
-            )
+            scored_iter = ()
         for (j, outside_move), score in scored_iter:
             stats["hh_scores"] += 1
             region_ok = accepts_region_score(
@@ -678,15 +667,13 @@ def _try_soft_soft(
             if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
                 continue
             scored.append((b, outside_move))
-        if scored and _batch_swap_scores():
+        if scored:
             scores = scorer.score_swap_soft_soft_many(
                 a, np.asarray([b for b, _ in scored], dtype=np.int64)
             )
             scored_iter = zip(scored, scores)
         else:
-            scored_iter = (
-                ((b, outside_move), scorer.score_swap_soft_soft(a, b)) for b, outside_move in scored
-            )
+            scored_iter = ()
         for (b, outside_move), score in scored_iter:
             stats["ss_scores"] += 1
             required_gain = max(min_gain, soft_barrier_gain)
@@ -862,16 +849,13 @@ def _try_hard_soft(
             if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
                 continue
             scored.append((k, hx, hy, sx, sy, bool(row.get("outside_region", False))))
-        if scored and _batch_swap_scores():
+        if scored:
             scores = scorer.score_swap_hard_soft_many(
                 i, np.asarray([k for k, *_ in scored], dtype=np.int64)
             )
             scored_iter = zip(scored, scores)
         else:
-            scored_iter = (
-                ((k, hx, hy, sx, sy, outside_move), scorer.score_swap_hard_soft(i, k))
-                for k, hx, hy, sx, sy, outside_move in scored
-            )
+            scored_iter = ()
         for (k, hx, hy, sx, sy, outside_move), score in scored_iter:
             stats["hs_scores"] += 1
             required_gain = max(min_gain, soft_barrier_gain)
@@ -944,7 +928,7 @@ def _region_bounded_swap_relief(
     for _ in range(rounds):
         if deadline is not None and time.monotonic() > deadline:
             break
-        weighted_rank = bool(const.HIER_CONGESTION_WEIGHTED_PROPOSALS and not use_density)
+        weighted_rank = not use_density
         field = (
             _density_field(incremental_scorer, nr, nc)
             if use_density
