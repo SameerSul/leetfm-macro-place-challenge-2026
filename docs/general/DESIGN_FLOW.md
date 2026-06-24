@@ -260,6 +260,12 @@ overhead: repeated multi-macro swap scores reuse cached touched-net routing
 structs, and outside-region flags are computed with vectorized bbox masks. This
 lets deadline-bound swap rounds score more candidates without changing the
 ranked candidate stream or accept rule.
+Hard-hard and hard-soft legality filters use numba short-circuit loops when
+available, which avoids allocating a full candidate-by-hard overlap matrix for
+each source macro. In default production, where GNN candidate tracing and GNN
+swap ranking are off, the pass also skips per-candidate trace dictionaries and
+scores the ranked legal candidates directly. The trace/ranker path remains
+available and uses the same per-row outside-region flags as the default path.
 The exact `score_swap_*_many()` methods still evaluate candidates one at a
 time. A reversible exact batch scorer was tested for soft-soft, hard-soft, and
 hard-hard swaps; it matched scalar scoring but reduced ibm10 swap throughput, so

@@ -3,6 +3,20 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-24 — numba swap legality and no-trace swap fast path):**
+> hard-hard and hard-soft region-swap legality now use numba short-circuit
+> loops when available, avoiding repeated candidate-by-hard overlap matrix
+> allocations. Default production also skips per-candidate swap trace
+> dictionaries when both `HIER_GNN_TRACE` and region-swap GNN ranking are off,
+> and scores the ranked legal list directly. While adding that fast path, the
+> soft-soft trace path was corrected to use each row's own outside-region flag
+> instead of a stale loop variable, so traced/ranked and default modes now share
+> the same region gate. Verification: `_verify_score_region_swaps.py ibm01
+> ibm04 ibm10` passed; direct numba-vs-vectorized legality parity on `ibm10`
+> was 4096/4096 hard-hard and 4096/4096 hard-soft; `uv run evaluate
+> src/main.py -b ibm10` = `proxy=1.1493` (wl=0.078, den=0.586, cong=1.556),
+> VALID, 89.37s.
+
 > **Status (2026-06-23 — local CUDA scoring guards and cache cleanup):**
 > bounded hard relocation, bounded soft relocation, and micro-shift now have a
 > guarded path to reuse the exact `cuda_delta` relocation scorer for larger
