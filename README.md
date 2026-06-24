@@ -2,7 +2,7 @@
 
 Active placer for the Partcl/HRT Macro Placement Challenge.
 
-**Current production mode (2026-06-18): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-06-23): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py`. The previous proxy-optimized production
 path has been deleted: random candidate restarts, R2/2-opt/swap/cycle search,
@@ -14,9 +14,10 @@ DREAMPlace to form a hierarchical global placement, legalizes hard macros in
 cluster-consecutive order, classifies soft macros as owned or bridge, expands
 hot cluster regions by congestion, runs bounded hard/soft relief, applies
 exact-gated cluster decompression, and finishes with region-bounded swaps plus
-post-swap hard and soft polish passes, proxy-aware coldspot tightening, and two
-micro-shift replay passes. The exact proxy is still used for evaluation and
-local gates, but it is no longer the primary design objective.
+round-level and post-swap micro-shift replay, post-swap hard and soft polish
+passes, component-aware late cleanup scheduling, proxy-aware coldspot
+tightening, and bounded survivor search. The exact proxy is still used for
+evaluation and local gates, but it is no longer the primary design objective.
 
 The placement objective note is in [docs/general/OBJECTIVES.md](docs/general/OBJECTIVES.md).
 The hierarchy-integrated BeyondPPA structural objective notes and GNN trace
@@ -26,14 +27,14 @@ Current smoke reference:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.6133  VALID  [~41s locally]
+proxy=1.1576  VALID  [~93s locally]
 ```
 
 Current full IBM reference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.3631  17/17 VALID  0 overlaps  [602.76s locally]
+AVG 1.1793  17/17 VALID  0 overlaps  [1421.12s locally]
 ```
 
 Historical proxy leaderboard numbers remain in `docs/general/PROGRESS.md` and
@@ -85,11 +86,14 @@ initial.plc / benchmark
   -> exact-gated in-region micro-shift polish
   -> exact-gated cluster decompression
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
+  -> optional swap-round micro-shift replay
   -> post-swap micro-shift replay
   -> post-swap hard propose-all polish
   -> post-swap soft relocation polish
+  -> component-aware strong soft repair scheduling
   -> proxy-aware coldspot tightening
   -> post-coldspot micro-shift replay
+  -> bounded survivor-pool search
   -> final movable-macro in-bounds clamp
   -> return macro centers
 ```
@@ -116,12 +120,15 @@ HIER_REGION_BUDGET_S=40
 HIER_REGION_ESCAPE_MIN=0.002
 HIER_CONG_EXPAND_REGIONS=1
 HIER_MICRO_SHIFT=1
+HIER_SWAP_ROUND_MICRO_SHIFT=1
 HIER_POST_SWAP_MICRO_SHIFT=1
 HIER_POST_COLDSPOT_MICRO_SHIFT=1
 HIER_DECOMPRESS=1
 HIER_DECOMPRESS_ANISO=1
+HIER_STRONG_OPPORTUNITY_GATES=1
 HIER_REGION_SWAPS=1
 HIER_SOFT_SWAP_K=48
+HIER_COMPONENT_AWARE_SCHEDULING=1
 HIER_COLDSPOT_KICK=1
 HIER_COLDSPOT_BUDGET=0.0
 HIER_COLDSPOT_TOTAL=0.0

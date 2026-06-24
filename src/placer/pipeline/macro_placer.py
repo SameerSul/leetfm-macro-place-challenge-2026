@@ -105,10 +105,15 @@ class MacroPlacer:
             hierarchy_quality_metric,
         )
         from placer.local_search.fields import _congestion_field
-        from placer.local_search.gnn_trace import log_gnn_event, log_plateau_event
+        from placer.local_search.gnn_trace import (
+            flush_plateau_events,
+            log_gnn_event,
+            log_plateau_event,
+        )
         from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
         from placer.local_search.hierarchy_model import HierarchyModel
         from placer.local_search.region_expand import expand_regions_by_congestion
+        from placer.local_search.survivor_search import _parallel_survivor_search
         from placer.local_search.relocation import (
             _micro_shift_polish,
             _relocation_moves,
@@ -155,10 +160,42 @@ class MacroPlacer:
                 const.HIER_ADDITIVE_CANDIDATE_POOLS
                 and (
                     deadline is None
-                    or time.monotonic() + float(const.HIER_ADDITIVE_MIN_SPARE_S)
-                    < float(deadline)
+                    or time.monotonic() + float(const.HIER_ADDITIVE_MIN_SPARE_S) < float(deadline)
                 )
             )
+
+        def _proxy_components(hard_xy, soft_xy) -> dict[str, float]:
+            full = torch.tensor(
+                np.vstack([hard_xy, soft_xy]).astype(np.float32),
+                dtype=torch.float32,
+            )
+            _exact_proxy(full, benchmark, plc)
+            return {
+                "wirelength": float(plc.get_cost()),
+                "density": float(plc.get_density_cost()),
+                "congestion": float(plc.get_congestion_cost()),
+            }
+
+        def _component_cleanup_bias(hard_xy, soft_xy) -> dict[str, float | bool]:
+            if not const.HIER_COMPONENT_AWARE_SCHEDULING:
+                return {
+                    "enabled": False,
+                    "congestion_dominates": False,
+                    "wirelength": 0.0,
+                    "density": 0.0,
+                    "congestion": 0.0,
+                }
+            comp = _proxy_components(hard_xy, soft_xy)
+            density = float(comp["density"])
+            congestion = float(comp["congestion"])
+            dominates = congestion > density + float(const.HIER_COMPONENT_CONG_DOMINANCE)
+            return {
+                "enabled": True,
+                "congestion_dominates": bool(dominates),
+                "wirelength": float(comp["wirelength"]),
+                "density": density,
+                "congestion": congestion,
+            }
 
         hier_post_reloc_top_m = const.HIER_POST_RELOC_PROPOSE_TOP_M
         hier_reloc_propose_hot_k = max(1, int(const.HIER_RELOC_PROPOSE_HOT_K))
@@ -288,7 +325,11 @@ class MacroPlacer:
 
         def _hard_legality_margin(hard_xy, eps: float) -> dict[str, float]:
             if hard_xy.shape[0] == 0:
-                return {"pair_margin": float("inf"), "bounds_margin": float("inf"), "min_margin": float("inf")}
+                return {
+                    "pair_margin": float("inf"),
+                    "bounds_margin": float("inf"),
+                    "min_margin": float("inf"),
+                }
             bounds_x = np.minimum(hard_xy[:, 0] - hw, cw - hw - hard_xy[:, 0])
             bounds_y = np.minimum(hard_xy[:, 1] - hh, ch - hh - hard_xy[:, 1])
             bounds_margin = float(min(np.min(bounds_x), np.min(bounds_y)))
@@ -550,9 +591,7 @@ class MacroPlacer:
             try:
                 hard_b = list(plc.hard_macro_indices[:n])
                 tagged = sum(
-                    1
-                    for idx in hard_b
-                    if "/" in str(plc.modules_w_pins[int(idx)].get_name())
+                    1 for idx in hard_b if "/" in str(plc.modules_w_pins[int(idx)].get_name())
                 )
             except Exception:
                 return False
@@ -631,11 +670,18 @@ class MacroPlacer:
 
         def _select_seed_portfolio(dp_hard, dp_soft, dp_score):
             if not const.HIER_SEED_PORTFOLIO:
-                return dp_hard, dp_soft, dp_score, [{"name": "dreamplace", "score": float(dp_score)}]
+                return (
+                    dp_hard,
+                    dp_soft,
+                    dp_score,
+                    [{"name": "dreamplace", "score": float(dp_score)}],
+                )
             initial = benchmark.macro_positions.detach().cpu().numpy().astype(np.float64)
             init_hard = initial[:n].copy()
             init_soft = initial[n : n + n_soft].copy()
-            rows = [{"name": "dreamplace", "hard": dp_hard, "soft": dp_soft, "score": float(dp_score)}]
+            rows = [
+                {"name": "dreamplace", "hard": dp_hard, "soft": dp_soft, "score": float(dp_score)}
+            ]
             raw_candidates = []
             raw_candidates.append(("initial", init_hard, init_soft))
             for alpha in tuple(float(a) for a in const.HIER_SEED_BLEND_ALPHAS):
@@ -644,7 +690,9 @@ class MacroPlacer:
                 raw_candidates.append((f"blend_{alpha:.2f}", hard, soft))
             raw_candidates.append(("expand", *_expanded_seed(dp_hard, dp_soft)))
             if const.HIER_SEED_SYNTHETIC_CLEARANCE:
-                raw_candidates.append(("synthetic_clearance", *_synthetic_clearance_seed(dp_hard, dp_soft)))
+                raw_candidates.append(
+                    ("synthetic_clearance", *_synthetic_clearance_seed(dp_hard, dp_soft))
+                )
             if const.HIER_SEED_ROUTE_CHANNEL and _has_explicit_path_tags():
                 raw_candidates.append(("route_channel", *_route_channel_seed(dp_hard, dp_soft)))
             for name, cand_h, cand_s in raw_candidates:
@@ -668,7 +716,9 @@ class MacroPlacer:
             return None
 
         hard, soft, s_score, seed_rows = _select_seed_portfolio(hard, soft, s_score)
-        selected_seed_name = str(seed_rows[0].get("name", "dreamplace")) if seed_rows else "dreamplace"
+        selected_seed_name = (
+            str(seed_rows[0].get("name", "dreamplace")) if seed_rows else "dreamplace"
+        )
 
         legal = hard
         s_pos = soft.copy()
@@ -922,73 +972,117 @@ class MacroPlacer:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
             if const.HIER_DECOMPRESS:
                 pre_decomp_h, pre_decomp_s, pre_decomp_score = h_pos.copy(), s_pos.copy(), r_score
-                d_deadline = _deadline(float(const.HIER_DECOMPRESS_BUDGET_S), rdeadline)
-                decomp_t0 = time.monotonic()
-                h_pos, s_pos, d_acc, r_score, hq = _cluster_decompression_relief(
-                    h_pos,
-                    s_pos,
-                    sizes[:n],
-                    hw,
-                    hh,
-                    soft_hw,
-                    soft_hh,
-                    cw,
-                    ch,
-                    movable[:n],
-                    soft_mov,
-                    n,
-                    clusters,
-                    csofts,
-                    bridge_softs,
-                    region,
-                    soft_region,
-                    plc,
-                    benchmark,
-                    r_score,
-                    deadline=d_deadline,
-                    rounds=max(1, int(const.HIER_DECOMPRESS_ROUNDS)),
-                    hot_percentile=float(const.HIER_DECOMPRESS_HOT_PCT),
-                    quality_budget=float(const.HIER_QUALITY_BUDGET),
-                    min_proxy_gain=float(const.HIER_DECOMPRESS_MIN_GAIN),
-                    anisotropic=hier_decompress_aniso,
-                    anisotropic_band=max(1, int(const.HIER_DECOMPRESS_ANISO_BAND)),
-                    anisotropic_secondary=float(const.HIER_DECOMPRESS_ANISO_SECONDARY),
-                )
-                invalid_decomp = not _hard_valid(h_pos)
-                weak_decomp = (
-                    d_acc
-                    and const.HIER_ROLLBACK_WEAK_DECOMP
-                    and r_score > pre_decomp_score - float(const.HIER_DECOMPRESS_MIN_GAIN)
-                )
-                if invalid_decomp or weak_decomp:
-                    h_pos, s_pos, r_score = pre_decomp_h, pre_decomp_s, pre_decomp_score
-                    d_acc = 0
-                if d_acc:
-                    full = np.vstack([h_pos, s_pos]).astype(np.float64)
-                    rscorer = IncrementalScorer(plc, benchmark, full.copy())
-                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
-                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-                _log(
-                    f"  [hier] cluster decompression: {d_acc} accepts, "
-                    f"quality={hq:.4f}, proxy={r_score:.4f}"
-                )
-                _trace_pass(
-                    "cluster_decompression",
-                    pre_decomp_score,
-                    r_score,
-                    d_acc,
-                    quality=float(hq),
-                    rolled_back=bool(invalid_decomp or weak_decomp),
-                )
-                _record_plateau(
-                    "cluster_decompression",
-                    pre_decomp_score,
-                    r_score,
-                    d_acc,
-                    time.monotonic() - decomp_t0,
-                    quality=float(hq),
-                    rolled_back=bool(invalid_decomp or weak_decomp),
-                )
+                decomp_gap = float("inf")
+                decomp_skip = False
+                if const.HIER_STRONG_OPPORTUNITY_GATES and const.HIER_DECOMPRESS_FIELD_GATE:
+                    decomp_field = _congestion_field(rscorer, nr, nc)
+                    if decomp_field is not None and clusters:
+                        cell_w, cell_h = cw / nc, ch / nr
+                        heats = []
+                        for mem in clusters.values():
+                            mem = np.asarray(mem, dtype=np.int64)
+                            mem = mem[(mem >= 0) & (mem < n)]
+                            if mem.size == 0:
+                                continue
+                            ci = np.clip((h_pos[mem, 0] / cell_w).astype(np.int64), 0, nc - 1)
+                            ri = np.clip((h_pos[mem, 1] / cell_h).astype(np.int64), 0, nr - 1)
+                            heats.append(float(decomp_field[ri, ci].mean()))
+                        if heats:
+                            decomp_gap = float(max(heats) - np.min(decomp_field))
+                            decomp_skip = decomp_gap < float(const.HIER_DECOMPRESS_MIN_FIELD_GAP)
+                if decomp_skip:
+                    hq = hierarchy_quality_metric(h_pos, clusters)
+                    _log(
+                        f"  [hier] cluster decompression skipped: "
+                        f"field_gap={decomp_gap:.4f} < {float(const.HIER_DECOMPRESS_MIN_FIELD_GAP):.4f}"
+                    )
+                    _trace_pass(
+                        "cluster_decompression",
+                        pre_decomp_score,
+                        r_score,
+                        0,
+                        quality=float(hq),
+                        skipped_by_field_gate=True,
+                        field_gap=float(decomp_gap),
+                    )
+                    _record_plateau(
+                        "cluster_decompression",
+                        pre_decomp_score,
+                        r_score,
+                        0,
+                        0.0,
+                        quality=float(hq),
+                        skipped_by_field_gate=True,
+                        field_gap=float(decomp_gap),
+                    )
+                else:
+                    d_deadline = _deadline(float(const.HIER_DECOMPRESS_BUDGET_S), rdeadline)
+                    decomp_t0 = time.monotonic()
+                    h_pos, s_pos, d_acc, r_score, hq = _cluster_decompression_relief(
+                        h_pos,
+                        s_pos,
+                        sizes[:n],
+                        hw,
+                        hh,
+                        soft_hw,
+                        soft_hh,
+                        cw,
+                        ch,
+                        movable[:n],
+                        soft_mov,
+                        n,
+                        clusters,
+                        csofts,
+                        bridge_softs,
+                        region,
+                        soft_region,
+                        plc,
+                        benchmark,
+                        r_score,
+                        deadline=d_deadline,
+                        rounds=max(1, int(const.HIER_DECOMPRESS_ROUNDS)),
+                        hot_percentile=float(const.HIER_DECOMPRESS_HOT_PCT),
+                        quality_budget=float(const.HIER_QUALITY_BUDGET),
+                        min_proxy_gain=float(const.HIER_DECOMPRESS_MIN_GAIN),
+                        anisotropic=hier_decompress_aniso,
+                        anisotropic_band=max(1, int(const.HIER_DECOMPRESS_ANISO_BAND)),
+                        anisotropic_secondary=float(const.HIER_DECOMPRESS_ANISO_SECONDARY),
+                    )
+                    invalid_decomp = not _hard_valid(h_pos)
+                    weak_decomp = (
+                        d_acc
+                        and const.HIER_ROLLBACK_WEAK_DECOMP
+                        and r_score > pre_decomp_score - float(const.HIER_DECOMPRESS_MIN_GAIN)
+                    )
+                    if invalid_decomp or weak_decomp:
+                        h_pos, s_pos, r_score = pre_decomp_h, pre_decomp_s, pre_decomp_score
+                        d_acc = 0
+                    if d_acc:
+                        full = np.vstack([h_pos, s_pos]).astype(np.float64)
+                        rscorer = IncrementalScorer(plc, benchmark, full.copy())
+                    if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                        best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                    _log(
+                        f"  [hier] cluster decompression: {d_acc} accepts, "
+                        f"quality={hq:.4f}, proxy={r_score:.4f}"
+                    )
+                    _trace_pass(
+                        "cluster_decompression",
+                        pre_decomp_score,
+                        r_score,
+                        d_acc,
+                        quality=float(hq),
+                        rolled_back=bool(invalid_decomp or weak_decomp),
+                    )
+                    _record_plateau(
+                        "cluster_decompression",
+                        pre_decomp_score,
+                        r_score,
+                        d_acc,
+                        time.monotonic() - decomp_t0,
+                        quality=float(hq),
+                        rolled_back=bool(invalid_decomp or weak_decomp),
+                    )
             if (
                 const.HIER_INTERLEAVED_SOFT_REPAIR
                 and n_soft
@@ -1033,10 +1127,7 @@ class MacroPlacer:
                         inter_soft_stats,
                         getattr(_soft_relocation_moves, "last_stats", {}),
                     )
-                    if (
-                        inter_soft_deadline is not None
-                        and time.monotonic() >= inter_soft_deadline
-                    ):
+                    if inter_soft_deadline is not None and time.monotonic() >= inter_soft_deadline:
                         break
                 if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                     best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
@@ -1065,6 +1156,7 @@ class MacroPlacer:
             swap_record: PlateauTelemetry | None = None
             post_hard_record: PlateauTelemetry | None = None
             post_soft_record: PlateauTelemetry | None = None
+            plateau_escape_ran = False
             if const.HIER_REGION_SWAPS:
                 swap_rounds = max(1, int(const.HIER_REGION_SWAP_ROUNDS))
                 swap_deadline = _deadline(float(const.HIER_REGION_SWAP_BUDGET_S), rdeadline)
@@ -1093,44 +1185,112 @@ class MacroPlacer:
                     "proxy_gain": 0.0,
                 }
                 swap_acc = 0
+                swap_round_micro_acc = 0
                 pre_swap_score = r_score
                 swap_t0 = time.monotonic()
                 fields = (False, True) if use_density_swaps else (False,)
-                for use_density in fields:
-                    h_pos, s_pos, got, r_score, stats = _region_bounded_swap_relief(
-                        h_pos,
-                        s_pos,
-                        sizes[:n],
-                        hw,
-                        hh,
-                        soft_hw,
-                        soft_hh,
-                        cw,
-                        ch,
-                        movable[:n],
-                        soft_mov,
-                        benchmark,
-                        rscorer,
-                        r_score,
-                        region,
-                        soft_region,
-                        deadline=swap_deadline,
-                        rounds=swap_rounds,
-                        hard_k=hard_k,
-                        soft_k=soft_k,
-                        region_bias=bias,
-                        escape_min=escape_min,
-                        min_gain=swap_min_gain,
-                        soft_barrier_gain=hier_soft_barrier_gain,
-                        min_field_relief=swap_min_field,
-                        enable_hh=enable_hh,
-                        enable_hs=enable_hs,
-                        enable_ss=enable_ss,
-                        use_density=use_density,
-                    )
-                    swap_acc += got
-                    for k, v in stats.items():
-                        swap_stats[k] += v
+                if const.HIER_SWAP_ROUND_MICRO_SHIFT:
+                    for _swap_round in range(swap_rounds):
+                        if swap_deadline is not None and time.monotonic() >= swap_deadline:
+                            break
+                        for use_density in fields:
+                            h_pos, s_pos, got, r_score, stats = _region_bounded_swap_relief(
+                                h_pos,
+                                s_pos,
+                                sizes[:n],
+                                hw,
+                                hh,
+                                soft_hw,
+                                soft_hh,
+                                cw,
+                                ch,
+                                movable[:n],
+                                soft_mov,
+                                benchmark,
+                                rscorer,
+                                r_score,
+                                region,
+                                soft_region,
+                                deadline=swap_deadline,
+                                rounds=1,
+                                hard_k=hard_k,
+                                soft_k=soft_k,
+                                region_bias=bias,
+                                escape_min=escape_min,
+                                min_gain=swap_min_gain,
+                                soft_barrier_gain=hier_soft_barrier_gain,
+                                min_field_relief=swap_min_field,
+                                enable_hh=enable_hh,
+                                enable_hs=enable_hs,
+                                enable_ss=enable_ss,
+                                use_density=use_density,
+                            )
+                            swap_acc += got
+                            for k, v in stats.items():
+                                swap_stats[k] += v
+                        for micro_density in (False, True):
+                            h_pos, s_pos, got, r_score = _micro_shift_polish(
+                                h_pos,
+                                s_pos,
+                                sizes[:n],
+                                hw,
+                                hh,
+                                soft_hw,
+                                soft_hh,
+                                cw,
+                                ch,
+                                movable[:n],
+                                soft_mov,
+                                n,
+                                plc,
+                                benchmark,
+                                rscorer,
+                                r_score,
+                                hard_region=region,
+                                soft_region=soft_region,
+                                deadline=swap_deadline,
+                                radius_cells=hier_micro_shift_radius,
+                                top_hot=hier_micro_shift_top,
+                                min_gain=hier_micro_shift_min_gain,
+                                use_density=micro_density,
+                            )
+                            swap_round_micro_acc += got
+                else:
+                    for use_density in fields:
+                        h_pos, s_pos, got, r_score, stats = _region_bounded_swap_relief(
+                            h_pos,
+                            s_pos,
+                            sizes[:n],
+                            hw,
+                            hh,
+                            soft_hw,
+                            soft_hh,
+                            cw,
+                            ch,
+                            movable[:n],
+                            soft_mov,
+                            benchmark,
+                            rscorer,
+                            r_score,
+                            region,
+                            soft_region,
+                            deadline=swap_deadline,
+                            rounds=swap_rounds,
+                            hard_k=hard_k,
+                            soft_k=soft_k,
+                            region_bias=bias,
+                            escape_min=escape_min,
+                            min_gain=swap_min_gain,
+                            soft_barrier_gain=hier_soft_barrier_gain,
+                            min_field_relief=swap_min_field,
+                            enable_hh=enable_hh,
+                            enable_hs=enable_hs,
+                            enable_ss=enable_ss,
+                            use_density=use_density,
+                        )
+                        swap_acc += got
+                        for k, v in stats.items():
+                            swap_stats[k] += v
                 if not _hard_valid(h_pos):
                     h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
                     full = np.vstack([h_pos, s_pos]).astype(np.float64)
@@ -1148,7 +1308,8 @@ class MacroPlacer:
                     f"hs {swap_stats['hs_accepts']}/{swap_stats['hs_scores']}, "
                     f"ss {swap_stats['ss_accepts']}/{swap_stats['ss_scores']}, "
                     f"esc {escape_accepts}, "
-                    f"gain {swap_stats['proxy_gain']:.4f}), proxy={r_score:.4f}"
+                    f"gain {swap_stats['proxy_gain']:.4f}, "
+                    f"round_micro {swap_round_micro_acc}), proxy={r_score:.4f}"
                 )
                 _trace_pass(
                     "region_swaps",
@@ -1156,6 +1317,7 @@ class MacroPlacer:
                     r_score,
                     swap_acc,
                     stats=swap_stats,
+                    round_micro_accepts=int(swap_round_micro_acc),
                     quality=hierarchy_quality_metric(h_pos, clusters),
                 )
                 swap_scored = int(
@@ -1173,6 +1335,92 @@ class MacroPlacer:
                     quality=hierarchy_quality_metric(h_pos, clusters),
                     stats=swap_stats,
                 )
+                if (
+                    const.HIER_PLATEAU_ESCAPE_PROPOSALS
+                    and n_soft
+                    and bool(np.any(soft_mov))
+                    and _is_plateau(swap_record)
+                ):
+                    escape_budget = float(const.HIER_PLATEAU_ESCAPE_BUDGET_S)
+                    escape_spare = float(const.HIER_PLATEAU_ESCAPE_MIN_SPARE_S)
+                    run_escape = _has_spare(rdeadline, escape_spare)
+                    schedule_payload = {
+                        "benchmark": pass_context.benchmark_name,
+                        "diagnostic_no_deadlines": pass_context.diagnostic_no_deadlines,
+                        "pass_name": "plateau_escape_soft_relocation",
+                        "run": bool(run_escape),
+                        "has_spare": bool(run_escape),
+                        "trigger_pass": "region_swaps",
+                        "budget_s": escape_budget,
+                        "min_spare_s": escape_spare,
+                    }
+                    log_gnn_event("hier_budget_schedule", **schedule_payload)
+                    log_plateau_event("hier_budget_schedule", **schedule_payload)
+                    if run_escape:
+                        plateau_escape_ran = True
+                        escape_deadline = _deadline(escape_budget, rdeadline)
+                        pre_escape_score = r_score
+                        escape_acc = 0
+                        escape_stats = _empty_pass_stats()
+                        escape_t0 = time.monotonic()
+                        for use_density in (False, True):
+                            s_pos, got, r_score = _soft_relocation_moves(
+                                s_pos,
+                                soft_hw,
+                                soft_hh,
+                                cw,
+                                ch,
+                                n,
+                                plc,
+                                benchmark,
+                                rscorer,
+                                r_score,
+                                deadline=escape_deadline,
+                                top_hot=max(1, int(const.HIER_PLATEAU_ESCAPE_SOFT_TOP_K)),
+                                n_targets=max(1, int(const.HIER_PLATEAU_ESCAPE_SOFT_TARGETS)),
+                                soft_movable=soft_mov,
+                                use_density=use_density,
+                                region_bbox=soft_region,
+                                region_bias=bias,
+                                region_escape_min=escape_min,
+                                accept_min_gain=max(
+                                    float(const.HIER_PLATEAU_ESCAPE_MIN_GAIN),
+                                    hier_soft_barrier_gain,
+                                ),
+                                gpu_batch_rank=True,
+                            )
+                            escape_acc += got
+                            _accum_pass_stats(
+                                escape_stats,
+                                getattr(_soft_relocation_moves, "last_stats", {}),
+                            )
+                            if escape_deadline is not None and time.monotonic() >= escape_deadline:
+                                break
+                        if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                            best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                        _log(
+                            f"  [hier] plateau escape soft relocation: {escape_acc} accepts, "
+                            f"proxy {pre_escape_score:.4f}->{r_score:.4f}"
+                        )
+                        escape_record = _record_plateau(
+                            "plateau_escape_soft_relocation",
+                            pre_escape_score,
+                            r_score,
+                            escape_acc,
+                            time.monotonic() - escape_t0,
+                            candidates=escape_stats["candidates"],
+                            legal=escape_stats["legal"],
+                            scored=escape_stats["scored"],
+                            quality=hierarchy_quality_metric(h_pos, clusters),
+                        )
+                        _trace_pass(
+                            "plateau_escape_soft_relocation",
+                            pre_escape_score,
+                            r_score,
+                            escape_acc,
+                            quality=hierarchy_quality_metric(h_pos, clusters),
+                            plateau=bool(_is_plateau(escape_record)),
+                        )
             if hier_post_swap_micro:
                 post_micro_deadline = _deadline(
                     float(const.HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S), rdeadline
@@ -1353,10 +1601,113 @@ class MacroPlacer:
                     scored=post_soft_stats["scored"],
                     quality=hierarchy_quality_metric(h_pos, clusters),
                 )
+            post_escape_trigger = None
+            if _is_plateau(post_soft_record):
+                post_escape_trigger = "post_swap_soft_relocation"
+            elif _is_plateau(post_hard_record):
+                post_escape_trigger = "post_swap_hard_propose_all"
+            if (
+                const.HIER_PLATEAU_ESCAPE_PROPOSALS
+                and const.HIER_PLATEAU_ESCAPE_AFTER_POST_POLISH
+                and not plateau_escape_ran
+                and post_escape_trigger is not None
+                and n_soft
+                and bool(np.any(soft_mov))
+            ):
+                escape_budget = float(const.HIER_PLATEAU_ESCAPE_BUDGET_S)
+                escape_spare = float(const.HIER_PLATEAU_ESCAPE_MIN_SPARE_S)
+                run_escape = _has_spare(rdeadline, escape_spare)
+                schedule_payload = {
+                    "benchmark": pass_context.benchmark_name,
+                    "diagnostic_no_deadlines": pass_context.diagnostic_no_deadlines,
+                    "pass_name": "plateau_escape_post_soft_relocation",
+                    "run": bool(run_escape),
+                    "has_spare": bool(run_escape),
+                    "trigger_pass": post_escape_trigger,
+                    "budget_s": escape_budget,
+                    "min_spare_s": escape_spare,
+                }
+                log_gnn_event("hier_budget_schedule", **schedule_payload)
+                log_plateau_event("hier_budget_schedule", **schedule_payload)
+                if run_escape:
+                    plateau_escape_ran = True
+                    escape_deadline = _deadline(escape_budget, rdeadline)
+                    pre_escape_score = r_score
+                    escape_acc = 0
+                    escape_stats = _empty_pass_stats()
+                    escape_t0 = time.monotonic()
+                    for use_density in (False, True):
+                        s_pos, got, r_score = _soft_relocation_moves(
+                            s_pos,
+                            soft_hw,
+                            soft_hh,
+                            cw,
+                            ch,
+                            n,
+                            plc,
+                            benchmark,
+                            rscorer,
+                            r_score,
+                            deadline=escape_deadline,
+                            top_hot=max(1, int(const.HIER_PLATEAU_ESCAPE_SOFT_TOP_K)),
+                            n_targets=max(1, int(const.HIER_PLATEAU_ESCAPE_SOFT_TARGETS)),
+                            soft_movable=soft_mov,
+                            use_density=use_density,
+                            region_bbox=soft_region,
+                            region_bias=bias,
+                            region_escape_min=escape_min,
+                            accept_min_gain=max(
+                                float(const.HIER_PLATEAU_ESCAPE_MIN_GAIN),
+                                hier_soft_barrier_gain,
+                            ),
+                            gpu_batch_rank=True,
+                        )
+                        escape_acc += got
+                        _accum_pass_stats(
+                            escape_stats,
+                            getattr(_soft_relocation_moves, "last_stats", {}),
+                        )
+                        if escape_deadline is not None and time.monotonic() >= escape_deadline:
+                            break
+                    if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                        best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                    _log(
+                        f"  [hier] plateau escape post-soft relocation: {escape_acc} accepts, "
+                        f"proxy {pre_escape_score:.4f}->{r_score:.4f}"
+                    )
+                    escape_record = _record_plateau(
+                        "plateau_escape_post_soft_relocation",
+                        pre_escape_score,
+                        r_score,
+                        escape_acc,
+                        time.monotonic() - escape_t0,
+                        candidates=escape_stats["candidates"],
+                        legal=escape_stats["legal"],
+                        scored=escape_stats["scored"],
+                        quality=hierarchy_quality_metric(h_pos, clusters),
+                    )
+                    _trace_pass(
+                        "plateau_escape_post_soft_relocation",
+                        pre_escape_score,
+                        r_score,
+                        escape_acc,
+                        quality=hierarchy_quality_metric(h_pos, clusters),
+                        plateau=bool(_is_plateau(escape_record)),
+                    )
             if const.HIER_STRONG_SOFT_REPAIR and n_soft and bool(np.any(soft_mov)):
+                component_bias = _component_cleanup_bias(h_pos, s_pos)
                 strong_budget = float(const.HIER_STRONG_SOFT_REPAIR_BUDGET_S)
                 min_spare = float(const.HIER_STRONG_SOFT_REPAIR_MIN_SPARE_S)
                 has_spare = _has_spare(rdeadline, min_spare)
+                cleanup_reserved = _has_spare(
+                    rdeadline,
+                    float(const.HIER_COMPONENT_RESERVED_CLEANUP_S),
+                )
+                component_soft_trigger = bool(
+                    component_bias["enabled"]
+                    and component_bias["congestion_dominates"]
+                    and cleanup_reserved
+                )
                 plateau_trigger = (
                     _is_plateau(swap_record)
                     or _is_plateau(post_hard_record)
@@ -1389,6 +1740,7 @@ class MacroPlacer:
                     not const.HIER_BUDGET_AWARE_SCHEDULING
                     or plateau_trigger
                     or useful_soft_trigger
+                    or component_soft_trigger
                 )
                 schedule_payload = {
                     "benchmark": pass_context.benchmark_name,
@@ -1399,6 +1751,10 @@ class MacroPlacer:
                     "plateau_trigger": bool(plateau_trigger),
                     "plateau_soft_bonus": bool(plateau_soft_bonus),
                     "useful_soft_trigger": bool(useful_soft_trigger),
+                    "component_soft_trigger": bool(component_soft_trigger),
+                    "component_wirelength": float(component_bias["wirelength"]),
+                    "component_density": float(component_bias["density"]),
+                    "component_congestion": float(component_bias["congestion"]),
                     "budget_s": scheduled_strong_budget,
                     "min_spare_s": min_spare,
                     "rounds": int(scheduled_strong_rounds),
@@ -1524,6 +1880,11 @@ class MacroPlacer:
             ck_quality_budget = float(const.HIER_COLDSPOT_QUALITY_BUDGET)
             ck_rounds = max(1, int(const.HIER_COLDSPOT_ROUNDS))
             ck_min_field_gap = float(const.HIER_COLDSPOT_MIN_FIELD_GAP)
+            if const.HIER_STRONG_OPPORTUNITY_GATES and const.HIER_COLDSPOT_STRONG_FIELD_GATE:
+                ck_min_field_gap = max(
+                    ck_min_field_gap,
+                    float(const.HIER_COLDSPOT_STRONG_MIN_FIELD_GAP),
+                )
             ck_deadline = _deadline(float(const.HIER_COLDSPOT_BUDGET_S))
             ck_gnn_select = gnn_coldspot_select_enabled()
             ck_oracle = gnn_coldspot_oracle_enabled()
@@ -1539,6 +1900,34 @@ class MacroPlacer:
             ck_skip_micro = ck_gnn_select and gnn_coldspot_skip_micro()
             nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
             soft_mov = movable[n : n + n_soft]
+            coldspot_candidate_softs = csofts
+            if bool(const.HIER_COLDSPOT_JOINT_BRIDGE_SOFTS) and bridge_softs:
+                bridge_by_cluster: dict[int, list[int]] = {}
+                for soft_k, soft_cids in bridge_softs.items():
+                    k = int(soft_k)
+                    if k < 0 or k >= n_soft or not bool(soft_mov[k]):
+                        continue
+                    for cid_for_soft in np.asarray(soft_cids, dtype=np.int64):
+                        bridge_by_cluster.setdefault(int(cid_for_soft), []).append(n + k)
+                if bridge_by_cluster:
+                    merged_softs: dict[int, np.ndarray] = {}
+                    for cid in clusters.keys():
+                        parts = []
+                        owned = np.asarray(csofts.get(int(cid), []), dtype=np.int64)
+                        if owned.size:
+                            parts.append(owned)
+                        bridge = np.asarray(
+                            bridge_by_cluster.get(int(cid), []),
+                            dtype=np.int64,
+                        )
+                        if bridge.size:
+                            parts.append(bridge)
+                        if parts:
+                            merged_softs[int(cid)] = np.unique(np.concatenate(parts)).astype(
+                                np.int64
+                            )
+                    if merged_softs:
+                        coldspot_candidate_softs = merged_softs
 
             def _full(h, sft):
                 return torch.tensor(np.vstack([h, sft]).astype(np.float32), dtype=torch.float32)
@@ -2188,7 +2577,7 @@ class MacroPlacer:
                     movable[:n],
                     n,
                     clusters,
-                    csofts,
+                    coldspot_candidate_softs,
                     cur_s,
                     soft_hw,
                     soft_hh,
@@ -2200,6 +2589,8 @@ class MacroPlacer:
                     deadline=ck_deadline,
                     pick="random",
                     kick_count=ck_gnn_kicks,
+                    plc=plc,
+                    benchmark_name=benchmark.name,
                 )
                 if not generated:
                     log_gnn_event(
@@ -2541,6 +2932,63 @@ class MacroPlacer:
                         f"  [hier] graph-local coldspot fallback: 1 accept, "
                         f"proxy {base_proxy:.4f}->{cur_proxy:.4f}"
                     )
+            soft_only_acc = 0
+            if (
+                bool(const.HIER_COLDSPOT_SOFT_ONLY)
+                and ck_acc == 0
+                and n_soft
+                and bool(np.any(soft_mov))
+                and soft_region is not None
+                and (ck_deadline is None or time.monotonic() < ck_deadline)
+            ):
+                soft_only_before = float(cur_proxy)
+                soft_only_field = _congestion_field(ck_scorer, nr, nc)
+                soft_only_target_cells = 0
+                if soft_only_field is not None:
+                    cold_memory = _remember_cold_cells(soft_only_field)
+                    target_mask = cold_memory & ~_occupied_cells(cur_h, cur_s)
+                    target_pool = np.flatnonzero(target_mask.ravel()).astype(np.int64)
+                    soft_only_target_cells = int(target_pool.size)
+                    if target_pool.size:
+                        cur_s, soft_only_acc, cur_proxy = _soft_relocation_moves(
+                            cur_s,
+                            soft_hw,
+                            soft_hh,
+                            cw,
+                            ch,
+                            n,
+                            plc,
+                            benchmark,
+                            ck_scorer,
+                            cur_proxy,
+                            deadline=ck_deadline,
+                            top_hot=max(1, int(const.HIER_COLDSPOT_SOFT_ONLY_TOP_K)),
+                            n_targets=max(1, int(const.HIER_COLDSPOT_SOFT_ONLY_TARGETS)),
+                            soft_movable=soft_mov,
+                            use_density=False,
+                            region_bbox=soft_region,
+                            region_bias=bias,
+                            region_escape_min=float(const.HIER_COLDSPOT_LOCAL_SOFT_ESCAPE_MIN),
+                            accept_min_gain=max(
+                                hier_soft_barrier_gain,
+                                float(const.HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN),
+                            ),
+                            target_pool=target_pool,
+                            region_mask=target_mask,
+                        )
+                    _trace_pass(
+                        "coldspot_soft_only",
+                        soft_only_before,
+                        cur_proxy,
+                        soft_only_acc,
+                        quality=float(cur_quality),
+                        target_cells=int(soft_only_target_cells),
+                    )
+                    _log(
+                        f"  [hier] coldspot soft-only fallback: {soft_only_acc} accepts, "
+                        f"targets={soft_only_target_cells}, "
+                        f"proxy {soft_only_before:.4f}->{cur_proxy:.4f}"
+                    )
             legal, s_pos = cur_h, cur_s
             _log(
                 f"  [hier] coldspot tightening: {ck_acc} accepts, "
@@ -2553,6 +3001,7 @@ class MacroPlacer:
                 ck_acc,
                 quality=float(cur_quality),
                 graph_fallback_accepts=int(graph_fallback_acc),
+                soft_only_accepts=int(soft_only_acc),
             )
 
             if (
@@ -2617,7 +3066,67 @@ class MacroPlacer:
                     skipped_by_gnn_coldspot_selector=True,
                 )
 
-        state = PlacementState(legal.copy(), s_pos.copy(), float(_exact_proxy(_full_tensor(legal, s_pos), benchmark, plc)))
+            if const.HIER_SURVIVOR_SEARCH:
+                survivor_deadline = _deadline(float(const.HIER_SURVIVOR_BUDGET_S), rdeadline)
+                pre_survivor_score = cur_proxy
+                survivor_t0 = time.monotonic()
+                legal, s_pos, survivor_acc, cur_proxy = _parallel_survivor_search(
+                    legal,
+                    s_pos,
+                    sizes[:n],
+                    hw,
+                    hh,
+                    soft_hw,
+                    soft_hh,
+                    cw,
+                    ch,
+                    movable[:n],
+                    soft_mov,
+                    n,
+                    plc,
+                    benchmark,
+                    cur_proxy,
+                    clusters,
+                    cluster_softs=csofts,
+                    bridge_softs=bridge_softs,
+                    hard_region=region,
+                    soft_region=soft_region,
+                    deadline=survivor_deadline,
+                )
+                if not _hard_valid(legal):
+                    legal, s_pos, cur_proxy = best_h.copy(), best_s.copy(), best_score
+                    survivor_acc = 0
+                survivor_stats = getattr(_parallel_survivor_search, "last_stats", {})
+                _log(
+                    f"  [hier] survivor search: {survivor_acc} accepts, "
+                    f"proxy {pre_survivor_score:.4f}->{cur_proxy:.4f}"
+                )
+                _trace_pass(
+                    "survivor_search",
+                    pre_survivor_score,
+                    cur_proxy,
+                    survivor_acc,
+                    quality=hierarchy_quality_metric(legal, clusters),
+                    gpu_rank=bool(survivor_stats.get("gpu_rank", False)),
+                )
+                _record_plateau(
+                    "survivor_search",
+                    pre_survivor_score,
+                    cur_proxy,
+                    survivor_acc,
+                    time.monotonic() - survivor_t0,
+                    candidates=int(survivor_stats.get("candidates", 0)),
+                    legal=int(survivor_stats.get("legal", 0)),
+                    scored=int(survivor_stats.get("scored", 0)),
+                    quality=hierarchy_quality_metric(legal, clusters),
+                    gpu_rank=bool(survivor_stats.get("gpu_rank", False)),
+                )
+
+        state = PlacementState(
+            legal.copy(),
+            s_pos.copy(),
+            float(_exact_proxy(_full_tensor(legal, s_pos), benchmark, plc)),
+        )
         out = torch.tensor(state.full().astype(np.float32), dtype=torch.float32)
         proxy = float(state.proxy)
         hq_breakdown = hierarchy_quality_breakdown(legal, clusters)
@@ -2665,6 +3174,7 @@ class MacroPlacer:
             f"weight={gw}: proxy={proxy:.4f} "
             f"(pre-relief {pre_relief:.4f}; hierarchy-preserving NON-proxy mode)"
         )
+        flush_plateau_events()
         return out
 
     def place(self, benchmark: Benchmark) -> torch.Tensor:

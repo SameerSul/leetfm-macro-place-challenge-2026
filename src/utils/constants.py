@@ -58,7 +58,6 @@ HIER_SEED_ROUTE_CHANNEL_LANE_FRAC = 0.10
 HIER_SEED_ROUTE_CHANNEL_PUSH_FRAC = 0.35
 # Maximum route-channel push as a fraction of the cluster local span.
 HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
-
 # Congestion-heavy proposal ranking. Exact proxy remains the accept gate.
 HIER_CONGESTION_WEIGHTED_PROPOSALS = True
 HIER_PROPOSAL_CONGESTION_WEIGHT = 2.5
@@ -86,8 +85,19 @@ HIER_RELOC_PROPOSE_MIN_GAIN = 0.0005
 
 # Emits pass-level candidate/accept/gain/time telemetry for plateau analysis.
 HIER_PLATEAU_TELEMETRY = True
+# Buffers plateau telemetry rows and flushes once per benchmark / process exit.
+HIER_PLATEAU_TELEMETRY_BUFFERED = True
 # Enables simple budget-aware pass scheduling from plateau telemetry.
 HIER_BUDGET_AWARE_SCHEDULING = True
+# Enables component-aware scheduling from exact proxy component snapshots.
+HIER_COMPONENT_AWARE_SCHEDULING = True
+# If normalized congestion dominates density by this margin, preserve budget
+# for soft/coldspot cleanup and allow strong-soft repair to run even when
+# plateau telemetry is ambiguous.
+HIER_COMPONENT_CONG_DOMINANCE = 0.10
+# Minimum seconds preserved for strong soft repair and coldspot cleanup when
+# congestion still dominates.
+HIER_COMPONENT_RESERVED_CLEANUP_S = 12.0
 # Accept-rate threshold below which a pass is considered plateaued.
 HIER_PLATEAU_ACCEPT_RATE = 0.002
 # Proxy-gain threshold below which a pass is considered low-yield.
@@ -97,6 +107,14 @@ HIER_PLATEAU_SOFT_REPAIR_BONUS = True
 HIER_PLATEAU_SOFT_REPAIR_BONUS_BUDGET_S = 4.0
 HIER_PLATEAU_SOFT_REPAIR_BONUS_ROUNDS = 1
 HIER_PLATEAU_SOFT_REPAIR_BONUS_MIN_SPARE_S = 6.0
+# Adds a short alternate soft-relocation proposal class after plateaued swaps.
+HIER_PLATEAU_ESCAPE_PROPOSALS = True
+HIER_PLATEAU_ESCAPE_BUDGET_S = 4.0
+HIER_PLATEAU_ESCAPE_MIN_SPARE_S = 5.0
+HIER_PLATEAU_ESCAPE_AFTER_POST_POLISH = True
+HIER_PLATEAU_ESCAPE_SOFT_TOP_K = 384
+HIER_PLATEAU_ESCAPE_SOFT_TARGETS = 10
+HIER_PLATEAU_ESCAPE_MIN_GAIN = 0.00005
 
 # Stronger exact-gated late soft repair. This spends spare budget on soft
 # macros, which can relieve congestion without reopening hard legality.
@@ -161,6 +179,9 @@ HIER_MICRO_SHIFT_TOP = 96
 HIER_MICRO_SHIFT_MIN_GAIN = 0.00001
 # Replays micro-shift polish after region swaps.
 HIER_POST_SWAP_MICRO_SHIFT = True
+# Experiment 2: when region swaps run multiple rounds, replay micro-shift after
+# each swap round instead of waiting until the full swap pass completes.
+HIER_SWAP_ROUND_MICRO_SHIFT = True
 # Wall-clock budget for the post-swap micro-shift replay.
 HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S = 8.0
 # Replays micro-shift polish after coldspot tightening.
@@ -170,6 +191,14 @@ HIER_POST_COLDSPOT_MICRO_SHIFT_BUDGET_S = 8.0
 
 # Enables exact-gated decompression of congested hierarchy clusters.
 HIER_DECOMPRESS = True
+# Stronger opportunity gates for expensive decompression/coldspot
+# passes. These gates skip optional passes when the current congestion field has
+# too little hot-vs-cold separation to justify spending runtime.
+HIER_STRONG_OPPORTUNITY_GATES = True
+HIER_DECOMPRESS_FIELD_GATE = True
+HIER_DECOMPRESS_MIN_FIELD_GAP = 0.08
+HIER_COLDSPOT_STRONG_FIELD_GATE = True
+HIER_COLDSPOT_STRONG_MIN_FIELD_GAP = 0.04
 # Wall-clock budget for cluster decompression inside a region-relief round.
 HIER_DECOMPRESS_BUDGET_S = 18.0
 # Number of cluster-decompression rounds to attempt.
@@ -222,6 +251,18 @@ HIER_SWAP_SS = True
 HIER_SWAP_DENSITY_FIELD = True
 # Enables experimental batched swap scoring path.
 HIER_BATCH_SWAP_SCORES = True
+
+# Uses CUDA top-k/order kernels for large candidate-ranking arrays when available.
+HIER_GPU_RANK_SWAP_CANDIDATES = "auto"
+HIER_GPU_RANK_RELOCATION_TARGETS = "auto"
+HIER_GPU_RANK_SOFT_RELOCATION_TARGETS = "auto"
+HIER_GPU_RANK_MIN_CANDIDATES = 512
+HIER_GPU_RANK_SOFT_MIN_CANDIDATES = 1024
+HIER_GPU_SWAP_PRESCORE_SS = "auto"
+HIER_GPU_SWAP_PRESCORE_HS = "auto"
+HIER_GPU_SWAP_PRESCORE_HH = "auto"
+HIER_GPU_SWAP_PRESCORE_MIN_CANDIDATES = 512
+HIER_GPU_SWAP_PRESCORE_DISTANCE_WEIGHT = 0.02
 
 # Adds supplemental candidates after the deterministic prefix when local budget remains.
 HIER_ADDITIVE_CANDIDATE_POOLS = True
@@ -297,12 +338,78 @@ HIER_COLDSPOT_GRAPH_MASK_GATING = True
 HIER_COLDSPOT_GRAPH_FALLBACK = True
 # Number of hot clusters considered by graph-local fallback.
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K = 3
+# Default-off soft-only fallback for coldspot cleanup. When no hard coldspot
+# candidate commits, this tries exact-gated movable soft relocation into open
+# remembered cold cells while preserving hierarchy region boxes.
+HIER_COLDSPOT_SOFT_ONLY = False
+# Hot soft macros considered by the soft-only coldspot fallback.
+HIER_COLDSPOT_SOFT_ONLY_TOP_K = 96
+# Candidate cold cells considered per soft source in the soft-only fallback.
+HIER_COLDSPOT_SOFT_ONLY_TARGETS = 10
+# Minimum exact-proxy gain required by the soft-only coldspot fallback.
+HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN = 0.00005
+# Include bridge soft macros in coldspot kick generation, so the hard cluster
+# and its owned/bridge softs move together as one exact-gated candidate.
+HIER_COLDSPOT_JOINT_BRIDGE_SOFTS = False
 # Enables remembered cold-cell graph expansion for local coldspot refinement.
 HIER_COLDSPOT_ADAPTIVE_REGIONS = True
 # Field percentile used to remember cold cells for adaptive local regions.
 HIER_COLDSPOT_MEMORY_COLD_PCT = 35.0
 # Maximum grid-cell distance flooded from a cluster box into adjacent cold cells.
 HIER_COLDSPOT_ADAPTIVE_MAX_CELLS = 5
+# Generates one default-off capacity-aware partial frontier candidate alongside
+# the normal whole-cluster coldspot kick. Exact proxy and hierarchy gates still
+# decide whether the candidate can commit.
+HIER_COLDSPOT_PARTIAL_FRONTIER = False
+# Maximum number of partial frontier candidates added to one coldspot pool.
+HIER_COLDSPOT_PARTIAL_CANDIDATES = 1
+# Fill fraction applied to the connected cold-area capacity estimate.
+HIER_COLDSPOT_PARTIAL_FILL_FRAC = 0.75
+# Maximum fraction of the source hard-cluster area a partial frontier candidate
+# may move. This keeps the mode distinct from the whole-cluster kick.
+HIER_COLDSPOT_PARTIAL_MAX_AREA_FRAC = 0.55
+# Minimum source hard-cluster size for partial frontier. Tiny clusters tend to
+# become far 2-of-3 splits that improve proxy but fail hierarchy quality.
+HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD = 6
+# Minimum hard macros moved by a partial frontier candidate.
+HIER_COLDSPOT_PARTIAL_MIN_HARD = 2
+# Minimum hard macros left behind in the source cluster.
+HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD = 3
+# Maximum selected hard-macro fraction before rejecting majority splits.
+HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC = 0.50
+# Maximum selected-vs-remaining connectivity cut ratio before rejecting a split.
+HIER_COLDSPOT_PARTIAL_MAX_CUT_RATIO = 0.85
+# Require selected hard macros to form one local low-fanout connectivity
+# component when such edges are available.
+HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED = True
+# Cheap pre-exact split-shape guard. Reject partial candidates predicted to
+# stretch the source hierarchy cluster beyond these local shape ratios.
+HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = 1.15
+HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = 1.20
+HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = 1.50
+
+# Enables a bounded go-with-the-winners survivor search after coldspot cleanup.
+# The pass keeps a small pool of valid hierarchy-preserving states instead of
+# continuing from one greedy state.
+HIER_SURVIVOR_SEARCH = True
+# Wall-clock budget for survivor search.
+HIER_SURVIVOR_BUDGET_S = 12.0
+# Number of survivor generations.
+HIER_SURVIVOR_ROUNDS = 2
+# Number of placement states kept between generations.
+HIER_SURVIVOR_WIDTH = 4
+# Number of hottest hierarchy clusters used to generate each candidate pool.
+HIER_SURVIVOR_HOT_CLUSTERS = 6
+# Candidate cluster translation distances in congestion-grid cells.
+HIER_SURVIVOR_STEP_CELLS = (2.0, 4.0, 7.0)
+# Exact-score only the best cheap-ranked candidates per generation.
+HIER_SURVIVOR_EXACT_TOP_K = 10
+# Minimum exact-proxy gain required to commit the final survivor result.
+HIER_SURVIVOR_MIN_GAIN = 0.0001
+# Maximum hierarchy-quality degradation allowed for survivor candidates.
+HIER_SURVIVOR_QUALITY_BUDGET = 0.015
+# Uses CUDA for cheap candidate-pool ranking when available.
+HIER_SURVIVOR_GPU_RANK = "auto"
 
 # Weight for structural candidate ordering inside hierarchy relocation.
 HIER_OBJECTIVE_STRUCTURAL_WEIGHT = 0.0

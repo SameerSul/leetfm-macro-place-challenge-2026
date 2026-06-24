@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import atexit
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ TRACE_SCHEMA_VERSION = 1
 PLATEAU_SCHEMA_VERSION = 1
 
 _FALSE = {"0", "false", "False", "no", "NO", "off", ""}
+_PLATEAU_BUFFER: list[str] = []
+_PLATEAU_BUFFER_PATH: Path | None = None
 
 
 def gnn_trace_enabled() -> bool:
@@ -22,6 +25,17 @@ def gnn_trace_enabled() -> bool:
 
 def plateau_trace_enabled() -> bool:
     return os.environ.get("HIER_PLATEAU_TRACE", "1").strip() not in _FALSE
+
+
+def plateau_trace_buffered() -> bool:
+    try:
+        from utils import constants as const
+
+        default_buffered = bool(getattr(const, "HIER_PLATEAU_TELEMETRY_BUFFERED", True))
+    except Exception:
+        default_buffered = True
+    raw = os.environ.get("HIER_PLATEAU_TRACE_BUFFERED", "1" if default_buffered else "0").strip()
+    return raw not in _FALSE
 
 
 def gnn_trace_limit(default: int = 512) -> int:
@@ -62,6 +76,22 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def flush_plateau_events() -> None:
+    """Flush buffered plateau rows to JSONL."""
+    global _PLATEAU_BUFFER_PATH
+    if not _PLATEAU_BUFFER:
+        return
+    path = _PLATEAU_BUFFER_PATH or _plateau_trace_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = list(_PLATEAU_BUFFER)
+    _PLATEAU_BUFFER.clear()
+    with path.open("a", encoding="utf-8") as f:
+        f.write("".join(rows))
+
+
+atexit.register(flush_plateau_events)
+
+
 def log_gnn_event(event: str, **payload: Any) -> None:
     """Append one trace event when `HIER_GNN_TRACE=1`."""
     if not gnn_trace_enabled():
@@ -80,15 +110,23 @@ def log_gnn_event(event: str, **payload: Any) -> None:
 
 def log_plateau_event(event: str, **payload: Any) -> None:
     """Append one lightweight plateau telemetry row unless disabled."""
+    global _PLATEAU_BUFFER_PATH
     if not plateau_trace_enabled():
         return
     path = _plateau_trace_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     row = {
         "schema_version": PLATEAU_SCHEMA_VERSION,
         "time_s": time.time(),
         "event": event,
         **payload,
     }
+    line = json.dumps(_jsonable(row), sort_keys=True, separators=(",", ":")) + "\n"
+    if plateau_trace_buffered():
+        if _PLATEAU_BUFFER_PATH is not None and _PLATEAU_BUFFER_PATH != path:
+            flush_plateau_events()
+        _PLATEAU_BUFFER_PATH = path
+        _PLATEAU_BUFFER.append(line)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(_jsonable(row), sort_keys=True, separators=(",", ":")) + "\n")
+        f.write(line)

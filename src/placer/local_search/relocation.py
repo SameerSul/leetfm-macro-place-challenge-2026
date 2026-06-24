@@ -32,6 +32,205 @@ def _proposal_scorer_mode() -> str:
     return mode if mode in {"exact", "tensor", "cuda_delta"} else "cuda_delta"
 
 
+def _auto_gpu_enabled(value) -> bool:
+    if isinstance(value, str) and value.lower() == "auto":
+        return _GPU_BACKEND == "cuda"
+    return bool(value)
+
+
+def _gpu_rank_order(values: np.ndarray, *, enabled, largest: bool = False) -> np.ndarray:
+    """Return argsort-equivalent order using CUDA for large candidate arrays."""
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = int(arr.size)
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+    if (
+        not _auto_gpu_enabled(enabled)
+        or _GPU_BACKEND != "cuda"
+        or n < int(const.HIER_GPU_RANK_MIN_CANDIDATES)
+    ):
+        return np.argsort(-arr if largest else arr)
+    try:
+        with torch.inference_mode():
+            vals = torch.as_tensor(arr, device=_GPU_DEVICE, dtype=torch.float32)
+            order = torch.argsort(vals, descending=bool(largest), stable=True)
+            return order.cpu().numpy().astype(np.int64, copy=False)
+    except Exception:
+        return np.argsort(-arr if largest else arr)
+
+
+def _gpu_rank_soft_targets_batch(
+    *,
+    soft_pos: np.ndarray,
+    hot: np.ndarray,
+    local_cong: np.ndarray,
+    tgt_x: np.ndarray,
+    tgt_y: np.ndarray,
+    tgt_cong: np.ndarray,
+    cw: float,
+    ch: float,
+    n_targets: int,
+    wl_blend: float,
+    net_centroid: "np.ndarray | None",
+    region_bbox: "np.ndarray | None",
+    region_mask: "np.ndarray | None",
+    region_bias: float,
+    field_span: float,
+    hierarchy_filter_enabled: bool,
+) -> "dict[int, np.ndarray] | None":
+    """Rank soft-relocation targets in CUDA chunks while preserving exact gates later."""
+    hot = np.asarray(hot, dtype=np.int64).reshape(-1)
+    p = int(tgt_x.size)
+    h = int(hot.size)
+    if (
+        h == 0
+        or p == 0
+        or _hierarchy_structural_weight() > 0.0
+        or not _auto_gpu_enabled(const.HIER_GPU_RANK_SOFT_RELOCATION_TARGETS)
+        or _GPU_BACKEND != "cuda"
+        or h * p < int(const.HIER_GPU_RANK_SOFT_MIN_CANDIDATES)
+    ):
+        return None
+    keep = max(int(n_targets) * 8, int(n_targets) + 64, 96)
+    keep = min(keep, p)
+    if keep <= 0:
+        return None
+    max_chunk_elems = 2_000_000
+    chunk = max(256, min(p, max_chunk_elems // max(1, h)))
+    span2 = float(max(cw, ch)) ** 2
+    try:
+        with torch.inference_mode():
+            src_x = torch.as_tensor(soft_pos[hot, 0], device=_GPU_DEVICE, dtype=torch.float32)[
+                :, None
+            ]
+            src_y = torch.as_tensor(soft_pos[hot, 1], device=_GPU_DEVICE, dtype=torch.float32)[
+                :, None
+            ]
+            src_field = torch.as_tensor(local_cong[hot], device=_GPU_DEVICE, dtype=torch.float32)[
+                :, None
+            ]
+            best_scores = None
+            best_idx = None
+            if wl_blend > 0.0 and net_centroid is not None:
+                cen_x = torch.as_tensor(
+                    net_centroid[hot, 0], device=_GPU_DEVICE, dtype=torch.float32
+                )[:, None]
+                cen_y = torch.as_tensor(
+                    net_centroid[hot, 1], device=_GPU_DEVICE, dtype=torch.float32
+                )[:, None]
+            else:
+                cen_x = cen_y = None
+            if region_bbox is not None and region_bias > 0.0:
+                rb = torch.as_tensor(region_bbox[hot], device=_GPU_DEVICE, dtype=torch.float32)
+                rx0 = rb[:, 0:1]
+                ry0 = rb[:, 1:2]
+                rx1 = rb[:, 2:3]
+                ry1 = rb[:, 3:4]
+            else:
+                rx0 = ry0 = rx1 = ry1 = None
+            filter_by_hierarchy = bool(hierarchy_filter_enabled and region_bbox is not None)
+            if filter_by_hierarchy:
+                rb = torch.as_tensor(region_bbox[hot], device=_GPU_DEVICE, dtype=torch.float32)
+                hx0 = rb[:, 0:1]
+                hy0 = rb[:, 1:2]
+                hx1 = rb[:, 2:3]
+                hy1 = rb[:, 3:4]
+                margin = float(const.HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN) * max(
+                    float(field_span), 1e-12
+                )
+                best_inside = torch.full((h, 1), -float("inf"), device=_GPU_DEVICE)
+                mask_arr = np.asarray(region_mask, dtype=bool) if region_mask is not None else None
+                for start in range(0, p, chunk):
+                    end = min(p, start + chunk)
+                    tx = torch.as_tensor(tgt_x[start:end], device=_GPU_DEVICE, dtype=torch.float32)[
+                        None, :
+                    ]
+                    ty = torch.as_tensor(tgt_y[start:end], device=_GPU_DEVICE, dtype=torch.float32)[
+                        None, :
+                    ]
+                    field = torch.as_tensor(
+                        tgt_cong[start:end], device=_GPU_DEVICE, dtype=torch.float32
+                    )[None, :]
+                    inside = (tx >= hx0) & (tx <= hx1) & (ty >= hy0) & (ty <= hy1)
+                    if mask_arr is not None and mask_arr.ndim == 2 and mask_arr.size:
+                        nr, nc = mask_arr.shape
+                        cols = np.clip((tgt_x[start:end] / (cw / nc)).astype(np.int64), 0, nc - 1)
+                        rows = np.clip((tgt_y[start:end] / (ch / nr)).astype(np.int64), 0, nr - 1)
+                        mask_chunk = torch.as_tensor(
+                            mask_arr[rows, cols], device=_GPU_DEVICE, dtype=torch.bool
+                        )[None, :]
+                        inside = inside & mask_chunk
+                    relief = src_field - field
+                    chunk_best = torch.max(
+                        relief.masked_fill(~inside, -float("inf")), dim=1, keepdim=True
+                    ).values
+                    best_inside = torch.maximum(best_inside, chunk_best)
+            else:
+                hx0 = hy0 = hx1 = hy1 = None
+                margin = 0.0
+                best_inside = None
+                mask_arr = None
+            for start in range(0, p, chunk):
+                end = min(p, start + chunk)
+                tx = torch.as_tensor(tgt_x[start:end], device=_GPU_DEVICE, dtype=torch.float32)[
+                    None, :
+                ]
+                ty = torch.as_tensor(tgt_y[start:end], device=_GPU_DEVICE, dtype=torch.float32)[
+                    None, :
+                ]
+                field = torch.as_tensor(
+                    tgt_cong[start:end], device=_GPU_DEVICE, dtype=torch.float32
+                )[None, :]
+                scores = (tx - src_x).square() + (ty - src_y).square()
+                if wl_blend > 0.0 and cen_x is not None and cen_y is not None:
+                    anchored = (tx - cen_x).square() + (ty - cen_y).square()
+                    scores = (1.0 - float(wl_blend)) * scores + float(wl_blend) * anchored
+                if rx0 is not None:
+                    out = (tx < rx0) | (tx > rx1) | (ty < ry0) | (ty > ry1)
+                    scores = scores + out.to(torch.float32) * float(region_bias) * span2
+                valid = field < src_field - 1e-9
+                if filter_by_hierarchy and best_inside is not None:
+                    inside = (tx >= hx0) & (tx <= hx1) & (ty >= hy0) & (ty <= hy1)
+                    if mask_arr is not None and mask_arr.ndim == 2 and mask_arr.size:
+                        nr, nc = mask_arr.shape
+                        cols = np.clip((tgt_x[start:end] / (cw / nc)).astype(np.int64), 0, nc - 1)
+                        rows = np.clip((tgt_y[start:end] / (ch / nr)).astype(np.int64), 0, nr - 1)
+                        mask_chunk = torch.as_tensor(
+                            mask_arr[rows, cols], device=_GPU_DEVICE, dtype=torch.bool
+                        )[None, :]
+                        inside = inside & mask_chunk
+                    relief = src_field - field
+                    has_inside = torch.isfinite(best_inside)
+                    keep_hierarchy = inside | (relief >= best_inside + margin)
+                    valid = valid & (~has_inside | keep_hierarchy)
+                scores = scores.masked_fill(~valid, float("inf"))
+                take = min(keep, end - start)
+                chunk_scores, chunk_order = torch.topk(scores, k=take, dim=1, largest=False)
+                chunk_idx = chunk_order + int(start)
+                if best_scores is None:
+                    best_scores = chunk_scores
+                    best_idx = chunk_idx
+                else:
+                    merged_scores = torch.cat([best_scores, chunk_scores], dim=1)
+                    merged_idx = torch.cat([best_idx, chunk_idx], dim=1)
+                    take = min(keep, int(merged_scores.shape[1]))
+                    best_scores, order = torch.topk(merged_scores, k=take, dim=1, largest=False)
+                    best_idx = torch.gather(merged_idx, 1, order)
+            if best_scores is None or best_idx is None:
+                return None
+            finite = torch.isfinite(best_scores)
+            idx_cpu = best_idx.cpu().numpy().astype(np.int64, copy=False)
+            finite_cpu = finite.cpu().numpy()
+            ranked: dict[int, np.ndarray] = {}
+            for row, soft_i in enumerate(hot):
+                row_idx = idx_cpu[row][finite_cpu[row]]
+                if row_idx.size:
+                    ranked[int(soft_i)] = row_idx
+            return ranked or None
+    except Exception:
+        return None
+
+
 def _structural_weights() -> tuple[float, float, float]:
     return (
         float(const.HIER_KEEP_OUT_WEIGHT),
@@ -2474,7 +2673,7 @@ def _relocation_moves_propose_all(
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
         if region_bbox is not None and region_bias > 0.0:
             d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, _span2, region_bias)
-        cand = cand[np.argsort(d2)][:n_targets]
+        cand = cand[_gpu_rank_order(d2, enabled=const.HIER_GPU_RANK_RELOCATION_TARGETS)][:n_targets]
 
         mask = all_idx != i
         sxi = sep_x_mat[i, mask]
@@ -2669,9 +2868,7 @@ def _relocation_moves_propose_all(
         frozen_scores=int(frozen_scores),
         additive_candidate_pools=bool(const.HIER_ADDITIVE_CANDIDATE_POOLS),
         additive_extra_top_k=int(
-            const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K
-            if const.HIER_ADDITIVE_CANDIDATE_POOLS
-            else 0
+            const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K if const.HIER_ADDITIVE_CANDIDATE_POOLS else 0
         ),
         gpu_rank_additive_tails=bool(const.HIER_GPU_RANK_ADDITIVE_TAILS),
         structural_weight=float(_hierarchy_structural_weight()),
@@ -2891,7 +3088,9 @@ def _relocation_moves(
     """
     _relocation_moves.last_stats = {"candidates": 0, "legal": 0, "scored": 0, "accepts": 0}
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
-    weighted_rank = bool(const.HIER_CONGESTION_WEIGHTED_PROPOSALS and not use_density and not use_combined)
+    weighted_rank = bool(
+        const.HIER_CONGESTION_WEIGHTED_PROPOSALS and not use_density and not use_combined
+    )
     trace_field = (
         "weighted_congestion"
         if weighted_rank
@@ -3146,6 +3345,7 @@ def _soft_relocation_moves(
     accept_min_gain: float = 0.0,
     target_pool: "np.ndarray | None" = None,
     region_mask: "np.ndarray | None" = None,
+    gpu_batch_rank: bool = False,
 ) -> "tuple[np.ndarray, int, float]":
     """Move hot soft macros to colder cells."""
     _soft_relocation_moves.last_stats = {
@@ -3153,6 +3353,8 @@ def _soft_relocation_moves(
         "legal": 0,
         "scored": 0,
         "accepts": 0,
+        "gpu_ranked_sources": 0,
+        "gpu_rank_fallbacks": 0,
     }
     num_soft = incremental_scorer.num_soft
     if num_soft == 0:
@@ -3203,9 +3405,31 @@ def _soft_relocation_moves(
     candidate_count = 0
     legal_count = 0
     scored_count = 0
+    gpu_ranked_sources = 0
+    gpu_rank_fallbacks = 0
     full_pos_for_struct = _full_committed_pos(incremental_scorer)
     sizes_for_struct = _full_macro_sizes(incremental_scorer)
     accepted_trace = []
+    gpu_soft_order = None
+    if gpu_batch_rank:
+        gpu_soft_order = _gpu_rank_soft_targets_batch(
+            soft_pos=soft_pos,
+            hot=hot,
+            local_cong=local_cong,
+            tgt_x=tgt_x,
+            tgt_y=tgt_y,
+            tgt_cong=tgt_cong,
+            cw=cw,
+            ch=ch,
+            n_targets=n_targets,
+            wl_blend=wl_blend,
+            net_centroid=net_centroid,
+            region_bbox=region_bbox,
+            region_mask=region_mask,
+            region_bias=region_bias,
+            field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
+            hierarchy_filter_enabled=bool(weighted_rank and const.HIER_PROPOSAL_HIERARCHY_AWARE),
+        )
     for k in hot:
         k = int(k)
         if deadline is not None and time.monotonic() > deadline:
@@ -3228,27 +3452,42 @@ def _soft_relocation_moves(
             field_span=max(float(np.max(flat) - np.min(flat)), 1e-12),
             enabled=bool(weighted_rank and const.HIER_PROPOSAL_HIERARCHY_AWARE),
         )
-        # Order targets by distance and optional wirelength anchor.
-        d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
-        if wl_blend > 0.0 and net_centroid is not None:
-            d2c = (tgt_x[cand] - net_centroid[k, 0]) ** 2 + (tgt_y[cand] - net_centroid[k, 1]) ** 2
-            d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
-        if region_bbox is not None and region_bias > 0.0:
-            _span2 = float(max(cw, ch)) ** 2
-            d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, k, _span2, region_bias)
-        order = _structural_candidate_order(
-            cand=cand,
-            base_rank=d2,
-            module_index=n + k,
-            target_x=tgt_x,
-            target_y=tgt_y,
-            full_pos=full_pos_for_struct,
-            sizes=sizes_for_struct,
-            cw=cw,
-            ch=ch,
-            benchmark=benchmark,
-        )
-        cand = cand[order][:n_targets]
+        used_gpu_rank = False
+        if gpu_soft_order is not None and k in gpu_soft_order:
+            cand_mask = np.zeros(tgt_cong.shape[0], dtype=bool)
+            cand_mask[cand] = True
+            ordered = gpu_soft_order[k]
+            ordered = ordered[cand_mask[ordered]]
+            if ordered.size >= min(int(n_targets), int(cand.size)):
+                cand = ordered[:n_targets]
+                used_gpu_rank = True
+                gpu_ranked_sources += 1
+            else:
+                gpu_rank_fallbacks += 1
+        if not used_gpu_rank:
+            # Order targets by distance and optional wirelength anchor.
+            d2 = (tgt_x[cand] - soft_pos[k, 0]) ** 2 + (tgt_y[cand] - soft_pos[k, 1]) ** 2
+            if wl_blend > 0.0 and net_centroid is not None:
+                d2c = (tgt_x[cand] - net_centroid[k, 0]) ** 2 + (
+                    tgt_y[cand] - net_centroid[k, 1]
+                ) ** 2
+                d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
+            if region_bbox is not None and region_bias > 0.0:
+                _span2 = float(max(cw, ch)) ** 2
+                d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, k, _span2, region_bias)
+            order = _structural_candidate_order(
+                cand=cand,
+                base_rank=d2,
+                module_index=n + k,
+                target_x=tgt_x,
+                target_y=tgt_y,
+                full_pos=full_pos_for_struct,
+                sizes=sizes_for_struct,
+                cw=cw,
+                ch=ch,
+                benchmark=benchmark,
+            )
+            cand = cand[order][:n_targets]
         # Remove the soft macro once, then try several targets.
         prep = incremental_scorer._prepare_move_soft(k)
         best_k_xy = None
@@ -3313,7 +3552,9 @@ def _soft_relocation_moves(
         "hier_relocation_result",
         benchmark=getattr(benchmark, "name", ""),
         kind="soft_sequential",
-        field="density" if use_density else ("weighted_congestion" if weighted_rank else "congestion"),
+        field=(
+            "density" if use_density else ("weighted_congestion" if weighted_rank else "congestion")
+        ),
         initial_proxy=float(initial_score),
         final_proxy=float(best_score),
         hot_count=int(len(hot)),
@@ -3326,5 +3567,7 @@ def _soft_relocation_moves(
         "legal": int(legal_count),
         "scored": int(scored_count),
         "accepts": int(accepts),
+        "gpu_ranked_sources": int(gpu_ranked_sources),
+        "gpu_rank_fallbacks": int(gpu_rank_fallbacks),
     }
     return soft_pos, accepts, best_score

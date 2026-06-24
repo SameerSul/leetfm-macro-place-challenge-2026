@@ -25,6 +25,7 @@ from placer.local_search.lsmc_explore import (
     _coldspot_cluster_kick_candidates,
 )
 from placer.scoring.exact import _exact_proxy
+from utils import constants as const
 
 TOL = 0.05
 
@@ -53,6 +54,7 @@ def _check(bench):
 
     kicks = 0
     pools = 0
+    partial_pools = 0
     for s in range(25):
         rng = np.random.default_rng(s)
         for pk in ("hot", "random"):
@@ -163,11 +165,102 @@ def _check(bench):
                 assert np.all(m[:, 1] >= soft_hh[moved] - TOL) and np.all(
                     m[:, 1] <= ch - soft_hh[moved] + TOL
                 ), "pool soft y oob"
+
+    old_partial = bool(const.HIER_COLDSPOT_PARTIAL_FRONTIER)
+    old_min_cluster = int(const.HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD)
+    old_min_remaining = int(const.HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD)
+    old_max_member_frac = float(const.HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC)
+    old_require_connected = bool(const.HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED)
+    old_radius_ratio = float(const.HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO)
+    old_bbox_ratio = float(const.HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO)
+    old_sep_ratio = float(const.HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO)
+    const.HIER_COLDSPOT_PARTIAL_FRONTIER = True
+    const.HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD = 2
+    const.HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD = 1
+    const.HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC = 1.0
+    const.HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED = False
+    const.HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = 1.0e9
+    const.HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = 1.0e9
+    const.HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = 1.0e9
+    try:
+        partial_pool = _coldspot_cluster_kick_candidates(
+            hard_xy,
+            sizes[:n],
+            hw,
+            hh,
+            cw,
+            ch,
+            movable[:n],
+            n,
+            clusters,
+            csofts,
+            soft_xy,
+            soft_hw,
+            soft_hh,
+            movable[n : n + n_soft],
+            field,
+            nr,
+            nc,
+            np.random.default_rng(2),
+            deadline=float("inf"),
+            pick="random",
+            kick_count=2,
+            plc=plc,
+        )
+    finally:
+        const.HIER_COLDSPOT_PARTIAL_FRONTIER = old_partial
+        const.HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD = old_min_cluster
+        const.HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD = old_min_remaining
+        const.HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC = old_max_member_frac
+        const.HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED = old_require_connected
+        const.HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = old_radius_ratio
+        const.HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = old_bbox_ratio
+        const.HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = old_sep_ratio
+    partial = [
+        (out, out_soft, trace)
+        for out, out_soft, trace in partial_pool
+        if trace.get("partial_frontier")
+    ]
+    if partial:
+        partial_pools += 1
+        assert (
+            len(partial_pool) <= 3
+        ), "partial pool exceeded whole candidates plus partial candidate"
+        for out, out_soft, trace in partial:
+            assert trace["partial_moved_hard"] >= const.HIER_COLDSPOT_PARTIAL_MIN_HARD
+            assert trace["partial_moved_hard"] < trace["member_count"]
+            assert trace["partial_capacity"] > 0.0
+            assert trace["partial_pred_radius_ratio"] > 0.0
+            assert trace["partial_pred_bbox_ratio"] > 0.0
+            assert trace["partial_pred_separation_ratio"] >= 0.0
+            assert np.all(out[:, 0] >= hw - TOL) and np.all(
+                out[:, 0] <= cw - hw + TOL
+            ), "partial hard x oob"
+            assert np.all(out[:, 1] >= hh - TOL) and np.all(
+                out[:, 1] <= ch - hh + TOL
+            ), "partial hard y oob"
+            p = out[mv]
+            sx = np.abs(p[:, None, 0] - p[None, :, 0]) + TOL >= (hw[mv][:, None] + hw[mv][None, :])
+            sy = np.abs(p[:, None, 1] - p[None, :, 1]) + TOL >= (hh[mv][:, None] + hh[mv][None, :])
+            ok = sx | sy
+            np.fill_diagonal(ok, True)
+            assert ok.all(), "partial hard overlap"
+            if out_soft is not None:
+                moved = np.any(np.abs(out_soft - soft_xy) > TOL, axis=1)
+                m = out_soft[moved]
+                assert np.all(m[:, 0] >= soft_hw[moved] - TOL) and np.all(
+                    m[:, 0] <= cw - soft_hw[moved] + TOL
+                ), "partial soft x oob"
+                assert np.all(m[:, 1] >= soft_hh[moved] - TOL) and np.all(
+                    m[:, 1] <= ch - soft_hh[moved] + TOL
+                ), "partial soft y oob"
     assert kicks > 0, "no kicks fired (no usable cluster?)"
     assert pools > 0, "no candidate pools fired"
+    assert partial_pools > 0, "partial frontier candidate did not fire"
     print(
         f"{bench}: coldspot-kick OK  {len(clusters)} clusters, "
-        f"{kicks} kicks, {pools} pools, 0 overlaps, in-bounds"
+        f"{kicks} kicks, {pools} pools, {partial_pools} partial pools, "
+        "0 overlaps, in-bounds"
     )
 
 

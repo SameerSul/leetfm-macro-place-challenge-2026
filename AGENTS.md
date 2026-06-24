@@ -11,16 +11,19 @@ The active submission now lives at the repository root: `src/`, `docs/`,
 absent after the root-layout migration; if present, treat it as frozen /
 read-only.
 
-**Current production mode (2026-06-18): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-06-23): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py` and raises if grouped DREAMPlace is not
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 Current accepted hierarchy result: `uv run evaluate src/main.py --all` =
-**AVG 1.1817**, 17/17 VALID, 0 overlaps, 1383.28s. The best same-day
-audit-equivalent sweep after Stage 5 was **AVG 1.1796**, but the final
-current-code Stage 6 audit sweep is the documented reproducible result.
+**AVG 1.1793**, 17/17 VALID, 0 overlaps, 1421.12s. The accepted post-Stage-6
+cleanup adds swap-round micro-shift replay, stronger opportunity gates for
+expensive decompression/coldspot work, and component-aware scheduling telemetry
+for late cleanup. Early strong-soft repair, early swap-lite, early survivor
+search, and ArchGen-style seed top-k repair were tested and rejected/removed
+because they regressed final proxy or consumed budget needed by late cleanup.
 NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
 **AVG 0.7320**, 4/4 VALID, 0 overlaps; `uv run python
 test/verification/_verify_ng45_hierarchy_tags.py` passes. The hierarchy model

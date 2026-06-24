@@ -5,12 +5,14 @@ from __future__ import annotations
 import time
 
 import numpy as np
+import torch
 
 from utils import constants as const
+from utils.config import _GPU_BACKEND, _GPU_DEVICE
 from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
-from placer.local_search.region_rules import accepts_region_score, any_outside_region
+from placer.local_search.region_rules import accepts_region_score
 
 
 def _new_stats() -> dict:
@@ -51,6 +53,87 @@ def _cell_values(pos: np.ndarray, field: np.ndarray, cw: float, ch: float) -> np
     ci = np.clip((pos[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
     ri = np.clip((pos[:, 1] / cell_h).astype(np.int64), 0, nr - 1)
     return field[ri, ci]
+
+
+def _auto_gpu_enabled(value) -> bool:
+    if isinstance(value, str) and value.lower() == "auto":
+        return _GPU_BACKEND == "cuda"
+    return bool(value)
+
+
+def _rank_smallest(values: np.ndarray) -> np.ndarray:
+    """Return ascending rank order, using CUDA only for large arrays."""
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = int(arr.size)
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+    if (
+        not _auto_gpu_enabled(const.HIER_GPU_RANK_SWAP_CANDIDATES)
+        or _GPU_BACKEND != "cuda"
+        or n < int(const.HIER_GPU_RANK_MIN_CANDIDATES)
+    ):
+        return np.argsort(arr)
+    try:
+        with torch.inference_mode():
+            vals = torch.as_tensor(arr, device=_GPU_DEVICE, dtype=torch.float32)
+            return torch.argsort(vals, stable=True).cpu().numpy().astype(np.int64, copy=False)
+    except Exception:
+        return np.argsort(arr)
+
+
+def _gpu_swap_prescore_order(
+    base_rank: np.ndarray,
+    *,
+    enabled,
+    src_x: float,
+    src_y: float,
+    tgt_x: np.ndarray,
+    tgt_y: np.ndarray,
+    field_span: float,
+    distance_span: float,
+) -> np.ndarray:
+    """Rank swap candidates with a lightweight CUDA heuristic before exact scoring."""
+    base = np.asarray(base_rank, dtype=np.float64).reshape(-1)
+    n = int(base.size)
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+    if (
+        not _auto_gpu_enabled(enabled)
+        or _GPU_BACKEND != "cuda"
+        or n < int(const.HIER_GPU_SWAP_PRESCORE_MIN_CANDIDATES)
+    ):
+        return _rank_smallest(base)
+    try:
+        with torch.inference_mode():
+            tx = torch.as_tensor(tgt_x, device=_GPU_DEVICE, dtype=torch.float32)
+            ty = torch.as_tensor(tgt_y, device=_GPU_DEVICE, dtype=torch.float32)
+            rank = torch.as_tensor(base, device=_GPU_DEVICE, dtype=torch.float32)
+            dx = tx - float(src_x)
+            dy = ty - float(src_y)
+            span2 = max(float(distance_span) ** 2, 1.0)
+            dist = (dx.square() + dy.square()) / span2
+            rank = (
+                rank
+                + float(const.HIER_GPU_SWAP_PRESCORE_DISTANCE_WEIGHT)
+                * max(float(field_span), 1e-12)
+                * dist
+            )
+            return torch.argsort(rank, stable=True).cpu().numpy().astype(np.int64, copy=False)
+    except Exception:
+        return _rank_smallest(base)
+
+
+def _outside_region_mask(region_bbox, idx, x, y) -> np.ndarray:
+    """Vectorized equivalent of `not point_in_region(...)`."""
+    idx_arr = np.asarray(idx, dtype=np.int64).reshape(-1)
+    if idx_arr.size == 0:
+        return np.zeros(0, dtype=np.bool_)
+    if region_bbox is None:
+        return np.zeros(idx_arr.size, dtype=np.bool_)
+    rb = region_bbox[idx_arr]
+    x_arr = np.broadcast_to(np.asarray(x, dtype=np.float64), idx_arr.shape)
+    y_arr = np.broadcast_to(np.asarray(y, dtype=np.float64), idx_arr.shape)
+    return (x_arr < rb[:, 0]) | (x_arr > rb[:, 2]) | (y_arr < rb[:, 1]) | (y_arr > rb[:, 3])
 
 
 def _swap_rejection_reason(
@@ -360,18 +443,12 @@ def _try_hard_hard(
             cand,
             1e-6,
         )
-        outside = np.array(
-            [
-                any_outside_region(
-                    [
-                        (hard_region, i, h_pos[j, 0], h_pos[j, 1]),
-                        (hard_region, int(j), h_pos[i, 0], h_pos[i, 1]),
-                    ]
-                )
-                for j in cand
-            ],
-            dtype=bool,
-        )
+        outside = _outside_region_mask(
+            hard_region,
+            np.full(cand.size, i, dtype=np.int64),
+            h_pos[cand, 0],
+            h_pos[cand, 1],
+        ) | _outside_region_mask(hard_region, cand, h_pos[i, 0], h_pos[i, 1])
         cand_before = cand
         cand, outside = _hierarchy_aware_swap_filter(
             cand,
@@ -385,7 +462,16 @@ def _try_hard_hard(
             keep = np.isin(cand_before, cand)
             legal_mask = legal_mask[keep]
         rank = local[cand] + region_bias * span * outside.astype(np.float64)
-        ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked_idx = _gpu_swap_prescore_order(
+            rank,
+            enabled=const.HIER_GPU_SWAP_PRESCORE_HH,
+            src_x=float(h_pos[i, 0]),
+            src_y=float(h_pos[i, 1]),
+            tgt_x=h_pos[cand, 0],
+            tgt_y=h_pos[cand, 1],
+            field_span=span,
+            distance_span=max(float(max(cw, ch)), 1.0),
+        )[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_legal = legal_mask[ranked_idx]
         ranked_outside = outside[ranked_idx]
@@ -515,18 +601,12 @@ def _try_soft_soft(
         cand = cand[(local[a] - local[cand]) > min_field_relief * span]
         if cand.size == 0:
             continue
-        outside = np.array(
-            [
-                any_outside_region(
-                    [
-                        (soft_region, a, s_pos[b, 0], s_pos[b, 1]),
-                        (soft_region, int(b), s_pos[a, 0], s_pos[a, 1]),
-                    ]
-                )
-                for b in cand
-            ],
-            dtype=bool,
-        )
+        outside = _outside_region_mask(
+            soft_region,
+            np.full(cand.size, a, dtype=np.int64),
+            s_pos[cand, 0],
+            s_pos[cand, 1],
+        ) | _outside_region_mask(soft_region, cand, s_pos[a, 0], s_pos[a, 1])
         cand, outside = _hierarchy_aware_swap_filter(
             cand,
             outside,
@@ -537,7 +617,16 @@ def _try_soft_soft(
         )
         rank = local[cand] + region_bias * span * outside.astype(np.float64)
         scored = []
-        ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked_idx = _gpu_swap_prescore_order(
+            rank,
+            enabled=const.HIER_GPU_SWAP_PRESCORE_SS,
+            src_x=float(s_pos[a, 0]),
+            src_y=float(s_pos[a, 1]),
+            tgt_x=s_pos[cand, 0],
+            tgt_y=s_pos[cand, 1],
+            field_span=span,
+            distance_span=max(float(max(cw, ch)), 1.0),
+        )[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_outside = outside[ranked_idx]
         trace_rows = []
@@ -679,18 +768,12 @@ def _try_hard_soft(
         cand = soft_idx[(hard_local[i] - soft_local[soft_idx]) > min_field_relief * span]
         if cand.size == 0:
             continue
-        outside = np.array(
-            [
-                any_outside_region(
-                    [
-                        (hard_region, i, s_pos[k, 0], s_pos[k, 1]),
-                        (soft_region, int(k), h_pos[i, 0], h_pos[i, 1]),
-                    ]
-                )
-                for k in cand
-            ],
-            dtype=bool,
-        )
+        outside = _outside_region_mask(
+            hard_region,
+            np.full(cand.size, i, dtype=np.int64),
+            s_pos[cand, 0],
+            s_pos[cand, 1],
+        ) | _outside_region_mask(soft_region, cand, h_pos[i, 0], h_pos[i, 1])
         cand, outside = _hierarchy_aware_swap_filter(
             cand,
             outside,
@@ -715,7 +798,16 @@ def _try_hard_soft(
             cand,
             1e-6,
         )
-        ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked_idx = _gpu_swap_prescore_order(
+            rank,
+            enabled=const.HIER_GPU_SWAP_PRESCORE_HS,
+            src_x=float(h_pos[i, 0]),
+            src_y=float(h_pos[i, 1]),
+            tgt_x=s_pos[cand, 0],
+            tgt_y=s_pos[cand, 1],
+            field_span=span,
+            distance_span=max(float(max(cw, ch)), 1.0),
+        )[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_outside = outside[ranked_idx]
         trace_rows = []
@@ -865,9 +957,7 @@ def _region_bounded_swap_relief(
         if field is None:
             break
         field_name = (
-            "density"
-            if use_density
-            else ("weighted_congestion" if weighted_rank else "congestion")
+            "density" if use_density else ("weighted_congestion" if weighted_rank else "congestion")
         )
         if enable_hh:
             got, best_score = _try_hard_hard(
