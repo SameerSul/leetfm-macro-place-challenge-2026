@@ -1,4 +1,4 @@
-# Open issues and recent shipped items — v2 placer (last revised 2026-06-18)
+# Open issues and recent shipped items — v2 placer (last revised 2026-06-23)
 
 This file tracks current gaps, speculative score ideas, follow-up work, and a
 small number of recent shipped items that still explain active knobs. Older
@@ -9,14 +9,14 @@ resolved or rejected findings are primarily captured in commit messages and
 
 ## Current state (headline)
 
-**Current production mode (2026-06-18): hierarchy-only.** The old
+**Current production mode (2026-06-23): hierarchy-only.** The old
 proxy-optimized production path (candidate restarts, R2/2-opt/LSMC, ML ranker
 defaults, and generic LSMC cluster kicks) has been deleted from active code.
 `MacroPlacer.place()` now always routes through `_hierarchy_floorplan()` and
-raises if that path is unavailable. Current smoke: `ibm10` proxy `1.6133`,
-VALID, ~41s locally. Current full IBM run:
-`uv run evaluate src/main.py --all` = **AVG 1.3631**, 17/17 VALID, 0 overlaps,
-602.76s. The historical proxy table below is retained as context for the
+raises if that path is unavailable. Current smoke: `ibm10` proxy `1.1576`,
+VALID, ~93s locally. Current full IBM run:
+`uv run evaluate src/main.py --all` = **AVG 1.1793**, 17/17 VALID, 0 overlaps,
+1421.12s. The historical proxy table below is retained as context for the
 removed proxy path, not the current hierarchy-preserving output.
 
 BeyondPPA-style structural guidance is now integrated only as hierarchy
@@ -28,8 +28,8 @@ second placement path.
 
 | Metric | Value |
 |---|---|
-| Current hierarchy `--all` avg | **1.3631** (2026-06-18 — post-swap and post-coldspot micro-shift replay; 17/17 VALID, 0 overlaps, 602.76s). |
-| Current hierarchy gap to RePlAce | **+6.5% vs RePlAce** (1.3631 vs 1.4578). |
+| Current hierarchy `--all` avg | **1.1793** (2026-06-23 — swap-round micro-shift replay, stronger opportunity gates, component-aware scheduling; 17/17 VALID, 0 overlaps, 1421.12s). |
+| Current hierarchy gap to RePlAce | **+19.1% vs RePlAce** (1.1793 vs 1.4578). |
 | Best `--all` avg | **1.1252** (2026-06-11 — S10 ML hard-relocation ranker connected as production default; 17/17 VALID, 0 overlaps, **2337s ~39min**). |
 | Prior `--all` avg | 1.1272 (S16, DP basins restored) → 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |

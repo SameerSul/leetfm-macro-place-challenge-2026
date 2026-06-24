@@ -3,6 +3,168 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
+> **Status (2026-06-23 — default-off soft-only coldspot fallback):**
+> added `HIER_COLDSPOT_SOFT_ONLY=0`, which runs only when the hard coldspot kick
+> path and graph-local fallback commit no candidate. The pass keeps all hard
+> macros fixed, builds a soft relocation target pool from remembered open cold
+> cells, preserves hierarchy region boxes and the cold-cell mask, and accepts
+> only exact-proxy improvements above `HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN`.
+> This is intended as the next low-risk coldspot experiment because it cannot
+> alter hard legality or hard hierarchy quality by construction. It is not
+> promoted and does not change default production output.
+> Follow-up replaced the after-hard refill idea with
+> `HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0`, a simultaneous hard+soft candidate
+> experiment. When enabled, coldspot kick generation includes bridge soft macros
+> tied to the same hierarchy cluster in the candidate's soft set, so hard and
+> soft positions are proposed together and accepted or rejected as one exact-gated
+> full placement.
+
+> **Status (2026-06-23 — default-off partial frontier coldspot prototype):**
+> added `HIER_COLDSPOT_PARTIAL_FRONTIER=0`, which can append one
+> capacity-aware partial frontier candidate to a coldspot candidate pool. The
+> prototype estimates connected cold area near the selected anchor, clamps the
+> moved area to a source-cluster fraction, selects frontier hard macros with a
+> low-fanout connectivity bias, optionally co-moves directly connected soft
+> macros, and relies on the existing legalization, local refinement,
+> exact-proxy, and hierarchy-quality gates. This is not promoted and does not
+> change default production output. Verification:
+> `uv run python test/verification/_verify_coldspot_kick.py ibm04 ibm10`
+> passed, including one partial frontier pool on each benchmark.
+> Follow-up enabled traces showed the first implementation was mostly
+> under-ranked by graph selection; on `ibm10`, widening graph top-k plus oracle
+> scoring exact-labeled the partial candidate as a proxy regression
+> (`proxy_delta=+0.0005`). A five-benchmark enabled smoke (`ibm04`, `ibm10`,
+> `ibm12`, `ibm15`, `ibm17`) was 5/5 VALID, 0 overlaps, AVG **1.3356**,
+> 431.44s, with per-benchmark proxies `1.0277`, `1.1577`, `1.6776`,
+> `1.4036`, `1.4112`. The only exact-improving partial candidate was on
+> `ibm15` (`proxy_delta=-0.0097`) but it failed hierarchy quality badly
+> (`0.8022 -> 2.9406`) because it moved two macros out of a three-macro
+> cluster. The prototype now skips tiny source clusters by default with
+> `HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD=6`; explicit source-hotspot
+> reorganization was not added because the hierarchy metric is dominated by the
+> far split itself, not by unfilled area left behind.
+> Follow-up implementation added a cheap pre-exact split-quality predictor for
+> surviving partial candidates: after hard legalization, the generator rejects
+> candidates whose full source-cluster radius, bbox radius, or moved-vs-remaining
+> centroid separation exceeds configured ratios
+> (`HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO=1.15`,
+> `HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO=1.20`,
+> `HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO=1.50`). This keeps obviously
+> hierarchy-damaging partial splits out of the expensive exact/refinement pool.
+> The generator now also rejects majority splits, splits that leave too few
+> hard macros behind, and disconnected selected subsets when local low-fanout
+> hard-hard edges exist. `HIER_GNN_TRACE=1` writes
+> `hier_coldspot_partial_reject` rows for generated-but-filtered partials, so
+> future threshold tuning can count rejected candidates by reason before
+> spending exact score time.
+> Capping the selected subset during construction, instead of only rejecting
+> majority splits after selection, was tested with another enabled trace smoke.
+> `ibm10` produced a smaller 10-of-21 split but the pre-exact predictor still
+> rejected it as a far stretch (`radius_ratio=2.10`, `bbox_ratio=1.64`,
+> `separation_ratio=1.79`). The five-benchmark enabled capped smoke was 5/5
+> VALID, 0 overlaps, AVG **1.3385**, 433.99s, with per-benchmark proxies
+> `ibm04=1.0277`, `ibm10=1.1609`, `ibm12=1.6858`, `ibm15=1.4051`,
+> `ibm17=1.4130`. It generated 11 rejected partial attempts and 0 surviving
+> partial candidates: most rejects were tiny clusters, with the only larger
+> attempt rejected by radius ratio. No source-hotspot reorganization was added;
+> the traced blocker remains far hierarchy splitting, not lack of source-side
+> area relaxation.
+
+> **Status (2026-06-23 — accepted swap-round micro-shift, stronger
+> opportunity gates, and component-aware scheduling):** promoted
+> `HIER_SWAP_ROUND_MICRO_SHIFT=1`, `HIER_STRONG_OPPORTUNITY_GATES=1`, and
+> `HIER_COMPONENT_AWARE_SCHEDULING=1`. Region swaps now replay exact-gated
+> micro-shift after each swap round as well as after the full swap pass.
+> Optional decompression/coldspot work now has stronger hot-vs-cold field gates;
+> this changes scheduling only, not exact acceptance. Late strong soft repair
+> records exact wirelength/density/congestion components and can treat
+> congestion-dominated states as useful cleanup opportunities. Rejected and
+> removed during the same audit: early strong-soft repair, early swap-lite,
+> early survivor search, and ArchGen-style seed top-k repair. Full verification:
+> `uv run evaluate src/main.py --all` = **AVG 1.1793**, 17/17 VALID,
+> 0 overlaps, 1421.12s. `ibm10` in the full sweep was `1.1576`, VALID.
+>
+> Full per-benchmark proxies:
+> `ibm01=0.9392`, `ibm02=1.1345`, `ibm03=1.0085`, `ibm04=1.0277`,
+> `ibm06=1.2092`, `ibm07=1.0698`, `ibm08=1.1593`, `ibm09=0.8692`,
+> `ibm10=1.1576`, `ibm11=1.0242`, `ibm12=1.6850`, `ibm13=1.0230`,
+> `ibm14=1.2889`, `ibm15=1.4043`, `ibm16=1.2093`, `ibm17=1.4141`,
+> `ibm18=1.4234`.
+
+> **Status (2026-06-22 — Archgen-inspired buffered telemetry, GPU proposal
+> ranking, and plateau escape proposal class):** added buffered default-on
+> plateau telemetry (`HIER_PLATEAU_TRACE_BUFFERED=1`) with per-benchmark flush
+> plus `atexit` fallback. Added CUDA sorting for large swap and relocation
+> target-rank arrays (`HIER_GPU_RANK_SWAP_CANDIDATES=auto`,
+> `HIER_GPU_RANK_RELOCATION_TARGETS=auto`,
+> `HIER_GPU_RANK_MIN_CANDIDATES=512`). Added a plateau escape proposal class:
+> if region swaps plateau and spare budget remains, the scheduler spends a
+> short exact-gated soft-relocation slice inside soft hierarchy regions before
+> post-swap polish. Verification: `uv run python -m py_compile $(find src -type
+> f -name '*.py')` passed; `_verify_score_region_swaps.py ibm01 ibm04 ibm10`
+> passed; `uv run evaluate src/main.py -b ibm10` was VALID with
+> `proxy=1.1539`, 0 overlaps, 92.17s. On that smoke, region swaps were not
+> plateaued, so the new escape pass did not trigger; post-swap hard/soft
+> relocation plateaus still scheduled strong soft repair as before. Follow-up
+> full sweep reported by the user: `uv run evaluate src/main.py --all` =
+> **AVG 1.1791**, 17/17 VALID, 0 overlaps, 1376.96s.
+> Follow-up plateau expansion scopes the escape proposal class to both
+> region-swap plateaus and post-swap hard/soft cleanup plateaus
+> (`HIER_PLATEAU_ESCAPE_AFTER_POST_POLISH=1`). The new soft-relocation GPU
+> batch ranker is used only by this plateau escape class by default, so normal
+> interleaved/post/strong soft repair keeps the previously accepted CPU
+> hierarchy ordering. The CUDA prefix applies the same hierarchy-aware target
+> filter before ranking, then exact incremental scoring remains the accept
+> gate. Verification after scoping: py-compile passed;
+> `_verify_score_region_swaps.py ibm01 ibm04 ibm10` passed; `uv run evaluate
+> src/main.py -b ibm10` was VALID with `proxy=1.1543` (wl=0.081, den=0.586,
+> cong=1.561), 0 overlaps, 89.97s. On that smoke, post-swap soft relocation
+> plateaued, `plateau_escape_post_soft_relocation` accepted 38 soft moves
+> (`1.1623 -> 1.1583`), and strong/coldspot cleanup finished at `1.1543`.
+> Staged GPU swap prescore follow-up: added a guarded CUDA swap-prescore helper
+> that can add a small distance-aware batch ranking term before exact swap
+> scoring. Soft-soft was tested first and left default-off after ibm10
+> regressed to `proxy=1.1553`, VALID, 91.22s. Hard-soft was tested second and
+> left default-off after ibm10 regressed to `proxy=1.1554`, VALID, 91.42s.
+> Hard-hard was tested last and kept default-on
+> (`HIER_GPU_SWAP_PRESCORE_HH=auto`) after ibm10 improved to `proxy=1.1525`
+> (wl=0.081, den=0.588, cong=1.555), VALID, 91.56s. Exact swap verification
+> still passed on ibm01/ibm04/ibm10.
+> Follow-up all-prescore validation promoted hard-hard, hard-soft, and soft-soft
+> to default `auto` rather than default-off gates. The condition is now runtime
+> capability and scale: CUDA must be available and the candidate list must meet
+> `HIER_GPU_SWAP_PRESCORE_MIN_CANDIDATES`. A temporary monkeypatched all-on
+> wrapper reached `proxy=1.1513` (wl=0.080, den=0.586, cong=1.557), VALID,
+> 90.21s, but after promoting the constants the normal command repeated at
+> `proxy=1.1599` (wl=0.077, den=0.587, cong=1.578), VALID, 91.47s and 91.58s.
+> The all-auto behavior remains per the no-default-off-gates direction, but the
+> stable normal-command smoke is weaker than the previous HH-only setting.
+> Exact reversible batched swap scoring was then tested for soft-soft,
+> hard-soft, and hard-hard `score_swap_*_many()` paths. Direct many-vs-scalar
+> checks on ibm01/ibm04/ibm10 matched to numerical precision, and the standard
+> `_verify_score_region_swaps.py ibm01 ibm04 ibm10` verifier passed. However,
+> the reversible scorer was slower than the current full-grid snapshot path on
+> ibm10: all swap types active finished `proxy=1.1633`, VALID, 92.00s; isolated
+> soft-soft reversible scoring finished `proxy=1.1613`, VALID, 90.30s. The
+> reversible exact batch scorer was not promoted and was removed from the active
+> code path. Current production remains the cached-struct exact scorer.
+
+> **Status (2026-06-22 — swap scoring throughput speedup, smoke-validated):**
+> added exact-equivalent cached routing structs for repeated multi-macro swap
+> scoring and vectorized region-bbox masks for hard-hard, hard-soft, and
+> soft-soft swap candidate outside-region flags. This does not change candidate
+> ranking, legality, hierarchy escape rules, or exact-proxy accept gates.
+> Verification: `uv run python -m py_compile $(find src -type f -name '*.py')`
+> passed; `uv run python test/verification/_verify_score_region_swaps.py ibm01
+> ibm04 ibm10` matched full exact proxy on all trial and sequential commit
+> checks; `uv run evaluate src/main.py -b ibm10` was VALID with
+> `proxy=1.1545`, 0 overlaps, 92.37s. Compared with the pre-speedup smoke
+> (`proxy=1.1598`, 91.55s), wall time is similar because region swaps are
+> deadline-bound, but the swap stage scored more soft-soft candidates
+> (`25860 -> 29194`) and improved proxy on the smoke. Additional smoke:
+> `uv run evaluate src/main.py -b ibm01` was VALID with `proxy=0.9448`,
+> 0 overlaps, 76.71s.
+
 > **CURRENT SYSTEM (2026-06-22): hierarchy path with exact-prescored seed
 > portfolio.** The active code no longer
 > ships the proxy-optimized production path. `MacroPlacer.place()` always routes
