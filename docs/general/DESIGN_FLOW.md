@@ -19,11 +19,12 @@ integration in the main loop, and ML ranker defaults.
 
 Current verification after adding exact-prescored seed portfolio selection,
 hierarchy-aware congestion-weighted proposal ranking, plateau telemetry,
-budget-aware pass scheduling, and strong soft repair:
+budget-aware pass scheduling, strong soft repair, swap-round micro-shift replay,
+stronger opportunity gates, and component-aware cleanup scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1827  17/17 VALID  0 overlaps  1328.33s
+AVG 1.1793  17/17 VALID  0 overlaps  1421.12s
 ```
 
 ## Flow
@@ -48,8 +49,9 @@ flowchart TD
     U -->|No| S
     V --> S{HIER_REGION_SWAPS enabled?}
     S -->|Yes| T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
+    T --> T1[Optional per-round micro-shift replay]
     S -->|No| P
-    T --> Y[Post-swap micro-shift replay]
+    T1 --> Y[Post-swap micro-shift replay]
     Y --> P{HIER_POST_RELOC_PROPOSE_ALL enabled?}
     P -->|Yes| Q[Post-swap hard propose-all polish]
     P -->|No| W
@@ -57,13 +59,14 @@ flowchart TD
     W -->|Yes| X[Post-swap soft relocation polish]
     W -->|No| X1
     X --> X1{Strong soft repair scheduled?}
-    X1 -->|Yes| X2[Budget-aware strong soft repair]
+    X1 -->|Yes| X2[Plateau/component-aware strong soft repair]
     X1 -->|No| K
     X2 --> K{HIER_COLDSPOT_KICK enabled?}
     K -->|Yes| L[Coldspot cluster tightening with bounded proxy budget]
     K -->|No| M[Clamp movable macros in bounds]
     L --> Z[Post-coldspot micro-shift replay]
-    Z --> M
+    Z --> Z1[Bounded survivor-pool search]
+    Z1 --> M
     M --> N[Return macro centers]
 ```
 
@@ -235,6 +238,7 @@ HIER_MICRO_SHIFT=1
 HIER_MICRO_SHIFT_RADIUS=2
 HIER_MICRO_SHIFT_TOP=96
 HIER_MICRO_SHIFT_MIN_GAIN=0.00001
+HIER_SWAP_ROUND_MICRO_SHIFT=1
 ```
 
 ## Cluster Decompression
@@ -274,6 +278,22 @@ live congestion and density fields. In-region swaps use the normal exact-proxy
 accept gate; swaps that move either participant outside its region must improve
 proxy by at least `HIER_REGION_ESCAPE_MIN`.
 
+The implementation keeps hierarchy behavior unchanged while reducing Python
+overhead: repeated multi-macro swap scores reuse cached touched-net routing
+structs, and outside-region flags are computed with vectorized bbox masks. This
+lets deadline-bound swap rounds score more candidates without changing the
+ranked candidate stream or accept rule.
+The exact `score_swap_*_many()` methods still evaluate candidates one at a
+time. A reversible exact batch scorer was tested for soft-soft, hard-soft, and
+hard-hard swaps; it matched scalar scoring but reduced ibm10 swap throughput, so
+it is not active.
+On CUDA, large swap rank arrays use torch sorting when
+`HIER_GPU_RANK_SWAP_CANDIDATES=auto`. Hard-hard, hard-soft, and soft-soft
+swaps also use guarded distance-aware CUDA batch prescore before top-k
+truncation. These prescores are conditional `auto` paths: CUDA must be
+available and the candidate count must meet the minimum. Exact incremental
+scoring and hierarchy escape gates still decide every accepted swap.
+
 Constants in `src/utils/constants.py`:
 
 ```text
@@ -288,14 +308,23 @@ HIER_SWAP_HH=1
 HIER_SWAP_HS=1
 HIER_SWAP_SS=1
 HIER_SWAP_DENSITY_FIELD=1
+HIER_SWAP_ROUND_MICRO_SHIFT=1
+HIER_GPU_RANK_SWAP_CANDIDATES=auto
+HIER_GPU_RANK_MIN_CANDIDATES=512
+HIER_GPU_SWAP_PRESCORE_HH=auto
+HIER_GPU_SWAP_PRESCORE_HS=auto
+HIER_GPU_SWAP_PRESCORE_SS=auto
+HIER_GPU_SWAP_PRESCORE_MIN_CANDIDATES=512
+HIER_GPU_SWAP_PRESCORE_DISTANCE_WEIGHT=0.02
 ```
 
 The pass logs per-operator score/accept counts.
 
-The accepted Stage-3 flow replays `_micro_shift_polish()` immediately after
-region swaps. This exact-gated one/two-grid-cell pass is enabled by default
-with `HIER_POST_SWAP_MICRO_SHIFT=1` and recovers small hard and soft
-congestion improvements left behind by swaps.
+The accepted current flow can replay `_micro_shift_polish()` after each
+region-swap round with `HIER_SWAP_ROUND_MICRO_SHIFT=1`, then still replays the
+normal post-swap `_micro_shift_polish()` with `HIER_POST_SWAP_MICRO_SHIFT=1`.
+Both passes are exact-gated one/two-grid-cell cleanups and recover small hard
+and soft congestion improvements left behind by swaps.
 
 When local pass budget has at least `HIER_ADDITIVE_MIN_SPARE_S` seconds
 remaining, the swap and hard propose-all passes exact-check a small additive
@@ -316,11 +345,32 @@ soft-move signal. Stage 4 adds a plateau-driven operator switch: when the hard
 and swap cleanup stack is plateaued and enough time remains, the scheduler gives
 strong soft repair one extra round and a small budget bonus. This improves soft
 congestion cleanup without reopening hard macro legality.
+Component-aware scheduling additionally records exact proxy components before
+late strong soft repair. If congestion still dominates density by
+`HIER_COMPONENT_CONG_DOMINANCE`, the scheduler may treat late soft cleanup as
+useful even when plateau telemetry alone is ambiguous. The component values
+only affect scheduling and trace payloads; exact proxy still decides every move.
+
+Stronger opportunity gates are enabled for optional decompression/coldspot work.
+They skip expensive optional passes only when the current congestion field lacks
+enough hot-vs-cold separation. Candidate acceptance rules are unchanged.
 
 Stage 5 implements GPU-ranked additive hard-relocation tails, but leaves them
 default-off (`HIER_GPU_RANK_ADDITIVE_TAILS=0`) after the IBM sweep showed no
 hard propose-all accepts and a small regression. The code remains available for
 opt-in experiments where additive hard tails are active.
+
+Large hard-relocation target ordering can also use CUDA sorting with
+`HIER_GPU_RANK_RELOCATION_TARGETS=auto`. Plateau escape proposal switching now
+also covers post-swap hard/soft cleanup plateaus, not just region-swap
+plateaus. It changes proposal class from swaps or cleanup relocation to
+soft-only relocation for a short budget slice, keeping hard macros fixed and
+using the same soft hierarchy regions. The plateau escape soft pass can use a
+CUDA batched target pre-ranker
+(`HIER_GPU_RANK_SOFT_RELOCATION_TARGETS=auto`), but normal interleaved,
+post-swap, and strong soft repair keep the accepted CPU hierarchy ordering by
+default. The CUDA prefix applies the same hierarchy-aware target filter before
+ranking and exact incremental scoring still decides all accepted moves.
 
 Stage 6 adds a final audit-only hard legality margin report using the same
 `0.05` separation tolerance as local legality tests. The evaluator can still
@@ -329,10 +379,18 @@ that near-contact visible in trace and summary logs.
 
 ```text
 HIER_ADDITIVE_CANDIDATE_POOLS=1
+HIER_GPU_RANK_RELOCATION_TARGETS=auto
+HIER_GPU_RANK_SOFT_RELOCATION_TARGETS=auto
+HIER_GPU_RANK_SOFT_MIN_CANDIDATES=1024
 HIER_GPU_RANK_ADDITIVE_TAILS=0
 HIER_ADDITIVE_RELOC_EXTRA_TOP_K=8
 HIER_ADDITIVE_SWAP_EXTRA_K=4
 HIER_ADDITIVE_MIN_SPARE_S=2.0
+HIER_STRONG_OPPORTUNITY_GATES=1
+HIER_DECOMPRESS_FIELD_GATE=1
+HIER_DECOMPRESS_MIN_FIELD_GAP=0.08
+HIER_COLDSPOT_STRONG_FIELD_GATE=1
+HIER_COLDSPOT_STRONG_MIN_FIELD_GAP=0.04
 HIER_INTERLEAVED_SOFT_REPAIR=1
 HIER_INTERLEAVED_SOFT_REPAIR_BUDGET_S=3
 HIER_INTERLEAVED_SOFT_REPAIR_MIN_SPARE_S=12
@@ -343,9 +401,17 @@ HIER_STRONG_SOFT_REPAIR_TOP_K=512
 HIER_STRONG_SOFT_REPAIR_TARGETS=12
 HIER_PLATEAU_TELEMETRY=1
 HIER_BUDGET_AWARE_SCHEDULING=1
+HIER_COMPONENT_AWARE_SCHEDULING=1
+HIER_COMPONENT_CONG_DOMINANCE=0.10
+HIER_COMPONENT_RESERVED_CLEANUP_S=12
 HIER_PLATEAU_SOFT_REPAIR_BONUS=1
 HIER_PLATEAU_SOFT_REPAIR_BONUS_BUDGET_S=4
 HIER_PLATEAU_SOFT_REPAIR_BONUS_ROUNDS=1
+HIER_PLATEAU_ESCAPE_PROPOSALS=1
+HIER_PLATEAU_ESCAPE_BUDGET_S=4
+HIER_PLATEAU_ESCAPE_AFTER_POST_POLISH=1
+HIER_PLATEAU_ESCAPE_SOFT_TOP_K=384
+HIER_PLATEAU_ESCAPE_SOFT_TARGETS=10
 HIER_LEGALITY_MARGIN_AUDIT=1
 HIER_LEGALITY_MARGIN_EPS=0.05
 ```
@@ -381,9 +447,37 @@ HIER_COLDSPOT_GRAPH_TARGET_POOL=1
 HIER_COLDSPOT_GRAPH_MASK_GATING=1
 HIER_COLDSPOT_GRAPH_FALLBACK=1
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K=3
+HIER_COLDSPOT_SOFT_ONLY=0
+HIER_COLDSPOT_SOFT_ONLY_TOP_K=96
+HIER_COLDSPOT_SOFT_ONLY_TARGETS=10
+HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN=0.00005
+HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0
 HIER_COLDSPOT_ADAPTIVE_REGIONS=1
 HIER_COLDSPOT_MEMORY_COLD_PCT=35
 HIER_COLDSPOT_ADAPTIVE_MAX_CELLS=5
+HIER_COLDSPOT_PARTIAL_FRONTIER=0
+HIER_COLDSPOT_PARTIAL_CANDIDATES=1
+HIER_COLDSPOT_PARTIAL_FILL_FRAC=0.75
+HIER_COLDSPOT_PARTIAL_MAX_AREA_FRAC=0.55
+HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD=6
+HIER_COLDSPOT_PARTIAL_MIN_HARD=2
+HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD=3
+HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC=0.50
+HIER_COLDSPOT_PARTIAL_MAX_CUT_RATIO=0.85
+HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED=1
+HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO=1.15
+HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO=1.20
+HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO=1.50
+HIER_SURVIVOR_SEARCH=1
+HIER_SURVIVOR_BUDGET_S=12
+HIER_SURVIVOR_ROUNDS=2
+HIER_SURVIVOR_WIDTH=4
+HIER_SURVIVOR_HOT_CLUSTERS=6
+HIER_SURVIVOR_STEP_CELLS=2.0,4.0,7.0
+HIER_SURVIVOR_EXACT_TOP_K=10
+HIER_SURVIVOR_MIN_GAIN=0.0001
+HIER_SURVIVOR_QUALITY_BUDGET=0.015
+HIER_SURVIVOR_GPU_RANK=auto
 ```
 
 A round first requires a cheap congestion-field opportunity: an eligible cluster
@@ -405,17 +499,60 @@ cluster-defined seed. The hard-core pad is applied after that graph expansion,
 giving swaps and soft-locked relocations room around the usable coldspot area. A
 graph-derived target pool and graph-expanded target mask are passed to
 coldspot-local hard and soft relocation. Generated outcomes are graph-ranked
-before exact gating when the GNN selector is disabled. If no kick commits, the
-graph-local fallback selects the hottest eligible clusters in the current
-placement and runs the same graph-bordered swaps and relocations without a
-cluster kick first. A refined kick or fallback move is accepted only when exact
-proxy improves and the hierarchy-quality metric stays within budget. This keeps
-the pass from undoing congestion relief for compactness alone.
+before exact gating when the GNN selector is disabled. A default-off
+`HIER_COLDSPOT_SOFT_ONLY` fallback can run after hard coldspot movement and
+graph-local fallback both fail to commit. It holds hard macros fixed during the
+soft fallback, uses open remembered cold cells as the soft relocation target
+pool, keeps hierarchy region boxes and the cold-cell mask active, and accepts
+only exact-proxy improvements above `HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN`.
+`HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0` is the simultaneous hard+soft candidate
+experiment: coldspot kick generation augments each cluster's owned softs with
+bridge soft macros tied to the same hierarchy cluster, places hard and soft
+members into the cold window together, and sends that full candidate through the
+same local refinement, exact-proxy, and hierarchy-quality gates. A default-off
+`HIER_COLDSPOT_PARTIAL_FRONTIER` prototype can add one capacity-aware partial
+frontier candidate to the generated pool. That candidate estimates connected
+coldspot capacity from the cold field, clamps it to a source-cluster area
+fraction, selects hard macros closest to the coldspot with a low-fanout
+connectivity bias, co-moves directly connected soft macros when capacity
+allows, and places cross-cut-heavy macros nearest the border between the old
+hotspot and the newly filled coldspot. Tiny source clusters are skipped by
+default because moving two macros out of a three- or four-macro group is usually
+a far split under the hierarchy-quality metric even when proxy improves. It
+also runs a pre-exact split-shape predictor after partial hard legalization and
+before the expensive exact-proxy/refinement path: candidates are discarded if
+the full source cluster's radius, bbox radius, or moved-vs-remaining centroid
+separation grows beyond configured ratios. Surviving candidates still go
+through normal local refinement, exact-proxy gating, and hierarchy-quality
+gating. The generator also rejects majority splits, splits that strand too few
+macros in the original hotspot, and disconnected selected subsets when
+low-fanout local edges are available. The selected subset is capped during
+construction by the same majority/remaining-macro limits, so the generator tries
+smaller frontier groups before falling back to a reject. Rejected partial attempts are logged as
+`hier_coldspot_partial_reject` when candidate tracing is enabled, so threshold
+tuning can use the rejected pool rather than only surviving candidates. If no
+kick commits, the graph-local
+fallback selects the hottest
+eligible clusters in the current placement and runs the same graph-bordered
+swaps and relocations without a cluster kick first. A refined kick or fallback
+move is accepted only when exact proxy improves and the hierarchy-quality metric
+stays within budget. This keeps the pass from undoing congestion relief for
+compactness alone.
 
 Production then replays `_micro_shift_polish()` once more with
 `HIER_POST_COLDSPOT_MICRO_SHIFT=1`. The paired post-swap and post-coldspot
 replays are the current accepted stack. Deterministic hot-cluster coldspot
 selection was tested separately and removed after regressing the full sweep.
+
+After coldspot cleanup, a bounded go-with-the-winners survivor search keeps a
+small pool of valid hierarchy-preserving states instead of continuing from only
+one greedy state. It generates cluster-translation variants toward cold routing
+space and the four cardinal directions, co-moves owned and bridge soft macros,
+legalizes with the existing cluster-consecutive legalizer, rejects candidates
+that leave hierarchy regions or exceed hierarchy-quality budget, and exact-scores
+only the top cheap-ranked candidates. When CUDA is available,
+`HIER_SURVIVOR_GPU_RANK=auto` uses torch sorting for the cheap candidate ranking;
+exact proxy scoring remains the commit authority.
 
 A default-off coldspot GNN selector can be enabled with runtime environment
 variables, not constants:
@@ -468,7 +605,8 @@ future ML/DL scheduling work. Rows are written to
 `ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` by default and include
 pass runtime, candidate/legal/scored counts, accepts, proxy gain, plateau flag,
 and budget scheduler decisions. Set `HIER_PLATEAU_TRACE=0` to disable it or
-`HIER_PLATEAU_TRACE_PATH` to redirect it.
+`HIER_PLATEAU_TRACE_PATH` to redirect it. Rows are buffered by default with
+`HIER_PLATEAU_TRACE_BUFFERED=1` and flushed once per benchmark.
 
 Stage G3 has an accepted default-off offline baseline artifact, Stage G4 has an
 accepted default-off offline macro-net ranker artifact, and Stage G5 has a
@@ -511,5 +649,7 @@ The higher-level placement objectives behind these passes are documented in
 The active hierarchy path uses CUDA through DREAMPlace when PyTorch can see a
 GPU. The archived `cuda_delta` scorer for hard-relocation proposal batches is
 still available and verified by diagnostics, but hierarchy region swaps and
-cluster decompression remain sequential exact-gated CPU/NumPy passes. They do
-not yet implement cuGenOpt-style batched GPU proposal evaluation.
+cluster decompression remain sequential exact-gated CPU/NumPy passes. The
+current region-swap speedups combine CPU vectorization/cache improvements with
+CUDA sorting for large rank arrays, not a GPU exact-scoring kernel. These
+passes do not yet implement cuGenOpt-style batched GPU proposal evaluation.

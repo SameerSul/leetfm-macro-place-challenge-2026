@@ -144,6 +144,23 @@ outcomes for the normal exact-proxy and hierarchy-quality gates. It does not
 yet enumerate multiple anchor windows; it ranks generated outcomes for the
 selected cluster/window.
 
+`HIER_COLDSPOT_PARTIAL_FRONTIER=False` is a default-off generator experiment
+that can add one more outcome for that selected cluster/window. It estimates
+connected cold capacity around the anchor, clamps the moved area so the outcome
+remains a true subset kick, chooses frontier hard macros with a distance and
+low-fanout connectivity heuristic, co-moves directly connected soft macros
+when capacity remains, and places cross-cut-heavy macros nearest the border
+between the source hotspot and the coldspot. Tiny source clusters are skipped
+by default because far 2-of-3 splits are normally hierarchy-quality failures.
+After partial hard legalization, a pre-exact split-shape predictor rejects
+candidates whose full source-cluster radius, bbox radius, or moved-vs-remaining
+centroid separation grows beyond the configured ratios. The graph selector and
+exact gates treat surviving partial candidates like any other generated
+coldspot outcome. Rejected partial attempts can emit
+`hier_coldspot_partial_reject` trace rows, including selector, connectivity,
+and split-shape reasons, so default-off tuning can inspect candidates that never
+reach exact scoring.
+
 ### Graph Target Pools
 
 When `HIER_COLDSPOT_GRAPH_TARGET_POOL=True`, coldspot-local hard and soft

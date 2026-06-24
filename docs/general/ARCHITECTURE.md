@@ -2,7 +2,7 @@
 
 ## Current Production System
 
-As of 2026-06-22, v2 is a hierarchy-preserving placer with exact-prescored
+As of 2026-06-23, v2 is a hierarchy-preserving placer with exact-prescored
 seed portfolio selection. The active
 `MacroPlacer.place()` path is:
 
@@ -26,10 +26,11 @@ benchmark input
   -> exact-gated cluster decompression with composite hierarchy quality
   -> budget-aware interleaved soft repair
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
+       - optional micro-shift replay after each swap round
   -> post-swap micro-shift replay
   -> post-swap hard propose-all relocation with spare-budget additive candidates
   -> post-swap soft relocation with spare-budget additive candidates
-  -> plateau-switched strong soft repair when telemetry shows useful spare work
+  -> plateau- and component-aware strong soft repair when telemetry shows useful spare work
   -> coldspot tightening:
        - refresh current congestion field and cold-cell graph memory
        - generate coldspot kick candidates
@@ -46,6 +47,10 @@ benchmark input
        - run the same swaps and relocations without a kick
        - exact proxy + hierarchy-quality gate before commit
   -> post-coldspot micro-shift replay
+  -> bounded go-with-the-winners survivor search:
+       - generate hierarchy-safe cluster move variants from multiple states
+       - GPU-rank cheap candidate scores when CUDA is available
+       - exact-score the top candidates and keep the best survivor pool
   -> final scorer-compatible hard legality margin audit
   -> final legality and bounds checks
   -> return center coordinates for hard and soft macros
@@ -71,20 +76,20 @@ The structural objectives that drive the hierarchy flow are documented in
 ranking and GNN trace logging are documented in
 [../ml_nn/beyondppa_results/](../ml_nn/beyondppa_results/).
 
-Current verified full sweep after the six-stage hierarchy-aware revamp
-through Stage 6 audit:
+Current verified full sweep after swap-round micro-shift replay, stronger
+opportunity gates, and component-aware scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1817  17/17 VALID  0 overlaps  1383.28s
+AVG 1.1793  17/17 VALID  0 overlaps  1421.12s
 ```
 
-The same active behavior without the audit-only final logging swept at
-`AVG 1.1796`, 17/17 VALID, 0 overlaps; the difference is run-to-run variance,
-because the Stage 6 audit does not move macros.
+The prior accepted Stage-6 audit sweep was `AVG 1.1817`, 17/17 VALID,
+0 overlaps, 1383.28s. A same-day audit-equivalent sweep reached `AVG 1.1796`,
+but the current documented code path is the `AVG 1.1793` sweep above.
 
-Last lower-proxy accepted hierarchy full sweep before the graph-local and
-six-stage architecture revamps:
+Historical accepted hierarchy full sweep before the graph-local and six-stage
+architecture revamps:
 
 ```text
 uv run evaluate src/main.py --all
@@ -114,6 +119,7 @@ The graph-select / graph-target / graph-mask stack was also swept valid at
 | `src/placer/local_search/hierarchy_swaps.py` | Region-bounded hard-hard, hard-soft, and soft-soft swap relief. |
 | `src/placer/local_search/fields.py` | Congestion/coldspot fields used by relocation and coldspot tightening. |
 | `src/placer/local_search/lsmc_explore.py` | Coldspot kick candidate generation remains. Generic LSMC was deleted. |
+| `src/placer/local_search/survivor_search.py` | Bounded survivor-pool search over hierarchy-safe cluster moves with optional CUDA candidate ranking. |
 | `src/placer/scoring/exact.py` | Exact TILOS proxy wrapper. |
 | `src/placer/scoring/incremental.py` | Incremental scorer for relocation and hierarchy-bounded swap moves. Proxy-only cycle APIs were deleted. |
 | `src/eda_io/` | Standard EDA file I/O; converts inputs to the same benchmark object. |
@@ -318,6 +324,24 @@ escape threshold. The current accepted system keeps a wider soft candidate list
 because the largest remaining congestion cases are most sensitive to soft-soft
 and mixed soft movement.
 
+Swap scoring uses `IncrementalScorer` exact-equivalent cached routing structs
+for repeated multi-macro touched-net sets. Region-membership flags for swap
+candidates are computed with vectorized bbox masks rather than per-candidate
+Python `point_in_region()` calls. These are throughput optimizations only:
+candidate ordering, legality checks, hierarchy escape rules, and exact-proxy
+accept gates are unchanged.
+The `score_swap_*_many()` APIs still score exact candidates one at a time using
+the cached structs. A reversible exact batch scorer was verified against scalar
+scoring but was not promoted because inverse route reapplication was slower
+than the current full-grid snapshot restore path on ibm10.
+On CUDA systems, large swap-candidate rank arrays can use torch GPU sorting
+before the same top-k truncation. A guarded CUDA swap prescore can also add a
+small distance-aware batch ranking term before exact scoring. Hard-hard,
+hard-soft, and soft-soft prescore are all default `auto`: they run only when
+CUDA is available and the candidate count is large enough, otherwise they fall
+back to the existing CPU ordering. These accelerate or reorder proposal
+selection only; exact swap scoring remains the acceptance authority.
+
 Constants in `src/utils/constants.py`:
 
 ```text
@@ -328,6 +352,13 @@ HIER_SWAP_MIN_GAIN=0.00001
 HIER_SWAP_DENSITY_FIELD=1
 HIER_CONGESTION_WEIGHTED_PROPOSALS=1
 HIER_PROPOSAL_HIERARCHY_AWARE=1
+HIER_GPU_RANK_SWAP_CANDIDATES=auto
+HIER_GPU_RANK_MIN_CANDIDATES=512
+HIER_GPU_SWAP_PRESCORE_HH=auto
+HIER_GPU_SWAP_PRESCORE_HS=auto
+HIER_GPU_SWAP_PRESCORE_SS=auto
+HIER_GPU_SWAP_PRESCORE_MIN_CANDIDATES=512
+HIER_GPU_SWAP_PRESCORE_DISTANCE_WEIGHT=0.02
 ```
 
 ### 9. Post-Swap Polish
@@ -359,6 +390,20 @@ swap-local refinement. This is additive exploration only: it does not replace
 the deterministic ordering or weaken legality, region, hierarchy-quality, or
 exact-proxy gates.
 
+Large hard-relocation target-rank arrays can also use CUDA sorting. Plateau
+escape soft relocation has its own CUDA batched target pre-ranker, but this is
+scoped to the plateau escape proposal class by default; normal interleaved,
+post-swap, and strong soft repair keep the accepted CPU hierarchy ordering. The
+batched soft ranker applies the same hierarchy-aware target filter before
+ranking and still feeds the normal exact incremental soft-move gate.
+
+When the region-swap pass or post-swap hard/soft cleanup plateaus and spare
+local budget remains, the scheduler can switch proposal class briefly to soft
+relocation. `plateau_escape_soft_relocation` runs after swap plateaus;
+`plateau_escape_post_soft_relocation` runs after post-swap cleanup plateaus.
+Both passes keep hard macros fixed, use the same soft hierarchy regions, and
+accept only exact-proxy improvements.
+
 Constants in `src/utils/constants.py`:
 
 ```text
@@ -383,9 +428,17 @@ HIER_BUDGET_AWARE_SCHEDULING=1
 HIER_PLATEAU_ACCEPT_RATE=0.002
 HIER_PLATEAU_PROXY_GAIN=0.0005
 HIER_ADDITIVE_CANDIDATE_POOLS=1
+HIER_GPU_RANK_RELOCATION_TARGETS=auto
+HIER_GPU_RANK_SOFT_RELOCATION_TARGETS=auto
+HIER_GPU_RANK_SOFT_MIN_CANDIDATES=1024
 HIER_ADDITIVE_RELOC_EXTRA_TOP_K=8
 HIER_ADDITIVE_SWAP_EXTRA_K=4
 HIER_ADDITIVE_MIN_SPARE_S=2.0
+HIER_PLATEAU_ESCAPE_PROPOSALS=1
+HIER_PLATEAU_ESCAPE_BUDGET_S=4
+HIER_PLATEAU_ESCAPE_AFTER_POST_POLISH=1
+HIER_PLATEAU_ESCAPE_SOFT_TOP_K=384
+HIER_PLATEAU_ESCAPE_SOFT_TARGETS=10
 ```
 
 ### 10. Coldspot Tightening
@@ -419,9 +472,27 @@ HIER_COLDSPOT_GRAPH_TARGET_POOL=1
 HIER_COLDSPOT_GRAPH_MASK_GATING=1
 HIER_COLDSPOT_GRAPH_FALLBACK=1
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K=3
+HIER_COLDSPOT_SOFT_ONLY=0
+HIER_COLDSPOT_SOFT_ONLY_TOP_K=96
+HIER_COLDSPOT_SOFT_ONLY_TARGETS=10
+HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN=0.00005
+HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0
 HIER_COLDSPOT_ADAPTIVE_REGIONS=1
 HIER_COLDSPOT_MEMORY_COLD_PCT=35
 HIER_COLDSPOT_ADAPTIVE_MAX_CELLS=5
+HIER_COLDSPOT_PARTIAL_FRONTIER=0
+HIER_COLDSPOT_PARTIAL_CANDIDATES=1
+HIER_COLDSPOT_PARTIAL_FILL_FRAC=0.75
+HIER_COLDSPOT_PARTIAL_MAX_AREA_FRAC=0.55
+HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD=6
+HIER_COLDSPOT_PARTIAL_MIN_HARD=2
+HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD=3
+HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC=0.50
+HIER_COLDSPOT_PARTIAL_MAX_CUT_RATIO=0.85
+HIER_COLDSPOT_PARTIAL_REQUIRE_CONNECTED=1
+HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO=1.15
+HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO=1.20
+HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO=1.50
 ```
 
 Rounds with no cheap hot-cluster to cold-window field gap are skipped before
@@ -440,9 +511,39 @@ cold cells before applying the hard-core pad. This lets finalized cluster
 locations use nearby coldspots for local relief while preserving swap and
 soft-locked relocation room. The graph also supplies coldspot-local relocation
 target pools, gates relocation targets by graph mask, and ranks generated
-outcomes before exact gating when the GNN selector is disabled. When no
-coldspot kick commits, the graph-local fallback runs the same bordered swaps
-and relocations on the current placement for the hottest eligible clusters.
+outcomes before exact gating when the GNN selector is disabled.
+`HIER_COLDSPOT_SOFT_ONLY=0` is a default-off fallback that runs only when hard
+coldspot kicks and graph-local fallback commit no candidate. It keeps all hard
+macros fixed, builds a target pool from remembered open cold cells, and invokes
+the exact-gated soft relocation pass with hierarchy region boxes and the cold
+cell mask still active.
+`HIER_COLDSPOT_JOINT_BRIDGE_SOFTS=0` is the simultaneous hard+soft experiment:
+when enabled, coldspot kick candidate generation augments each cluster's owned
+soft set with bridge soft macros tied to the same hierarchy cluster. The hard
+cluster and those soft macros are placed into the cold window together, then the
+existing legalization, local refinement, exact-proxy gate, and hierarchy-quality
+gate accept or reject the resulting full candidate as one state.
+`HIER_COLDSPOT_PARTIAL_FRONTIER=0` is a default-off experiment that can add one
+capacity-aware partial frontier candidate to the same pool: it estimates the
+connected cold area around the chosen anchor, selects a true subset of the hot
+cluster nearest that anchor, biases the split by low-fanout net connectivity,
+places cross-cut-heavy macros near the source-facing coldspot border, and then
+uses the same legalization, local refinement, exact-proxy gate, and
+hierarchy-quality gate as the normal kick. The prototype skips tiny source
+clusters by default because far 2-of-3 splits can improve proxy while failing
+the radius/bbox hierarchy-quality metric. It also runs a cheap pre-exact
+split-shape predictor after partial hard legalization and rejects candidates
+whose source cluster radius, bbox radius, or moved-vs-remaining separation
+would grow beyond the configured ratios. Additional cheap gates reject majority
+splits, splits that leave too few source macros behind, disconnected selected
+subsets when low-fanout local edges are available, and high selected-vs-remaining
+cut ratios. When `HIER_GNN_TRACE=1`, generated-but-rejected partial candidates
+emit `hier_coldspot_partial_reject` rows with the reject reason and shape/connectivity
+stats. Majority/remaining-macro limits are applied during subset construction,
+not only after selection, so the partial generator can try smaller frontier
+groups before rejecting. When no coldspot kick commits, the
+graph-local fallback runs the same bordered swaps and relocations on the
+current placement for the hottest eligible clusters.
 Production then reruns `_micro_shift_polish()` once more with
 `HIER_POST_COLDSPOT_MICRO_SHIFT=1`; deterministic hot-cluster coldspot
 selection was tested and removed after regressing the full sweep.
@@ -471,10 +572,13 @@ evaluates candidate-feature-only rankers without changing placement behavior.
 
 Plateau telemetry is separate and default-on. It writes lightweight pass-level
 rows for pass name, proxy before/after, elapsed time, candidate/legal/scored
-counts, accepts, accept rate, plateau flag, and scheduler decisions:
+counts, accepts, accept rate, plateau flag, and scheduler decisions. Rows are
+buffered by default and flushed once per successful benchmark, with an `atexit`
+fallback.
 
 ```text
 HIER_PLATEAU_TRACE=1
+HIER_PLATEAU_TRACE_BUFFERED=1
 HIER_PLATEAU_TRACE_DIR=ml_data/beyondppa_gnn/plateau
 HIER_PLATEAU_TRACE_RUN=<optional run id; default file is plateau_telemetry.jsonl>
 HIER_PLATEAU_TRACE_PATH=<optional direct JSONL path>
