@@ -6,32 +6,37 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
-> **Status (2026-06-25 — strict hierarchy audit rollback and component-aware relief):**
+> **Status (2026-06-25 — audit-preserving local relief recovery):**
 > Fixed the stale region-escape verifier so it uses the active `HierarchyModel`
 > and restored the shared `any_outside_region()` helper. Added final
 > hierarchy-quality audit telemetry against the selected hierarchy seed. The
 > hierarchy pipeline now tracks a separate audit-safe checkpoint, independent of
 > proxy-best state, and the finalizer rolls back to the best audit-passing
 > checkpoint when the current state exceeds
-> `HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION=0.05`. The small-design polish now keeps
-> only audit-passing polished states before it can become the returned placement.
+> `HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION=0.05`. Pass boundaries now enforce that
+> checkpoint immediately, region-bounded hard-hard and hard-soft swap candidates
+> are rejected before commit when they exceed the hierarchy-quality budget, and
+> small-design polish restores the best audit-passing exact-scored subpass state
+> instead of waiting for the final rollback.
 > Region expansion now prefers nearby contiguous cold congestion
 > components before falling back to side-band expansion, and cluster
 > decompression can bias its local expansion/shift toward a nearby cold
 > component while keeping exact-proxy and hierarchy-quality gates. Verification:
 > targeted bytecode compile passed; `uv run python
 > test/verification/_verify_region_escape_gate.py` passed on `ibm01`, `ibm04`,
-> and `ibm10`; strict-audit focused checks passed on `ibm02`, `ibm03`, and
-> `ibm12`; full `uv run evaluate src/main.py --all` = **AVG 1.1999**, 17/17
-> VALID, 0 overlaps, all final hierarchy audits passed, 1147.08s. This is a
-> deliberate proxy regression versus the prior **AVG 1.1627** hierarchy result:
-> hierarchy audit is now an enforced production invariant rather than report-only
-> telemetry. Per-benchmark proxies:
-> `ibm01=0.9253`, `ibm02=1.1358`, `ibm03=1.1013`, `ibm04=1.0120`,
-> `ibm06=1.2089`, `ibm07=1.0609`, `ibm08=1.2138`, `ibm09=0.8542`,
-> `ibm10=1.1534`, `ibm11=1.0424`, `ibm12=1.9460`, `ibm13=1.0197`,
-> `ibm14=1.2771`, `ibm15=1.4327`, `ibm16=1.2148`, `ibm17=1.4062`,
-> `ibm18=1.3934`.
+> and `ibm10`; focused recovery checks passed on `ibm03`, `ibm08`, `ibm12`,
+> and `ibm15`; `git diff --check` passed; full
+> `uv run evaluate src/main.py --all` = **AVG 1.1664**, 17/17 VALID, 0 overlaps,
+> all final hierarchy audits passed, 1146.64s. The previous strict-final-rollback
+> result was **AVG 1.1999**; the current path recovers most of that proxy loss
+> while keeping hierarchy audit as an enforced production invariant. The earlier
+> **AVG 1.1627** hierarchy sweep remains a proxy reference only because its final
+> hierarchy audit was report-only. Per-benchmark proxies:
+> `ibm01=0.9254`, `ibm02=1.1180`, `ibm03=1.0057`, `ibm04=1.0079`,
+> `ibm06=1.2130`, `ibm07=1.0544`, `ibm08=1.1339`, `ibm09=0.8535`,
+> `ibm10=1.1692`, `ibm11=1.0001`, `ibm12=1.6756`, `ibm13=1.0200`,
+> `ibm14=1.2770`, `ibm15=1.3612`, `ibm16=1.2147`, `ibm17=1.4050`,
+> `ibm18=1.3933`.
 
 > **Status (2026-06-24 — SA-ratio secondary subset cleanup):**
 > The hierarchy flow now splits the SA-ratio secondary subset into two
