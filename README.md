@@ -2,7 +2,7 @@
 
 Active placer for the Partcl/HRT Macro Placement Challenge.
 
-**Current production mode (2026-06-23): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-06-24): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py`. The previous proxy-optimized production
 path has been deleted: random candidate restarts, R2/2-opt/swap/cycle search,
@@ -27,15 +27,19 @@ Current smoke reference:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.1576  VALID  [~93s locally]
+proxy=1.1534  VALID  audit=pass  [~78s locally]
 ```
 
 Current full IBM reference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1793  17/17 VALID  0 overlaps  [1421.12s locally]
+AVG 1.1999  17/17 VALID  0 overlaps  all hierarchy audits passed  [1147.08s locally]
 ```
+
+Pass progression is now adaptive: the pipeline advances to the next stage when the
+most recent exact proxy improvement is no longer better than
+`HIER_PLATEAU_PROXY_GAIN`.
 
 Historical proxy leaderboard numbers remain in `docs/general/PROGRESS.md` and
 `docs/general/ISSUES.md`; they describe the removed proxy path and should not be
@@ -118,6 +122,7 @@ HIER_REGION_ESCAPE_MIN=0.002
 HIER_SOFT_SWAP_K=48
 HIER_COLDSPOT_BUDGET=0.0
 HIER_COLDSPOT_TOTAL=0.0
+HIER_PLATEAU_PROXY_GAIN=0.00005
 HIER_COLDSPOT_MIN_FIELD_GAP=0.02
 HIER_COLDSPOT_ROUNDS=8
 HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0

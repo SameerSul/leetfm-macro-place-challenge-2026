@@ -257,6 +257,7 @@ def _candidate_trace_sample(proposals: list[dict], limit: int) -> list[dict]:
                 "score": float(p.get("score", 0.0)),
                 "local_field": float(p.get("local_field", 0.0)),
                 "target_field": float(p.get("target_field", 0.0)),
+                "component_penalty": float(p.get("component_penalty", 0.0)),
                 "structural_delta": float(p.get("structural_delta", 0.0)),
                 "x": float(p["xy"][0]),
                 "y": float(p["xy"][1]),
@@ -2480,18 +2481,44 @@ def _point_in_region_mask(region_mask, x: float, y: float, cw: float, ch: float)
     return bool(mask[r, c])
 
 
-def _target_pool_from_override(target_pool, flat, n_targets: int) -> np.ndarray:
-    """Return sanitized flat grid target indices ordered by field value."""
+def _target_pool_from_override(
+    target_pool, flat, n_targets: int
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Return sanitized flat grid target indices and optional component penalties."""
     if target_pool is None:
-        return np.zeros(0, dtype=np.int64)
-    pool = np.asarray(target_pool, dtype=np.int64).reshape(-1)
+        return np.zeros(0, dtype=np.int64), None
+    penalty_by_flat = None
+    if isinstance(target_pool, dict):
+        pool = np.asarray(target_pool.get("indices", []), dtype=np.int64).reshape(-1)
+        penalties = np.asarray(target_pool.get("penalty", []), dtype=np.float64).reshape(-1)
+        if pool.size and penalties.size == pool.size:
+            penalty_by_flat = {int(idx): float(pen) for idx, pen in zip(pool, penalties)}
+    else:
+        pool = np.asarray(target_pool, dtype=np.int64).reshape(-1)
     if pool.size == 0:
-        return np.zeros(0, dtype=np.int64)
-    pool = np.unique(pool[(pool >= 0) & (pool < flat.size)])
+        return np.zeros(0, dtype=np.int64), None
+    valid = pool[(pool >= 0) & (pool < flat.size)]
+    if valid.size == 0:
+        return np.zeros(0, dtype=np.int64), None
+    _, keep = np.unique(valid, return_index=True)
+    pool = valid[np.sort(keep)]
     if pool.size == 0:
-        return np.zeros(0, dtype=np.int64)
-    order = np.argsort(flat[pool])
-    return pool[order[: max(pool.size, max(n_targets, 64))]]
+        return np.zeros(0, dtype=np.int64), None
+    if penalty_by_flat is None:
+        penalties = None
+        order = np.argsort(flat[pool])
+    else:
+        penalties = np.asarray(
+            [penalty_by_flat.get(int(idx), 1.0) for idx in pool], dtype=np.float64
+        )
+        order = np.argsort(
+            penalties + 1e-9 * np.asarray(flat[pool], dtype=np.float64), kind="stable"
+        )
+    limit = max(pool.size, max(n_targets, 64))
+    pool = pool[order[:limit]]
+    if penalties is not None:
+        penalties = penalties[order[:limit]]
+    return pool, penalties
 
 
 def _micro_shift_polish(
@@ -2718,6 +2745,7 @@ def _relocation_moves_propose_all(
     accept_min_gain: float = 0.0,
     target_pool: "np.ndarray | None" = None,
     region_mask: "np.ndarray | None" = None,
+    tgt_component_penalty: "np.ndarray | None" = None,
 ) -> "tuple[np.ndarray, int, float]":
     """Rank all hard-relocation proposals, then exact-check the best ones."""
     best_score = initial_score
@@ -2764,6 +2792,13 @@ def _relocation_moves_propose_all(
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
         if region_bbox is not None and region_bias > 0.0:
             d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, _span2, region_bias)
+        if tgt_component_penalty is not None and tgt_component_penalty.size == tgt_cong.size:
+            d2 = (
+                d2
+                + float(const.HIER_COLD_COMPONENT_RANK_WEIGHT)
+                * _span2
+                * tgt_component_penalty[cand]
+            )
         cand = cand[_gpu_rank_order(d2, enabled=const.HIER_GPU_RANK_RELOCATION_TARGETS)][:n_targets]
 
         mask = all_idx != i
@@ -2822,6 +2857,12 @@ def _relocation_moves_propose_all(
                             "target_index": int(target_index),
                             "local_field": local_field,
                             "target_field": float(cand_field[target_index]),
+                            "component_penalty": (
+                                float(tgt_component_penalty[target_index])
+                                if tgt_component_penalty is not None
+                                and tgt_component_penalty.size == tgt_cong.size
+                                else 0.0
+                            ),
                             "xy": (nx, ny),
                         }
                     )
@@ -2838,6 +2879,12 @@ def _relocation_moves_propose_all(
                         "target_index": int(target_index),
                         "local_field": local_field,
                         "target_field": float(cand_field[target_index]),
+                        "component_penalty": (
+                            float(tgt_component_penalty[target_index])
+                            if tgt_component_penalty is not None
+                            and tgt_component_penalty.size == tgt_cong.size
+                            else 0.0
+                        ),
                         "xy": (nx, ny),
                     }
                 )
@@ -3172,7 +3219,7 @@ def _relocation_moves(
     are given, out-of-region candidate cells get a ranking penalty so a macro
     strongly prefers staying within its cluster region — a SOFT region lock (it
     can still exit when in-region cold cells run out). Bit-identical when
-    `region_bbox is None` (the production pipeline never passes it).
+    `region_bbox is None`.
     """
     _relocation_moves.last_stats = {"candidates": 0, "legal": 0, "scored": 0, "accepts": 0}
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
@@ -3215,12 +3262,13 @@ def _relocation_moves(
 
     # Use low-field cells as possible targets.
     flat = cell_cong.ravel()
-    pool = _target_pool_from_override(target_pool, flat, n_targets)
+    pool, tgt_component_penalty = _target_pool_from_override(target_pool, flat, n_targets)
     if pool.size == 0:
         _thr = np.percentile(flat, 55)
         pool = np.where(flat < _thr)[0]
         if pool.size < max(n_targets, 64):
             pool = np.argsort(flat)[: max(n_targets, 64)]
+        tgt_component_penalty = None
     tgt_c = (pool % nc).astype(np.float64)
     tgt_r = (pool // nc).astype(np.float64)
     tgt_x = (tgt_c + 0.5) * cell_w
@@ -3266,6 +3314,7 @@ def _relocation_moves(
             accept_min_gain=propose_accept_min_gain,
             target_pool=target_pool,
             region_mask=region_mask,
+            tgt_component_penalty=tgt_component_penalty,
         )
         _relocation_moves.last_stats = dict(
             getattr(_relocation_moves_propose_all, "last_stats", {})
@@ -3314,6 +3363,13 @@ def _relocation_moves(
             d2 = (1.0 - wl_blend) * d2 + wl_blend * d2c
         if region_bbox is not None and region_bias > 0.0:
             d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, i, _span2, region_bias)
+        if tgt_component_penalty is not None and tgt_component_penalty.size == tgt_cong.size:
+            d2 = (
+                d2
+                + float(const.HIER_COLD_COMPONENT_RANK_WEIGHT)
+                * _span2
+                * tgt_component_penalty[cand]
+            )
         order = _structural_candidate_order(
             cand=cand,
             base_rank=d2,
@@ -3486,12 +3542,13 @@ def _soft_relocation_moves(
 
     flat = cell_field.ravel()
     # Use low-field cells as possible targets.
-    pool = _target_pool_from_override(target_pool, flat, n_targets)
+    pool, tgt_component_penalty = _target_pool_from_override(target_pool, flat, n_targets)
     if pool.size == 0:
         _thr = np.percentile(flat, 55)
         pool = np.where(flat < _thr)[0]
         if pool.size < max(n_targets, 64):
             pool = np.argsort(flat)[: max(n_targets, 64)]
+        tgt_component_penalty = None
     tgt_x = ((pool % nc).astype(np.float64) + 0.5) * cell_w
     tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
     tgt_cong = flat[pool]
@@ -3571,6 +3628,14 @@ def _soft_relocation_moves(
             if region_bbox is not None and region_bias > 0.0:
                 _span2 = float(max(cw, ch)) ** 2
                 d2 = _region_penalty(d2, tgt_x, tgt_y, cand, region_bbox, k, _span2, region_bias)
+            if tgt_component_penalty is not None and tgt_component_penalty.size == tgt_cong.size:
+                _span2 = float(max(cw, ch)) ** 2
+                d2 = (
+                    d2
+                    + float(const.HIER_COLD_COMPONENT_RANK_WEIGHT)
+                    * _span2
+                    * tgt_component_penalty[cand]
+                )
             order = _structural_candidate_order(
                 cand=cand,
                 base_rank=d2,

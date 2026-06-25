@@ -20,12 +20,29 @@ integration in the main loop, and ML ranker defaults.
 Current verification after adding exact-prescored seed portfolio selection,
 hierarchy-aware congestion-weighted proposal ranking, plateau telemetry,
 budget-aware pass scheduling, strong soft repair, swap-round micro-shift replay,
-stronger opportunity gates, and component-aware cleanup scheduling:
+stronger opportunity gates, component-aware cleanup scheduling, component-aware
+region expansion/decompression, small-design polish, no-release low-net soft/SS
+breadth, medium/large soft-continuation scheduling, and strict final hierarchy
+audit rollback:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1793  17/17 VALID  0 overlaps  1421.12s
+AVG 1.1999  17/17 VALID  0 overlaps  1147.08s
 ```
+
+The earlier `AVG 1.1627` hierarchy sweep remains an important proxy reference,
+but its hierarchy audit was report-only. The current default enforces the audit
+budget and rolls back to the best saved audit-passing checkpoint when a later
+proxy-improving state drifts too far from the selected hierarchy seed.
+
+Passes are now adaptive by gain. A stage exits and advances when the most recent
+full exact proxy gain is `<= HIER_PLATEAU_PROXY_GAIN` (`0.00005`), instead of
+running a fixed number of low-yield rounds.
+
+Region construction has a default-off experiment for reshaping weak inferred
+hierarchy constraints before local relief starts. Broadly enabling extra room
+for hot low-confidence clusters helped some small designs but regressed the full
+2026-06-24 sweep, so production keeps it disabled.
 
 ## Flow
 
@@ -57,7 +74,10 @@ flowchart TD
     X2 --> L[Coldspot cluster tightening with bounded proxy budget]
     L --> Z[Post-coldspot micro-shift replay]
     Z --> Z1[Bounded survivor-pool search]
-    Z1 --> M
+    Z1 --> Z2{Small-design polish gated?}
+    Z2 -->|Yes| Z3[Low-confidence hierarchy release + exact polish]
+    Z2 -->|No| M
+    Z3 --> M[Final hierarchy audit + rollback checkpoint]
     M --> N[Return macro centers]
 ```
 
@@ -166,7 +186,16 @@ cleanup. Soft macros receive analogous region boxes from their assigned hard
 cluster or bridge affinities. A move may leave its region only when the exact
 proxy improvement exceeds the configured escape threshold.
 Before relief runs, hot cluster regions expand toward colder neighboring grid
-bands so packed hierarchy blobs get room to create routing channels.
+bands so packed hierarchy blobs get room to create routing channels. The
+default expansion first finds nearby contiguous cold congestion components and
+grows hard/soft hierarchy regions toward those components; if no useful
+component is adjacent, it falls back to the older side-band comparison. A
+default-off weak/hot reshape experiment can give low-confidence hot clusters
+extra capped side expansion, with a floor on non-cold sides, before local
+cleanup starts. The broad default-on version produced `AVG 1.1637` versus the
+accepted `AVG 1.1627`, so it remains opt-in. The opt-in path is now candidate
+gated to small-design-sized placements, and selected clusters must overlap the
+same low-confidence release-candidate pool used by late small-design polish.
 
 Constants in `src/utils/constants.py`:
 
@@ -182,6 +211,19 @@ HIER_BRIDGE_SOFT_RATIO=0.6
 HIER_REGION_EXPAND_HOT_PCT=60
 HIER_REGION_EXPAND_FRAC=0.08
 HIER_REGION_EXPAND_BAND=3
+HIER_REGION_COMPONENT_EXPAND=True
+HIER_REGION_COMPONENT_COLD_PCT=45
+HIER_REGION_COMPONENT_MIN_CELLS=4
+HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS=4
+HIER_REGION_WEAK_HOT_RESHAPE=False
+HIER_REGION_WEAK_CONFIDENCE_MAX=0.92
+HIER_REGION_WEAK_HOT_MAX_CLUSTERS=2
+HIER_REGION_WEAK_HOT_EXTRA_FRAC=0.03
+HIER_REGION_WEAK_HOT_SIDE_FLOOR=0.45
+HIER_REGION_WEAK_HOT_HARD_MIN=240
+HIER_REGION_WEAK_HOT_HARD_MAX=420
+HIER_REGION_WEAK_HOT_MACRO_MAX=1600
+HIER_REGION_WEAK_HOT_REQUIRE_RELEASE_CANDIDATE=True
 HIER_PROPOSAL_CONGESTION_WEIGHT=2.5
 HIER_PROPOSAL_DENSITY_WEIGHT=1.0
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08
@@ -224,11 +266,13 @@ HIER_MICRO_SHIFT_MIN_GAIN=0.00001
 
 Cluster decompression creates routing channels inside hot hierarchy blobs. It
 builds full-placement candidates by expanding a hot cluster away from its
-centroid inside the expanded region, legalizes hard macros, moves owned softs
-with the cluster, and nudges bridge softs toward the corridor centroid. The
-candidate is accepted only when full exact proxy improves and the composite
-hierarchy-quality metric stays within budget. That metric combines mean
-cluster radius, bounding-box spread, and a small nearest-cluster crowding
+centroid inside the expanded region. When a nearby contiguous cold congestion
+component exists, decompression biases the expansion axis and applies a small
+whole-cluster shift toward that component. It then legalizes hard macros, moves
+owned softs with the cluster, and nudges bridge softs toward the corridor
+centroid. The candidate is accepted only when full exact proxy improves and the
+composite hierarchy-quality metric stays within budget. That metric combines
+mean cluster radius, bounding-box spread, and a small nearest-cluster crowding
 penalty.
 
 Constants in `src/utils/constants.py`:
@@ -245,6 +289,11 @@ HIER_QUALITY_BBOX_WEIGHT=0.20
 HIER_QUALITY_CROWD_WEIGHT=0.05
 HIER_DECOMPRESS_ANISO_BAND=3
 HIER_DECOMPRESS_ANISO_SECONDARY=0.25
+HIER_DECOMPRESS_LOCAL_COMPONENT=True
+HIER_DECOMPRESS_LOCAL_COLD_PCT=45
+HIER_DECOMPRESS_LOCAL_MIN_CELLS=4
+HIER_DECOMPRESS_LOCAL_MAX_DISTANCE_CELLS=4
+HIER_DECOMPRESS_LOCAL_SHIFT_FRAC=0.20
 ```
 
 ## Region-Bounded Swaps
@@ -326,6 +375,11 @@ late strong soft repair. If congestion still dominates density by
 `HIER_COMPONENT_CONG_DOMINANCE`, the scheduler may treat late soft cleanup as
 useful even when plateau telemetry alone is ambiguous. The component values
 only affect scheduling and trace payloads; exact proxy still decides every move.
+Medium/large congestion cases can run one continuation after strong soft repair
+when the design shape matches the structural gate and the normal strong-soft
+pass has already produced enough exact-proxy gain. This preserves runtime on
+cases where plateau escape and hard propose-all are dry while allowing
+`ibm12`-like soft cleanup to continue.
 
 Stronger opportunity gates are enabled for optional decompression/coldspot work.
 They skip expensive optional passes only when the current congestion field lacks
@@ -358,7 +412,12 @@ than the scoring work.
 Stage 6 adds a final audit-only hard legality margin report using the same
 `0.05` separation tolerance as local legality tests. The evaluator can still
 report 0 overlaps when this strict margin is slightly negative; the audit makes
-that near-contact visible in trace and summary logs.
+that near-contact visible in trace and summary logs. The finalizer also emits a
+hierarchy-quality audit comparing the returned state with the selected hierarchy
+seed. The pipeline tracks a separate audit-safe checkpoint, independent of the
+proxy-best state. If the current state exceeds the configured quality-drift
+budget, the finalizer rolls back to the best saved checkpoint inside that
+budget.
 
 ```text
 HIER_GPU_RANK_RELOCATION_TARGETS=auto
@@ -382,10 +441,13 @@ HIER_COMPONENT_CONG_DOMINANCE=0.10
 HIER_COMPONENT_RESERVED_CLEANUP_S=12
 HIER_PLATEAU_SOFT_REPAIR_BONUS_BUDGET_S=4
 HIER_PLATEAU_SOFT_REPAIR_BONUS_ROUNDS=1
+HIER_PLATEAU_PROXY_GAIN=0.00005
 HIER_PLATEAU_ESCAPE_BUDGET_S=4
 HIER_PLATEAU_ESCAPE_SOFT_TOP_K=384
 HIER_PLATEAU_ESCAPE_SOFT_TARGETS=10
 HIER_LEGALITY_MARGIN_EPS=0.05
+HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION=0.05
+HIER_FINAL_HIER_AUDIT_ROLLBACK=True
 ```
 
 ## Coldspot Tightening
@@ -533,6 +595,85 @@ that leave hierarchy regions or exceed hierarchy-quality budget, and exact-score
 only the top cheap-ranked candidates. When CUDA is available,
 `HIER_SURVIVOR_GPU_RANK=auto` uses torch sorting for the cheap candidate ranking;
 exact proxy scoring remains the commit authority.
+
+After survivor search, small designs can run one extra exact-gated polish pass.
+This pass targets the high-SA-ratio primary subset shape documented in
+`docs/general/benchmark_patterns/SA_RATIO_SUBSET_PATTERNS.md`: small hard-macro
+population, moderate total macro count, and no fixed hard macros. It is still
+feature-gated rather than benchmark-name gated. The release candidate pool now
+starts with the weakest-k inferred hierarchy clusters by confidence, filters
+that set by the confidence threshold, and releases the hottest remaining weak
+clusters. The release count is capped by
+`min(max_clusters, clusters_below_threshold, weakest_k)`. Released clusters
+expand their hard and soft region boxes to full canvas-feasible bounds.
+The pass then tries bounded hard propose-all relocation, soft relocation, an
+explicit released-region hard-hard swap pass, released-region hard-soft/soft-soft
+swaps, and micro-shift polish. The hard-hard swap pass is itself gated: it only
+runs when at least one weak cluster was released and the preceding hard
+relocation subpass cleared the small-design gain threshold. It runs up to two
+adaptive rounds and stops when the latest round does not clear the small-design
+gain threshold. The pass snapshots its entry state and restores the best
+audit-passing exact score seen across its adaptive rounds before handing control
+back to the main hierarchy flow. Every committed move must improve exact proxy,
+preserve hard legality, and keep the returned small-design state inside the
+final hierarchy-audit budget.
+
+Hard and soft relocation inside this pass use cold connected-component target
+pools. The current weighted congestion field is thresholded into cold cells,
+4-neighbor connected components are extracted, and targets from larger/colder
+components receive a lower component penalty. That penalty is used only in
+candidate ordering and target truncation; exact proxy remains the commit gate.
+
+Constants in `src/utils/constants.py`:
+
+```text
+HIER_SMALL_DESIGN_POLISH=True
+HIER_SMALL_DESIGN_HARD_MIN=240
+HIER_SMALL_DESIGN_HARD_MAX=420
+HIER_SMALL_DESIGN_MACRO_MAX=1600
+HIER_SMALL_DESIGN_BUDGET_S=14
+HIER_SMALL_DESIGN_ROUNDS=2
+HIER_SMALL_DESIGN_RELEASE_CONFIDENCE_MAX=0.92
+HIER_SMALL_DESIGN_RELEASE_WEAKEST_K=4
+HIER_SMALL_DESIGN_RELEASE_MAX_CLUSTERS=8
+HIER_SMALL_DESIGN_HIGH_NETS_PER_MACRO=24
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_HARD_TOP_K=64
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_HARD_TARGETS=12
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_SOFT_TOP_K=384
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_SOFT_TARGETS=12
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_SWAP_SOFT_K=24
+HIER_SMALL_DESIGN_HARD_SWAP_K=8
+HIER_SMALL_DESIGN_SWAP_HARD_K=8
+HIER_SMALL_DESIGN_SWAP_SOFT_K=16
+HIER_COLD_COMPONENT_TARGETS=True
+HIER_COLD_COMPONENT_PCT=45
+HIER_COLD_COMPONENT_MAX_COMPONENTS=8
+HIER_COLD_COMPONENT_MIN_CELLS=4
+HIER_COLD_COMPONENT_SIZE_WEIGHT=0.35
+HIER_COLD_COMPONENT_RANK_WEIGHT=0.04
+```
+
+The no-release low-net constants apply only when the small-design gate passes,
+the high-net lane is inactive, and no weak hierarchy cluster is released. They
+reduce hard-relocation breadth and increase soft relocation / soft-involving
+swap breadth; exact proxy and hard legality remain the only acceptance gates.
+
+Medium/large soft-continuation constants:
+
+```text
+HIER_MEDIUM_SOFT_CONTINUATION=True
+HIER_MEDIUM_SOFT_HARD_MIN=520
+HIER_MEDIUM_SOFT_HARD_MAX=760
+HIER_MEDIUM_SOFT_MACRO_MIN=2200
+HIER_MEDIUM_SOFT_MACRO_MAX=3200
+HIER_MEDIUM_SOFT_NETS_PER_MACRO_MIN=12
+HIER_MEDIUM_SOFT_NETS_PER_MACRO_MAX=24
+HIER_MEDIUM_SOFT_TRIGGER_GAIN=0.004
+HIER_MEDIUM_SOFT_BUDGET_S=6
+HIER_MEDIUM_SOFT_ROUNDS=2
+HIER_MEDIUM_SOFT_TOP_K=768
+HIER_MEDIUM_SOFT_TARGETS=14
+```
 
 A default-off coldspot GNN selector can be enabled with runtime environment
 variables, not constants:

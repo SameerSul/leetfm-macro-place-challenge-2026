@@ -4,7 +4,6 @@ import numpy as np
 import torch
 from macro_place.benchmark import Benchmark
 
-from utils import constants as const
 from utils.config import HAS_NUMBA, _GPU_DEVICE, _USE_GPU, _numba_njit
 from placer.plc.placement import _ensure_pos_cache
 from placer.scoring.wirelength import _build_wl_cache
