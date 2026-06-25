@@ -322,6 +322,8 @@ def _cluster_decompression_relief(
     local_component_min_cells: int = 4,
     local_component_max_distance_cells: int = 4,
     local_component_shift_frac: float = 0.0,
+    cluster_priority: dict[int, float] | None = None,
+    cluster_priority_weight: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, int, float, float]:
     """Try group decompression candidates and accept exact proxy improvements."""
     if not clusters:
@@ -383,7 +385,19 @@ def _cluster_decompression_relief(
         if not heat:
             break
         threshold = float(np.percentile([h for _, h in heat], hot_percentile))
-        ordered = [cid for cid, h in sorted(heat, key=lambda x: -x[1]) if h >= threshold]
+        priority = cluster_priority or {}
+        priority_weight = max(0.0, float(cluster_priority_weight))
+        span = max(float(field.max()) - float(field.min()), 1e-12)
+        ordered = [
+            cid
+            for cid, h in sorted(
+                heat,
+                key=lambda x: -(
+                    float(x[1]) + priority_weight * span * float(priority.get(int(x[0]), 0.0))
+                ),
+            )
+            if h >= threshold
+        ]
         centroids = {cid: cur_h[meta["mem_all"]].mean(axis=0) for cid, meta in cluster_meta.items()}
         accepted_round = False
         for cid in ordered:
@@ -523,6 +537,7 @@ def _cluster_decompression_relief(
                         soft_count=int(
                             0 if cluster_softs.get(cid) is None else len(cluster_softs.get(cid))
                         ),
+                        graph_tension=float(priority.get(int(cid), 0.0)),
                         expansion_factor=float(factor),
                         axis_scale=[float(scale[0]), float(scale[1])],
                         hierarchy_quality_before=old_quality,

@@ -26,6 +26,7 @@ benchmark input
        - default-off low-confidence hot-cluster extra room is available for experiments
   -> exact-gated local micro-shift polish
   -> exact-gated cluster decompression with composite hierarchy quality
+       - large designs can order opportunities by hierarchy graph tension
   -> budget-aware interleaved soft repair
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
        - hard-moving swap candidates must stay inside the hierarchy audit budget
@@ -45,6 +46,7 @@ benchmark input
        - run graph-bordered local swaps and hard/soft relocations
        - graph-rank generated outcomes when the GNN selector is off
        - exact proxy + hierarchy-quality gate before commit
+       - large designs can rank hot clusters by hierarchy graph tension
   -> graph-local fallback when no coldspot kick commits:
        - select hottest eligible current clusters
        - reuse the same graph-expanded border
@@ -99,23 +101,30 @@ ranking and GNN trace logging are documented in
 
 Current verified full sweep with strict hierarchy-audit rollback,
 audit-aware hard swap gating, component-aware region expansion/decompression,
-swap-round micro-shift replay, stronger opportunity gates, component-aware
-scheduling, post-survivor small-design polish with subpass audit restore,
-no-release low-net soft/SS breadth, and medium/large soft-continuation
-scheduling:
+large-design hierarchy graph-tension opportunity ordering, swap-round
+micro-shift replay, stronger opportunity gates, component-aware scheduling,
+post-survivor small-design polish with subpass audit restore, no-release
+low-net soft/SS breadth, and medium/large soft-continuation scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1664  17/17 VALID  0 overlaps  1146.64s
+AVG 1.1658  17/17 VALID  0 overlaps  1130.99s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
 0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
 several designs after late proxy-improving relief. A strict final-rollback-only
-audit sweep reached `AVG 1.1999`; the current `AVG 1.1664` path preserves the
-audit invariant earlier in local relief so fewer proxy-improving states need to
-be discarded at finalization. Earlier Stage-6 audit sweeps are retained in
-`PROGRESS.md` as historical experiment records.
+audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
+reached `AVG 1.1664`; the current graph-tension path is `AVG 1.1658`. The
+production path preserves the audit invariant earlier in local relief so fewer
+proxy-improving states need to be discarded at finalization. Earlier Stage-6
+audit sweeps are retained in `PROGRESS.md` as historical experiment records.
+
+The graph-tension signal is advisory and gated to large designs by default. It
+orders decompression/coldspot opportunities but does not change commit gates.
+Direct graph-tension swap ordering remains available through
+`HIER_GRAPH_TENSION_SWAP_WEIGHT`, but defaults to `0.0` after focused tests
+regressed `ibm08` and `ibm10`.
 
 Historical accepted hierarchy full sweep before the graph-local and six-stage
 architecture revamps:

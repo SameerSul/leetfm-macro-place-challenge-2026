@@ -16,10 +16,12 @@ hot cluster regions by congestion, runs bounded hard/soft relief, applies
 exact-gated cluster decompression, and finishes with region-bounded swaps plus
 round-level and post-swap micro-shift replay, post-swap hard and soft polish
 passes, component-aware late cleanup scheduling, proxy-aware coldspot
-tightening, and bounded survivor search. Hard-moving swap candidates and
-small-design polish subpasses are kept inside the hierarchy-audit budget before
-they can become the returned placement. The exact proxy is still used for
-evaluation and local gates, but it is no longer the primary design objective.
+tightening, and bounded survivor search. Large designs use hierarchy
+graph-tension scores to order decompression and coldspot opportunities.
+Hard-moving swap candidates and small-design polish subpasses are kept inside
+the hierarchy-audit budget before they can become the returned placement. The
+exact proxy is still used for evaluation and local gates, but it is no longer
+the primary design objective.
 
 The placement objective note is in [docs/general/OBJECTIVES.md](docs/general/OBJECTIVES.md).
 The hierarchy-integrated BeyondPPA structural objective notes and GNN trace
@@ -29,14 +31,14 @@ Current smoke reference:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.1692  VALID  audit=pass  [~73s locally]
+proxy=1.1679  VALID  audit=pass  [~68s locally]
 ```
 
 Current full IBM reference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1664  17/17 VALID  0 overlaps  all hierarchy audits passed  [1146.64s locally]
+AVG 1.1658  17/17 VALID  0 overlaps  all hierarchy audits passed  [1130.99s locally]
 ```
 
 Pass progression is now adaptive: the pipeline advances to the next stage when the
@@ -91,6 +93,7 @@ initial.plc / benchmark
   -> region-locked hard relocation + soft relocation relief
   -> exact-gated in-region micro-shift polish
   -> exact-gated cluster decompression
+  -> large-design graph-tension opportunity ordering
   -> audit-aware region-bounded hard-hard / hard-soft / soft-soft swaps
   -> optional swap-round micro-shift replay
   -> post-swap micro-shift replay

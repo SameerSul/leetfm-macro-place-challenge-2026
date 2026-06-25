@@ -74,6 +74,8 @@ def run_coldspot_tightening(
     hier_micro_shift_radius: int,
     hier_micro_shift_top: int,
     hier_micro_shift_min_gain: float,
+    graph_tension_fn: Callable[[np.ndarray, np.ndarray | None], dict[int, float]] | None = None,
+    graph_tension_weight: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """Run coldspot tightening and return the post-coldspot placement."""
     _additive_spare = lambda deadline: deadline is None or time.monotonic() + float(
@@ -176,6 +178,7 @@ def run_coldspot_tightening(
         hard_xy: np.ndarray,
         soft_xy: np.ndarray,
     ) -> dict:
+        cluster_priority = graph_tension_fn(hard_xy, field) if graph_tension_fn is not None else None
         return coldspot_opportunity(
             field=field,
             hard_xy=hard_xy,
@@ -195,6 +198,8 @@ def run_coldspot_tightening(
             ck_min_field_gap=ck_min_field_gap,
             ck_opportunity_min_score=ck_opportunity_min_score,
             ck_opportunity_top_clusters=ck_opportunity_top_clusters,
+            cluster_priority=cluster_priority,
+            cluster_priority_weight=graph_tension_weight,
         )
 
     def _full(h: np.ndarray, soft: np.ndarray) -> torch.Tensor:
@@ -419,6 +424,7 @@ def run_coldspot_tightening(
                 opportunity_min_cold_cells=int(ck_opportunity_min_cold_cells),
                 opportunity_cluster=int(opportunity["cluster"]),
                 opportunity_cluster_ids=list(opportunity["cluster_ids"]),
+                graph_tension=float(opportunity.get("graph_tension", 0.0)),
                 old_proxy=float(cur_proxy),
                 candidate_proxy=None,
                 proxy_delta=None,
@@ -475,6 +481,7 @@ def run_coldspot_tightening(
                 opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
                 opportunity_cluster=int(opportunity["cluster"]),
                 opportunity_cluster_ids=list(opportunity["cluster_ids"]),
+                graph_tension=float(opportunity.get("graph_tension", 0.0)),
                 old_proxy=float(cur_proxy),
                 candidate_proxy=None,
                 proxy_delta=None,
