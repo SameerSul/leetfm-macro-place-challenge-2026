@@ -45,13 +45,58 @@ def _bench(row: dict[str, Any]) -> str:
 def _candidate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for row in rows:
-        if row.get("event") in {
+        event = str(row.get("event", ""))
+        if event == "hier_swap_candidates":
+            parent = {
+                "event": event,
+                "operator": row.get("operator", ""),
+                "kind": row.get("kind", ""),
+                "field": row.get("field", ""),
+                "source": row.get("source"),
+                "outside_region_mask_count": row.get("outside_region_mask_count"),
+                "inside_region_mask_count": row.get("inside_region_mask_count"),
+                "outside_region_bbox_count": row.get("outside_region_bbox_count"),
+                "benchmark": row.get("benchmark", row.get("benchmark_name")),
+                "_path": row.get("_path"),
+                "_line": row.get("_line"),
+            }
+            for candidate_idx, cand in enumerate(
+                row.get("candidates", []) if isinstance(row.get("candidates"), list) else []
+            ):
+                if not isinstance(cand, dict):
+                    continue
+                merged = dict(parent)
+                merged.update(cand)
+                merged.setdefault("candidate_id", candidate_idx)
+                out.append(merged)
+            continue
+        if event in {
             "hier_decompression_candidate",
             "hier_coldspot_candidate",
             "hier_swap_candidate",
         }:
             out.append(row)
     return out
+
+
+def _print_swap_summary(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    out = [row for row in rows if bool(row.get("outside_region_mask", False))]
+    in_mask = [row for row in rows if not bool(row.get("outside_region_mask", False))]
+    out_bbox = [row for row in rows if bool(row.get("outside_region_bbox", False))]
+    in_bbox = [row for row in rows if not bool(row.get("outside_region_bbox", False))]
+    print(f"swap_candidate_rows: {len(rows)}")
+    print(f"swap_outside_mask_rows: {len(out)}")
+    print(f"swap_inside_mask_rows: {len(in_mask)}")
+    print(f"swap_outside_bbox_rows: {len(out_bbox)}")
+    print(f"swap_inside_bbox_rows: {len(in_bbox)}")
+    accepted = [row for row in rows if bool(row.get("accepted"))]
+    exact = [row for row in rows if row.get("proxy_delta") is not None]
+    print(
+        f"swap_accepted_rows: {len(accepted)} exact={len(exact)} "
+        f"avg_tension={sum(_num(row, 'graph_tension') for row in rows) / max(1, len(rows)):.3f}"
+    )
 
 
 def _print_tension_events(rows: list[dict[str, Any]], limit: int) -> None:
@@ -76,6 +121,7 @@ def _print_candidate_summary(candidates: list[dict[str, Any]]) -> None:
     with_tension = [row for row in candidates if "graph_tension" in row]
     egonet = [row for row in candidates if bool(row.get("egonet_candidate"))]
     graph_anchor = [row for row in candidates if bool(row.get("graph_anchor_enabled"))]
+    swap = [row for row in candidates if row.get("event") == "hier_swap_candidates"]
     prefiltered = [
         row
         for row in candidates
@@ -102,6 +148,15 @@ def _print_candidate_summary(candidates: list[dict[str, Any]]) -> None:
     print(f"graph_delta_ranked_rows: {len(graph_delta_rank)}")
     print(f"graph_rescue_attempted_rows: {len(graph_rescue)}")
     print(f"graph_survivor_attempted_rows: {len(graph_survivor)}")
+    multi_source = [row for row in candidates if int(row.get("whole_source_points", 0) or 0) > 1]
+    if multi_source:
+        print(
+            "multi_source_coldspot_rows: "
+            f"{len(multi_source)} avg_source_points="
+            f"{sum(float(row.get('whole_source_points', 0.0)) for row in multi_source) / len(multi_source):.2f}"
+        )
+    if swap:
+        _print_swap_summary(swap)
     if not with_tension:
         if egonet:
             _print_egonet_summary(egonet)

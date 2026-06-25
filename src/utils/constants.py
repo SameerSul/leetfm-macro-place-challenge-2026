@@ -291,6 +291,12 @@ HIER_SWAP_MIN_GAIN = 0.00001
 HIER_SOFT_BARRIER_GAIN = 0.0
 # Minimum congestion-field relief required for a swap move.
 HIER_SWAP_MIN_FIELD_RELIEF = 0.0
+# Enable mask-aware swap region checks when a region mask is available.
+HIER_SWAP_GRAPH_MASK_AWARE = True
+
+# Optional bias for source-anchored coldspot expansion around graph/components.
+# Source points are used to prefer low-congestion windows near cluster anchors.
+HIER_COLDSPOT_SOURCE_POINT_WEIGHT = 0.20
 # Region-bounded swap relief uses hard-hard, hard-soft, soft-soft,
 # congestion-field, density-field, and batched exact scoring paths.
 
@@ -383,6 +389,9 @@ HIER_COLDSPOT_LOCAL_RELOC_TARGETS = 8
 HIER_COLDSPOT_WHOLE_VARIANTS = 5
 # Number of distinct low-congestion anchors considered by whole-cluster variants.
 HIER_COLDSPOT_ANCHOR_VARIANTS = 3
+# Component-derived anchor candidates are ranked by coldness, area, and source
+# proximity when source context is available.
+HIER_COLDSPOT_COMPONENT_ANCHORS = 2
 # Optional graph-aware coldspot anchor ranking. When positive, cold window
 # anchors are still cold-first, but ties and near-ties prefer locations closer
 # to the selected cluster's weighted graph-neighbor centroid.

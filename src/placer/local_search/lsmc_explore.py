@@ -23,6 +23,118 @@ def _bbox(xy: np.ndarray, members: np.ndarray, hw: np.ndarray, hh: np.ndarray) -
     ]
 
 
+def _component_anchors(
+    hard_xy: np.ndarray,
+    members: np.ndarray,
+    *,
+    plc=None,
+    n: int | None = None,
+    n_soft: int = 0,
+    soft_members: np.ndarray | None = None,
+    max_anchors: int = 1,
+) -> np.ndarray:
+    """Build source anchors from graph components when available, else geometric spread."""
+    members = np.asarray(members, dtype=np.int64)
+    if members.size == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    max_anchors = max(1, int(max_anchors))
+    points = np.asarray(hard_xy[members], dtype=np.float64)
+    if points.size == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    if max_anchors == 1 or members.size <= 1:
+        return np.asarray([points.mean(axis=0)], dtype=np.float64)
+
+    edges: dict[tuple[int, int], float] = {}
+    if plc is not None and n is not None:
+        try:
+            hard_edges, _, _ = _local_connectivity(
+                plc=plc,
+                n=n,
+                n_soft=max(int(n_soft), 0),
+                hard_members=members,
+                soft_members=np.asarray(soft_members, dtype=np.int64)
+                if soft_members is not None
+                else np.zeros(0, dtype=np.int64),
+            )
+            if hard_edges:
+                edges = {tuple(k): float(v) for k, v in hard_edges.items()}
+        except Exception:
+            edges = {}
+
+    member_set = {int(v) for v in members}
+    adj = {int(v): [] for v in members}
+    if edges:
+        for (a, b), w in edges.items():
+            if w <= 0.0:
+                continue
+            ai = int(a)
+            bi = int(b)
+            if ai not in member_set or bi not in member_set:
+                continue
+            adj[ai].append(bi)
+            adj[bi].append(ai)
+    components: list[np.ndarray] = []
+    seen: set[int] = set()
+    for i in members:
+        i_i = int(i)
+        if i_i in seen:
+            continue
+        stack = [i_i]
+        seen.add(i_i)
+        comp: list[int] = []
+        while stack:
+            v = stack.pop()
+            comp.append(v)
+            for nxt in adj.get(v, []):
+                if nxt in seen:
+                    continue
+                seen.add(nxt)
+                stack.append(nxt)
+        components.append(np.asarray(comp, dtype=np.int64))
+
+    if len(components) >= 2:
+        comp_sizes = sorted(components, key=lambda a: a.size, reverse=True)
+        member_to_local = {int(v): i for i, v in enumerate(members)}
+        selected = [c for c in comp_sizes[:max_anchors] if c.size > 0]
+        anchors: list[np.ndarray] = []
+        for comp in selected:
+            local_idx = [
+                member_to_local.get(int(v), -1)
+                for v in comp
+                if int(v) in member_to_local
+            ]
+            local_idx = [v for v in local_idx if v >= 0]
+            if not local_idx:
+                continue
+            anchors.append(points[np.asarray(local_idx, dtype=np.int64)].mean(axis=0))
+        if anchors:
+            return np.asarray(anchors, dtype=np.float64)
+
+    # Geometry fallback: farthest-point sampling over cluster members.
+    center = points.mean(axis=0)
+    anchor_idx = [int(np.argmin(np.sum((points - center) ** 2, axis=1)))]
+    chosen = list(anchor_idx)
+    while len(chosen) < min(max_anchors, members.size):
+        chosen_pts = points[chosen]
+        d2 = np.full(points.shape[0], float("inf"), dtype=np.float64)
+        for p in chosen_pts:
+            d2 = np.minimum(d2, np.sum((points - p) ** 2, axis=1))
+        next_idx = int(np.argmax(d2))
+        if not np.isfinite(d2[next_idx]) or d2[next_idx] <= 0.0:
+            break
+        chosen.append(next_idx)
+    return points[np.asarray(chosen, dtype=np.int64)]
+
+
+def _source_points_signature(source_points: np.ndarray | None) -> tuple[tuple[int, int], ...]:
+    points = np.asarray(source_points, dtype=np.float64)
+    if points.size == 0:
+        return ()
+    points = points.reshape(-1, 2)
+    quant = np.rint(points * 1000.0).astype(np.int64)
+    return tuple(sorted((int(x), int(y)) for x, y in quant))
+
+
 def _cold_window_anchors(
     field: np.ndarray,
     nr: int,
@@ -33,6 +145,38 @@ def _cold_window_anchors(
     count: int,
     graph_target: tuple[float, float] | None = None,
     graph_weight: float = 0.0,
+    source_points: np.ndarray | None = None,
+    source_weight: float = 0.0,
+) -> list[tuple[float, float, float]]:
+    """Compatibility wrapper kept for historical callers."""
+    return _cold_window_anchors_legacy(
+        field=field,
+        nr=nr,
+        nc=nc,
+        cw=cw,
+        ch=ch,
+        win_cells=win_cells,
+        count=count,
+        graph_target=graph_target,
+        graph_weight=graph_weight,
+        source_points=source_points,
+        source_weight=source_weight,
+    )
+
+
+# Backward-compatibility marker for static analyzers.
+def _cold_window_anchors_legacy(
+    field: np.ndarray,
+    nr: int,
+    nc: int,
+    cw: float,
+    ch: float,
+    win_cells: int,
+    count: int,
+    graph_target: tuple[float, float] | None = None,
+    graph_weight: float = 0.0,
+    source_points: np.ndarray | None = None,
+    source_weight: float = 0.0,
 ) -> list[tuple[float, float, float]]:
     """Return diverse low-field window centers as (x, y, average field)."""
     count = max(1, int(count))
@@ -54,6 +198,50 @@ def _cold_window_anchors(
     flat_avg = avg.ravel()
     graph_weight = max(0.0, float(graph_weight))
     graph_target_xy = None
+    source_points = (
+        np.asarray(source_points, dtype=np.float64)
+        if source_points is not None
+        else None
+    )
+    source_weight = max(0.0, float(source_weight))
+    if source_points is not None:
+        if source_points.ndim != 2 or source_points.shape[1] != 2 or source_points.size == 0:
+            source_points = None
+    source_term = (
+        np.full(avg.shape, np.inf, dtype=np.float64)
+        if source_points is not None and source_weight > 0.0
+        else None
+    )
+    if source_term is not None:
+        for sx, sy in source_points:
+            if not np.isfinite(sx) or not np.isfinite(sy):
+                continue
+            x_center = (np.arange(cols) + 0.5 * w) * cell_w
+            y_center = (np.arange(rows) + 0.5 * w) * cell_h
+            xx = x_center[None, :]
+            yy = y_center[:, None]
+            source_term = np.minimum(source_term, np.hypot(xx - float(sx), yy - float(sy)))
+
+    if graph_target_xy is None:
+        if source_term is None:
+            flat_order = np.argsort(flat_avg)
+        else:
+            source_term = source_term / max(float(np.hypot(cw, ch)), 1.0)
+            flat_order = np.argsort(flat_avg + source_weight * source_term.ravel())
+    else:
+        row_grid, col_grid = np.indices(avg.shape)
+        cx = (col_grid.astype(np.float64) + 0.5 * float(w)) * cell_w
+        cy = (row_grid.astype(np.float64) + 0.5 * float(w)) * cell_h
+        diag = max(float(np.hypot(cw, ch)), 1.0)
+        dist_norm = np.hypot(cx - graph_target_xy[0], cy - graph_target_xy[1]) / diag
+        avg_min = float(np.min(avg))
+        avg_span = max(float(np.max(avg) - avg_min), 1e-9)
+        cold_norm = (avg - avg_min) / avg_span
+        score = cold_norm + graph_weight * dist_norm
+        if source_term is not None:
+            source_term = source_term / max(float(np.hypot(cw, ch)), 1.0)
+            score = score + source_weight * source_term
+        flat_order = np.lexsort((flat_avg, score.ravel()))
     if graph_target is not None and graph_weight > 0.0:
         graph_target_xy = np.asarray(graph_target, dtype=np.float64)
         if graph_target_xy.size != 2 or not np.all(np.isfinite(graph_target_xy)):
@@ -957,6 +1145,20 @@ def _coldspot_cluster_kick_candidates(
         win_microns = float(np.sqrt(member_area / max(target_density, 1e-3)))
         win_cells = max(1, int(np.ceil(win_microns / min(cell_w, cell_h))))
         anchor_count = max(1, int(getattr(const, "HIER_COLDSPOT_ANCHOR_VARIANTS", 3)))
+        source_anchor_count = max(1, int(getattr(const, "HIER_COLDSPOT_COMPONENT_ANCHORS", 1)))
+        source_point_weight = max(0.0, float(getattr(const, "HIER_COLDSPOT_SOURCE_POINT_WEIGHT", 0.0)))
+        source_points = _component_anchors(
+            hard_xy,
+            members,
+            plc=plc,
+            n=n,
+            n_soft=0 if soft_xy is None else int(soft_xy.shape[0]),
+            soft_members=cluster_soft_local.get(cid),
+            max_anchors=source_anchor_count,
+        )
+        if source_point_weight <= 0.0:
+            source_points = np.zeros((0, 2), dtype=np.float64)
+        anchor_count = max(anchor_count, source_points.shape[0])
         graph_target = graph_anchor_targets_by_cluster.get(int(cid))
         graph_strength = max(0.0, float(graph_anchor_strength_by_cluster.get(int(cid), 0.0)))
         effective_graph_weight = float(graph_anchor_weight) * graph_strength
@@ -966,10 +1168,17 @@ def _coldspot_cluster_kick_candidates(
             if graph_arr.size == 2 and np.all(np.isfinite(graph_arr)):
                 graph_target = (float(graph_arr[0]), float(graph_arr[1]))
                 graph_key = (int(np.round(graph_arr[0] * 1000.0)), int(np.round(graph_arr[1] * 1000.0)))
-            else:
-                graph_target = None
-                effective_graph_weight = 0.0
-        cache_key = (int(win_cells), graph_key, round(float(effective_graph_weight), 4))
+        else:
+            graph_target = None
+            effective_graph_weight = 0.0
+        source_signature = _source_points_signature(source_points)
+        cache_key = (
+            int(win_cells),
+            graph_key,
+            round(float(effective_graph_weight), 4),
+            source_signature,
+            round(float(source_point_weight), 4),
+        )
         cached = anchor_cache.get(cache_key)
         if cached is None or len(cached) < anchor_count:
             cached = _cold_window_anchors(
@@ -982,6 +1191,8 @@ def _coldspot_cluster_kick_candidates(
                 anchor_count,
                 graph_target=graph_target,
                 graph_weight=effective_graph_weight,
+                source_points=source_points if source_points.size else None,
+                source_weight=source_point_weight,
             )
             anchor_cache[cache_key] = cached
         anchors = cached[:anchor_count]
@@ -1032,6 +1243,8 @@ def _coldspot_cluster_kick_candidates(
                 "whole_variant": variant,
                 "whole_anchor_rank": int(anchor_rank),
                 "whole_anchor_field": float(anchor_field),
+                "whole_source_points": int(source_points.shape[0]),
+                "whole_source_point_weight": float(source_point_weight),
                 "graph_anchor_enabled": bool(effective_graph_weight > 0.0),
                 "graph_anchor_weight": float(effective_graph_weight),
             }
