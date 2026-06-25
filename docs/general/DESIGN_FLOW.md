@@ -23,11 +23,12 @@ budget-aware pass scheduling, strong soft repair, swap-round micro-shift replay,
 stronger opportunity gates, component-aware cleanup scheduling, component-aware
 region expansion/decompression, small-design polish, no-release low-net soft/SS
 breadth, medium/large soft-continuation scheduling, and strict final hierarchy
-audit rollback with audit-aware local relief:
+audit rollback with audit-aware local relief plus large-design graph-tension
+opportunity ordering:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1664  17/17 VALID  0 overlaps  1146.64s
+AVG 1.1658  17/17 VALID  0 overlaps  1130.99s
 ```
 
 The earlier `AVG 1.1627` hierarchy sweep remains an important proxy reference,
@@ -37,6 +38,12 @@ budget, and rolls back to the best saved audit-passing checkpoint when a later
 proxy-improving state drifts too far from the selected hierarchy seed. The
 strict final-rollback-only sweep was `AVG 1.1999`; earlier enforcement recovers
 most of that proxy loss while preserving the hierarchy invariant.
+
+Large designs additionally compute a hierarchy graph-tension signal from
+stretched inter-cluster edges and congestion along those edge corridors. The
+signal only orders decompression and coldspot opportunities by default; swap
+ordering remains disabled by `HIER_GRAPH_TENSION_SWAP_WEIGHT=0.0` because the
+focused swap-ordering trial regressed candidate quality.
 
 Passes are now adaptive by gain. A stage exits and advances when the most recent
 full exact proxy gain is `<= HIER_PLATEAU_PROXY_GAIN` (`0.00005`), instead of
@@ -62,7 +69,7 @@ flowchart TD
     H --> R[Congestion-expanded hard/soft regions]
     R --> J[Region-locked hard relocation + soft cleanup]
     J --> A1[In-region micro-shift polish]
-    A1 --> V[Exact-gated cluster decompression]
+    A1 --> V[Exact-gated cluster decompression + graph-tension ordering]
     V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
     T --> T1[Per-round micro-shift replay + audit checkpoint]
     T1 --> Y[Post-swap micro-shift replay]

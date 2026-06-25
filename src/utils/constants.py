@@ -229,6 +229,18 @@ HIER_DECOMPRESS_LOCAL_COLD_PCT = 45.0
 HIER_DECOMPRESS_LOCAL_MIN_CELLS = 4
 HIER_DECOMPRESS_LOCAL_MAX_DISTANCE_CELLS = 4
 HIER_DECOMPRESS_LOCAL_SHIFT_FRAC = 0.20
+# Advisory hierarchy-graph pressure ordering. These weights only reorder
+# existing candidates; exact proxy, hard legality, and hierarchy audit gates
+# still decide whether a candidate commits.
+HIER_GRAPH_TENSION_ORDER = True
+HIER_GRAPH_TENSION_WEIGHT = 0.10
+HIER_GRAPH_TENSION_DECOMP_WEIGHT = 0.10
+HIER_GRAPH_TENSION_COLDSPOT_WEIGHT = 0.10
+HIER_GRAPH_TENSION_SWAP_WEIGHT = 0.0
+HIER_GRAPH_TENSION_HARD_MIN = 600
+HIER_GRAPH_TENSION_HARD_MAX = 1000000
+HIER_GRAPH_TENSION_CORRIDOR_SAMPLES = 9
+HIER_GRAPH_TENSION_TRACE_TOP = 6
 # Region-bounded hard-hard, hard-soft, and soft-soft swap relief.
 # Number of region-bounded swap rounds to attempt.
 HIER_REGION_SWAP_ROUNDS = 2

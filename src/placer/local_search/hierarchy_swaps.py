@@ -522,6 +522,8 @@ def _try_hard_hard(
     field_name: str,
     hierarchy_quality_fn=None,
     hierarchy_quality_limit: "float | None" = None,
+    hard_priority: "np.ndarray | None" = None,
+    priority_weight: float = 0.0,
 ) -> tuple[int, float]:
     accepts = 0
     n = h_pos.shape[0]
@@ -533,7 +535,13 @@ def _try_hard_hard(
         return 0, best_score
     sep_x_mat, sep_y_mat = separation_matrices(sizes)
     span = max(float(field.max()), 1e-12)
-    hot = movable_idx[np.argsort(-local[movable_idx])][: min(128, movable_idx.size)]
+    priority = (
+        np.asarray(hard_priority, dtype=np.float64)
+        if hard_priority is not None and len(hard_priority) >= n
+        else np.zeros(n, dtype=np.float64)
+    )
+    source_rank = local + max(0.0, float(priority_weight)) * span * priority
+    hot = movable_idx[np.argsort(-source_rank[movable_idx])][: min(128, movable_idx.size)]
     use_trace_or_rank = _swap_trace_or_rank_enabled()
 
     for i_raw in hot:
@@ -574,7 +582,11 @@ def _try_hard_hard(
         if cand.size != cand_before.size:
             keep = np.isin(cand_before, cand)
             legal_mask = legal_mask[keep]
-        rank = local[cand] + region_bias * span * outside.astype(np.float64)
+        rank = (
+            local[cand]
+            + region_bias * span * outside.astype(np.float64)
+            + max(0.0, float(priority_weight)) * span * priority[cand]
+        )
         ranked_idx = _gpu_swap_prescore_order(
             rank,
             enabled=const.HIER_GPU_SWAP_PRESCORE_HH,
@@ -629,6 +641,8 @@ def _try_hard_hard(
                 "target": j,
                 "source_field": float(local[i]),
                 "target_field": float(local[j]),
+                "source_graph_tension": float(priority[i]),
+                "target_graph_tension": float(priority[j]),
                 "outside_region": bool(outside_move),
                 "legal": bool(is_legal),
                 "old_proxy": float(best_score),
@@ -928,6 +942,8 @@ def _try_hard_soft(
     field_name: str,
     hierarchy_quality_fn=None,
     hierarchy_quality_limit: "float | None" = None,
+    hard_priority: "np.ndarray | None" = None,
+    priority_weight: float = 0.0,
 ) -> tuple[int, float]:
     accepts = 0
     if h_pos.shape[0] == 0 or s_pos.shape[0] == 0:
@@ -943,7 +959,13 @@ def _try_hard_soft(
         return 0, best_score
     sep_x_mat, sep_y_mat = separation_matrices(sizes)
     span = max(float(field.max()), 1e-12)
-    hot = hard_idx[np.argsort(-hard_local[hard_idx])][: min(128, hard_idx.size)]
+    priority = (
+        np.asarray(hard_priority, dtype=np.float64)
+        if hard_priority is not None and len(hard_priority) >= h_pos.shape[0]
+        else np.zeros(h_pos.shape[0], dtype=np.float64)
+    )
+    source_rank = hard_local + max(0.0, float(priority_weight)) * span * priority
+    hot = hard_idx[np.argsort(-source_rank[hard_idx])][: min(128, hard_idx.size)]
     use_trace_or_rank = _swap_trace_or_rank_enabled()
 
     for i_raw in hot:
@@ -1047,6 +1069,7 @@ def _try_hard_soft(
                 "target": k,
                 "source_field": float(hard_local[i]),
                 "target_field": float(soft_local[k]),
+                "source_graph_tension": float(priority[i]),
                 "outside_region": bool(outside_move),
                 "legal": bool(is_legal and in_bounds),
                 "old_proxy": float(best_score),
@@ -1170,6 +1193,8 @@ def _region_bounded_swap_relief(
     use_density: bool = False,
     hierarchy_quality_fn=None,
     hierarchy_quality_limit: "float | None" = None,
+    hard_priority: "np.ndarray | None" = None,
+    priority_weight: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, int, float, dict]:
     """Run bounded hierarchy-preserving swap relief."""
     nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
@@ -1220,6 +1245,8 @@ def _region_bounded_swap_relief(
                 field_name,
                 hierarchy_quality_fn,
                 hierarchy_quality_limit,
+                hard_priority,
+                priority_weight,
             )
             accepts += got
         if enable_hs:
@@ -1252,6 +1279,8 @@ def _region_bounded_swap_relief(
                 field_name,
                 hierarchy_quality_fn,
                 hierarchy_quality_limit,
+                hard_priority,
+                priority_weight,
             )
             accepts += got
         if enable_ss:

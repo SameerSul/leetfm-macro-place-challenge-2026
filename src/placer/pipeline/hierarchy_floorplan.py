@@ -34,6 +34,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         log_gnn_event,
         log_plateau_event,
     )
+    from placer.local_search.graph_tension import (
+        cluster_graph_tension,
+        hard_tension_from_labels,
+    )
     from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
     from placer.local_search.hierarchy_model import HierarchyModel
     from placer.local_search.region_expand import expand_regions_by_congestion
@@ -355,11 +359,79 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
 
     legal = hard
     s_pos = soft.copy()
+    seed_hard_for_tension = legal.copy()
     state = PlacementState(legal.copy(), s_pos.copy(), float(s_score))
     pos = state.full()
     scorer = IncrementalScorer(plc, benchmark, pos.copy())
     soft_mov = movable[n : n + n_soft]
     seed_hierarchy_quality = hierarchy_quality_metric(legal, clusters)
+
+    graph_tension_enabled = bool(getattr(const, "HIER_GRAPH_TENSION_ORDER", False)) and (
+        int(n) >= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MIN", 0))
+        and int(n) <= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MAX", 1000000))
+    )
+    graph_tension_weight = (
+        max(0.0, float(getattr(const, "HIER_GRAPH_TENSION_WEIGHT", 0.0)))
+        if graph_tension_enabled
+        else 0.0
+    )
+    graph_tension_decomp_weight = (
+        max(0.0, float(getattr(const, "HIER_GRAPH_TENSION_DECOMP_WEIGHT", graph_tension_weight)))
+        if graph_tension_enabled
+        else 0.0
+    )
+    graph_tension_coldspot_weight = (
+        max(0.0, float(getattr(const, "HIER_GRAPH_TENSION_COLDSPOT_WEIGHT", graph_tension_weight)))
+        if graph_tension_enabled
+        else 0.0
+    )
+    graph_tension_swap_weight = (
+        max(0.0, float(getattr(const, "HIER_GRAPH_TENSION_SWAP_WEIGHT", 0.0)))
+        if graph_tension_enabled
+        else 0.0
+    )
+    graph_tension_active = max(
+        graph_tension_decomp_weight,
+        graph_tension_coldspot_weight,
+        graph_tension_swap_weight,
+    )
+
+    def _graph_tension(hard_xy: np.ndarray, field=None) -> dict[int, float]:
+        if graph_tension_active <= 0.0:
+            return {}
+        return cluster_graph_tension(
+            hard_xy,
+            clusters,
+            hierarchy.edges,
+            cw=float(cw),
+            ch=float(ch),
+            field=field,
+            seed_hard_xy=seed_hard_for_tension,
+            confidence=hierarchy.cluster_confidence,
+            samples=max(2, int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9))),
+        )
+
+    def _hard_graph_tension(hard_xy: np.ndarray, field=None) -> np.ndarray:
+        return hard_tension_from_labels(labels, _graph_tension(hard_xy, field), int(n))
+
+    def _trace_graph_tension(label: str, hard_xy: np.ndarray, field=None) -> None:
+        scores = _graph_tension(hard_xy, field)
+        if not scores:
+            return
+        top = sorted(scores.items(), key=lambda row: (-row[1], row[0]))[
+            : max(1, int(getattr(const, "HIER_GRAPH_TENSION_TRACE_TOP", 6)))
+        ]
+        log_gnn_event(
+            "hier_graph_tension",
+            benchmark=benchmark.name,
+            label=str(label),
+            decomp_weight=float(graph_tension_decomp_weight),
+            coldspot_weight=float(graph_tension_coldspot_weight),
+            swap_weight=float(graph_tension_swap_weight),
+            top_clusters=[int(cid) for cid, _score in top],
+            top_scores=[float(score) for _cid, score in top],
+            edge_count=int(len(hierarchy.edges)),
+        )
 
     pre_relief = s_score
     region = None
@@ -367,6 +439,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
     base_heat_field = _congestion_field(scorer, nr, nc)
     cluster_heat = None
+    _trace_graph_tension("seed", legal, base_heat_field)
 
     def _cluster_heat(field):
         if field is None or not clusters:
@@ -794,6 +867,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         d_acc = 0
         decomp_rounds = max(1, int(const.HIER_DECOMPRESS_ROUNDS))
         decomp_hq = hierarchy_quality_metric(h_pos, clusters)
+        decomp_priority = _graph_tension(h_pos, decomp_field)
+        _trace_graph_tension("cluster_decompression", h_pos, decomp_field)
         for _ in range(decomp_rounds):
             if d_deadline is not None and time.monotonic() >= d_deadline:
                 break
@@ -843,6 +918,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     0.0,
                     float(getattr(const, "HIER_DECOMPRESS_LOCAL_SHIFT_FRAC", 0.0)),
                 ),
+                cluster_priority=decomp_priority,
+                cluster_priority_weight=graph_tension_decomp_weight,
             )
             weak_decomp = bool(trial_acc) and float(trial_score) > decomp_before - decomp_min_gain
             if not _hard_valid(trial_h) or weak_decomp or int(trial_acc) <= 0:
@@ -1005,6 +1082,14 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         swap_round_start_acc = int(swap_acc)
         for use_density in fields:
             swap_before = float(r_score)
+            swap_field = _congestion_field(rscorer, nr, nc) if graph_tension_swap_weight > 0.0 else None
+            hard_graph_priority = (
+                _hard_graph_tension(h_pos, swap_field)
+                if graph_tension_swap_weight > 0.0 and swap_field is not None
+                else None
+            )
+            if _swap_round == 0 and not use_density and swap_field is not None:
+                _trace_graph_tension("region_swaps", h_pos, swap_field)
             h_pos, s_pos, got, r_score, stats = _region_bounded_swap_relief(
                 h_pos,
                 s_pos,
@@ -1037,6 +1122,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 use_density=use_density,
                 hierarchy_quality_fn=lambda cand_h: hierarchy_quality_metric(cand_h, clusters),
                 hierarchy_quality_limit=audit_limit,
+                hard_priority=hard_graph_priority,
+                priority_weight=graph_tension_swap_weight,
             )
             swap_acc += got
             for k, v in stats.items():
@@ -1827,6 +1914,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         hier_micro_shift_radius=int(hier_micro_shift_radius),
         hier_micro_shift_top=int(hier_micro_shift_top),
         hier_micro_shift_min_gain=float(hier_micro_shift_min_gain),
+        graph_tension_fn=_graph_tension,
+        graph_tension_weight=graph_tension_coldspot_weight,
     )
     _maybe_update_audit_checkpoint(legal, s_pos, cur_proxy)
 

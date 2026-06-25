@@ -6,7 +6,31 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
-> **Status (2026-06-25 — audit-preserving local relief recovery):**
+> **Status (2026-06-25 — large-design graph-tension opportunity ordering):**
+> Added a hierarchy graph-tension signal that compares current cluster-centroid
+> relations with the selected hierarchy seed, weights stretched inter-cluster
+> edges by edge weight and congestion along the edge corridor, and normalizes the
+> result into per-cluster ordering scores. The signal is default-on only for
+> large hard-macro designs (`HIER_GRAPH_TENSION_HARD_MIN=600`) and currently
+> orders decompression/coldspot opportunities; direct swap ordering remains
+> default-off (`HIER_GRAPH_TENSION_SWAP_WEIGHT=0.0`) because focused tests showed
+> it burned exact-score budget on weaker swaps. Exact proxy, hard legality, and
+> hierarchy audit remain the only commit gates.
+>
+> Verification: `uv run python -m py_compile $(find src -type f -name '*.py')`
+> passed; `git diff --check` passed; focused checks were `ibm08=1.1338`,
+> `ibm10=1.1675`, `ibm12=1.6704`, and `ibm15=1.3618`, all VALID and
+> audit-passing. Full `uv run evaluate src/main.py --all` = **AVG 1.1658**,
+> 17/17 VALID, 0 overlaps, all final hierarchy audits passed, 1130.99s. This
+> supersedes the prior audit-preserving **AVG 1.1664** result. Per-benchmark
+> proxies:
+> `ibm01=0.9257`, `ibm02=1.1203`, `ibm03=1.0049`, `ibm04=1.0095`,
+> `ibm06=1.2129`, `ibm07=1.0523`, `ibm08=1.1358`, `ibm09=0.8534`,
+> `ibm10=1.1679`, `ibm11=0.9936`, `ibm12=1.6704`, `ibm13=1.0200`,
+> `ibm14=1.2763`, `ibm15=1.3627`, `ibm16=1.2147`, `ibm17=1.4059`,
+> `ibm18=1.3925`.
+
+> **[HISTORICAL] Status (2026-06-25 — audit-preserving local relief recovery):**
 > Fixed the stale region-escape verifier so it uses the active `HierarchyModel`
 > and restored the shared `any_outside_region()` helper. Added final
 > hierarchy-quality audit telemetry against the selected hierarchy seed. The
