@@ -106,3 +106,96 @@ def hard_tension_from_labels(labels: np.ndarray, cluster_tension: dict[int, floa
     for i in range(limit):
         out[i] = float(cluster_tension.get(int(labels[i]), 0.0))
     return out
+
+
+def candidate_graph_edge_delta(
+    before_hard_xy: np.ndarray,
+    after_hard_xy: np.ndarray,
+    clusters: dict,
+    edges,
+    *,
+    cw: float,
+    ch: float,
+    field: np.ndarray | None = None,
+    seed_hard_xy: np.ndarray | None = None,
+    confidence: dict[int, float] | None = None,
+    affected_clusters=None,
+    samples: int = 9,
+) -> dict[str, float]:
+    """Summarize graph-edge impact of a candidate move.
+
+    Negative deltas are good: they shorten weighted graph edges or reduce
+    corridor pressure. The score is diagnostic/ranking data only; exact proxy
+    and hierarchy gates remain responsible for acceptance.
+    """
+    if not clusters or not edges:
+        return {
+            "edge_stretch_delta": 0.0,
+            "corridor_congestion_delta": 0.0,
+            "weighted_edge_delta": 0.0,
+            "graph_candidate_delta": 0.0,
+            "graph_delta_edges": 0.0,
+        }
+    before_centroids = _cluster_centroids(before_hard_xy, clusters)
+    after_centroids = _cluster_centroids(after_hard_xy, clusters)
+    if not before_centroids or not after_centroids:
+        return {
+            "edge_stretch_delta": 0.0,
+            "corridor_congestion_delta": 0.0,
+            "weighted_edge_delta": 0.0,
+            "graph_candidate_delta": 0.0,
+            "graph_delta_edges": 0.0,
+        }
+    seed_centroids = (
+        _cluster_centroids(seed_hard_xy, clusters)
+        if seed_hard_xy is not None and seed_hard_xy.shape == before_hard_xy.shape
+        else before_centroids
+    )
+    affected = None if affected_clusters is None else {int(cid) for cid in affected_clusters}
+    diag = max(float(np.hypot(cw, ch)), 1.0)
+    stretch_delta = 0.0
+    corridor_delta = 0.0
+    weighted_delta = 0.0
+    edge_count = 0
+    for edge in edges:
+        a = int(getattr(edge, "src", -1))
+        b = int(getattr(edge, "dst", -1))
+        if affected is not None and a not in affected and b not in affected:
+            continue
+        if a not in before_centroids or b not in before_centroids:
+            continue
+        if a not in after_centroids or b not in after_centroids:
+            continue
+        before_a = before_centroids[a]
+        before_b = before_centroids[b]
+        after_a = after_centroids[a]
+        after_b = after_centroids[b]
+        before_dist = float(np.linalg.norm(before_a - before_b))
+        after_dist = float(np.linalg.norm(after_a - after_b))
+        seed_a = seed_centroids.get(a, before_a)
+        seed_b = seed_centroids.get(b, before_b)
+        seed_dist = max(float(np.linalg.norm(seed_a - seed_b)), diag * 0.01)
+        weight = max(0.0, float(getattr(edge, "weight", 1.0)))
+        conf_a = 1.0 if confidence is None else float(confidence.get(a, 1.0))
+        conf_b = 1.0 if confidence is None else float(confidence.get(b, 1.0))
+        conf_boost = 1.0 + 0.25 * max(0.0, 1.0 - min(conf_a, conf_b))
+        edge_weight = weight * conf_boost
+        before_stretch = max(0.0, before_dist / seed_dist - 1.0)
+        after_stretch = max(0.0, after_dist / seed_dist - 1.0)
+        before_corridor = _corridor_field_mean(field, before_a, before_b, cw, ch, samples)
+        after_corridor = _corridor_field_mean(field, after_a, after_b, cw, ch, samples)
+        sd = edge_weight * (after_stretch - before_stretch)
+        cd = edge_weight * (after_corridor - before_corridor)
+        wd = edge_weight * ((after_dist - before_dist) / diag)
+        stretch_delta += sd
+        corridor_delta += cd
+        weighted_delta += wd
+        edge_count += 1
+    graph_delta = stretch_delta + 0.15 * weighted_delta + 0.25 * corridor_delta
+    return {
+        "edge_stretch_delta": float(stretch_delta),
+        "corridor_congestion_delta": float(corridor_delta),
+        "weighted_edge_delta": float(weighted_delta),
+        "graph_candidate_delta": float(graph_delta),
+        "graph_delta_edges": float(edge_count),
+    }

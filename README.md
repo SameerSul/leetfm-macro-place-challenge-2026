@@ -38,7 +38,7 @@ Current full IBM reference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1658  17/17 VALID  0 overlaps  all hierarchy audits passed  [1130.99s locally]
+AVG 1.1657  17/17 VALID  0 overlaps  all hierarchy audits passed  [1128.80s locally]
 ```
 
 Pass progression is now adaptive: the pipeline advances to the next stage when the
@@ -75,6 +75,9 @@ uv run evaluate src/main.py -b ibm10 --vis
 
 # Verify coldspot cluster kick helper used by hierarchy tightening
 uv run python test/verification/_verify_coldspot_kick.py ibm10
+
+# Analyze opt-in graph tension traces
+uv run python scripts/gnn/analyze_graph_tension.py ml_data/beyondppa_gnn/trace.jsonl
 
 # Bytecode sanity
 uv run python -m py_compile $(find src -type f -name "*.py")
@@ -148,6 +151,13 @@ constant inside the existing hierarchy relocation operators. It only reorders
 candidates; legality, fixed-macro, region, hierarchy-quality, and exact-proxy
 gates still decide accepted moves. `HIER_GNN_TRACE=1` writes JSONL traces for
 future hierarchy-aware GNN training without changing placement output. Offline
+graph-utilization probes are summarized by
+`scripts/gnn/analyze_graph_tension.py`; graph-delta coldspot ranking is
+default-off and remains diagnostic after focused `ibm10`/`ibm12` regressions.
+Graph-guided decompression rescue is also default-off after a legal but
+slightly regressive full-suite run, while the narrower graph-survivor
+decompression near-miss polish is default-on after a small accepted sweep gain.
+Offline
 Stage-G3 candidate baselines can be trained with
 `scripts/train_gnn_baseline.py`; the accepted G3 artifact is default-off and is
 not used at placement time. Offline Stage-G4 macro-net rankers can be trained

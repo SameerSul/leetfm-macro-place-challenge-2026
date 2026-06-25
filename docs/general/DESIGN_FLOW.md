@@ -28,7 +28,7 @@ opportunity ordering:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1658  17/17 VALID  0 overlaps  1130.99s
+AVG 1.1657  17/17 VALID  0 overlaps  1128.80s
 ```
 
 The earlier `AVG 1.1627` hierarchy sweep remains an important proxy reference,
@@ -44,6 +44,42 @@ stretched inter-cluster edges and congestion along those edge corridors. The
 signal only orders decompression and coldspot opportunities by default; swap
 ordering remains disabled by `HIER_GRAPH_TENSION_SWAP_WEIGHT=0.0` because the
 focused swap-ordering trial regressed candidate quality.
+`scripts/gnn/analyze_graph_tension.py` summarizes trace rows for this signal.
+Candidate traces now include graph-edge deltas for coldspot and decompression:
+edge stretch, corridor congestion, weighted edge length, and combined graph
+delta. These are used for analysis only, not commit gates.
+The default-off `HIER_COLDSPOT_GRAPH_DELTA_RANK` hook can add a
+proxy-equivalent penalty for graph-worsening coldspot candidates before the
+normal exact-proxy rank. It remains opt-in because focused `ibm10`/`ibm12`
+tests were valid but did not improve proxy.
+The default-off `HIER_REGION_GRAPH_COMPONENT_WEIGHT` hook uses graph edge
+corridors to choose among nearby contiguous cold components during early region
+expansion; it remains opt-in after focused `ibm10` regression.
+The default-off `HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT` hook lets graph context
+rank coldspot anchors toward a selected cluster's weighted graph-neighbor
+centroid while keeping exact proxy and hierarchy gates unchanged.
+The default-on `HIER_DECOMPRESS_FEASIBILITY_FILTER` screens decompression
+candidates by estimated free area and neighbor blockage before legalization and
+exact scoring.
+The default-off `HIER_DECOMPRESS_GRAPH_RESCUE` hook can retry graph-favorable
+decompression candidates that fail feasibility or hard overlap using smaller
+and cold-component-shifted variants. The rescued candidate still needs normal
+hard legality, hierarchy quality, exact proxy gain, and audit pass. It remains
+opt-in because the first full-suite run was legal but slightly regressive.
+The default-on `HIER_DECOMPRESS_GRAPH_SURVIVOR` hook handles a narrower case:
+legal graph-favorable decompression candidates that just miss exact proxy. It
+spends a small capped exact-scored hard/soft local-polish pool and accepts only
+if the polished candidate clears the normal proxy and audit gates.
+The default-off `HIER_GRAPH_PREFILTER` hook can skip low-tension candidates
+whose cheap local congestion estimate fails to improve before exact scoring or
+coldspot refinement; it remains diagnostic because the focused `ibm10` control
+was better with the filter disabled.
+The default-off `HIER_COLDSPOT_EGONET` scaffold can add temporary coldspot
+candidate groups made from a selected cluster plus small graph neighbors. Trace
+mining showed large soft-carrying ego-net moves were too disruptive, so the
+current opt-in default is hard-only, low-displacement, and requires an extra
+exact-gain floor before commit. The original hierarchy graph, exact proxy gates,
+and audit gates remain unchanged.
 
 Passes are now adaptive by gain. A stage exits and advances when the most recent
 full exact proxy gain is `<= HIER_PLATEAU_PROXY_GAIN` (`0.00005`), instead of
@@ -81,7 +117,7 @@ flowchart TD
     X --> X1{Strong soft repair scheduled?}
     X1 -->|Yes| X2[Plateau/component-aware strong soft repair]
     X1 -->|No| L
-    X2 --> L[Coldspot cluster tightening with bounded proxy budget]
+    X2 --> L[Coldspot cluster tightening with optional ego-net candidates]
     L --> Z[Post-coldspot micro-shift replay]
     Z --> Z1[Bounded survivor-pool search]
     Z1 --> Z2{Small-design polish gated?}

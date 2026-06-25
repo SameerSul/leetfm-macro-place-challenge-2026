@@ -6,7 +6,7 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
-> **Status (2026-06-25 — large-design graph-tension opportunity ordering):**
+> **Status (2026-06-25 — graph-tension ordering plus decompression survivor):**
 > Added a hierarchy graph-tension signal that compares current cluster-centroid
 > relations with the selected hierarchy seed, weights stretched inter-cluster
 > edges by edge weight and congestion along the edge corridor, and normalizes the
@@ -14,21 +14,131 @@ Target: beat RePlAce avg of 1.4578.
 > large hard-macro designs (`HIER_GRAPH_TENSION_HARD_MIN=600`) and currently
 > orders decompression/coldspot opportunities; direct swap ordering remains
 > default-off (`HIER_GRAPH_TENSION_SWAP_WEIGHT=0.0`) because focused tests showed
-> it burned exact-score budget on weaker swaps. Exact proxy, hard legality, and
-> hierarchy audit remain the only commit gates.
+> it burned exact-score budget on weaker swaps. The default-on decompression
+> graph survivor exact-scores a tiny hard/soft local-polish pool for legal,
+> hierarchy-safe, graph-favorable decompression near misses. Exact proxy, hard
+> legality, and hierarchy audit remain the only commit gates.
 >
 > Verification: `uv run python -m py_compile $(find src -type f -name '*.py')`
 > passed; `git diff --check` passed; focused checks were `ibm08=1.1338`,
 > `ibm10=1.1675`, `ibm12=1.6704`, and `ibm15=1.3618`, all VALID and
-> audit-passing. Full `uv run evaluate src/main.py --all` = **AVG 1.1658**,
-> 17/17 VALID, 0 overlaps, all final hierarchy audits passed, 1130.99s. This
+> audit-passing. Current full `uv run evaluate src/main.py --all` after the
+> graph-utilization follow-ups = **AVG 1.1657**, 17/17 VALID, 0 overlaps, all
+> final hierarchy audits passed, 1128.80s. This
 > supersedes the prior audit-preserving **AVG 1.1664** result. Per-benchmark
 > proxies:
-> `ibm01=0.9257`, `ibm02=1.1203`, `ibm03=1.0049`, `ibm04=1.0095`,
-> `ibm06=1.2129`, `ibm07=1.0523`, `ibm08=1.1358`, `ibm09=0.8534`,
-> `ibm10=1.1679`, `ibm11=0.9936`, `ibm12=1.6704`, `ibm13=1.0200`,
-> `ibm14=1.2763`, `ibm15=1.3627`, `ibm16=1.2147`, `ibm17=1.4059`,
-> `ibm18=1.3925`.
+> `ibm01=0.9258`, `ibm02=1.1180`, `ibm03=1.0050`, `ibm04=1.0115`,
+> `ibm06=1.2097`, `ibm07=1.0525`, `ibm08=1.1331`, `ibm09=0.8541`,
+> `ibm10=1.1715`, `ibm11=0.9939`, `ibm12=1.6723`, `ibm13=1.0200`,
+> `ibm14=1.2794`, `ibm15=1.3595`, `ibm16=1.2147`, `ibm17=1.4046`,
+> `ibm18=1.3906`.
+>
+> Follow-up graph-utilization infrastructure, not promoted as a new full-suite
+> result: added `scripts/gnn/analyze_graph_tension.py` to summarize
+> `hier_graph_tension`, decompression, coldspot candidate, rejection, and
+> ego-net trace rows; added a default-off `HIER_COLDSPOT_EGONET` scaffold that
+> synthesizes temporary graph-neighbor candidate groups for coldspot generation
+> while leaving the real hierarchy model and all exact/audit gates unchanged.
+> Trace mining on `ibm12` showed the first ego-net candidates were too large
+> (`~118` hard, `~155` soft, `~46` micron mean hard displacement). The tuned
+> opt-in path now prefers small neighbors
+> (`HIER_COLDSPOT_EGONET_MAX_NEIGHBOR_HARD=32`), moves hard macros only by
+> default (`HIER_COLDSPOT_EGONET_SOFT_MODE=none`), starts with low-displacement
+> variants, and requires `HIER_COLDSPOT_EGONET_MIN_GAIN=0.001` before commit.
+> Verification: bytecode compile passed; `git diff --check` passed; traced
+> `ibm10` smoke with `HIER_GNN_TRACE=1` was VALID/audit-pass at `1.1682`; default
+> `ibm06` smoke was VALID/audit-pass at `1.2130`; tuned opt-in `ibm12` was
+> VALID/audit-pass at `1.6810`, with ego-net rows rejected unless they cleared
+> the stricter gain gate. Ego-net remains default-off pending broader A/B because
+> current accepted default `ibm12` remains better at `1.6704`.
+>
+> Added a default-off graph-aware coldspot anchor ranker
+> (`HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT`) that keeps congestion as the primary
+> anchor signal and uses distance to the selected cluster's weighted
+> graph-neighbor centroid as a tie/near-tie bias. Focused opt-in traces were
+> legal and audit-passing, but not promoted: `ibm12` with weight `0.10` finished
+> at `1.6744` and weight `0.25` at `1.6736`, both behind accepted `1.6704`;
+> `ibm10` with weight `0.10` finished at `1.1684`, behind accepted `1.1679`.
+> Analyzer output now reports `graph_anchor_candidate_rows` and
+> `graph_anchor_summary`.
+>
+> Added a default-off graph/local-relief prefilter (`HIER_GRAPH_PREFILTER`) for
+> decompression and coldspot candidate generation. It rejects low-tension
+> candidates before exact scoring/refinement when their cheap local congestion
+> estimate does not improve, and logs `prefiltered`/`local_relief` trace fields.
+> Focused opt-in traces were legal and audit-passing but mixed: `ibm08=1.1341`
+> with 12 prefiltered rows and `ibm15=1.3619` with 9 prefiltered rows improved
+> their accepted sweep numbers, while `ibm10=1.1676` with 6 prefiltered rows was
+> worse than the prefilter-disabled control `ibm10=1.1667`. `ibm12=1.6744` was
+> unchanged by disabling the filter. The hook remains default-off pending a more
+> selective predictor.
+>
+> Added graph-corridor-aware component region expansion
+> (`HIER_REGION_GRAPH_COMPONENT_WEIGHT`, default `0.0`). The hook biases
+> component-aware early region expansion toward cold components near hierarchy
+> graph edge corridors. It is opt-in only: `ibm10` with weight `0.10` was
+> VALID/audit-pass but regressed to `1.1744` despite `graph_component=19`.
+>
+> Added default-on decompression feasibility screening
+> (`HIER_DECOMPRESS_FEASIBILITY_FILTER`) that estimates free area and neighbor
+> blockage for the proposed decompression bbox before legalization/exact scoring.
+> Focused checks: `ibm10=1.1669`, VALID/audit-pass with 3
+> `feasibility_blocked` rows; `ibm12=1.6744`, VALID/audit-pass with 0
+> feasibility rejects; `ibm15=1.3627`, VALID/audit-pass with 1 feasibility
+> reject. Analyzer output now reports `feasibility_rejected_rows` and
+> `feasibility_summary`.
+>
+> Added graph-edge candidate delta tracing for coldspot and decompression:
+> `edge_stretch_delta`, `corridor_congestion_delta`, `weighted_edge_delta`,
+> `graph_candidate_delta`, and `graph_delta_edges`. The fields are diagnostic
+> only. Focused traces: `ibm12=1.6758`, VALID/audit-pass, with the accepted
+> coldspot candidate showing a large positive graph delta (`committed_delta`
+> `13.9369`), meaning it improved proxy while worsening graph-edge geometry;
+> decompression candidates often had favorable negative graph deltas but died on
+> legality. `ibm10=1.1693`, VALID/audit-pass, showed the same pattern: average
+> decompression graph delta was negative, while coldspot candidates were
+> graph-expensive and rejected. Analyzer output now reports
+> `graph_delta_candidate_rows` and `graph_delta_summary`.
+>
+> Added a default-off graph-delta coldspot ranker
+> (`HIER_COLDSPOT_GRAPH_DELTA_RANK`, `HIER_COLDSPOT_GRAPH_DELTA_WEIGHT`) that
+> adds a small proxy-equivalent penalty for graph-worsening exact coldspot
+> candidates before the usual graph-score tie-break. Analyzer output now reports
+> `graph_delta_ranked_rows` and `graph_delta_rank_summary`. Focused opt-in
+> checks were valid/audit-passing but not promotable: `ibm12` with weight
+> `0.0002` and `0.001` both finished at `1.6744` and still committed the same
+> graph-worsening coldspot move (`committed_delta` `13.9381`); `ibm10` with
+> weight `0.0002` finished worse at `1.1727` with no coldspot accepts.
+>
+> Implemented default-off graph-guided decompression legalization rescue
+> (`HIER_DECOMPRESS_GRAPH_RESCUE`). When a decompression candidate has a
+> favorable `graph_candidate_delta` but fails feasibility or hard overlap, the
+> hook tries a bounded set of smaller and cold-component-shifted variants before
+> returning to the normal hard legality, hierarchy-quality, exact-proxy, and
+> audit gates. Focused traced `ibm10` showed the intended behavior:
+> `graph_rescue_attempted_rows=51`, `used=7`, and 2 exact-accepted rescued
+> decompression candidates, finishing VALID/audit-pass at `1.1664`. Required
+> full-suite validation was legal but not promotable:
+> `uv run evaluate src/main.py --all` = **AVG 1.1663**, 17/17 VALID, 0
+> overlaps, all final hierarchy audits passed, 1134.11s. It improved `ibm12`
+> (`1.6691` vs prior `1.6744`) and `ibm15`/`ibm16` slightly, but regressed
+> `ibm10` (`1.1755`) and `ibm18` (`1.3957`) enough that the default remains
+> off. Analyzer output now reports `graph_rescue_attempted_rows` and
+> `graph_rescue_summary`.
+>
+> Implemented and promoted the narrower decompression graph survivor
+> (`HIER_DECOMPRESS_GRAPH_SURVIVOR`). It only runs after a legal,
+> hierarchy-safe decompression candidate misses exact proxy by a small margin
+> while having favorable graph-edge delta; it exact-scores a capped local
+> hard/soft one-cell polish pool and commits only if the polished candidate
+> clears the normal exact-proxy gain and audit gates. Focused `ibm10` traces
+> showed survivor attempts (`graph_survivor_attempted_rows=6`) but no direct
+> survivor accept; the full suite nevertheless improved slightly through
+> downstream ordering effects. Required full-suite validation with the hook
+> enabled and then promoted to default:
+> `uv run evaluate src/main.py --all` = **AVG 1.1657**, 17/17 VALID, 0
+> overlaps, all final hierarchy audits passed, 1128.80s. Analyzer output now
+> reports `graph_survivor_attempted_rows` and `graph_survivor_summary`.
 
 > **[HISTORICAL] Status (2026-06-25 — audit-preserving local relief recovery):**
 > Fixed the stale region-escape verifier so it uses the active `HierarchyModel`

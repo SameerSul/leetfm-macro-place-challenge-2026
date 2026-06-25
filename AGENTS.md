@@ -18,8 +18,8 @@ available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 Current accepted hierarchy-audit result: `uv run evaluate src/main.py --all` =
-**AVG 1.1658**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
-1130.99s. The current production cleanup adds swap-round micro-shift replay,
+**AVG 1.1657**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
+1128.80s. The current production cleanup adds swap-round micro-shift replay,
 stronger opportunity gates for expensive decompression/coldspot work,
 component-aware scheduling telemetry, adaptive per-pass continuation by exact
 proxy gain, post-survivor small-design polish, no-release low-net small-design
@@ -31,14 +31,47 @@ restore, large-design hierarchy graph-tension opportunity ordering, and strict
 final hierarchy-quality audit rollback. The graph-tension signal orders
 decompression/coldspot opportunities only for large hard-macro designs by
 default; direct graph-tension swap ordering is available but default-off through
-`HIER_GRAPH_TENSION_SWAP_WEIGHT=0.0`. The pipeline tracks a separate audit-safe
-checkpoint, independent of proxy-best state, and restores that checkpoint when a
-local pass drifts beyond the audit budget. The previous strict final-rollback-only
-result was **AVG 1.1999**. The older **AVG 1.1627** sweep remains a proxy
-reference, but its final hierarchy audit was report-only and failed on several
-designs. The weak/hot early region-reshape hook remains default-off and is
-candidate-gated when enabled. `HIER_PLATEAU_PROXY_GAIN` is currently `0.00005`,
-and stages skip forward when the last pass gain is too small.
+`HIER_GRAPH_TENSION_SWAP_WEIGHT=0.0`. `scripts/gnn/analyze_graph_tension.py`
+summarizes graph-tension, graph-edge candidate delta, candidate rejection,
+graph-anchor, and ego-net trace rows. Coldspot and decompression candidates log
+edge stretch, corridor congestion, weighted edge, and combined graph deltas for
+future ranking experiments; these fields do not affect acceptance. A
+default-off `HIER_COLDSPOT_GRAPH_DELTA_RANK` hook can add a small
+proxy-equivalent penalty for graph-worsening coldspot candidates before the
+normal exact-proxy/graph-score sort; focused `ibm10`/`ibm12` tests were valid
+but not promotable, so the weight remains `0.0`.
+A default-off `HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT` hook ranks coldspot
+anchors by congestion plus distance to the selected cluster's weighted graph
+neighbor centroid; focused `ibm10`/`ibm12` tests were valid but not promotable.
+A default-off `HIER_REGION_GRAPH_COMPONENT_WEIGHT` hook biases component-aware
+region expansion toward cold components near hierarchy graph edge corridors;
+`ibm10` regressed at weight `0.10`, so it is opt-in only.
+A default-on `HIER_DECOMPRESS_FEASIBILITY_FILTER` estimates local free area and
+neighbor blockage before decompression legalization/exact scoring.
+A default-off `HIER_DECOMPRESS_GRAPH_RESCUE` hook tries smaller/shifted
+legalization variants when a graph-favorable decompression candidate fails
+feasibility or hard overlap; full-suite validation was legal but regressed AVG
+to `1.1663`, so it is opt-in only.
+A default-on `HIER_DECOMPRESS_GRAPH_SURVIVOR` hook exact-scores a tiny
+hard/soft local polish pool for legal, hierarchy-safe, graph-favorable
+decompression near misses; the accepted full sweep improved slightly to
+`AVG 1.1657`.
+A default-off `HIER_GRAPH_PREFILTER` hook can skip exact scoring/refinement for
+low-tension candidates whose cheap local congestion estimate does not improve;
+focused traces showed useful skips on `ibm08`/`ibm15` but `ibm10` was better
+with the filter disabled, so it is not production default.
+A default-off `HIER_COLDSPOT_EGONET` scaffold can synthesize temporary
+small-neighbor hard-only coldspot candidate groups for diagnostics; it does not
+change the real hierarchy model or acceptance gates, and ego-net commits require
+`HIER_COLDSPOT_EGONET_MIN_GAIN=0.001` by default. The pipeline tracks a
+separate audit-safe checkpoint, independent of proxy-best state, and restores
+that checkpoint when a local pass drifts beyond the audit budget. The previous
+strict final-rollback-only result was
+**AVG 1.1999**. The older **AVG 1.1627** sweep remains a proxy reference, but
+its final hierarchy audit was report-only and failed on several designs. The
+weak/hot early region-reshape hook remains default-off and is candidate-gated
+when enabled. `HIER_PLATEAU_PROXY_GAIN` is currently `0.00005`, and stages skip
+forward when the last pass gain is too small.
 Early strong-soft repair, early swap-lite, early survivor search, and
 ArchGen-style seed top-k repair were tested and rejected/removed because they
 regressed final proxy or consumed budget needed by late cleanup.

@@ -39,6 +39,7 @@ benchmark input
   -> coldspot tightening:
        - refresh current congestion field and cold-cell graph memory
        - generate coldspot kick candidates
+       - optional default-off hard-only ego-net candidate groups move small graph neighbors
        - co-move owned/bridge soft macros
        - legalize candidate hard macros
        - expand local graph border through adjacent open cold cells
@@ -108,14 +109,14 @@ low-net soft/SS breadth, and medium/large soft-continuation scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1658  17/17 VALID  0 overlaps  1130.99s
+AVG 1.1657  17/17 VALID  0 overlaps  1128.80s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
 0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
 several designs after late proxy-improving relief. A strict final-rollback-only
 audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
-reached `AVG 1.1664`; the current graph-tension path is `AVG 1.1658`. The
+reached `AVG 1.1664`; the current graph-tension/survivor path is `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
 proxy-improving states need to be discarded at finalization. Earlier Stage-6
 audit sweeps are retained in `PROGRESS.md` as historical experiment records.
@@ -125,6 +126,48 @@ orders decompression/coldspot opportunities but does not change commit gates.
 Direct graph-tension swap ordering remains available through
 `HIER_GRAPH_TENSION_SWAP_WEIGHT`, but defaults to `0.0` after focused tests
 regressed `ibm08` and `ibm10`.
+Trace analysis for this signal lives in `scripts/gnn/analyze_graph_tension.py`.
+Coldspot and decompression candidates also log graph-edge candidate deltas:
+weighted edge stretch, corridor congestion change, weighted edge-length change,
+and a combined graph delta. These are diagnostic/ranking features only; they do
+not alter acceptance.
+The default-off `HIER_COLDSPOT_GRAPH_DELTA_RANK` hook can use that combined
+graph delta during exact coldspot candidate ordering by adding a small
+proxy-equivalent penalty for graph-worsening moves before the normal graph-score
+tie-break. Focused `ibm10`/`ibm12` tests were valid and audit-passing but did
+not improve proxy, so the default weight remains `0.0`.
+The default-off `HIER_REGION_GRAPH_COMPONENT_WEIGHT` hook uses hierarchy graph
+edge corridors to bias which contiguous cold congestion component a hot region
+expands toward. It changes only region construction; local relief still uses
+the normal legality, exact-proxy, and hierarchy gates.
+The default-off `HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT` hook keeps congestion as
+the primary coldspot anchor signal, then uses the selected cluster's weighted
+graph-neighbor centroid to break cold-window ties and near-ties. Candidate
+acceptance is unchanged.
+The default-on `HIER_DECOMPRESS_FEASIBILITY_FILTER` estimates the proposed
+decompression bbox's free area and neighbor blockage before legalization and
+exact scoring, and logs `feasibility_blocked` rejects.
+The default-off `HIER_DECOMPRESS_GRAPH_RESCUE` hook uses the graph-edge delta
+signal to rescue decompression candidates that improve graph geometry but fail
+feasibility or hard-overlap legalization. It tries a bounded set of smaller or
+cold-component-shifted variants, then returns to the normal hard legality,
+hierarchy-quality, exact-proxy, and audit gates. Full-suite validation was
+legal but not promoted because the average regressed to `1.1663`.
+The default-on `HIER_DECOMPRESS_GRAPH_SURVIVOR` hook is narrower: for legal,
+hierarchy-safe decompression candidates that miss exact proxy by a small amount
+while improving graph-edge geometry, it exact-scores a tiny hard/soft local
+polish pool around the moved cluster. It commits only if the final candidate
+clears the normal exact-proxy gain and audit gates. The accepted full sweep is
+`AVG 1.1657`.
+The default-off `HIER_GRAPH_PREFILTER` hook can reject low-tension
+decompression/coldspot candidates before exact scoring when their cheap local
+congestion estimate does not improve. It is trace-visible, but not promoted by
+default because focused A/B found `ibm10` better with the filter disabled.
+The default-off `HIER_COLDSPOT_EGONET` scaffold can synthesize temporary
+small-neighbor hard-only coldspot candidate groups. These groups are candidate
+generation inputs only; final acceptance still uses the original hierarchy
+quality and audit gates, plus an ego-net-specific exact-gain floor
+(`HIER_COLDSPOT_EGONET_MIN_GAIN`).
 
 Historical accepted hierarchy full sweep before the graph-local and six-stage
 architecture revamps:
