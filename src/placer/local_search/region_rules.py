@@ -20,3 +20,11 @@ def accepts_region_score(
     """Exact-proxy accept rule for in-region and region-escaping moves."""
     min_gain = max(1e-9, float(escape_min)) if outside_region else 1e-9
     return float(score) < float(best_score) - min_gain
+
+
+def any_outside_region(rows) -> bool:
+    """Return whether any ``(region, idx, x, y)`` tuple falls outside its region."""
+    for region_bbox, idx, x, y in rows:
+        if not point_in_region(region_bbox, int(idx), float(x), float(y)):
+            return True
+    return False

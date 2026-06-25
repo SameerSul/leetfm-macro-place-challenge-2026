@@ -102,6 +102,23 @@ HIER_STRONG_SOFT_REPAIR_TOP_K = 512
 HIER_STRONG_SOFT_REPAIR_TARGETS = 12
 HIER_STRONG_SOFT_REPAIR_MIN_GAIN = 0.00005
 HIER_STRONG_SOFT_REPAIR_WL_PREFILTER = 0.0005
+# Extra soft-only continuation for medium/large congestion cases where the
+# normal strong-soft pass is still producing exact proxy gain. This is
+# structural, not benchmark-name gated.
+HIER_MEDIUM_SOFT_CONTINUATION = True
+HIER_MEDIUM_SOFT_HARD_MIN = 520
+HIER_MEDIUM_SOFT_HARD_MAX = 760
+HIER_MEDIUM_SOFT_MACRO_MIN = 2200
+HIER_MEDIUM_SOFT_MACRO_MAX = 3200
+HIER_MEDIUM_SOFT_NETS_PER_MACRO_MIN = 12.0
+HIER_MEDIUM_SOFT_NETS_PER_MACRO_MAX = 24.0
+HIER_MEDIUM_SOFT_TRIGGER_GAIN = 0.004
+HIER_MEDIUM_SOFT_BUDGET_S = 6.0
+HIER_MEDIUM_SOFT_MIN_SPARE_S = 2.0
+HIER_MEDIUM_SOFT_ROUNDS = 2
+HIER_MEDIUM_SOFT_TOP_K = 768
+HIER_MEDIUM_SOFT_TARGETS = 14
+HIER_MEDIUM_SOFT_MIN_GAIN = 0.00005
 # Soft-only repair interleaved before hard/soft swap search.
 HIER_INTERLEAVED_SOFT_REPAIR_BUDGET_S = 3.0
 HIER_INTERLEAVED_SOFT_REPAIR_MIN_SPARE_S = 12.0
@@ -129,6 +146,27 @@ HIER_REGION_EXPAND_HOT_PCT = 60.0
 HIER_REGION_EXPAND_FRAC = 0.08
 # Number of grid cells sampled on each side when choosing expansion direction.
 HIER_REGION_EXPAND_BAND = 3
+# Component-aware expansion grows hot hierarchy regions toward contiguous cold
+# congestion components rather than only comparing thin side bands.
+HIER_REGION_COMPONENT_EXPAND = True
+HIER_REGION_COMPONENT_COLD_PCT = 45.0
+HIER_REGION_COMPONENT_MIN_CELLS = 4
+HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS = 4
+# Extra early region room for hot clusters with weak inferred hierarchy
+# confidence. This reshapes the hierarchy boxes before local relief instead of
+# waiting for post-survivor small-design release.
+HIER_REGION_WEAK_HOT_RESHAPE = False
+HIER_REGION_WEAK_CONFIDENCE_MAX = 0.92
+HIER_REGION_WEAK_HOT_MAX_CLUSTERS = 2
+HIER_REGION_WEAK_HOT_EXTRA_FRAC = 0.03
+HIER_REGION_WEAK_HOT_SIDE_FLOOR = 0.45
+# Candidate gate for weak/hot reshape. Keep the experiment scoped to the
+# small-design region where the full sweep showed useful wins and away from
+# larger region-relief cases that regressed.
+HIER_REGION_WEAK_HOT_HARD_MIN = 240
+HIER_REGION_WEAK_HOT_HARD_MAX = 420
+HIER_REGION_WEAK_HOT_MACRO_MAX = 1600
+HIER_REGION_WEAK_HOT_REQUIRE_RELEASE_CANDIDATE = True
 # Weight favoring candidates that stay inside hierarchy regions.
 REGION_BIAS = 1.0
 # Minimum proxy improvement required for moves that escape their hierarchy region.
@@ -184,6 +222,13 @@ HIER_QUALITY_CROWD_WEIGHT = 0.05
 HIER_DECOMPRESS_ANISO_BAND = 3
 # Secondary-axis expansion ratio during anisotropic decompression.
 HIER_DECOMPRESS_ANISO_SECONDARY = 0.25
+# Bias decompression toward a nearby contiguous cold component while preserving
+# the cluster as a local shape instead of splitting the hierarchy group.
+HIER_DECOMPRESS_LOCAL_COMPONENT = True
+HIER_DECOMPRESS_LOCAL_COLD_PCT = 45.0
+HIER_DECOMPRESS_LOCAL_MIN_CELLS = 4
+HIER_DECOMPRESS_LOCAL_MAX_DISTANCE_CELLS = 4
+HIER_DECOMPRESS_LOCAL_SHIFT_FRAC = 0.20
 # Region-bounded hard-hard, hard-soft, and soft-soft swap relief.
 # Number of region-bounded swap rounds to attempt.
 HIER_REGION_SWAP_ROUNDS = 2
@@ -229,6 +274,11 @@ HIER_ADDITIVE_MIN_SPARE_S = 2.0
 
 # Final audit of hard-macro clearance using the same tolerance as local legality tests.
 HIER_LEGALITY_MARGIN_EPS = 0.05
+# Final audit of hierarchy-quality drift versus the selected hierarchy seed.
+# If rollback is enabled, the finalizer returns the tracked best valid state
+# when it satisfies this budget and the current state does not.
+HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION = 0.05
+HIER_FINAL_HIER_AUDIT_ROLLBACK = True
 
 # Wall-clock budget for post-swap hard propose-all relocation.
 HIER_POST_RELOC_PROPOSE_BUDGET_S = 8.0
@@ -362,6 +412,59 @@ HIER_SURVIVOR_MIN_GAIN = 0.0001
 HIER_SURVIVOR_QUALITY_BUDGET = 0.015
 # Uses CUDA for cheap candidate-pool ranking when available.
 HIER_SURVIVOR_GPU_RANK = "auto"
+
+# Extra exact-gated late polish for the SA-ratio primary struggle subset shape:
+# small hard-macro population, no fixed hard macros, and moderate total macro
+# count. This is structural, not benchmark-name gated.
+HIER_SMALL_DESIGN_POLISH = True
+HIER_SMALL_DESIGN_HARD_MIN = 240
+HIER_SMALL_DESIGN_HARD_MAX = 420
+HIER_SMALL_DESIGN_MACRO_MAX = 1600
+HIER_SMALL_DESIGN_BUDGET_S = 14.0
+HIER_SMALL_DESIGN_ROUNDS = 2
+HIER_SMALL_DESIGN_MIN_GAIN = 0.00005
+# Release weak inferred hierarchy regions inside the small-design polish.
+# Selection starts from the weakest-k clusters by confidence, keeps only clusters
+# below the confidence cutoff, then releases the hottest eligible weak clusters.
+HIER_SMALL_DESIGN_RELEASE_CONFIDENCE_MAX = 0.92
+HIER_SMALL_DESIGN_RELEASE_WEAKEST_K = 4
+HIER_SMALL_DESIGN_RELEASE_MAX_CLUSTERS = 8
+HIER_SMALL_DESIGN_RELEASE_ESCAPE_MIN = 0.00005
+# Split the small-design pass into a low-connectivity lane and a high-net lane
+# for ibm15-like cases. Exact proxy remains the accept gate in both lanes.
+HIER_SMALL_DESIGN_HIGH_NETS_PER_MACRO = 24.0
+HIER_SMALL_DESIGN_LOW_HARD_TOP_K = 96
+HIER_SMALL_DESIGN_LOW_HARD_TARGETS = 20
+HIER_SMALL_DESIGN_LOW_HARD_PROPOSE_TOP_M = 24
+HIER_SMALL_DESIGN_LOW_SOFT_TOP_K = 256
+HIER_SMALL_DESIGN_LOW_SOFT_TARGETS = 10
+# Small low-net designs with no releasable weak cluster get more soft/SS
+# candidate breadth and less hard-relocation breadth. This targets the shape,
+# not a benchmark name, and exact proxy still gates every accepted move.
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_HARD_TOP_K = 64
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_HARD_TARGETS = 12
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_HARD_PROPOSE_TOP_M = 16
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_SOFT_TOP_K = 384
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_SOFT_TARGETS = 12
+HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_SWAP_SOFT_K = 24
+HIER_SMALL_DESIGN_HIGH_HARD_TOP_K = 128
+HIER_SMALL_DESIGN_HIGH_HARD_TARGETS = 24
+HIER_SMALL_DESIGN_HIGH_HARD_PROPOSE_TOP_M = 32
+HIER_SMALL_DESIGN_HIGH_SOFT_TOP_K = 384
+HIER_SMALL_DESIGN_HIGH_SOFT_TARGETS = 12
+HIER_SMALL_DESIGN_HARD_SWAP_K = 8
+HIER_SMALL_DESIGN_SWAP_HARD_K = 8
+HIER_SMALL_DESIGN_SWAP_SOFT_K = 16
+HIER_SMALL_DESIGN_SWAP_MIN_GAIN = 0.00005
+# Cold connected-component pools for small-design relocation target selection.
+# The pool builder finds connected low-field grid components, prefers larger and
+# colder components, and passes a component penalty into relocation ranking.
+HIER_COLD_COMPONENT_TARGETS = True
+HIER_COLD_COMPONENT_PCT = 45.0
+HIER_COLD_COMPONENT_MAX_COMPONENTS = 8
+HIER_COLD_COMPONENT_MIN_CELLS = 4
+HIER_COLD_COMPONENT_SIZE_WEIGHT = 0.35
+HIER_COLD_COMPONENT_RANK_WEIGHT = 0.04
 
 # Weight for structural candidate ordering inside hierarchy relocation.
 HIER_OBJECTIVE_STRUCTURAL_WEIGHT = 0.0

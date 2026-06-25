@@ -6,7 +6,70 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
-> **Status (2026-06-24 — adaptive pass continuation by latest exact-gain):**
+> **Status (2026-06-25 — strict hierarchy audit rollback and component-aware relief):**
+> Fixed the stale region-escape verifier so it uses the active `HierarchyModel`
+> and restored the shared `any_outside_region()` helper. Added final
+> hierarchy-quality audit telemetry against the selected hierarchy seed. The
+> hierarchy pipeline now tracks a separate audit-safe checkpoint, independent of
+> proxy-best state, and the finalizer rolls back to the best audit-passing
+> checkpoint when the current state exceeds
+> `HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION=0.05`. The small-design polish now keeps
+> only audit-passing polished states before it can become the returned placement.
+> Region expansion now prefers nearby contiguous cold congestion
+> components before falling back to side-band expansion, and cluster
+> decompression can bias its local expansion/shift toward a nearby cold
+> component while keeping exact-proxy and hierarchy-quality gates. Verification:
+> targeted bytecode compile passed; `uv run python
+> test/verification/_verify_region_escape_gate.py` passed on `ibm01`, `ibm04`,
+> and `ibm10`; strict-audit focused checks passed on `ibm02`, `ibm03`, and
+> `ibm12`; full `uv run evaluate src/main.py --all` = **AVG 1.1999**, 17/17
+> VALID, 0 overlaps, all final hierarchy audits passed, 1147.08s. This is a
+> deliberate proxy regression versus the prior **AVG 1.1627** hierarchy result:
+> hierarchy audit is now an enforced production invariant rather than report-only
+> telemetry. Per-benchmark proxies:
+> `ibm01=0.9253`, `ibm02=1.1358`, `ibm03=1.1013`, `ibm04=1.0120`,
+> `ibm06=1.2089`, `ibm07=1.0609`, `ibm08=1.2138`, `ibm09=0.8542`,
+> `ibm10=1.1534`, `ibm11=1.0424`, `ibm12=1.9460`, `ibm13=1.0197`,
+> `ibm14=1.2771`, `ibm15=1.4327`, `ibm16=1.2148`, `ibm17=1.4062`,
+> `ibm18=1.3934`.
+
+> **Status (2026-06-24 — SA-ratio secondary subset cleanup):**
+> The hierarchy flow now splits the SA-ratio secondary subset into two
+> structural lanes. Small-secondary designs continue through the post-survivor
+> small-design polish; no-release low-net cases shift candidate breadth from
+> hard relocation toward soft relocation and soft-involving swaps. Medium/large
+> congestion cases add a default-on soft-only continuation hook after strong
+> soft repair, gated by structural shape and prior strong-soft exact gain. In
+> the verified production sweep, the medium hook matched `ibm12` but did not run
+> because spare-time gating was false; `ibm12` still improved through the normal
+> strong-soft/coldspot path. Post-swap hard propose-all was not expanded.
+> Verification: `uv run python -m py_compile $(find src -type f -name "*.py")`
+> passed; `git diff --check` passed; `uv run evaluate src/main.py --all` =
+> **AVG 1.1627**, 17/17 VALID, 0 overlaps, 1116.90s. The follow-up candidate
+> gate keeps weak/hot early region reshape default-off and limits the opt-in
+> path to small-design-sized low-confidence release candidates.
+>
+> Full per-benchmark proxies:
+> `ibm01=0.9262`, `ibm02=1.1194`, `ibm03=1.0009`, `ibm04=1.0067`,
+> `ibm06=1.2090`, `ibm07=1.0527`, `ibm08=1.1400`, `ibm09=0.8537`,
+> `ibm10=1.1475`, `ibm11=0.9935`, `ibm12=1.6668`, `ibm13=1.0172`,
+> `ibm14=1.2721`, `ibm15=1.3588`, `ibm16=1.2087`, `ibm17=1.4049`,
+> `ibm18=1.3877`.
+
+> **[REJECTED] Status (2026-06-24 — broad weak/hot early region reshape):**
+> Tested early extra region room for hot clusters with weak inferred hierarchy
+> confidence (`HIER_REGION_WEAK_HOT_RESHAPE=1`, confidence cutoff `0.92`,
+> cap `2` clusters, extra side fraction `0.03`, side floor `0.45`). Focused
+> `ibm04` improved to `1.0055`, but the full sweep regressed:
+> `uv run evaluate src/main.py --all` = **AVG 1.1637**, 17/17 VALID,
+> 0 overlaps, 1123.29s. Wins included `ibm02`, `ibm04`, `ibm07`, `ibm08`,
+> `ibm09`, `ibm15`, `ibm17`, and `ibm18`; regressions on `ibm01`, `ibm06`,
+> `ibm10`, `ibm11`, `ibm12`, `ibm13`, `ibm14`, and `ibm16` outweighed them.
+> The hook remains in code but is default-off. Follow-up tightened the opt-in
+> candidate gate to small-design-sized placements and to clusters in the same
+> low-confidence release-candidate pool used by late small-design polish.
+
+> **[HISTORICAL] Status (2026-06-24 — adaptive pass continuation by latest exact-gain):**
 > The hierarchy flow now uses gain-gated pass continuation for major plateaus and
 > stage transitions: interleaved soft repair, region swaps, post-swap hard/soft
 > cleanup, swap and post-coldspot micro-shift replay, and coldspot refinement now
