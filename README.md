@@ -2,7 +2,7 @@
 
 Active placer for the Partcl/HRT Macro Placement Challenge.
 
-**Current production mode (2026-06-24): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-06-25): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py`. The previous proxy-optimized production
 path has been deleted: random candidate restarts, R2/2-opt/swap/cycle search,
@@ -16,7 +16,9 @@ hot cluster regions by congestion, runs bounded hard/soft relief, applies
 exact-gated cluster decompression, and finishes with region-bounded swaps plus
 round-level and post-swap micro-shift replay, post-swap hard and soft polish
 passes, component-aware late cleanup scheduling, proxy-aware coldspot
-tightening, and bounded survivor search. The exact proxy is still used for
+tightening, and bounded survivor search. Hard-moving swap candidates and
+small-design polish subpasses are kept inside the hierarchy-audit budget before
+they can become the returned placement. The exact proxy is still used for
 evaluation and local gates, but it is no longer the primary design objective.
 
 The placement objective note is in [docs/general/OBJECTIVES.md](docs/general/OBJECTIVES.md).
@@ -27,14 +29,14 @@ Current smoke reference:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.1534  VALID  audit=pass  [~78s locally]
+proxy=1.1692  VALID  audit=pass  [~73s locally]
 ```
 
 Current full IBM reference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1999  17/17 VALID  0 overlaps  all hierarchy audits passed  [1147.08s locally]
+AVG 1.1664  17/17 VALID  0 overlaps  all hierarchy audits passed  [1146.64s locally]
 ```
 
 Pass progression is now adaptive: the pipeline advances to the next stage when the
@@ -89,7 +91,7 @@ initial.plc / benchmark
   -> region-locked hard relocation + soft relocation relief
   -> exact-gated in-region micro-shift polish
   -> exact-gated cluster decompression
-  -> region-bounded hard-hard / hard-soft / soft-soft swaps
+  -> audit-aware region-bounded hard-hard / hard-soft / soft-soft swaps
   -> optional swap-round micro-shift replay
   -> post-swap micro-shift replay
   -> post-swap hard propose-all polish
@@ -98,6 +100,8 @@ initial.plc / benchmark
   -> proxy-aware coldspot tightening
   -> post-coldspot micro-shift replay
   -> bounded survivor-pool search
+  -> audit-preserving small-design polish
+  -> final hierarchy audit checkpoint restore if needed
   -> final movable-macro in-bounds clamp
   -> return macro centers
 ```

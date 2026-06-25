@@ -23,17 +23,20 @@ budget-aware pass scheduling, strong soft repair, swap-round micro-shift replay,
 stronger opportunity gates, component-aware cleanup scheduling, component-aware
 region expansion/decompression, small-design polish, no-release low-net soft/SS
 breadth, medium/large soft-continuation scheduling, and strict final hierarchy
-audit rollback:
+audit rollback with audit-aware local relief:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1999  17/17 VALID  0 overlaps  1147.08s
+AVG 1.1664  17/17 VALID  0 overlaps  1146.64s
 ```
 
 The earlier `AVG 1.1627` hierarchy sweep remains an important proxy reference,
 but its hierarchy audit was report-only. The current default enforces the audit
-budget and rolls back to the best saved audit-passing checkpoint when a later
-proxy-improving state drifts too far from the selected hierarchy seed.
+budget during local relief, rejects hard-moving swap candidates that exceed the
+budget, and rolls back to the best saved audit-passing checkpoint when a later
+proxy-improving state drifts too far from the selected hierarchy seed. The
+strict final-rollback-only sweep was `AVG 1.1999`; earlier enforcement recovers
+most of that proxy loss while preserving the hierarchy invariant.
 
 Passes are now adaptive by gain. A stage exits and advances when the most recent
 full exact proxy gain is `<= HIER_PLATEAU_PROXY_GAIN` (`0.00005`), instead of
@@ -61,7 +64,7 @@ flowchart TD
     J --> A1[In-region micro-shift polish]
     A1 --> V[Exact-gated cluster decompression]
     V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
-    T --> T1[Per-round micro-shift replay]
+    T --> T1[Per-round micro-shift replay + audit checkpoint]
     T1 --> Y[Post-swap micro-shift replay]
     Y --> P{HIER_POST_RELOC_PROPOSE_ALL enabled?}
     P -->|Yes| Q[Post-swap hard propose-all polish]

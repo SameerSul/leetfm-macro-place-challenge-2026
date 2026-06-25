@@ -28,6 +28,7 @@ benchmark input
   -> exact-gated cluster decompression with composite hierarchy quality
   -> budget-aware interleaved soft repair
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
+       - hard-moving swap candidates must stay inside the hierarchy audit budget
        - optional micro-shift replay after each swap round
   -> post-swap micro-shift replay
   -> post-swap hard propose-all relocation with spare-budget additive candidates
@@ -97,21 +98,23 @@ ranking and GNN trace logging are documented in
 [../ml_nn/beyondppa_results/](../ml_nn/beyondppa_results/).
 
 Current verified full sweep with strict hierarchy-audit rollback,
-component-aware region expansion/decompression, swap-round micro-shift replay,
-stronger opportunity gates, component-aware scheduling, post-survivor
-small-design polish, no-release low-net soft/SS breadth, and medium/large
-soft-continuation scheduling:
+audit-aware hard swap gating, component-aware region expansion/decompression,
+swap-round micro-shift replay, stronger opportunity gates, component-aware
+scheduling, post-survivor small-design polish with subpass audit restore,
+no-release low-net soft/SS breadth, and medium/large soft-continuation
+scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1999  17/17 VALID  0 overlaps  1147.08s
+AVG 1.1664  17/17 VALID  0 overlaps  1146.64s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
 0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
-several designs after late proxy-improving relief. The current `AVG 1.1999`
-path deliberately gives back proxy improvement when needed so hierarchy audit is
-an enforced invariant. Earlier Stage-6 audit sweeps are retained in
+several designs after late proxy-improving relief. A strict final-rollback-only
+audit sweep reached `AVG 1.1999`; the current `AVG 1.1664` path preserves the
+audit invariant earlier in local relief so fewer proxy-improving states need to
+be discarded at finalization. Earlier Stage-6 audit sweeps are retained in
 `PROGRESS.md` as historical experiment records.
 
 Historical accepted hierarchy full sweep before the graph-local and six-stage
