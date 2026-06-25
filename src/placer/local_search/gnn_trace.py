@@ -72,7 +72,6 @@ def _jsonable(value: Any) -> Any:
 
 def flush_plateau_events() -> None:
     """Flush buffered plateau rows to JSONL."""
-    global _PLATEAU_BUFFER_PATH
     if not _PLATEAU_BUFFER:
         return
     path = _PLATEAU_BUFFER_PATH or _plateau_trace_path()

@@ -2,7 +2,6 @@
 
 import os
 import time
-from typing import Optional
 
 import numpy as np
 import torch
@@ -224,6 +223,25 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             float(const.HIER_PLATEAU_PROXY_GAIN),
         )
 
+    adaptive_passes = os.environ.get("HIER_ADAPTIVE_PASSES", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+        "disable",
+    }
+    adaptive_floor_proxy_gain = float(const.HIER_PLATEAU_PROXY_GAIN)
+    if adaptive_passes:
+        hier_micro_shift_min_gain = max(
+            float(hier_micro_shift_min_gain),
+            adaptive_floor_proxy_gain,
+        )
+
+    def _adaptive_pass_gain(before: float, after: float) -> bool:
+        if not adaptive_passes:
+            return True
+        return float(before) - float(after) > adaptive_floor_proxy_gain
+
     def _has_spare(deadline: "float | None", reserve_s: float) -> bool:
         return deadline is None or time.monotonic() + float(reserve_s) < float(deadline)
 
@@ -263,9 +281,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     groups = hierarchy.dreamplace_groups(plc, n)
 
     def _full_tensor(hard_xy, soft_xy):
-        return torch.tensor(
-            np.vstack([hard_xy, soft_xy]).astype(np.float32), dtype=torch.float32
-        )
+        return torch.tensor(np.vstack([hard_xy, soft_xy]).astype(np.float32), dtype=torch.float32)
 
     def _hard_connectivity_pressure() -> np.ndarray:
         pressure = np.zeros(n, dtype=np.float64)
@@ -281,9 +297,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             if length < 2 or length > max_fanout:
                 continue
             start = int(net_starts[net_i])
-            hard_a = [
-                b_to_a[int(r)] for r in ref_idx[start : start + length] if int(r) in b_to_a
-            ]
+            hard_a = [b_to_a[int(r)] for r in ref_idx[start : start + length] if int(r) in b_to_a]
             if not hard_a:
                 continue
             add = float(net_weights[net_i]) / max(1.0, float(len(hard_a) - 1))
@@ -337,9 +351,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     except Exception as exc:
         _log(f"  [hier] DREAMPlace failed: {type(exc).__name__}: {exc}")
         return None
-    selected_seed_name = (
-        str(seed_rows[0].get("name", "dreamplace")) if seed_rows else "dreamplace"
-    )
+    selected_seed_name = str(seed_rows[0].get("name", "dreamplace")) if seed_rows else "dreamplace"
 
     legal = hard
     s_pos = soft.copy()
@@ -347,6 +359,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     pos = state.full()
     scorer = IncrementalScorer(plc, benchmark, pos.copy())
     soft_mov = movable[n : n + n_soft]
+    seed_hierarchy_quality = hierarchy_quality_metric(legal, clusters)
 
     pre_relief = s_score
     region = None
@@ -401,6 +414,34 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         heat_escape_min=hier_region_heat_escape,
     )
     expand_field = base_heat_field
+    weak_hot_enabled = bool(getattr(const, "HIER_REGION_WEAK_HOT_RESHAPE", False))
+    weak_hot_small_shape = bool(
+        int(n) >= int(const.HIER_REGION_WEAK_HOT_HARD_MIN)
+        and int(n) <= int(const.HIER_REGION_WEAK_HOT_HARD_MAX)
+        and int(n) + int(n_soft) <= int(const.HIER_REGION_WEAK_HOT_MACRO_MAX)
+        and bool(np.all(np.asarray(movable[:n], dtype=bool)))
+    )
+    weak_hot_candidate_clusters = None
+    if weak_hot_enabled and weak_hot_small_shape:
+        confidence = getattr(hierarchy, "cluster_confidence", None) or {}
+        weakest_k = max(0, int(const.HIER_SMALL_DESIGN_RELEASE_WEAKEST_K))
+        if weakest_k > 0:
+            weakest_rows = sorted(
+                (
+                    (float(conf), int(cid))
+                    for cid, conf in confidence.items()
+                    if int(cid) in clusters
+                    and float(conf) <= float(const.HIER_REGION_WEAK_CONFIDENCE_MAX)
+                ),
+                key=lambda item: (item[0], item[1]),
+            )[:weakest_k]
+            weak_hot_candidate_clusters = [int(cid) for _conf, cid in weakest_rows]
+    if (
+        weak_hot_enabled
+        and bool(getattr(const, "HIER_REGION_WEAK_HOT_REQUIRE_RELEASE_CANDIDATE", True))
+        and not weak_hot_candidate_clusters
+    ):
+        weak_hot_enabled = False
     region, soft_region, n_expanded = expand_regions_by_congestion(
         region,
         soft_region,
@@ -419,9 +460,53 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         hot_percentile=float(const.HIER_REGION_EXPAND_HOT_PCT),
         max_expand_frac=float(const.HIER_REGION_EXPAND_FRAC),
         side_band=max(1, int(const.HIER_REGION_EXPAND_BAND)),
+        cluster_confidence=(
+            hierarchy.cluster_confidence if weak_hot_enabled and weak_hot_small_shape else None
+        ),
+        weak_confidence_max=float(const.HIER_REGION_WEAK_CONFIDENCE_MAX),
+        weak_hot_extra_frac=float(const.HIER_REGION_WEAK_HOT_EXTRA_FRAC),
+        weak_hot_max_clusters=max(0, int(const.HIER_REGION_WEAK_HOT_MAX_CLUSTERS)),
+        weak_hot_side_floor=float(const.HIER_REGION_WEAK_HOT_SIDE_FLOOR),
+        weak_candidate_clusters=(
+            weak_hot_candidate_clusters
+            if bool(getattr(const, "HIER_REGION_WEAK_HOT_REQUIRE_RELEASE_CANDIDATE", True))
+            else None
+        ),
+        component_expand=bool(getattr(const, "HIER_REGION_COMPONENT_EXPAND", False)),
+        component_cold_percentile=float(getattr(const, "HIER_REGION_COMPONENT_COLD_PCT", 45.0)),
+        component_min_cells=max(1, int(getattr(const, "HIER_REGION_COMPONENT_MIN_CELLS", 4))),
+        component_max_distance_cells=max(
+            0,
+            int(getattr(const, "HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS", 4)),
+        ),
     )
+    region_expand_stats = getattr(expand_regions_by_congestion, "last_stats", {})
     if n_expanded:
-        _log(f"  [hier] congestion-expanded regions: {n_expanded} clusters")
+        weak_hot_reshaped = int(region_expand_stats.get("weak_hot_reshaped", 0))
+        component_expanded = int(region_expand_stats.get("component_expanded", 0))
+        suffix_parts = []
+        if weak_hot_reshaped:
+            suffix_parts.append(f"weak_hot={weak_hot_reshaped}")
+        if component_expanded:
+            suffix_parts.append(f"component={component_expanded}")
+        suffix = f", {', '.join(suffix_parts)}" if suffix_parts else ""
+        _log(f"  [hier] congestion-expanded regions: {n_expanded} clusters{suffix}")
+    log_gnn_event(
+        "hier_region_expand",
+        benchmark=benchmark.name,
+        expanded=int(n_expanded),
+        component_expanded=int(region_expand_stats.get("component_expanded", 0)),
+        weak_hot_reshaped=int(region_expand_stats.get("weak_hot_reshaped", 0)),
+        weak_hot_clusters=list(region_expand_stats.get("weak_hot_clusters", [])),
+        weak_hot_candidate_clusters=list(
+            region_expand_stats.get("weak_hot_candidate_clusters", [])
+        ),
+        weak_hot_enabled=bool(weak_hot_enabled),
+        weak_hot_small_shape=bool(weak_hot_small_shape),
+        weak_confidence_max=float(const.HIER_REGION_WEAK_CONFIDENCE_MAX),
+        weak_hot_extra_frac=float(const.HIER_REGION_WEAK_HOT_EXTRA_FRAC),
+        weak_hot_side_floor=float(const.HIER_REGION_WEAK_HOT_SIDE_FLOOR),
+    )
     bias = float(const.REGION_BIAS)
     escape_min = float(const.HIER_REGION_ESCAPE_MIN)
     rounds = max(1, int(const.HIER_REGION_ROUNDS))
@@ -431,6 +516,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     r_score = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
     rscorer = IncrementalScorer(plc, benchmark, full.copy())
     best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+    audit_budget = max(
+        0.0,
+        float(getattr(const, "HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION", 0.0)),
+    )
+    audit_limit = float(seed_hierarchy_quality) + audit_budget
+    audit_h, audit_s, audit_score = h_pos.copy(), s_pos.copy(), float(r_score)
+    audit_quality = float(seed_hierarchy_quality)
 
     def _hard_valid(hard_xy):
         if hard_xy.shape[0] == 0:
@@ -441,19 +533,62 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             return False
         dx = np.abs(hard_xy[:, None, 0] - hard_xy[None, :, 0])
         dy = np.abs(hard_xy[:, None, 1] - hard_xy[None, :, 1])
-        ok = (dx + 1e-6 >= (hw[:, None] + hw[None, :])) | (
-            dy + 1e-6 >= (hh[:, None] + hh[None, :])
-        )
+        ok = (dx + 1e-6 >= (hw[:, None] + hw[None, :])) | (dy + 1e-6 >= (hh[:, None] + hh[None, :]))
         np.fill_diagonal(ok, True)
         return bool(ok.all())
+
+    def _maybe_update_audit_checkpoint(hard_xy, soft_xy, score):
+        nonlocal audit_h, audit_s, audit_score, audit_quality
+        if not _hard_valid(hard_xy):
+            return False
+        quality = hierarchy_quality_metric(hard_xy, clusters)
+        if quality > audit_limit:
+            return False
+        if float(score) < float(audit_score) - 1e-9 or audit_quality > audit_limit:
+            audit_h, audit_s, audit_score = hard_xy.copy(), soft_xy.copy(), float(score)
+            audit_quality = float(quality)
+            return True
+        return False
+
+    def _restore_audit_checkpoint(label: str) -> bool:
+        nonlocal h_pos, s_pos, r_score, rscorer
+        if audit_quality > audit_limit or not _hard_valid(audit_h):
+            return False
+        old_quality = hierarchy_quality_metric(h_pos, clusters)
+        if old_quality <= audit_limit:
+            return False
+        h_pos = audit_h.copy()
+        s_pos = audit_s.copy()
+        r_score = float(audit_score)
+        rscorer = IncrementalScorer(
+            plc,
+            benchmark,
+            np.vstack([h_pos, s_pos]).astype(np.float64),
+        )
+        log_gnn_event(
+            "hier_audit_checkpoint_restore",
+            benchmark=benchmark.name,
+            pass_name=str(label),
+            old_quality=float(old_quality),
+            audit_limit=float(audit_limit),
+            restored_quality=float(audit_quality),
+            restored_proxy=float(audit_score),
+        )
+        return True
+
+    def _enforce_audit_checkpoint(label: str) -> bool:
+        _maybe_update_audit_checkpoint(h_pos, s_pos, r_score)
+        return _restore_audit_checkpoint(label)
 
     for round_idx in range(rounds):
         if rdeadline is not None and time.monotonic() >= rdeadline:
             break
+        round_start = float(r_score)
         before_micro = r_score
         micro_acc = 0
         micro_t0 = time.monotonic()
         for use_density in (False, True):
+            micro_before = float(r_score)
             h_pos, s_pos, got, r_score = _micro_shift_polish(
                 h_pos,
                 s_pos,
@@ -480,6 +615,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 use_density=use_density,
             )
             micro_acc += got
+            if not _adaptive_pass_gain(micro_before, r_score):
+                break
         if micro_acc:
             _log(
                 f"  [hier] micro-shift polish: {micro_acc} accepts, "
@@ -500,11 +637,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             time.monotonic() - micro_t0,
             round=int(round_idx),
         )
+        _enforce_audit_checkpoint("micro_shift")
         reloc_acc = 0
         reloc_stats = _empty_pass_stats()
         before_reloc = r_score
         reloc_t0 = time.monotonic()
         for use_density in (False, True):
+            reloc_before = float(r_score)
             h_pos, got, r_score = _relocation_moves(
                 h_pos,
                 sizes[:n],
@@ -533,6 +672,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 reloc_stats,
                 getattr(_relocation_moves, "last_stats", {}),
             )
+            if not _adaptive_pass_gain(reloc_before, r_score):
+                break
         _record_plateau(
             "region_hard_relocation",
             before_reloc,
@@ -544,11 +685,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             scored=reloc_stats["scored"],
             round=int(round_idx),
         )
+        _enforce_audit_checkpoint("region_hard_relocation")
         soft_reloc_acc = 0
         soft_reloc_stats = _empty_pass_stats()
         before_soft_reloc = r_score
         soft_reloc_t0 = time.monotonic()
         for use_density in (False, True):
+            soft_before = float(r_score)
             s_pos, got, r_score = _soft_relocation_moves(
                 s_pos,
                 soft_hw,
@@ -575,6 +718,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 soft_reloc_stats,
                 getattr(_soft_relocation_moves, "last_stats", {}),
             )
+            if not _adaptive_pass_gain(soft_before, r_score):
+                break
         _record_plateau(
             "region_soft_relocation",
             before_soft_reloc,
@@ -586,9 +731,18 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             scored=soft_reloc_stats["scored"],
             round=int(round_idx),
         )
+        _enforce_audit_checkpoint("region_soft_relocation")
+        round_accepts = int(micro_acc + reloc_acc + soft_reloc_acc)
+        if adaptive_passes and not _adaptive_pass_gain(round_start, r_score):
+            _log(
+                f"  [hier] region-round adaptation: early exit after round {round_idx}, "
+                f"gain={round_start - float(r_score):.4f}, accepts={round_accepts}"
+            )
+            break
         if _hard_valid(h_pos) and r_score < best_score - 1e-9:
             best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-    pre_decomp_h, pre_decomp_s, pre_decomp_score = h_pos.copy(), s_pos.copy(), r_score
+        _enforce_audit_checkpoint("region_round")
+    pre_decomp_score = r_score
     decomp_gap = float("inf")
     decomp_skip = False
     decomp_field = _congestion_field(rscorer, nr, nc)
@@ -632,61 +786,93 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             field_gap=float(decomp_gap),
         )
     else:
+        decomp_min_gain = float(const.HIER_DECOMPRESS_MIN_GAIN)
+        if adaptive_passes:
+            decomp_min_gain = max(decomp_min_gain, adaptive_floor_proxy_gain)
         d_deadline = _deadline(float(const.HIER_DECOMPRESS_BUDGET_S), rdeadline)
         decomp_t0 = time.monotonic()
-        h_pos, s_pos, d_acc, r_score, hq = _cluster_decompression_relief(
-            h_pos,
-            s_pos,
-            sizes[:n],
-            hw,
-            hh,
-            soft_hw,
-            soft_hh,
-            cw,
-            ch,
-            movable[:n],
-            soft_mov,
-            n,
-            clusters,
-            csofts,
-            bridge_softs,
-            region,
-            soft_region,
-            plc,
-            benchmark,
-            r_score,
-            deadline=d_deadline,
-            rounds=max(1, int(const.HIER_DECOMPRESS_ROUNDS)),
-            hot_percentile=float(const.HIER_DECOMPRESS_HOT_PCT),
-            quality_budget=float(const.HIER_QUALITY_BUDGET),
-            min_proxy_gain=float(const.HIER_DECOMPRESS_MIN_GAIN),
-            anisotropic=True,
-            anisotropic_band=max(1, int(const.HIER_DECOMPRESS_ANISO_BAND)),
-            anisotropic_secondary=float(const.HIER_DECOMPRESS_ANISO_SECONDARY),
-        )
-        invalid_decomp = not _hard_valid(h_pos)
-        weak_decomp = d_acc and r_score > pre_decomp_score - float(
-            const.HIER_DECOMPRESS_MIN_GAIN
-        )
-        if invalid_decomp or weak_decomp:
-            h_pos, s_pos, r_score = pre_decomp_h, pre_decomp_s, pre_decomp_score
-            d_acc = 0
-        if d_acc:
+        d_acc = 0
+        decomp_rounds = max(1, int(const.HIER_DECOMPRESS_ROUNDS))
+        decomp_hq = hierarchy_quality_metric(h_pos, clusters)
+        for _ in range(decomp_rounds):
+            if d_deadline is not None and time.monotonic() >= d_deadline:
+                break
+            decomp_before = float(r_score)
+            trial_h, trial_s, trial_acc, trial_score, trial_hq = _cluster_decompression_relief(
+                h_pos,
+                s_pos,
+                sizes[:n],
+                hw,
+                hh,
+                soft_hw,
+                soft_hh,
+                cw,
+                ch,
+                movable[:n],
+                soft_mov,
+                n,
+                clusters,
+                csofts,
+                bridge_softs,
+                region,
+                soft_region,
+                plc,
+                benchmark,
+                decomp_before,
+                deadline=d_deadline,
+                rounds=1,
+                hot_percentile=float(const.HIER_DECOMPRESS_HOT_PCT),
+                quality_budget=float(const.HIER_QUALITY_BUDGET),
+                min_proxy_gain=decomp_min_gain,
+                anisotropic=True,
+                anisotropic_band=max(1, int(const.HIER_DECOMPRESS_ANISO_BAND)),
+                anisotropic_secondary=float(const.HIER_DECOMPRESS_ANISO_SECONDARY),
+                local_component=bool(getattr(const, "HIER_DECOMPRESS_LOCAL_COMPONENT", False)),
+                local_component_cold_percentile=float(
+                    getattr(const, "HIER_DECOMPRESS_LOCAL_COLD_PCT", 45.0)
+                ),
+                local_component_min_cells=max(
+                    1,
+                    int(getattr(const, "HIER_DECOMPRESS_LOCAL_MIN_CELLS", 4)),
+                ),
+                local_component_max_distance_cells=max(
+                    0,
+                    int(getattr(const, "HIER_DECOMPRESS_LOCAL_MAX_DISTANCE_CELLS", 4)),
+                ),
+                local_component_shift_frac=max(
+                    0.0,
+                    float(getattr(const, "HIER_DECOMPRESS_LOCAL_SHIFT_FRAC", 0.0)),
+                ),
+            )
+            weak_decomp = bool(trial_acc) and float(trial_score) > decomp_before - decomp_min_gain
+            if not _hard_valid(trial_h) or weak_decomp or int(trial_acc) <= 0:
+                break
+            h_pos, s_pos = trial_h, trial_s
+            r_score = float(trial_score)
+            decomp_hq = float(trial_hq)
+            d_acc += int(trial_acc)
+            if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+            _enforce_audit_checkpoint("cluster_decompression")
+            if not _adaptive_pass_gain(decomp_before, r_score):
+                break
+        if d_acc and _hard_valid(h_pos):
             full = np.vstack([h_pos, s_pos]).astype(np.float64)
             rscorer = IncrementalScorer(plc, benchmark, full.copy())
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+            _enforce_audit_checkpoint("cluster_decompression")
             _log(
                 f"  [hier] cluster decompression: {d_acc} accepts, "
-                f"quality={hq:.4f}, proxy={r_score:.4f}"
+                f"quality={decomp_hq:.4f}, proxy={r_score:.4f}"
             )
             _trace_pass(
                 "cluster_decompression",
                 pre_decomp_score,
                 r_score,
                 d_acc,
-                quality=float(hq),
-                rolled_back=bool(invalid_decomp or weak_decomp),
+                quality=float(decomp_hq),
+                rolled_back=False,
             )
             _record_plateau(
                 "cluster_decompression",
@@ -694,14 +880,20 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 r_score,
                 d_acc,
                 time.monotonic() - decomp_t0,
-                quality=float(hq),
-                rolled_back=bool(invalid_decomp or weak_decomp),
+                quality=float(decomp_hq),
+                rolled_back=False,
             )
     if (
         n_soft
         and bool(np.any(soft_mov))
         and _has_spare(rdeadline, float(const.HIER_INTERLEAVED_SOFT_REPAIR_MIN_SPARE_S))
     ):
+        interleaved_soft_min_gain = float(const.HIER_INTERLEAVED_SOFT_REPAIR_MIN_GAIN)
+        if adaptive_passes:
+            interleaved_soft_min_gain = max(
+                interleaved_soft_min_gain,
+                adaptive_floor_proxy_gain,
+            )
         inter_soft_deadline = _deadline(
             float(const.HIER_INTERLEAVED_SOFT_REPAIR_BUDGET_S), rdeadline
         )
@@ -710,6 +902,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         inter_soft_stats = _empty_pass_stats()
         inter_soft_t0 = time.monotonic()
         for use_density in (False, True):
+            inter_before = float(r_score)
             s_pos, got, r_score = _soft_relocation_moves(
                 s_pos,
                 soft_hw,
@@ -730,7 +923,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 region_bias=bias,
                 region_escape_min=escape_min,
                 accept_min_gain=max(
-                    float(const.HIER_INTERLEAVED_SOFT_REPAIR_MIN_GAIN),
+                    float(interleaved_soft_min_gain),
                     hier_soft_barrier_gain,
                 ),
                 wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
@@ -740,10 +933,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 inter_soft_stats,
                 getattr(_soft_relocation_moves, "last_stats", {}),
             )
+            if not _adaptive_pass_gain(inter_before, r_score):
+                break
             if inter_soft_deadline is not None and time.monotonic() >= inter_soft_deadline:
                 break
         if _hard_valid(h_pos) and r_score < best_score - 1e-9:
             best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+        _enforce_audit_checkpoint("interleaved_soft_repair")
         _log(
             f"  [hier] interleaved soft repair: {inter_soft_acc} accepts, "
             f"proxy {pre_inter_soft_score:.4f}->{r_score:.4f}"
@@ -779,6 +975,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         hard_k += extra_k
         soft_k += extra_k
     swap_min_gain = float(const.HIER_SWAP_MIN_GAIN)
+    if adaptive_passes:
+        swap_min_gain = max(swap_min_gain, adaptive_floor_proxy_gain)
     swap_min_field = float(const.HIER_SWAP_MIN_FIELD_RELIEF)
     enable_hh = True
     enable_hs = True
@@ -803,7 +1001,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     for _swap_round in range(swap_rounds):
         if swap_deadline is not None and time.monotonic() >= swap_deadline:
             break
+        swap_round_start = float(r_score)
+        swap_round_start_acc = int(swap_acc)
         for use_density in fields:
+            swap_before = float(r_score)
             h_pos, s_pos, got, r_score, stats = _region_bounded_swap_relief(
                 h_pos,
                 s_pos,
@@ -834,11 +1035,17 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 enable_hs=enable_hs,
                 enable_ss=enable_ss,
                 use_density=use_density,
+                hierarchy_quality_fn=lambda cand_h: hierarchy_quality_metric(cand_h, clusters),
+                hierarchy_quality_limit=audit_limit,
             )
             swap_acc += got
             for k, v in stats.items():
                 swap_stats[k] += v
+            _enforce_audit_checkpoint("region_swaps")
+            if not _adaptive_pass_gain(swap_before, r_score):
+                break
         for micro_density in (False, True):
+            swap_micro_before = float(r_score)
             h_pos, s_pos, got, r_score = _micro_shift_polish(
                 h_pos,
                 s_pos,
@@ -865,12 +1072,23 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 use_density=micro_density,
             )
             swap_round_micro_acc += got
+            _enforce_audit_checkpoint("swap_round_micro_shift")
+            if not _adaptive_pass_gain(swap_micro_before, r_score):
+                break
+        if adaptive_passes and not _adaptive_pass_gain(swap_round_start, r_score):
+            _log(
+                f"  [hier] swap-round adaptation: early exit after round {_swap_round}, "
+                f"gain={swap_round_start - float(r_score):.4f}, "
+                f"accepts={int(swap_acc - swap_round_start_acc)}"
+            )
+            break
     if not _hard_valid(h_pos):
         h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
         full = np.vstack([h_pos, s_pos]).astype(np.float64)
         rscorer = IncrementalScorer(plc, benchmark, full.copy())
     if _hard_valid(h_pos) and r_score < best_score - 1e-9:
         best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+    _enforce_audit_checkpoint("region_swaps")
     escape_accepts = (
         swap_stats["hh_escape_accepts"]
         + swap_stats["hs_escape_accepts"]
@@ -894,9 +1112,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         round_micro_accepts=int(swap_round_micro_acc),
         quality=hierarchy_quality_metric(h_pos, clusters),
     )
-    swap_scored = int(
-        swap_stats["hh_scores"] + swap_stats["hs_scores"] + swap_stats["ss_scores"]
-    )
+    swap_scored = int(swap_stats["hh_scores"] + swap_stats["hs_scores"] + swap_stats["ss_scores"])
     swap_record = _record_plateau(
         "region_swaps",
         pre_swap_score,
@@ -909,6 +1125,9 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         quality=hierarchy_quality_metric(h_pos, clusters),
         stats=swap_stats,
     )
+    plateau_escape_min_gain = float(const.HIER_PLATEAU_ESCAPE_MIN_GAIN)
+    if adaptive_passes:
+        plateau_escape_min_gain = max(plateau_escape_min_gain, adaptive_floor_proxy_gain)
     if n_soft and bool(np.any(soft_mov)) and _is_plateau(swap_record):
         escape_budget = float(const.HIER_PLATEAU_ESCAPE_BUDGET_S)
         escape_spare = float(const.HIER_PLATEAU_ESCAPE_MIN_SPARE_S)
@@ -933,6 +1152,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             escape_stats = _empty_pass_stats()
             escape_t0 = time.monotonic()
             for use_density in (False, True):
+                pre_escape = float(r_score)
                 s_pos, got, r_score = _soft_relocation_moves(
                     s_pos,
                     soft_hw,
@@ -953,7 +1173,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     region_bias=bias,
                     region_escape_min=escape_min,
                     accept_min_gain=max(
-                        float(const.HIER_PLATEAU_ESCAPE_MIN_GAIN),
+                        float(plateau_escape_min_gain),
                         hier_soft_barrier_gain,
                     ),
                     gpu_batch_rank=True,
@@ -963,10 +1183,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     escape_stats,
                     getattr(_soft_relocation_moves, "last_stats", {}),
                 )
+                if not _adaptive_pass_gain(pre_escape, r_score):
+                    break
                 if escape_deadline is not None and time.monotonic() >= escape_deadline:
                     break
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+            _enforce_audit_checkpoint("plateau_escape_soft_relocation")
             _log(
                 f"  [hier] plateau escape soft relocation: {escape_acc} accepts, "
                 f"proxy {pre_escape_score:.4f}->{r_score:.4f}"
@@ -995,6 +1218,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     post_micro_acc = 0
     post_micro_t0 = time.monotonic()
     for use_density in (False, True):
+        post_micro_before = float(r_score)
         h_pos, s_pos, got, r_score = _micro_shift_polish(
             h_pos,
             s_pos,
@@ -1021,6 +1245,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             use_density=use_density,
         )
         post_micro_acc += got
+        if not _adaptive_pass_gain(post_micro_before, r_score):
+            break
     if not _hard_valid(h_pos):
         h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
         full = np.vstack([h_pos, s_pos]).astype(np.float64)
@@ -1028,6 +1254,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         post_micro_acc = 0
     if _hard_valid(h_pos) and r_score < best_score - 1e-9:
         best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+    _enforce_audit_checkpoint("post_swap_micro_shift")
     _log(
         f"  [hier] post-swap micro-shift replay: {post_micro_acc} accepts, "
         f"proxy {pre_post_micro_score:.4f}->{r_score:.4f}"
@@ -1048,6 +1275,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         quality=hierarchy_quality_metric(h_pos, clusters),
     )
     if hier_post_reloc_propose:
+        post_reloc_propose_min_gain = float(hier_reloc_propose_min_gain)
+        if adaptive_passes:
+            post_reloc_propose_min_gain = max(
+                post_reloc_propose_min_gain,
+                adaptive_floor_proxy_gain,
+            )
         post_deadline = _deadline(float(const.HIER_POST_RELOC_PROPOSE_BUDGET_S), rdeadline)
         pre_post_score = r_score
         post_t0 = time.monotonic()
@@ -1073,7 +1306,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             region_bbox=region,
             region_bias=bias,
             region_escape_min=escape_min,
-            propose_accept_min_gain=hier_reloc_propose_min_gain,
+            propose_accept_min_gain=post_reloc_propose_min_gain,
         )
         if not _hard_valid(h_pos):
             h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
@@ -1082,6 +1315,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             post_acc = 0
         if _hard_valid(h_pos) and r_score < best_score - 1e-9:
             best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+        _enforce_audit_checkpoint("post_swap_hard_propose_all")
         _log(
             f"  [hier] post-swap hard propose-all: {post_acc} accepts, "
             f"proxy {pre_post_score:.4f}->{r_score:.4f}"
@@ -1109,8 +1343,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     pre_post_soft_score = r_score
     post_soft_acc = 0
     post_soft_t0 = time.monotonic()
+    post_soft_min_gain = float(hier_post_soft_reloc_min_gain)
+    if adaptive_passes:
+        post_soft_min_gain = max(post_soft_min_gain, adaptive_floor_proxy_gain)
     post_soft_stats = _empty_pass_stats()
     for use_density in (False, True):
+        post_soft_before = float(r_score)
         s_pos, got, r_score = _soft_relocation_moves(
             s_pos,
             soft_hw,
@@ -1131,7 +1369,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             region_bias=bias,
             region_escape_min=escape_min,
             accept_min_gain=max(
-                hier_post_soft_reloc_min_gain,
+                float(post_soft_min_gain),
                 hier_soft_barrier_gain,
             ),
         )
@@ -1140,8 +1378,11 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             post_soft_stats,
             getattr(_soft_relocation_moves, "last_stats", {}),
         )
+        if not _adaptive_pass_gain(post_soft_before, r_score):
+            break
     if _hard_valid(h_pos) and r_score < best_score - 1e-9:
         best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+    _enforce_audit_checkpoint("post_swap_soft_relocation")
     _log(
         f"  [hier] post-swap soft relocation: {post_soft_acc} accepts, "
         f"proxy {pre_post_soft_score:.4f}->{r_score:.4f}"
@@ -1198,6 +1439,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             escape_stats = _empty_pass_stats()
             escape_t0 = time.monotonic()
             for use_density in (False, True):
+                pre_escape = float(r_score)
                 s_pos, got, r_score = _soft_relocation_moves(
                     s_pos,
                     soft_hw,
@@ -1218,7 +1460,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     region_bias=bias,
                     region_escape_min=escape_min,
                     accept_min_gain=max(
-                        float(const.HIER_PLATEAU_ESCAPE_MIN_GAIN),
+                        float(plateau_escape_min_gain),
                         hier_soft_barrier_gain,
                     ),
                     gpu_batch_rank=True,
@@ -1228,10 +1470,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     escape_stats,
                     getattr(_soft_relocation_moves, "last_stats", {}),
                 )
+                if not _adaptive_pass_gain(pre_escape, r_score):
+                    break
                 if escape_deadline is not None and time.monotonic() >= escape_deadline:
                     break
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+            _enforce_audit_checkpoint("plateau_escape_post_soft_relocation")
             _log(
                 f"  [hier] plateau escape post-soft relocation: {escape_acc} accepts, "
                 f"proxy {pre_escape_score:.4f}->{r_score:.4f}"
@@ -1290,9 +1535,18 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             float(const.HIER_PLATEAU_SOFT_REPAIR_BONUS_BUDGET_S) if plateau_soft_bonus else 0.0
         )
         scheduled_strong_rounds = max(1, int(const.HIER_STRONG_SOFT_REPAIR_ROUNDS)) + (
-            max(0, int(const.HIER_PLATEAU_SOFT_REPAIR_BONUS_ROUNDS))
-            if plateau_soft_bonus
-            else 0
+            max(0, int(const.HIER_PLATEAU_SOFT_REPAIR_BONUS_ROUNDS)) if plateau_soft_bonus else 0
+        )
+        total_macros = max(1, int(n) + int(n_soft))
+        nets_per_macro = float(getattr(benchmark, "num_nets", 0)) / float(total_macros)
+        medium_soft_shape = bool(
+            bool(getattr(const, "HIER_MEDIUM_SOFT_CONTINUATION", False))
+            and int(n) >= int(const.HIER_MEDIUM_SOFT_HARD_MIN)
+            and int(n) <= int(const.HIER_MEDIUM_SOFT_HARD_MAX)
+            and total_macros >= int(const.HIER_MEDIUM_SOFT_MACRO_MIN)
+            and total_macros <= int(const.HIER_MEDIUM_SOFT_MACRO_MAX)
+            and nets_per_macro >= float(const.HIER_MEDIUM_SOFT_NETS_PER_MACRO_MIN)
+            and nets_per_macro <= float(const.HIER_MEDIUM_SOFT_NETS_PER_MACRO_MAX)
         )
         run_strong_soft = has_spare and (
             plateau_trigger or useful_soft_trigger or component_soft_trigger
@@ -1313,6 +1567,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             "budget_s": scheduled_strong_budget,
             "min_spare_s": min_spare,
             "rounds": int(scheduled_strong_rounds),
+            "medium_soft_shape": bool(medium_soft_shape),
+            "nets_per_macro": float(nets_per_macro),
         }
         log_gnn_event("hier_budget_schedule", **schedule_payload)
         log_plateau_event("hier_budget_schedule", **schedule_payload)
@@ -1322,8 +1578,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             strong_acc = 0
             strong_stats = _empty_pass_stats()
             strong_t0 = time.monotonic()
+            strong_min_gain = float(const.HIER_STRONG_SOFT_REPAIR_MIN_GAIN)
+            if adaptive_passes:
+                strong_min_gain = max(strong_min_gain, adaptive_floor_proxy_gain)
             for _strong_round in range(scheduled_strong_rounds):
+                strong_round_before = float(r_score)
                 for use_density in (False, True):
+                    strong_before = float(r_score)
                     s_pos, got, r_score = _soft_relocation_moves(
                         s_pos,
                         soft_hw,
@@ -1344,7 +1605,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         region_bias=bias,
                         region_escape_min=escape_min,
                         accept_min_gain=max(
-                            float(const.HIER_STRONG_SOFT_REPAIR_MIN_GAIN),
+                            float(strong_min_gain),
                             hier_soft_barrier_gain,
                         ),
                         wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
@@ -1354,12 +1615,17 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         strong_stats,
                         getattr(_soft_relocation_moves, "last_stats", {}),
                     )
+                    if not _adaptive_pass_gain(strong_before, r_score):
+                        break
                     if strong_deadline is not None and time.monotonic() >= strong_deadline:
                         break
+                if adaptive_passes and not _adaptive_pass_gain(strong_round_before, r_score):
+                    break
                 if strong_deadline is not None and time.monotonic() >= strong_deadline:
                     break
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+            _enforce_audit_checkpoint("strong_soft_repair")
             _log(
                 f"  [hier] strong soft repair: {strong_acc} accepts, "
                 f"proxy {pre_strong_score:.4f}->{r_score:.4f}"
@@ -1383,6 +1649,116 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 quality=hierarchy_quality_metric(h_pos, clusters),
                 plateau=bool(_is_plateau(strong_record)),
             )
+            strong_gain = max(0.0, float(pre_strong_score) - float(r_score))
+            medium_has_spare = _has_spare(
+                rdeadline,
+                float(const.HIER_MEDIUM_SOFT_MIN_SPARE_S),
+            )
+            run_medium_soft = bool(
+                medium_soft_shape
+                and medium_has_spare
+                and strong_gain >= float(const.HIER_MEDIUM_SOFT_TRIGGER_GAIN)
+            )
+            medium_schedule = {
+                "benchmark": pass_context.benchmark_name,
+                "diagnostic_no_deadlines": pass_context.diagnostic_no_deadlines,
+                "pass_name": "medium_soft_continuation",
+                "run": bool(run_medium_soft),
+                "has_spare": bool(medium_has_spare),
+                "strong_soft_gain": float(strong_gain),
+                "trigger_gain": float(const.HIER_MEDIUM_SOFT_TRIGGER_GAIN),
+                "medium_soft_shape": bool(medium_soft_shape),
+                "num_hard": int(n),
+                "num_soft": int(n_soft),
+                "num_macros": int(total_macros),
+                "nets_per_macro": float(nets_per_macro),
+                "budget_s": float(const.HIER_MEDIUM_SOFT_BUDGET_S),
+                "min_spare_s": float(const.HIER_MEDIUM_SOFT_MIN_SPARE_S),
+                "rounds": int(const.HIER_MEDIUM_SOFT_ROUNDS),
+            }
+            log_gnn_event("hier_budget_schedule", **medium_schedule)
+            log_plateau_event("hier_budget_schedule", **medium_schedule)
+            if run_medium_soft:
+                medium_deadline = _deadline(float(const.HIER_MEDIUM_SOFT_BUDGET_S), rdeadline)
+                pre_medium_score = float(r_score)
+                medium_acc = 0
+                medium_stats = _empty_pass_stats()
+                medium_t0 = time.monotonic()
+                medium_min_gain = float(const.HIER_MEDIUM_SOFT_MIN_GAIN)
+                if adaptive_passes:
+                    medium_min_gain = max(medium_min_gain, adaptive_floor_proxy_gain)
+                for _medium_round in range(max(1, int(const.HIER_MEDIUM_SOFT_ROUNDS))):
+                    medium_round_before = float(r_score)
+                    for use_density in (False, True):
+                        medium_before = float(r_score)
+                        s_pos, got, r_score = _soft_relocation_moves(
+                            s_pos,
+                            soft_hw,
+                            soft_hh,
+                            cw,
+                            ch,
+                            n,
+                            plc,
+                            benchmark,
+                            rscorer,
+                            r_score,
+                            deadline=medium_deadline,
+                            top_hot=max(1, int(const.HIER_MEDIUM_SOFT_TOP_K)),
+                            n_targets=max(1, int(const.HIER_MEDIUM_SOFT_TARGETS)),
+                            soft_movable=soft_mov,
+                            use_density=use_density,
+                            region_bbox=soft_region,
+                            region_bias=bias,
+                            region_escape_min=escape_min,
+                            accept_min_gain=max(
+                                float(medium_min_gain),
+                                hier_soft_barrier_gain,
+                            ),
+                            wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
+                        )
+                        medium_acc += got
+                        _accum_pass_stats(
+                            medium_stats,
+                            getattr(_soft_relocation_moves, "last_stats", {}),
+                        )
+                        if not _adaptive_pass_gain(medium_before, r_score):
+                            break
+                        if medium_deadline is not None and time.monotonic() >= medium_deadline:
+                            break
+                    if adaptive_passes and not _adaptive_pass_gain(medium_round_before, r_score):
+                        break
+                    if medium_deadline is not None and time.monotonic() >= medium_deadline:
+                        break
+                if _hard_valid(h_pos) and r_score < best_score - 1e-9:
+                    best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
+                _enforce_audit_checkpoint("medium_soft_continuation")
+                _log(
+                    f"  [hier] medium soft continuation: {medium_acc} accepts, "
+                    f"proxy {pre_medium_score:.4f}->{r_score:.4f}"
+                )
+                medium_record = _record_plateau(
+                    "medium_soft_continuation",
+                    pre_medium_score,
+                    r_score,
+                    medium_acc,
+                    time.monotonic() - medium_t0,
+                    candidates=medium_stats["candidates"],
+                    legal=medium_stats["legal"],
+                    scored=medium_stats["scored"],
+                    quality=hierarchy_quality_metric(h_pos, clusters),
+                    strong_soft_gain=float(strong_gain),
+                    nets_per_macro=float(nets_per_macro),
+                )
+                _trace_pass(
+                    "medium_soft_continuation",
+                    pre_medium_score,
+                    r_score,
+                    medium_acc,
+                    quality=hierarchy_quality_metric(h_pos, clusters),
+                    plateau=bool(_is_plateau(medium_record)),
+                    strong_soft_gain=float(strong_gain),
+                    nets_per_macro=float(nets_per_macro),
+                )
         else:
             reason = "insufficient_spare" if not has_spare else "no_trigger"
             _log(
@@ -1414,10 +1790,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     if legal_score <= best_score + 1e-9:
         legal = legal_candidate
         best_h, best_s, best_score = legal.copy(), s_pos.copy(), legal_score
+        _maybe_update_audit_checkpoint(legal, s_pos, legal_score)
     elif _hard_valid(best_h):
         legal, s_pos = best_h.copy(), best_s.copy()
     else:
         legal = legal_candidate
+        _maybe_update_audit_checkpoint(legal, s_pos, legal_score)
     legal, s_pos, cur_proxy, _ = run_coldspot_tightening(
         benchmark=benchmark,
         plc=plc,
@@ -1450,6 +1828,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         hier_micro_shift_top=int(hier_micro_shift_top),
         hier_micro_shift_min_gain=float(hier_micro_shift_min_gain),
     )
+    _maybe_update_audit_checkpoint(legal, s_pos, cur_proxy)
 
     return run_post_coldspot_finalize(
         benchmark=benchmark,
@@ -1462,12 +1841,16 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         selected_seed_name=selected_seed_name,
         seed_rows=seed_rows,
         pre_relief=pre_relief,
+        seed_hierarchy_quality=float(seed_hierarchy_quality),
         legal=legal,
         s_pos=s_pos,
         cur_proxy=cur_proxy,
         best_h=best_h,
         best_s=best_s,
         best_score=best_score,
+        audit_h=audit_h,
+        audit_s=audit_s,
+        audit_score=audit_score,
         movable=movable,
         n=int(n),
         n_soft=int(n_soft),

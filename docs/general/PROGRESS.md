@@ -3,7 +3,82 @@
 All scores are proxy cost (lower is better).
 Target: beat RePlAce avg of 1.4578.
 
-> **Status (2026-06-24 — numba swap legality and no-trace swap fast path):**
+> Only the first status entry is current production state; all later entries are
+> historical experiment records.
+
+> **Status (2026-06-25 — strict hierarchy audit rollback and component-aware relief):**
+> Fixed the stale region-escape verifier so it uses the active `HierarchyModel`
+> and restored the shared `any_outside_region()` helper. Added final
+> hierarchy-quality audit telemetry against the selected hierarchy seed. The
+> hierarchy pipeline now tracks a separate audit-safe checkpoint, independent of
+> proxy-best state, and the finalizer rolls back to the best audit-passing
+> checkpoint when the current state exceeds
+> `HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION=0.05`. The small-design polish now keeps
+> only audit-passing polished states before it can become the returned placement.
+> Region expansion now prefers nearby contiguous cold congestion
+> components before falling back to side-band expansion, and cluster
+> decompression can bias its local expansion/shift toward a nearby cold
+> component while keeping exact-proxy and hierarchy-quality gates. Verification:
+> targeted bytecode compile passed; `uv run python
+> test/verification/_verify_region_escape_gate.py` passed on `ibm01`, `ibm04`,
+> and `ibm10`; strict-audit focused checks passed on `ibm02`, `ibm03`, and
+> `ibm12`; full `uv run evaluate src/main.py --all` = **AVG 1.1999**, 17/17
+> VALID, 0 overlaps, all final hierarchy audits passed, 1147.08s. This is a
+> deliberate proxy regression versus the prior **AVG 1.1627** hierarchy result:
+> hierarchy audit is now an enforced production invariant rather than report-only
+> telemetry. Per-benchmark proxies:
+> `ibm01=0.9253`, `ibm02=1.1358`, `ibm03=1.1013`, `ibm04=1.0120`,
+> `ibm06=1.2089`, `ibm07=1.0609`, `ibm08=1.2138`, `ibm09=0.8542`,
+> `ibm10=1.1534`, `ibm11=1.0424`, `ibm12=1.9460`, `ibm13=1.0197`,
+> `ibm14=1.2771`, `ibm15=1.4327`, `ibm16=1.2148`, `ibm17=1.4062`,
+> `ibm18=1.3934`.
+
+> **Status (2026-06-24 — SA-ratio secondary subset cleanup):**
+> The hierarchy flow now splits the SA-ratio secondary subset into two
+> structural lanes. Small-secondary designs continue through the post-survivor
+> small-design polish; no-release low-net cases shift candidate breadth from
+> hard relocation toward soft relocation and soft-involving swaps. Medium/large
+> congestion cases add a default-on soft-only continuation hook after strong
+> soft repair, gated by structural shape and prior strong-soft exact gain. In
+> the verified production sweep, the medium hook matched `ibm12` but did not run
+> because spare-time gating was false; `ibm12` still improved through the normal
+> strong-soft/coldspot path. Post-swap hard propose-all was not expanded.
+> Verification: `uv run python -m py_compile $(find src -type f -name "*.py")`
+> passed; `git diff --check` passed; `uv run evaluate src/main.py --all` =
+> **AVG 1.1627**, 17/17 VALID, 0 overlaps, 1116.90s. The follow-up candidate
+> gate keeps weak/hot early region reshape default-off and limits the opt-in
+> path to small-design-sized low-confidence release candidates.
+>
+> Full per-benchmark proxies:
+> `ibm01=0.9262`, `ibm02=1.1194`, `ibm03=1.0009`, `ibm04=1.0067`,
+> `ibm06=1.2090`, `ibm07=1.0527`, `ibm08=1.1400`, `ibm09=0.8537`,
+> `ibm10=1.1475`, `ibm11=0.9935`, `ibm12=1.6668`, `ibm13=1.0172`,
+> `ibm14=1.2721`, `ibm15=1.3588`, `ibm16=1.2087`, `ibm17=1.4049`,
+> `ibm18=1.3877`.
+
+> **[REJECTED] Status (2026-06-24 — broad weak/hot early region reshape):**
+> Tested early extra region room for hot clusters with weak inferred hierarchy
+> confidence (`HIER_REGION_WEAK_HOT_RESHAPE=1`, confidence cutoff `0.92`,
+> cap `2` clusters, extra side fraction `0.03`, side floor `0.45`). Focused
+> `ibm04` improved to `1.0055`, but the full sweep regressed:
+> `uv run evaluate src/main.py --all` = **AVG 1.1637**, 17/17 VALID,
+> 0 overlaps, 1123.29s. Wins included `ibm02`, `ibm04`, `ibm07`, `ibm08`,
+> `ibm09`, `ibm15`, `ibm17`, and `ibm18`; regressions on `ibm01`, `ibm06`,
+> `ibm10`, `ibm11`, `ibm12`, `ibm13`, `ibm14`, and `ibm16` outweighed them.
+> The hook remains in code but is default-off. Follow-up tightened the opt-in
+> candidate gate to small-design-sized placements and to clusters in the same
+> low-confidence release-candidate pool used by late small-design polish.
+
+> **[HISTORICAL] Status (2026-06-24 — adaptive pass continuation by latest exact-gain):**
+> The hierarchy flow now uses gain-gated pass continuation for major plateaus and
+> stage transitions: interleaved soft repair, region swaps, post-swap hard/soft
+> cleanup, swap and post-coldspot micro-shift replay, and coldspot refinement now
+> skip to the next stage when the most recent exact-proxy gain is not above
+> `HIER_PLATEAU_PROXY_GAIN` (`0.00005`).
+> Full `uv run evaluate src/main.py --all` = **AVG 1.1714**, 17/17 VALID,
+> 0 overlaps, 961.79s.
+
+> **[HISTORICAL] Status (2026-06-24 — numba swap legality and no-trace swap fast path):**
 > hard-hard and hard-soft region-swap legality now use numba short-circuit
 > loops when available, avoiding repeated candidate-by-hard overlap matrix
 > allocations. Default production also skips per-candidate swap trace
@@ -17,7 +92,7 @@ Target: beat RePlAce avg of 1.4578.
 > src/main.py -b ibm10` = `proxy=1.1493` (wl=0.078, den=0.586, cong=1.556),
 > VALID, 89.37s.
 
-> **Status (2026-06-23 — local CUDA scoring guards and cache cleanup):**
+> **[HISTORICAL] Status (2026-06-23 — local CUDA scoring guards and cache cleanup):**
 > bounded hard relocation, bounded soft relocation, and micro-shift now have a
 > guarded path to reuse the exact `cuda_delta` relocation scorer for larger
 > per-source target batches (`HIER_LOCAL_RELOC_CUDA_DELTA=auto`,
@@ -31,7 +106,7 @@ Target: beat RePlAce avg of 1.4578.
 > Verification: bytecode compile passed; hard and soft CUDA delta parity
 > verifiers passed; `_verify_coldspot_kick.py ibm10` passed.
 
-> **Status (2026-06-23 — whole-cluster coldspot diversity and predictor):**
+> **[HISTORICAL] Status (2026-06-23 — whole-cluster coldspot diversity and predictor):**
 > coldspot kick generation now adds default-on shape-preserving whole-cluster
 > variants across the top two opportunity-ranked clusters: multiple cold
 > anchors, compact original orientation, rotated layouts, source-facing border
@@ -46,7 +121,7 @@ Target: beat RePlAce avg of 1.4578.
 > graph-local and soft-only coldspot fallbacks too. This is implemented but not
 > yet recorded as an accepted full-suite result.
 
-> **Status (2026-06-23 — promoted default-on gates to unconditional behavior):**
+> **[HISTORICAL] Status (2026-06-23 — promoted default-on gates to unconditional behavior):**
 > removed production constants that were always `True` and used only as feature
 > gates. The accepted hierarchy flow now runs those operators unconditionally:
 > tag-prefix/oversize clustering, connectivity-ordered legalization, seed
@@ -60,7 +135,7 @@ Target: beat RePlAce avg of 1.4578.
 > across `src/` and `test/` passes; benchmark smoke is tracked in the current
 > implementation turn rather than as a new accepted full-suite result.
 
-> **Status (2026-06-23 — default-off soft-only coldspot fallback):**
+> **[HISTORICAL] Status (2026-06-23 — default-off soft-only coldspot fallback):**
 > added `HIER_COLDSPOT_SOFT_ONLY=0`, which runs only when the hard coldspot kick
 > path and graph-local fallback commit no candidate. The pass keeps all hard
 > macros fixed, builds a soft relocation target pool from remembered open cold
@@ -75,7 +150,7 @@ Target: beat RePlAce avg of 1.4578.
 > set, so hard and soft positions are proposed together and accepted or rejected
 > as one exact-gated full placement.
 
-> **Status (2026-06-23 — default-off partial frontier coldspot prototype):**
+> **[HISTORICAL] Status (2026-06-23 — default-off partial frontier coldspot prototype):**
 > added `HIER_COLDSPOT_PARTIAL_FRONTIER=0`, which can append one
 > capacity-aware partial frontier candidate to a coldspot candidate pool. The
 > prototype estimates connected cold area near the selected anchor, clamps the
@@ -126,7 +201,7 @@ Target: beat RePlAce avg of 1.4578.
 > the traced blocker remains far hierarchy splitting, not lack of source-side
 > area relaxation.
 
-> **Status (2026-06-23 — accepted swap-round micro-shift, stronger
+> **[HISTORICAL] Status (2026-06-23 — accepted swap-round micro-shift, stronger
 > opportunity gates, and component-aware scheduling):** promoted
 > `HIER_SWAP_ROUND_MICRO_SHIFT=1`, `HIER_STRONG_OPPORTUNITY_GATES=1`, and
 > `HIER_COMPONENT_AWARE_SCHEDULING=1`. Region swaps now replay exact-gated
@@ -147,7 +222,7 @@ Target: beat RePlAce avg of 1.4578.
 > `ibm14=1.2889`, `ibm15=1.4043`, `ibm16=1.2093`, `ibm17=1.4141`,
 > `ibm18=1.4234`.
 
-> **Status (2026-06-22 — Archgen-inspired buffered telemetry, GPU proposal
+> **[HISTORICAL] Status (2026-06-22 — Archgen-inspired buffered telemetry, GPU proposal
 > ranking, and plateau escape proposal class):** added buffered default-on
 > plateau telemetry (`HIER_PLATEAU_TRACE_BUFFERED=1`) with per-benchmark flush
 > plus `atexit` fallback. Added CUDA sorting for large swap and relocation
@@ -205,7 +280,7 @@ Target: beat RePlAce avg of 1.4578.
 > reversible exact batch scorer was not promoted and was removed from the active
 > code path. Current production remains the cached-struct exact scorer.
 
-> **Status (2026-06-22 — swap scoring throughput speedup, smoke-validated):**
+> **[HISTORICAL] Status (2026-06-22 — swap scoring throughput speedup, smoke-validated):**
 > added exact-equivalent cached routing structs for repeated multi-macro swap
 > scoring and vectorized region-bbox masks for hard-hard, hard-soft, and
 > soft-soft swap candidate outside-region flags. This does not change candidate
@@ -238,7 +313,7 @@ Target: beat RePlAce avg of 1.4578.
 > 0 overlaps, 1328.33s. The older proxy-score history below is retained as
 > experiment context.
 
-> **Status (2026-06-22 — six-stage hierarchy-aware revamp):** applied the
+> **[HISTORICAL] Status (2026-06-22 — six-stage hierarchy-aware revamp):** applied the
 > staged revamp with full `uv run evaluate src/main.py --all` gates after each
 > active stage. Stage 1 verified NG45 path-tag hierarchy support on IBM with
 > **AVG 1.1822**, 17/17 VALID, 0 overlaps. Stage 2 added a hierarchy-safe
@@ -263,7 +338,7 @@ Target: beat RePlAce avg of 1.4578.
 > concrete signal for optional clearance repair without changing current
 > placement behavior.
 
-> **Status (2026-06-22 — NG45 hierarchy-tag verification added and passed):**
+> **[HISTORICAL] Status (2026-06-22 — NG45 hierarchy-tag verification added and passed):**
 > ran `uv run evaluate src/main.py --ng45` after the strong soft repair changes:
 > all four NG45 designs were VALID with 0 overlaps, `AVG 0.7300`
 > (`ariane133=0.6845`, `ariane136=0.7283`, `mempool_tile=0.7730`,
@@ -288,7 +363,7 @@ Target: beat RePlAce avg of 1.4578.
 > explicit hierarchy-tag preservation; `nvdla` improves versus the pre-tag NG45
 > run while the Ariane designs become more hierarchy-constrained.
 
-> **Status (2026-06-22 — strong soft repair, plateau telemetry, and
+> **[HISTORICAL] Status (2026-06-22 — strong soft repair, plateau telemetry, and
 > budget-aware scheduling added):** added pass-level `PlateauTelemetry` records
 > for region relief, swaps, post-swap polish, decompression, split evacuation,
 > and the new strong soft repair. Plateau rows are stored by default under
@@ -325,7 +400,7 @@ Target: beat RePlAce avg of 1.4578.
 > `ibm14=1.2853`, `ibm15=1.4161`, `ibm16=1.2138`, `ibm17=1.4128`,
 > `ibm18=1.4215`.
 
-> **Status (2026-06-22 — congestion-weighted ranking made hierarchy-aware):**
+> **[HISTORICAL] Status (2026-06-22 — congestion-weighted ranking made hierarchy-aware):**
 > kept the first-place-inspired weighted proposal field, but added
 > `HIER_PROPOSAL_HIERARCHY_AWARE=1` so out-of-region candidates do not dominate
 > ranking merely because they are cold. In hard/soft relocation and region
@@ -349,7 +424,7 @@ Target: beat RePlAce avg of 1.4578.
 > `ibm14=1.2904`, `ibm15=1.4232`, `ibm16=1.2231`, `ibm17=1.4118`,
 > `ibm18=1.4340`.
 
-> **Status (2026-06-22 — first-place lessons implemented: seed portfolio +
+> **[HISTORICAL] Status (2026-06-22 — first-place lessons implemented: seed portfolio +
 > congestion-weighted proposal ranking):** added two ArchGen-inspired ideas
 > without restoring the deleted proxy-only path. `HIER_SEED_PORTFOLIO=1`
 > exact-prescores grouped DREAMPlace, legalized `initial.plc`, two
@@ -381,7 +456,7 @@ Target: beat RePlAce avg of 1.4578.
 > `ibm17`, and `ibm18`. This confirms the portfolio is not merely reverting to
 > `initial.plc`; it selects different basins by exact prescore.
 
-> **Status (2026-06-21 — gated oversized-cluster split promoted over flat
+> **[HISTORICAL] Status (2026-06-21 — gated oversized-cluster split promoted over flat
 > default):** investigated whether `ibm17`'s loss after disabling recursive
 > clustering was random. It was deterministic: repeated focused toggles gave
 > `ibm17 flat/no-rooms=2.1529`, `recursive/no-rooms=2.1220`, and
@@ -412,7 +487,7 @@ Target: beat RePlAce avg of 1.4578.
 > `ibm14=1.6538`, `ibm15=1.8603`, `ibm16=1.6849`, `ibm17=2.1241`,
 > `ibm18=1.7395`.
 
-> **Status (2026-06-21 — recursive clustering and room/corridor regions removed
+> **[HISTORICAL] Status (2026-06-21 — recursive clustering and room/corridor regions removed
 > from production, then deleted):** removed the recursive weighted clustering
 > path and explicit room/corridor region boxes after the staged revamp showed
 > they were detrimental overall. The active system now keeps the first-class
@@ -433,7 +508,7 @@ Target: beat RePlAce avg of 1.4578.
 > `ibm10`, `ibm12`, and `ibm14`-`ibm16`; it hurts `ibm03`, `ibm11`, and
 > especially `ibm17`.
 
-> **Status (2026-06-21 — six-stage hierarchy architecture revamp valid, not
+> **[HISTORICAL] Status (2026-06-21 — six-stage hierarchy architecture revamp valid, not
 > lower-proxy promoted):** implemented the requested six revamp directions in
 > staged order and ran `uv run evaluate src/main.py --all` after each stage.
 > The new code introduces a first-class `HierarchyModel`, recursive hard-cluster
@@ -463,7 +538,7 @@ Target: beat RePlAce avg of 1.4578.
 > `ibm14=1.6764`, `ibm15=1.9036`, `ibm16=1.7436`, `ibm17=2.1073`,
 > `ibm18=1.7311`.
 
-> **Status (2026-06-20/21 — coldspot selector demoted; regional ops confirmed
+> **[HISTORICAL] Status (2026-06-20/21 — coldspot selector demoted; regional ops confirmed
 > as GNN target):** added default-off additive coldspot selector infrastructure:
 > `HIER_GNN_COLDSPOT_SELECT`, `HIER_GNN_COLDSPOT_MODEL`,
 > `HIER_GNN_COLDSPOT_KICKS`, `HIER_GNN_COLDSPOT_TOP_K`,
@@ -487,7 +562,7 @@ Target: beat RePlAce avg of 1.4578.
 > relocation and regional hard-hard, hard-soft, and soft-soft swaps, with an
 > optional soft-macro barrier for soft-involving moves.
 
-> **Status (2026-06-21 — regional swap GNN hook added, closed-loop rejected for
+> **[HISTORICAL] Status (2026-06-21 — regional swap GNN hook added, closed-loop rejected for
 > sequential reordering):** added default-off `region_swaps` inference support
 > to `src/placer/local_search/gnn_ranker.py`, plus guarded-prefix controls
 > `HIER_GNN_SWAP_PRESERVE_TOP_N` and `HIER_GNN_SWAP_TOP_K`. Added
@@ -510,7 +585,7 @@ Target: beat RePlAce avg of 1.4578.
 > `HIER_SOFT_BARRIER_GAIN=0.01` as a diagnostic soft-macro gate rather than a
 > production default.
 
-> **Status (2026-06-19 — GNN Stage G5 default-off relocation hook smoke
+> **[HISTORICAL] Status (2026-06-19 — GNN Stage G5 default-off relocation hook smoke
 > accepted):** added `src/placer/local_search/gnn_ranker.py`, a default-off
 > inference hook that can reorder the existing hard propose-all relocation
 > candidate list with the accepted G4 macro-net ranker. Runtime controls:
@@ -525,7 +600,7 @@ Target: beat RePlAce avg of 1.4578.
 > 50.16s. This is smoke acceptance only, not default-on promotion. Next stage is
 > G6 multi-benchmark closed-loop validation before expanding operators.
 
-> **Status (2026-06-19 — GNN Stage G6 closed-loop validation valid but not
+> **[HISTORICAL] Status (2026-06-19 — GNN Stage G6 closed-loop validation valid but not
 > promoted):** ran the default-off relocation hook through the documented G6
 > sequence and full suite with
 > `HIER_GNN_RANK=1`,
@@ -544,7 +619,7 @@ Target: beat RePlAce avg of 1.4578.
 > Keep `HIER_GNN_RANK=0` for production. Next GNN work should diagnose candidate
 > ordering/regression by benchmark and operator before any broader integration.
 
-> **Status (2026-06-19 — GNN post-G6 ranking diagnostics started):** added
+> **[HISTORICAL] Status (2026-06-19 — GNN post-G6 ranking diagnostics started):** added
 > `scripts/gnn/diagnose_gnn_ranking.py` to compare deterministic trace order, G3
 > MLP, and G4 macro-net rankings against both accepted labels and exact
 > proxy-gain labels inside candidate pools. Also added relocation trace fields
@@ -562,7 +637,7 @@ Target: beat RePlAce avg of 1.4578.
 > shift, downstream pass interactions, and runtime budget displacement before
 > expanding operators or promoting the hook.
 
-> **Status (2026-06-19 — GNN post-G6 paired trace comparison):** added
+> **[HISTORICAL] Status (2026-06-19 — GNN post-G6 paired trace comparison):** added
 > `scripts/gnn/compare_gnn_trace_pairs.py` and collected paired heuristic versus
 > `HIER_GNN_RANK=1` traces for `ibm01`, `ibm10`, `ibm12`, and `ibm17` with
 > `HIER_GNN_TRACE_MAX_CANDIDATES=64`. Pair reports live under
@@ -578,7 +653,7 @@ Target: beat RePlAce avg of 1.4578.
 > traces with `HIER_GNN_TOP_K=8` and `16` before retraining or expanding
 > operators.
 
-> **Status (2026-06-19 — GNN ibm12 top-k and guarded-prefix variants
+> **[HISTORICAL] Status (2026-06-19 — GNN ibm12 top-k and guarded-prefix variants
 > rejected):** ran `ibm12` follow-ups after the paired-trace finding.
 > `HIER_GNN_TOP_K=8` was VALID but worse (`2.1878`, delta `+0.0106`) with hard
 > propose-all accepts `4->3`; `HIER_GNN_TOP_K=16` matched the same worse result.
@@ -591,7 +666,7 @@ Target: beat RePlAce avg of 1.4578.
 > A/Bs. Next improvement work should create a repeatable diagnostic mode or use
 > repeated-run variance before retraining the GNN or expanding operators.
 
-> **Status (2026-06-20 — GNN repeatable diagnostic mode added):** added
+> **[HISTORICAL] Status (2026-06-20 — GNN repeatable diagnostic mode added):** added
 > `HIER_DIAGNOSTIC_NO_DEADLINES=1`, a diagnostic-only mode that disables local
 > hierarchy relief deadlines while preserving production defaults. This fixed
 > `ibm12` repeatability: two heuristic no-deadline traces both produced VALID
@@ -607,7 +682,7 @@ Target: beat RePlAce avg of 1.4578.
 > comparisons on `ibm01`, `ibm10`, and `ibm17`, then target the production
 > budget interaction if the controlled signal holds.
 
-> **Status (2026-06-20 — GNN additive controlled mode accepted for timed
+> **[HISTORICAL] Status (2026-06-20 — GNN additive controlled mode accepted for timed
 > smoke):** added default-off `HIER_GNN_EXTRA_TOP_K` so diagnostics can preserve
 > deterministic post-swap hard propose-all candidates and append extra
 > GNN-ranked candidates. Controlled no-deadline pure GNN top-k 32 results on the
@@ -622,7 +697,7 @@ Target: beat RePlAce avg of 1.4578.
 > no-gain cases. Next gate: timed production-mode smoke on `ibm10` and `ibm12`
 > with additive mode.
 
-> **Status (2026-06-20 — GNN additive timed smoke mixed, not promoted):** ran
+> **[HISTORICAL] Status (2026-06-20 — GNN additive timed smoke mixed, not promoted):** ran
 > timed production-mode smoke for additive GNN with
 > `HIER_GNN_PRESERVE_TOP_N=16`, `HIER_GNN_TOP_K=8`, and
 > `HIER_GNN_EXTRA_TOP_K=8` under normal local deadlines. Current timed
@@ -635,7 +710,7 @@ Target: beat RePlAce avg of 1.4578.
 > post-swap hard-propose budget, or repeated timed smoke to quantify the
 > `ibm10` risk.
 
-> **Status (2026-06-19 — GNN Stage G4 offline macro-net ranker accepted,
+> **[HISTORICAL] Status (2026-06-19 — GNN Stage G4 offline macro-net ranker accepted,
 > default-off):** extended `scripts/gnn/build_gnn_dataset.py` to dataset schema v2
 > with MacroDiff+-inspired macro-net graph tensors: net nodes, macro-net
 > incidence edges, normalized pin-offset edge features, net degree/fanout, net
@@ -656,7 +731,7 @@ Target: beat RePlAce avg of 1.4578.
 > changed. The model's proxy-delta correlation is weaker than G3, so G5 must
 > use it only for candidate ordering and keep exact-proxy gates authoritative.
 
-> **Status (2026-06-19 — GNN Stage G3 offline baseline accepted,
+> **[HISTORICAL] Status (2026-06-19 — GNN Stage G3 offline baseline accepted,
 > default-off):** collected fresh schema-v1 traces for the minimum G3 split:
 > `ibm01`, `ibm10`, `ibm12`, and `ibm17`. All four trace runs were VALID:
 > `ibm01=0.9435` in 36.38s, `ibm10=1.6172` in 43.90s,
@@ -674,7 +749,7 @@ Target: beat RePlAce avg of 1.4578.
 > does not enable inference or change placement. Next stage is G4 graph
 > extension and first GNN ranker training.
 
-> **Status (2026-06-19 — GNN Stage G2 graph dataset builder):** added
+> **[HISTORICAL] Status (2026-06-19 — GNN Stage G2 graph dataset builder):** added
 > `scripts/gnn/build_gnn_dataset.py`, a deterministic schema-v1 JSONL-to-PyTorch
 > dataset builder. The output contains one graph per benchmark with hard macro,
 > soft macro, and inferred-cluster nodes; netlist clique, macro-cluster
@@ -690,7 +765,7 @@ Target: beat RePlAce avg of 1.4578.
 > (with an unrelated existing regex escape warning in
 > `scripts/generate_macro_placement_tcl.py`); the G2 verifier passed.
 
-> **Status (2026-06-19 — GNN Stage G1 trace completeness and schema v1):**
+> **[HISTORICAL] Status (2026-06-19 — GNN Stage G1 trace completeness and schema v1):**
 > completed candidate-level trace coverage for the active hierarchy GNN data
 > path without changing placement behavior. `log_gnn_event()` now emits
 > `schema_version=1`; `hier_decompression_candidate` records cluster expansion,
@@ -708,7 +783,7 @@ Target: beat RePlAce avg of 1.4578.
 > VALID with proxy `0.9435` and wrote 1539 schema-v1 events with the new
 > decompression, swap, and coldspot candidate event families.
 
-> **Status (2026-06-18 — BeyondPPA structural objective and GNN trace logging
+> **[HISTORICAL] Status (2026-06-18 — BeyondPPA structural objective and GNN trace logging
 > integrated, defaults unchanged):** added deterministic edge-keepout,
 > grid-alignment, notch, and combined structural metrics in
 > `src/placer/local_search/structural_fields.py`; and integrated the structural term
@@ -726,7 +801,7 @@ Target: beat RePlAce avg of 1.4578.
 > Because the worktree also contains unrelated local changes, do not attribute
 > the small delta solely to the structural/GNN logging work without a clean A/B.
 
-> **Status (2026-06-18 — Stage 3 micro-shift replay stack accepted,
+> **[HISTORICAL] Status (2026-06-18 — Stage 3 micro-shift replay stack accepted,
 > `--all` avg = 1.3631):** promoted two exact-gated replay passes that rerun
 > `_micro_shift_polish()` after region swaps and again after coldspot tightening.
 > Full `uv run evaluate src/main.py --all`: **AVG 1.3631**, 17/17 VALID,
@@ -740,7 +815,7 @@ Target: beat RePlAce avg of 1.4578.
 > selection regressed to **AVG 1.3714**. Both rejected gates were removed from
 > the production pipeline.
 
-> **Status (2026-06-18 — Stage 3 DREAMPlace selector rejected at smoke):**
+> **[HISTORICAL] Status (2026-06-18 — Stage 3 DREAMPlace selector rejected at smoke):**
 > implemented a bounded grouped-DREAMPlace selector that tried candidate
 > `(group_weight, seed)` variants before relief, legalizing and scoring each
 > with exact proxy plus hierarchy-quality blend. `ibm10` group-weight variants
@@ -752,7 +827,7 @@ Target: beat RePlAce avg of 1.4578.
 > better `ibm10` candidate, the selector code path was removed and no `--all`
 > was run.
 
-> **Status (2026-06-18 — Stage 2 micro-shift + anisotropic decompression
+> **[HISTORICAL] Status (2026-06-18 — Stage 2 micro-shift + anisotropic decompression
 > accepted, `--all` avg = 1.3707):** promoted exact-gated one/two-grid-cell
 > micro-shift polish for hot hard and soft macros inside their hierarchy regions
 > (`HIER_MICRO_SHIFT=1`, radius 2, top 96, min gain `1e-5`) and promoted
@@ -769,7 +844,7 @@ Target: beat RePlAce avg of 1.4578.
 > smoke to **1.6405** VALID, so that pre-swap propose-all plumbing was removed;
 > accepted post-swap propose-all relocation remains active.
 
-> **Status (2026-06-16 — post-swap soft polish accepted, `--all`
+> **[HISTORICAL] Status (2026-06-16 — post-swap soft polish accepted, `--all`
 > avg = 1.3947):** promoted ordinary post-swap soft relocation with
 > `HIER_POST_SOFT_RELOC=1`, `HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005`, and
 > lowered the post-swap hard propose-all margin to
@@ -782,7 +857,7 @@ Target: beat RePlAce avg of 1.4578.
 > 1.7832→1.7772, ibm14 1.6784→1.6733, ibm12 2.2514→2.2496, plus smaller wins on
 > ibm01/06/07/09/11/16.
 
-> **Status (2026-06-16 — post-swap hard propose-all polish accepted, `--all`
+> **[HISTORICAL] Status (2026-06-16 — post-swap hard propose-all polish accepted, `--all`
 > avg = 1.3974):** kept `HIER_RELOC_PROPOSE_ALL=0` for the pre-swap hard
 > relocation loop, but promoted CUDA-only
 > `HIER_POST_RELOC_PROPOSE_ALL=auto` after region swaps with footprint-averaged
@@ -794,7 +869,7 @@ Target: beat RePlAce avg of 1.4578.
 > 1.6506→1.6485 and ibm12 2.2535→2.2514; other cases were neutral or within
 > run noise.
 
-> **Status (2026-06-16 — connectivity legalize order accepted, `--all`
+> **[HISTORICAL] Status (2026-06-16 — connectivity legalize order accepted, `--all`
 > avg = 1.3978):** promoted `HIER_LEGALIZE_CONNECTIVITY_ORDER=1`, which keeps
 > cluster-consecutive legalization but orders members by connectivity-pressure x
 > area instead of area alone. Full
@@ -812,7 +887,7 @@ Target: beat RePlAce avg of 1.4578.
 > experiment were removed. Pre-swap hard propose-all remains diagnostic-only and
 > default off.
 
-> **Status (2026-06-16 — soft-swap breadth tuning accepted, `--all`
+> **[HISTORICAL] Status (2026-06-16 — soft-swap breadth tuning accepted, `--all`
 > avg = 1.4452):** kept owned/bridge soft classification, congestion-expanded
 > regions, exact-gated cluster decompression, proxy-aware coldspot tightening,
 > per-operator region-swap controls, strict hard-swap legality, and best-state
@@ -863,7 +938,7 @@ Target: beat RePlAce avg of 1.4578.
 > 0.9358, ibm12 1.3145, ibm13 0.9809, ibm14 1.2091, + back four. Single-seed, so
 > ±~0.002 noise.
 
-> **Status (2026-06-14 — ALL cong-grad code DELETED (on the reverted multi-seed
+> **[HISTORICAL] Status (2026-06-14 — ALL cong-grad code DELETED (on the reverted multi-seed
 > LSMC base, e2c8d04).** Removed the congestion-gradient spine (phases 1-3, 5b
 > DP-rescue, P7 DP-chains; 136 lines) from `macro_placer.py` + the orphaned
 > `placer/perturb/` package and its test. `rng_cong` kept (Phase 9 tie-breaks);
@@ -889,7 +964,7 @@ Target: beat RePlAce avg of 1.4578.
 > near-noise simplification. NB: the "restore via PRUNE_*=0" knobs no longer
 > exist; ARCHITECTURE.md / README phase lists for these three are now superseded.
 
-> **Status (2026-06-14 — Stage 4: Phase 5c (wide-from-best) PRUNED by default
+> **[HISTORICAL] Status (2026-06-14 — Stage 4: Phase 5c (wide-from-best) PRUNED by default
 > for pipeline simplification, despite a near-noise score cost.** Pruned `--all`
 > = **1.1170** (seed1, full 17/17). The paired gate actually favored KEEPING 5c
 > (keep seed1 1.1156 / seed2 1.1191 vs prune seed1 1.1170; 5c does real work on
@@ -898,7 +973,7 @@ Target: beat RePlAce avg of 1.4578.
 > So 1.1156 (5c kept) is the lower achievable; the shipped lean default is 1.1170.
 > Gate stopped after 3/4 runs (decision was made); logs `ml_data/compare/stage4p5c_*`.
 
-> **Status (2026-06-13 — Stage 4: multi-seed 2-opt PRUNED by default; NEW BEST
+> **[HISTORICAL] Status (2026-06-13 — Stage 4: multi-seed 2-opt PRUNED by default; NEW BEST
 > `--all` 1.1169):** the pre-R2 multi-seed 2-opt phase is now skipped by default
 > (`PRUNE_MULTISEED_2OPT=0` restores it). Paired gate keep-vs-prune,
 > full-stack (dp=17 both arms): seed1 1.1175→1.1169 (−0.0006), seed2
@@ -915,7 +990,7 @@ Target: beat RePlAce avg of 1.4578.
 > (ibm01/02/03 all regress) was a small-sample trap — the full 17 reversed it.
 > Next Stage 4 target: the cong-grad restart phases.
 
-> **Status (2026-06-13 — Stage 2b kick pre-screen SHIPPED AS DEFAULT
+> **[HISTORICAL] Status (2026-06-13 — Stage 2b kick pre-screen SHIPPED AS DEFAULT
 > (PRESCREEN=8); on-arm best 1.1176 is the NEW BEST `--all`):** each LSMC
 > iteration now scores a batch of kicks (`GPU_EXPLORE_PRESCREEN`, default 8)
 > and descends only the best one — the cuGenOpt evaluate→reduce→descend-one
@@ -953,7 +1028,7 @@ Target: beat RePlAce avg of 1.4578.
 > filter on". Degraded-stack pair (DP/ML absent): explore was worth −0.0067
 > there — relevant if eval hardware ever lacks the full stack.
 
-> **Status (2026-06-12 — GPU staged rollout: Stage 0 re-baseline + Stage 1
+> **[HISTORICAL] Status (2026-06-12 — GPU staged rollout: Stage 0 re-baseline + Stage 1
 > propose-all A/B done; verdict WASH, stays opt-in; see docs/gpu/GPU-ops.md and
 > ISSUES.md S17):**
 >
@@ -987,7 +1062,7 @@ Target: beat RePlAce avg of 1.4578.
 > selector can harvest. Next: Stage 2 exploration engine (GPU_EXPLORE) per
 > docs/gpu/GPU-ops.md §2–3.
 
-> **Status (2026-06-11 — ML hard-relocation ranker connected as production
+> **[HISTORICAL] Status (2026-06-11 — ML hard-relocation ranker connected as production
 > default, ISSUES.md S10):** The trained XGBoost filter was validated 2026-06-05
 > (equal-budget net ≈ −0.008/10, no robust regressions) but had been left
 > opt-in — no env var was ever set in the run path, so every evaluate run since
@@ -1029,7 +1104,7 @@ Target: beat RePlAce avg of 1.4578.
 > is seed variance, not a selectable config). Next lever: budget-aware pruning
 > (`ML_FILTER_TOP_K` sweep under time pressure only).
 
-> **Status (2026-06-10 — fixed a silent DREAMPlace ABI break, ISSUES.md S16):**
+> **[HISTORICAL] Status (2026-06-10 — fixed a silent DREAMPlace ABI break, ISSUES.md S16):**
 > **Avg 1.1272 — all 17 VALID / 0 overlaps, 2645s (~44 min) — NEW BEST.** Root
 > cause: the DP bridge launched DREAMPlace with the repo `.venv`, which was upgraded
 > to **Python 3.14** for numba (S13), but DP's compiled extensions are **cpython-310**
@@ -1059,7 +1134,7 @@ Target: beat RePlAce avg of 1.4578.
 > acceptance just wastes budget (consistent with the S1 basin-hopping disproof).
 > Reverted in full; the accept gate stays strict-improvement greedy.
 
-> **Status (2026-06-07 — hand-JIT the scoring hot paths, ISSUES.md S14):**
+> **[HISTORICAL] Status (2026-06-07 — hand-JIT the scoring hot paths, ISSUES.md S14):**
 > **Avg 1.1379 — all 17 VALID / 0 overlaps, 2117s (~35 min).** cProfile (post-numba)
 > found three vectorized-numpy scoring functions with no JIT path dominating:
 > `_apply_macro_routing` (per-cell macro-routing scatter), `_macro_occ` (density
@@ -1070,7 +1145,7 @@ Target: beat RePlAce avg of 1.4578.
 > 200s (no-numba) → 162s (numba) → 119s (+3 JITs). Remaining: `_resmooth_h/v`
 > (cumsum-based, deprioritized).
 
-> **Status (2026-06-07 — numba JIT was silently disabled; re-enabled, ISSUES.md S13):**
+> **[HISTORICAL] Status (2026-06-07 — numba JIT was silently disabled; re-enabled, ISSUES.md S13):**
 > **Avg 1.1380 — all 17 VALID / 0 overlaps, 2563s (~43 min).** cProfile found the
 > routing-apply (half the runtime) running the slow **numpy fallbacks** because
 > **numba was not installed** (`HAS_NUMBA=False`): numba is in `v2/requirements.txt`
@@ -1084,7 +1159,7 @@ Target: beat RePlAce avg of 1.4578.
 > realize 1.1380; the graceful fallback is 1.1403. Both still beat RePlAce (1.4578)
 > and the leaderboard (1.4076) on every benchmark.
 
-> **Status (2026-06-07 — spend freed budget on soft_relocation, ISSUES.md S12):**
+> **[HISTORICAL] Status (2026-06-07 — spend freed budget on soft_relocation, ISSUES.md S12):**
 > **Avg 1.1403 — all 17 VALID / 0 overlaps, 3486.53s (new best).** With each
 > soft-reloc group ~37% cheaper (S11 WL prefilter), the freed budget is spent on the
 > score MVP's per-macro depth: **soft_relocation n_targets 24 → 32**. Validated:
@@ -1096,7 +1171,7 @@ Target: beat RePlAce avg of 1.4578.
 > boost → saturates), so the static caps + skip-if-empty stay. Env knobs:
 > `SOFT_TGT` / `SOFT_HOT`, `ADAPTIVE_BUDGET` (off).
 
-> **Status (2026-06-06 — scoring-cost reduction in 2-opt + soft-relocation, ISSUES.md S11):**
+> **[HISTORICAL] Status (2026-06-06 — scoring-cost reduction in 2-opt + soft-relocation, ISSUES.md S11):**
 > **Avg 1.1423 — all 17 VALID / 0 overlaps, 3433.76s (new best, beats prior 1.1500
 > by −0.0077).** Three accept-gate-safe WL-delta prefilter / budget cuts (only
 > change which candidates get exact-scored; every accept still validated):
@@ -1119,7 +1194,7 @@ Target: beat RePlAce avg of 1.4578.
 > `HARD_2OPT_WL_PREFILTER`. Tests: `_verify_wl_delta_swap.py`,
 > `_verify_wl_delta_move_soft.py`.
 
-> **Status (2026-06-04 — readability refactor, no algorithm change):**
+> **[HISTORICAL] Status (2026-06-04 — readability refactor, no algorithm change):**
 > **Avg 1.1500 — all 17 VALID / 0 overlaps, 3300.10s.** Pure code-simplification
 > pass, validated non-degrading via `--all`. No move-generation, scoring, or RNG
 > logic was touched, so the 1.1500 is a favorable full-budget run within normal
@@ -1142,7 +1217,7 @@ Target: beat RePlAce avg of 1.4578.
 > not a bit-identity oracle — non-degradation was confirmed at the `--all`
 > aggregate instead.
 >
-> **Status (2026-05-31 — full-stack `--all` incl. HS3 hard-soft 3-cycle + 3-pin routing JIT):**
+> **[HISTORICAL] Status (2026-05-31 — full-stack `--all` incl. HS3 hard-soft 3-cycle + 3-pin routing JIT):**
 > **Avg 1.1963 — beats RePlAce (1.4578) by 0.262 (−17.9%), and beats the UT
 > Austin DREAMPlace leaderboard (1.4076) by 0.211 (−15.0%).** All 17 VALID /
 > 0 overlaps. **11/17 wins** vs 1.1993 baseline. Cumulative Δ −0.0504,
@@ -1181,7 +1256,7 @@ Target: beat RePlAce avg of 1.4578.
 > benchmarks.
 >
 > Prior milestones (stacked):
-> **Status (2026-05-31 — full-stack `--all` incl. HXS+R6+WL-prefilter+shared-scorer+numba-JIT):**
+> **[HISTORICAL] Status (2026-05-31 — full-stack `--all` incl. HXS+R6+WL-prefilter+shared-scorer+numba-JIT):**
 > **Avg 1.1993 — beats RePlAce (1.4578) by 0.259 (−17.7%), and beats the UT
 > Austin DREAMPlace leaderboard (1.4076) by 0.208 (−14.8%).** All 17 VALID /
 > 0 overlaps. **14/17 wins** vs 1.2092 baseline (only ibm07 +0.004, ibm15
@@ -1238,7 +1313,7 @@ Target: beat RePlAce avg of 1.4578.
 > −49s/bench freed.
 >
 > Prior milestones (stacked):
-> **Status (2026-05-30 — full-stack `--all` incl. A4+A5+adaptive R2/skip-empty):**
+> **[HISTORICAL] Status (2026-05-30 — full-stack `--all` incl. A4+A5+adaptive R2/skip-empty):**
 > **Avg 1.2092 — beats RePlAce (1.4578) by 0.249 (−17.1%), and beats the UT
 > Austin DREAMPlace leaderboard (1.4076) by 0.198 (−14.1%).** All 17 VALID /
 > 0 overlaps. **15/17 wins** vs 1.2195 baseline (only ibm04 +0.0017 and ibm18
@@ -1274,7 +1349,7 @@ Target: beat RePlAce avg of 1.4578.
 > Total runtime 2716s (clean, no host suspend, well under 3600s hard cap).
 >
 > Prior milestones (stacked):
-> **Status (2026-05-30 — full-stack `--all` incl. H5+A1b+A1c+A1×2+Phase9-parallel):**
+> **[HISTORICAL] Status (2026-05-30 — full-stack `--all` incl. H5+A1b+A1c+A1×2+Phase9-parallel):**
 > **Avg 1.2195 — beats RePlAce (1.4578) by 0.238 (−16.3%), and beats the UT
 > Austin DREAMPlace leaderboard (1.4076) by 0.188 (−13.4%).** All 17 VALID /
 > 0 overlaps. We **beat RePlAce on every benchmark** (ibm01 flipped from

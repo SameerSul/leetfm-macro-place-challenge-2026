@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
@@ -14,7 +15,6 @@ from placer.local_search.cluster_decompress import hierarchy_quality_metric
 from placer.local_search.fields import _congestion_field, coldest_window_anchor
 from placer.scoring.exact import _exact_proxy
 from placer.scoring.incremental import IncrementalScorer
-
 
 def _auto_cuda(value) -> bool:
     if isinstance(value, str) and value.lower() == "auto":
@@ -210,11 +210,23 @@ def _parallel_survivor_search(
     baseline_quality = hierarchy_quality_metric(hard_xy, clusters)
     quality_budget = max(0.0, float(const.HIER_SURVIVOR_QUALITY_BUDGET))
     min_gain = max(0.0, float(const.HIER_SURVIVOR_MIN_GAIN))
+    adaptive_passes = (
+        os.environ.get("HIER_ADAPTIVE_PASSES", "1").strip().lower()
+        not in {"0", "false", "no", "off", "disable"}
+    )
+    adaptive_plateau_gain = float(const.HIER_PLATEAU_PROXY_GAIN)
+    if adaptive_passes:
+        min_gain = max(min_gain, adaptive_plateau_gain)
     width = max(1, int(const.HIER_SURVIVOR_WIDTH))
     rounds = max(1, int(const.HIER_SURVIVOR_ROUNDS))
     exact_top_k = max(1, int(const.HIER_SURVIVOR_EXACT_TOP_K))
     cell = min(cw / max(int(benchmark.grid_cols), 1), ch / max(int(benchmark.grid_rows), 1))
     legal_order = _cluster_order_for_legalize(clusters, n)
+
+    def _adaptive_round_gain(before: float, after: float) -> bool:
+        if not adaptive_passes:
+            return True
+        return float(before) - float(after) > adaptive_plateau_gain
 
     survivors = [{"hard": hard_xy.copy(), "soft": soft_xy.copy(), "score": float(initial_score)}]
     best_h = hard_xy.copy()
@@ -225,6 +237,7 @@ def _parallel_survivor_search(
     for _round in range(rounds):
         if deadline is not None and time.monotonic() >= deadline:
             break
+        round_start = float(best_score)
         pool = []
         for state_id, state in enumerate(survivors):
             if deadline is not None and time.monotonic() >= deadline:
@@ -322,13 +335,16 @@ def _parallel_survivor_search(
             parent_score = float(survivors[int(cand["state_id"])]["score"])
             if score < parent_score - min_gain:
                 next_states.append({"hard": cand_h, "soft": cand["soft"].copy(), "score": score})
+                accepts += 1
+                _parallel_survivor_search.last_stats["accepts"] = int(accepts)
             if score < best_score - min_gain:
                 best_h = cand_h.copy()
                 best_s = cand["soft"].copy()
                 best_score = float(score)
-                accepts = 1
         next_states.sort(key=lambda s: float(s["score"]))
         survivors = next_states[:width]
+        if not _adaptive_round_gain(round_start, float(best_score)):
+            break
 
     _parallel_survivor_search.last_stats["accepts"] = int(accepts)
     return best_h, best_s, accepts, best_score

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from placer.local_search.fields import cold_connected_components
+
 
 def _avg_side(field, r0, r1, c0, c1, side: str, band: int) -> float:
     nr, nc = field.shape
@@ -31,6 +33,85 @@ def _expand_one_region(region, idx, left, right, down, up, hw, hh, cw, ch):
     region[idx, 3] = np.minimum(ch - hh[idx], region[idx, 3] + up)
 
 
+def _component_expansion(
+    components,
+    r0: int,
+    r1: int,
+    c0: int,
+    c1: int,
+    *,
+    cell_w: float,
+    cell_h: float,
+    max_dx: float,
+    max_dy: float,
+    side_floor: float,
+    side_band: int,
+    max_distance_cells: int,
+):
+    """Return side expansion toward the best nearby cold component."""
+    best = None
+    max_dist = max(0, int(max_distance_cells))
+    band = max(0, int(side_band))
+    for comp in components:
+        cr0 = int(comp["r0"])
+        cr1 = int(comp["r1"])
+        cc0 = int(comp["c0"])
+        cc1 = int(comp["c1"])
+        row_overlap = cr1 >= r0 - band and cr0 <= r1 + band
+        col_overlap = cc1 >= c0 - band and cc0 <= c1 + band
+        sides = []
+        if row_overlap and cc1 < c0:
+            dist = c0 - cc1 - 1
+            if dist <= max_dist:
+                left = min(float(max_dx), max(0.0, (c0 - cc0 + 1) * float(cell_w)))
+                sides.append((dist, "left", left))
+        if row_overlap and cc0 > c1:
+            dist = cc0 - c1 - 1
+            if dist <= max_dist:
+                right = min(float(max_dx), max(0.0, (cc1 - c1 + 1) * float(cell_w)))
+                sides.append((dist, "right", right))
+        if col_overlap and cr1 < r0:
+            dist = r0 - cr1 - 1
+            if dist <= max_dist:
+                down = min(float(max_dy), max(0.0, (r0 - cr0 + 1) * float(cell_h)))
+                sides.append((dist, "down", down))
+        if col_overlap and cr0 > r1:
+            dist = cr0 - r1 - 1
+            if dist <= max_dist:
+                up = min(float(max_dy), max(0.0, (cr1 - r1 + 1) * float(cell_h)))
+                sides.append((dist, "up", up))
+        if not sides:
+            continue
+        dist = min(row[0] for row in sides)
+        row = (
+            dist,
+            float(comp["avg"]),
+            -int(comp["size"]),
+            int(comp["r0"]),
+            int(comp["c0"]),
+            sides,
+        )
+        if best is None or row < best:
+            best = row
+    if best is None:
+        return None
+
+    left = float(side_floor) * float(max_dx)
+    right = float(side_floor) * float(max_dx)
+    down = float(side_floor) * float(max_dy)
+    up = float(side_floor) * float(max_dy)
+    for _dist, side, amount in best[5]:
+        if side == "left":
+            left = max(left, float(amount))
+        elif side == "right":
+            right = max(right, float(amount))
+        elif side == "down":
+            down = max(down, float(amount))
+        elif side == "up":
+            up = max(up, float(amount))
+    return left, right, down, up
+
+
 def expand_regions_by_congestion(
     hard_region,
     soft_region,
@@ -49,8 +130,25 @@ def expand_regions_by_congestion(
     hot_percentile: float = 60.0,
     max_expand_frac: float = 0.08,
     side_band: int = 3,
+    cluster_confidence=None,
+    weak_confidence_max: float = 0.0,
+    weak_hot_extra_frac: float = 0.0,
+    weak_hot_max_clusters: int = 0,
+    weak_hot_side_floor: float = 0.35,
+    weak_candidate_clusters=None,
+    component_expand: bool = False,
+    component_cold_percentile: float = 45.0,
+    component_min_cells: int = 4,
+    component_max_distance_cells: int = 4,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Expand hot cluster regions toward colder neighboring grid bands."""
+    expand_regions_by_congestion.last_stats = {
+        "expanded": 0,
+        "component_expanded": 0,
+        "weak_hot_reshaped": 0,
+        "weak_hot_clusters": [],
+        "weak_hot_candidate_clusters": [],
+    }
     if field is None or not clusters:
         return hard_region, soft_region, 0
     hard_region = hard_region.copy()
@@ -70,6 +168,29 @@ def expand_regions_by_congestion(
     max_dx = max_expand_frac * float(cw)
     max_dy = max_expand_frac * float(ch)
     expanded = 0
+    component_expanded = 0
+    cold_components = []
+    if component_expand:
+        cold_components = cold_connected_components(
+            field,
+            cold_percentile=float(component_cold_percentile),
+            min_cells=max(1, int(component_min_cells)),
+        )
+    weak_hot_clusters: set[int] = set()
+    weak_candidates = None
+    if weak_candidate_clusters is not None:
+        weak_candidates = {int(cid) for cid in weak_candidate_clusters}
+    if cluster_confidence and weak_hot_extra_frac > 0.0 and weak_hot_max_clusters > 0:
+        weak_rows = []
+        for cid, h in heat:
+            if weak_candidates is not None and int(cid) not in weak_candidates:
+                continue
+            conf = float(cluster_confidence.get(int(cid), 1.0))
+            if h < threshold or conf > float(weak_confidence_max):
+                continue
+            weak_rows.append((float(h), -conf, int(cid)))
+        weak_rows.sort(reverse=True)
+        weak_hot_clusters = {int(cid) for _h, _neg_conf, cid in weak_rows[:weak_hot_max_clusters]}
 
     bridge_by_cluster: "dict[int, list[int]]" = {}
     for s, cids in (bridge_softs or {}).items():
@@ -79,6 +200,10 @@ def expand_regions_by_congestion(
     for cid, h in heat:
         if h < threshold:
             continue
+        weak_hot = int(cid) in weak_hot_clusters
+        local_max_dx = max_dx + (float(weak_hot_extra_frac) * float(cw) if weak_hot else 0.0)
+        local_max_dy = max_dy + (float(weak_hot_extra_frac) * float(ch) if weak_hot else 0.0)
+        side_floor = float(weak_hot_side_floor) if weak_hot else 0.35
         mem = np.asarray(clusters[cid], dtype=np.int64)
         x0, x1 = float(hard_xy[mem, 0].min()), float(hard_xy[mem, 0].max())
         y0, y1 = float(hard_xy[mem, 1].min()), float(hard_xy[mem, 1].max())
@@ -92,14 +217,36 @@ def expand_regions_by_congestion(
             "down": _avg_side(field, r0, r1, c0, c1, "down", side_band),
             "up": _avg_side(field, r0, r1, c0, c1, "up", side_band),
         }
-        finite = [v for v in side_vals.values() if np.isfinite(v)]
-        if not finite:
-            continue
-        cold = min(finite)
-        left = max_dx if side_vals["left"] <= cold + 1e-12 else 0.35 * max_dx
-        right = max_dx if side_vals["right"] <= cold + 1e-12 else 0.35 * max_dx
-        down = max_dy if side_vals["down"] <= cold + 1e-12 else 0.35 * max_dy
-        up = max_dy if side_vals["up"] <= cold + 1e-12 else 0.35 * max_dy
+        component_sides = None
+        if cold_components:
+            component_sides = _component_expansion(
+                cold_components,
+                r0,
+                r1,
+                c0,
+                c1,
+                cell_w=cell_w,
+                cell_h=cell_h,
+                max_dx=local_max_dx,
+                max_dy=local_max_dy,
+                side_floor=side_floor,
+                side_band=side_band,
+                max_distance_cells=component_max_distance_cells,
+            )
+        if component_sides is not None:
+            left, right, down, up = component_sides
+            component_expanded += 1
+        else:
+            finite = [v for v in side_vals.values() if np.isfinite(v)]
+            if not finite:
+                continue
+            cold = min(finite)
+            left = local_max_dx if side_vals["left"] <= cold + 1e-12 else side_floor * local_max_dx
+            right = (
+                local_max_dx if side_vals["right"] <= cold + 1e-12 else side_floor * local_max_dx
+            )
+            down = local_max_dy if side_vals["down"] <= cold + 1e-12 else side_floor * local_max_dy
+            up = local_max_dy if side_vals["up"] <= cold + 1e-12 else side_floor * local_max_dy
 
         _expand_one_region(hard_region, mem, left, right, down, up, hw, hh, cw, ch)
         soft_pidx = list(np.asarray(cluster_softs.get(cid, []), dtype=np.int64))
@@ -117,4 +264,11 @@ def expand_regions_by_congestion(
                     soft_region, sidx, left, right, down, up, soft_hw, soft_hh, cw, ch
                 )
         expanded += 1
+    expand_regions_by_congestion.last_stats = {
+        "expanded": int(expanded),
+        "component_expanded": int(component_expanded),
+        "weak_hot_reshaped": int(len(weak_hot_clusters)),
+        "weak_hot_clusters": sorted(int(cid) for cid in weak_hot_clusters),
+        "weak_hot_candidate_clusters": sorted(int(cid) for cid in weak_candidates or []),
+    }
     return hard_region, soft_region, expanded
