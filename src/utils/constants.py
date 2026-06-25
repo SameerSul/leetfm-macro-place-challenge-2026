@@ -152,6 +152,9 @@ HIER_REGION_COMPONENT_EXPAND = True
 HIER_REGION_COMPONENT_COLD_PCT = 45.0
 HIER_REGION_COMPONENT_MIN_CELLS = 4
 HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS = 4
+# Bias component-aware region expansion toward cold components near hierarchy
+# graph edge corridors for graph-tension-enabled large designs.
+HIER_REGION_GRAPH_COMPONENT_WEIGHT = 0.0
 # Extra early region room for hot clusters with weak inferred hierarchy
 # confidence. This reshapes the hierarchy boxes before local relief instead of
 # waiting for post-survivor small-design release.
@@ -229,6 +232,31 @@ HIER_DECOMPRESS_LOCAL_COLD_PCT = 45.0
 HIER_DECOMPRESS_LOCAL_MIN_CELLS = 4
 HIER_DECOMPRESS_LOCAL_MAX_DISTANCE_CELLS = 4
 HIER_DECOMPRESS_LOCAL_SHIFT_FRAC = 0.20
+# Cheap decompression feasibility screen. Before legalizing/scoring a candidate,
+# estimate whether the proposed cluster bbox has enough unblocked local area.
+HIER_DECOMPRESS_FEASIBILITY_FILTER = True
+HIER_DECOMPRESS_FEASIBILITY_MIN_FREE_RATIO = 0.70
+HIER_DECOMPRESS_FEASIBILITY_MAX_BLOCKAGE = 0.75
+# Graph-guided decompression rescue. When a candidate improves graph-edge
+# geometry but fails cheap feasibility or hard legalization, try smaller and
+# slightly shifted variants before discarding it. Final acceptance still requires
+# hard legality, hierarchy quality, exact proxy gain, and final audit pass.
+HIER_DECOMPRESS_GRAPH_RESCUE = False
+HIER_DECOMPRESS_GRAPH_RESCUE_MAX_DELTA = 0.0
+HIER_DECOMPRESS_GRAPH_RESCUE_SHRINKS = (0.75, 0.55, 0.35)
+HIER_DECOMPRESS_GRAPH_RESCUE_SHIFT_MULTS = (1.35, 0.70)
+HIER_DECOMPRESS_GRAPH_RESCUE_MAX_VARIANTS = 5
+# Default-on survivor for legal, hierarchy-safe decompression near misses with
+# strongly favorable graph-edge delta. It exact-scores a tiny local hard/soft
+# micro-shift pool around moved cluster members; final commit still requires a
+# normal exact-proxy gain and audit pass.
+HIER_DECOMPRESS_GRAPH_SURVIVOR = True
+HIER_DECOMPRESS_GRAPH_SURVIVOR_MAX_DELTA = -0.01
+HIER_DECOMPRESS_GRAPH_SURVIVOR_PROXY_MISS = 0.0015
+HIER_DECOMPRESS_GRAPH_SURVIVOR_TOP_HARD = 8
+HIER_DECOMPRESS_GRAPH_SURVIVOR_TOP_SOFT = 8
+HIER_DECOMPRESS_GRAPH_SURVIVOR_RADIUS_CELLS = 1
+HIER_DECOMPRESS_GRAPH_SURVIVOR_MAX_TRIALS = 48
 # Advisory hierarchy-graph pressure ordering. These weights only reorder
 # existing candidates; exact proxy, hard legality, and hierarchy audit gates
 # still decide whether a candidate commits.
@@ -241,6 +269,12 @@ HIER_GRAPH_TENSION_HARD_MIN = 600
 HIER_GRAPH_TENSION_HARD_MAX = 1000000
 HIER_GRAPH_TENSION_CORRIDOR_SAMPLES = 9
 HIER_GRAPH_TENSION_TRACE_TOP = 6
+# Conservative graph-aware rejection prefilters. These only skip low graph-tension
+# candidates whose cheap local congestion estimate does not improve before exact
+# scoring/refinement; high-tension candidates still reach the normal exact gates.
+HIER_GRAPH_PREFILTER = False
+HIER_GRAPH_PREFILTER_LOW_TENSION = 0.05
+HIER_GRAPH_PREFILTER_MIN_RELIEF = 0.0
 # Region-bounded hard-hard, hard-soft, and soft-soft swap relief.
 # Number of region-bounded swap rounds to attempt.
 HIER_REGION_SWAP_ROUNDS = 2
@@ -349,6 +383,28 @@ HIER_COLDSPOT_LOCAL_RELOC_TARGETS = 8
 HIER_COLDSPOT_WHOLE_VARIANTS = 5
 # Number of distinct low-congestion anchors considered by whole-cluster variants.
 HIER_COLDSPOT_ANCHOR_VARIANTS = 3
+# Optional graph-aware coldspot anchor ranking. When positive, cold window
+# anchors are still cold-first, but ties and near-ties prefer locations closer
+# to the selected cluster's weighted graph-neighbor centroid.
+HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT = 0.0
+HIER_COLDSPOT_GRAPH_ANCHOR_CANDIDATE_MULT = 32
+# Default-off exact-candidate reordering by graph-edge delta. Positive deltas
+# stretch hierarchy graph edges or worsen graph corridors, so the opt-in ranker
+# adds a small proxy-equivalent penalty before the usual graph-score tie-break.
+HIER_COLDSPOT_GRAPH_DELTA_RANK = False
+HIER_COLDSPOT_GRAPH_DELTA_WEIGHT = 0.0
+# Default-off ego-net coldspot candidates. When enabled, the selected high
+# tension/hot cluster may co-move a small strongest-neighbor cluster set through
+# the same whole-candidate, local-refine, exact-proxy, and hierarchy gates.
+HIER_COLDSPOT_EGONET = False
+HIER_COLDSPOT_EGONET_MAX_NEIGHBORS = 1
+HIER_COLDSPOT_EGONET_MAX_HARD = 96
+HIER_COLDSPOT_EGONET_MAX_NEIGHBOR_HARD = 32
+HIER_COLDSPOT_EGONET_MIN_EDGE_WEIGHT = 0.0
+HIER_COLDSPOT_EGONET_CANDIDATES = 2
+HIER_COLDSPOT_EGONET_SOFT_MODE = "none"
+HIER_COLDSPOT_EGONET_LOW_DISP_BLEND = 0.75
+HIER_COLDSPOT_EGONET_MIN_GAIN = 0.001
 # Compacting scale used by shape-preserving whole-cluster layouts.
 HIER_COLDSPOT_COMPACT_SPREAD = 0.72
 # Blend toward the current cluster centroid for lower-displacement candidates.

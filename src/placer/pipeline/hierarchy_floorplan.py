@@ -552,6 +552,20 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             0,
             int(getattr(const, "HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS", 4)),
         ),
+        graph_edges=hierarchy.edges if graph_tension_enabled else None,
+        graph_component_weight=(
+            max(
+                0.0,
+                float(
+                    os.environ.get(
+                        "HIER_REGION_GRAPH_COMPONENT_WEIGHT",
+                        str(getattr(const, "HIER_REGION_GRAPH_COMPONENT_WEIGHT", 0.0)),
+                    )
+                ),
+            )
+            if graph_tension_enabled
+            else 0.0
+        ),
     )
     region_expand_stats = getattr(expand_regions_by_congestion, "last_stats", {})
     if n_expanded:
@@ -562,6 +576,9 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             suffix_parts.append(f"weak_hot={weak_hot_reshaped}")
         if component_expanded:
             suffix_parts.append(f"component={component_expanded}")
+        graph_component_expanded = int(region_expand_stats.get("graph_component_expanded", 0))
+        if graph_component_expanded:
+            suffix_parts.append(f"graph_component={graph_component_expanded}")
         suffix = f", {', '.join(suffix_parts)}" if suffix_parts else ""
         _log(f"  [hier] congestion-expanded regions: {n_expanded} clusters{suffix}")
     log_gnn_event(
@@ -569,6 +586,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         benchmark=benchmark.name,
         expanded=int(n_expanded),
         component_expanded=int(region_expand_stats.get("component_expanded", 0)),
+        graph_component_expanded=int(region_expand_stats.get("graph_component_expanded", 0)),
         weak_hot_reshaped=int(region_expand_stats.get("weak_hot_reshaped", 0)),
         weak_hot_clusters=list(region_expand_stats.get("weak_hot_clusters", [])),
         weak_hot_candidate_clusters=list(
@@ -920,6 +938,9 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 ),
                 cluster_priority=decomp_priority,
                 cluster_priority_weight=graph_tension_decomp_weight,
+                graph_edges=hierarchy.edges,
+                seed_hard_xy=seed_hard_for_tension,
+                graph_confidence=hierarchy.cluster_confidence,
             )
             weak_decomp = bool(trial_acc) and float(trial_score) > decomp_before - decomp_min_gain
             if not _hard_valid(trial_h) or weak_decomp or int(trial_acc) <= 0:
@@ -1916,6 +1937,9 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         hier_micro_shift_min_gain=float(hier_micro_shift_min_gain),
         graph_tension_fn=_graph_tension,
         graph_tension_weight=graph_tension_coldspot_weight,
+        graph_edges=hierarchy.edges,
+        seed_hard_xy=seed_hard_for_tension,
+        graph_confidence=hierarchy.cluster_confidence,
     )
     _maybe_update_audit_checkpoint(legal, s_pos, cur_proxy)
 

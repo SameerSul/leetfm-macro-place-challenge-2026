@@ -18,6 +18,7 @@ from placer.local_search.gnn_ranker import (
     rank_coldspot_kick_candidates,
 )
 from placer.local_search.gnn_trace import log_gnn_event
+from placer.local_search.graph_tension import candidate_graph_edge_delta
 from placer.local_search.lsmc_explore import _coldspot_cluster_kick_candidates
 from placer.local_search.relocation import (
     _soft_relocation_moves,
@@ -76,6 +77,9 @@ def run_coldspot_tightening(
     hier_micro_shift_min_gain: float,
     graph_tension_fn: Callable[[np.ndarray, np.ndarray | None], dict[int, float]] | None = None,
     graph_tension_weight: float = 0.0,
+    graph_edges=None,
+    seed_hard_xy: np.ndarray | None = None,
+    graph_confidence: dict[int, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """Run coldspot tightening and return the post-coldspot placement."""
     _additive_spare = lambda deadline: deadline is None or time.monotonic() + float(
@@ -117,6 +121,115 @@ def run_coldspot_tightening(
         ck_gnn_kicks = max(ck_gnn_kicks, max(1, int(const.HIER_COLDSPOT_WHOLE_VARIANTS)))
     ck_gnn_top_k = max(1, int(os.environ.get("HIER_GNN_COLDSPOT_TOP_K", "1") or "1"))
     ck_skip_micro = ck_gnn_select and gnn_coldspot_skip_micro()
+
+    def _env_bool(name: str, default: bool) -> bool:
+        raw = os.environ.get(name)
+        if raw is None:
+            return bool(default)
+        return raw.strip() not in {"0", "false", "False", "no", "NO", "off", ""}
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return int(default)
+        return int(raw)
+
+    def _env_float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return float(default)
+        return float(raw)
+
+    ck_graph_anchor_weight = max(
+        0.0,
+        _env_float(
+            "HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT",
+            float(getattr(const, "HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT", 0.0)),
+        ),
+    )
+    ck_prefilter_enabled = _env_bool(
+        "HIER_GRAPH_PREFILTER",
+        bool(getattr(const, "HIER_GRAPH_PREFILTER", True)),
+    )
+    ck_prefilter_low_tension = max(
+        0.0,
+        _env_float(
+            "HIER_GRAPH_PREFILTER_LOW_TENSION",
+            float(getattr(const, "HIER_GRAPH_PREFILTER_LOW_TENSION", 0.05)),
+        ),
+    )
+    ck_prefilter_min_relief = max(
+        0.0,
+        _env_float(
+            "HIER_GRAPH_PREFILTER_MIN_RELIEF",
+            float(getattr(const, "HIER_GRAPH_PREFILTER_MIN_RELIEF", 0.0)),
+        ),
+    )
+    ck_graph_delta_rank = _env_bool(
+        "HIER_COLDSPOT_GRAPH_DELTA_RANK",
+        bool(getattr(const, "HIER_COLDSPOT_GRAPH_DELTA_RANK", False)),
+    )
+    ck_graph_delta_rank_weight = (
+        max(
+            0.0,
+            _env_float(
+                "HIER_COLDSPOT_GRAPH_DELTA_WEIGHT",
+                float(getattr(const, "HIER_COLDSPOT_GRAPH_DELTA_WEIGHT", 0.0)),
+            ),
+        )
+        if ck_graph_delta_rank
+        else 0.0
+    )
+
+    ck_egonet_enabled = _env_bool(
+        "HIER_COLDSPOT_EGONET",
+        bool(getattr(const, "HIER_COLDSPOT_EGONET", False)),
+    )
+    ck_egonet_max_neighbors = max(
+        0,
+        _env_int(
+            "HIER_COLDSPOT_EGONET_MAX_NEIGHBORS",
+            int(getattr(const, "HIER_COLDSPOT_EGONET_MAX_NEIGHBORS", 1)),
+        ),
+    )
+    ck_egonet_max_hard = max(
+        2,
+        _env_int(
+            "HIER_COLDSPOT_EGONET_MAX_HARD",
+            int(getattr(const, "HIER_COLDSPOT_EGONET_MAX_HARD", 96)),
+        ),
+    )
+    ck_egonet_max_neighbor_hard = max(
+        1,
+        _env_int(
+            "HIER_COLDSPOT_EGONET_MAX_NEIGHBOR_HARD",
+            int(getattr(const, "HIER_COLDSPOT_EGONET_MAX_NEIGHBOR_HARD", 32)),
+        ),
+    )
+    ck_egonet_min_edge_weight = max(
+        0.0,
+        float(
+            os.environ.get(
+                "HIER_COLDSPOT_EGONET_MIN_EDGE_WEIGHT",
+                str(getattr(const, "HIER_COLDSPOT_EGONET_MIN_EDGE_WEIGHT", 0.0)),
+            )
+        ),
+    )
+    ck_egonet_soft_mode = os.environ.get(
+        "HIER_COLDSPOT_EGONET_SOFT_MODE",
+        str(getattr(const, "HIER_COLDSPOT_EGONET_SOFT_MODE", "none")),
+    ).strip().lower()
+    if ck_egonet_soft_mode not in {"anchor", "all", "none"}:
+        ck_egonet_soft_mode = "none"
+    ck_egonet_min_gain = max(
+        0.0,
+        float(
+            os.environ.get(
+                "HIER_COLDSPOT_EGONET_MIN_GAIN",
+                str(getattr(const, "HIER_COLDSPOT_EGONET_MIN_GAIN", 0.001)),
+            )
+        ),
+    )
 
     def _adaptive_gain(
         before: float,
@@ -251,7 +364,11 @@ def run_coldspot_tightening(
         )
 
     def _rank_exact_coldspot_candidates(candidates: list[dict], current_proxy: float) -> list[dict]:
-        return rank_exact_coldspot_candidates(candidates, current_proxy)
+        return rank_exact_coldspot_candidates(
+            candidates,
+            current_proxy,
+            graph_delta_weight=ck_graph_delta_rank_weight,
+        )
 
     def _hot_cluster_fallback_candidates(
         field: np.ndarray | None,
@@ -302,28 +419,186 @@ def run_coldspot_tightening(
         )
 
     coldspot_candidate_softs = csofts
+    bridge_by_cluster: dict[int, list[int]] = {}
     if bridge_softs:
-        bridge_by_cluster: dict[int, list[int]] = {}
         for soft_id, soft_cids in bridge_softs.items():
             sid = int(soft_id)
             if sid < 0 or sid >= n_soft or not bool(soft_mov[sid]):
                 continue
             for cid_for_soft in np.asarray(soft_cids, dtype=np.int64):
                 bridge_by_cluster.setdefault(int(cid_for_soft), []).append(n + sid)
-        if bridge_by_cluster:
-            merged_softs: dict[int, np.ndarray] = {}
-            for cid in clusters.keys():
-                parts = []
-                owned = np.asarray(csofts.get(int(cid), []), dtype=np.int64)
-                if owned.size:
-                    parts.append(owned)
-                bridge = np.asarray(bridge_by_cluster.get(int(cid), []), dtype=np.int64)
-                if bridge.size:
-                    parts.append(bridge)
-                if parts:
-                    merged_softs[int(cid)] = np.unique(np.concatenate(parts)).astype(np.int64)
-            if merged_softs:
-                coldspot_candidate_softs = merged_softs
+    if bridge_by_cluster:
+        merged_softs: dict[int, np.ndarray] = {}
+        for cid in clusters.keys():
+            parts = []
+            owned = np.asarray(csofts.get(int(cid), []), dtype=np.int64)
+            if owned.size:
+                parts.append(owned)
+            bridge = np.asarray(bridge_by_cluster.get(int(cid), []), dtype=np.int64)
+            if bridge.size:
+                parts.append(bridge)
+            if parts:
+                merged_softs[int(cid)] = np.unique(np.concatenate(parts)).astype(np.int64)
+        if merged_softs:
+            coldspot_candidate_softs = merged_softs
+
+    graph_edge_neighbors: dict[int, list[tuple[float, int]]] = {}
+    if graph_edges is not None:
+        for edge in graph_edges:
+            a = int(getattr(edge, "src", -1))
+            b = int(getattr(edge, "dst", -1))
+            if a not in clusters or b not in clusters:
+                continue
+            weight = max(0.0, float(getattr(edge, "weight", 0.0)))
+            graph_edge_neighbors.setdefault(a, []).append((weight, b))
+            graph_edge_neighbors.setdefault(b, []).append((weight, a))
+        for cid in list(graph_edge_neighbors):
+            graph_edge_neighbors[cid].sort(key=lambda row: (-row[0], row[1]))
+
+    def _graph_anchor_targets(
+        hard_xy: np.ndarray,
+        tension_by_id: dict[int, float],
+    ) -> tuple[dict[int, tuple[float, float]], dict[int, float]]:
+        if ck_graph_anchor_weight <= 0.0 or not graph_edge_neighbors:
+            return {}, {}
+        centroids: dict[int, np.ndarray] = {}
+        for cid, raw_members in clusters.items():
+            members = np.asarray(raw_members, dtype=np.int64)
+            members = members[(members >= 0) & (members < hard_xy.shape[0])]
+            if members.size:
+                centroids[int(cid)] = np.asarray(hard_xy[members].mean(axis=0), dtype=np.float64)
+        targets: dict[int, tuple[float, float]] = {}
+        strengths: dict[int, float] = {}
+        for cid, neighbors in graph_edge_neighbors.items():
+            if cid not in centroids:
+                continue
+            weighted = np.zeros(2, dtype=np.float64)
+            total = 0.0
+            for weight, nbr in neighbors:
+                if nbr not in centroids:
+                    continue
+                w = max(0.0, float(weight))
+                if w <= 0.0:
+                    continue
+                weighted += w * centroids[nbr]
+                total += w
+            strength = max(0.0, float(tension_by_id.get(int(cid), 0.0)))
+            if total > 0.0 and strength > 0.0:
+                target = weighted / total
+                targets[int(cid)] = (float(target[0]), float(target[1]))
+                strengths[int(cid)] = float(strength)
+        return targets, strengths
+
+    def _prefilter_coldspot_trace(trace: dict) -> str | None:
+        if not ck_prefilter_enabled:
+            return None
+        tension = float(trace.get("graph_tension", 0.0) or 0.0)
+        if tension > ck_prefilter_low_tension:
+            return None
+        source = float(trace.get("source_field", trace.get("cluster_heat", 0.0)) or 0.0)
+        target = float(trace.get("target_field", source) or source)
+        relief = source - target
+        trace["local_relief"] = float(relief)
+        if relief <= ck_prefilter_min_relief:
+            return "prefilter_no_local_relief"
+        return None
+
+    def _annotate_graph_delta(before_h: np.ndarray, after_h: np.ndarray, trace: dict) -> None:
+        if graph_edges is None:
+            return
+        raw_cluster = int(trace.get("egonet_anchor_cluster", trace.get("cluster", -1)))
+        affected = trace.get("egonet_clusters")
+        if affected is None:
+            affected = [raw_cluster] if raw_cluster >= 0 else None
+        field = _congestion_field(ck_scorer, nr, nc)
+        stats = candidate_graph_edge_delta(
+            before_h,
+            after_h,
+            clusters,
+            graph_edges,
+            cw=cw,
+            ch=ch,
+            field=field,
+            seed_hard_xy=seed_hard_xy,
+            confidence=graph_confidence,
+            affected_clusters=affected,
+            samples=max(2, int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9))),
+        )
+        trace.update(stats)
+
+    def _egonet_candidate_view(
+        preferred_ids,
+    ) -> tuple[dict, dict, list[int], dict[int, dict]]:
+        if not ck_egonet_enabled:
+            return clusters, coldspot_candidate_softs, list(preferred_ids), {}
+        if not graph_edge_neighbors:
+            return clusters, coldspot_candidate_softs, list(preferred_ids), {}
+        if ck_egonet_max_neighbors <= 0:
+            return clusters, coldspot_candidate_softs, list(preferred_ids), {}
+        view_clusters = {int(cid): np.asarray(mem, dtype=np.int64) for cid, mem in clusters.items()}
+        view_softs = {
+            int(cid): np.asarray(sidx, dtype=np.int64)
+            for cid, sidx in coldspot_candidate_softs.items()
+        }
+        trace_by_cluster: dict[int, dict] = {}
+        preferred_out: list[int] = []
+        for raw_cid in preferred_ids:
+            cid = int(raw_cid)
+            if cid not in clusters:
+                continue
+            chosen = [cid]
+            neighbor_rows = []
+            for weight, nbr in graph_edge_neighbors.get(cid, []):
+                if weight < ck_egonet_min_edge_weight:
+                    continue
+                nbr_size = int(np.asarray(clusters[int(nbr)], dtype=np.int64).size)
+                if nbr_size > ck_egonet_max_neighbor_hard:
+                    continue
+                size_penalty = max(1.0, float(nbr_size) ** 0.5)
+                neighbor_rows.append((-(float(weight) / size_penalty), -float(weight), nbr_size, int(nbr)))
+            for _, _, nbr_size, nbr in sorted(neighbor_rows):
+                candidate = chosen + [int(nbr)]
+                total_hard = sum(int(np.asarray(clusters[c], dtype=np.int64).size) for c in candidate)
+                if total_hard > ck_egonet_max_hard:
+                    continue
+                chosen.append(int(nbr))
+                if len(chosen) - 1 >= ck_egonet_max_neighbors:
+                    break
+            if len(chosen) <= 1:
+                preferred_out.append(cid)
+                continue
+            synth_id = -100000 - cid
+            hard_parts = [np.asarray(clusters[c], dtype=np.int64) for c in chosen]
+            if ck_egonet_soft_mode == "all":
+                soft_cluster_ids = chosen
+            elif ck_egonet_soft_mode == "none":
+                soft_cluster_ids = []
+            else:
+                soft_cluster_ids = [cid]
+            soft_parts = []
+            for soft_cid in soft_cluster_ids:
+                soft_arr = np.asarray(coldspot_candidate_softs.get(soft_cid, []), dtype=np.int64)
+                if soft_arr.size:
+                    soft_parts.append(soft_arr)
+            view_clusters[synth_id] = np.unique(np.concatenate(hard_parts)).astype(np.int64)
+            if soft_parts:
+                view_softs[synth_id] = np.unique(np.concatenate(soft_parts)).astype(np.int64)
+            trace_by_cluster[synth_id] = {
+                "egonet_candidate": True,
+                "egonet_anchor_cluster": int(cid),
+                "egonet_clusters": [int(c) for c in chosen],
+                "egonet_neighbor_count": int(len(chosen) - 1),
+                "egonet_member_count": int(view_clusters[synth_id].size),
+                "egonet_neighbor_hard_count": int(view_clusters[synth_id].size - hard_parts[0].size),
+                "egonet_soft_mode": ck_egonet_soft_mode,
+            }
+            preferred_out.append(synth_id)
+            preferred_out.append(cid)
+        for cid in preferred_ids:
+            cid_i = int(cid)
+            if cid_i not in preferred_out:
+                preferred_out.append(cid_i)
+        return view_clusters, view_softs, preferred_out, trace_by_cluster
 
     cur_h, cur_s = legal.copy(), s_pos.copy()
     base_proxy = float(_exact_proxy(_full(cur_h, cur_s), benchmark, plc))
@@ -438,6 +713,11 @@ def run_coldspot_tightening(
             ck_run_fallbacks = False
             break
 
+        candidate_clusters, candidate_softs, preferred_ids, egonet_trace = _egonet_candidate_view(
+            opportunity["cluster_ids"]
+        )
+        tension_by_id = opportunity.get("cluster_tension_by_id", {}) or {}
+        graph_anchor_targets, graph_anchor_strength = _graph_anchor_targets(cur_h, tension_by_id)
         generated = _coldspot_cluster_kick_candidates(
             cur_h,
             sizes[:n],
@@ -447,8 +727,8 @@ def run_coldspot_tightening(
             ch,
             movable[:n],
             n,
-            clusters,
-            coldspot_candidate_softs,
+            candidate_clusters,
+            candidate_softs,
             cur_s,
             soft_hw,
             soft_hh,
@@ -462,12 +742,21 @@ def run_coldspot_tightening(
             kick_count=ck_gnn_kicks,
             plc=plc,
             benchmark_name=benchmark.name,
-            preferred_cluster_ids=opportunity["cluster_ids"],
+            max_size=(
+                max(64, int(ck_egonet_max_hard))
+                if ck_egonet_enabled
+                else 64
+            ),
+            preferred_cluster_ids=preferred_ids,
             max_clusters=(
                 1
                 if (ck_gnn_select or ck_oracle)
                 else min(ck_opportunity_top_clusters, len(opportunity["cluster_ids"]))
             ),
+            egonet_trace_by_cluster=egonet_trace,
+            graph_anchor_targets_by_cluster=graph_anchor_targets,
+            graph_anchor_strength_by_cluster=graph_anchor_strength,
+            graph_anchor_weight=ck_graph_anchor_weight,
         )
         if not generated:
             log_gnn_event(
@@ -538,7 +827,34 @@ def run_coldspot_tightening(
         ):
             cand_trace = dict(cand_trace)
             cand_trace["candidate_rank"] = int(rank)
+            tension_by_id = opportunity.get("cluster_tension_by_id", {}) or {}
+            tension_cluster = int(
+                cand_trace.get("egonet_anchor_cluster", cand_trace.get("cluster", -1))
+            )
+            cand_trace.setdefault("graph_tension", float(tension_by_id.get(tension_cluster, 0.0)))
+            _annotate_graph_delta(cur_h, cand_h, cand_trace)
             cand_soft = cand_s if cand_s is not None else cur_s
+            prefilter_reason = _prefilter_coldspot_trace(cand_trace)
+            if prefilter_reason is not None:
+                candidate_records.append(
+                    {
+                        "candidate_id": ck_candidate_id,
+                        "candidate_pool_id": pool_id,
+                        "candidate_rank": int(rank),
+                        "hard": cand_h,
+                        "soft": cand_soft,
+                        "trace": cand_trace,
+                        "is_noop": False,
+                        "prefiltered": True,
+                        "old_proxy": float(cur_proxy),
+                        "hierarchy_quality_before": float(cur_quality),
+                        "accepted": False,
+                        "committed": False,
+                        "rejection_reason": prefilter_reason,
+                    }
+                )
+                ck_candidate_id += 1
+                continue
             refined_h, refined_s, refined_proxy, refine_stats = _refine_coldspot_candidate(
                 cand_h,
                 cand_soft,
@@ -561,10 +877,11 @@ def run_coldspot_tightening(
             )
             ck_candidate_id += 1
 
+        rankable_records = [cand for cand in candidate_records if not cand.get("prefiltered", False)]
         ranked_records = (
-            rank_coldspot_kick_candidates(candidate_records, benchmark_name=benchmark.name)
+            rank_coldspot_kick_candidates(rankable_records, benchmark_name=benchmark.name)
             if ck_gnn_select
-            else _rank_exact_coldspot_candidates(candidate_records, cur_proxy)
+            else _rank_exact_coldspot_candidates(rankable_records, cur_proxy)
         )
         if ck_gnn_select:
             policy_records = ranked_records[: max(1, min(ck_gnn_top_k, len(ranked_records)))]
@@ -603,23 +920,27 @@ def run_coldspot_tightening(
             cand_s = cand["soft"]
             cand_proxy = float(cand.get("candidate_proxy_precomputed", cur_proxy))
             cand_quality = hierarchy_quality_metric_fn(cand_h, clusters)
+            cand_min_gain = float(ck_min_gain)
+            if bool(cand.get("trace", {}).get("egonet_candidate", False)):
+                cand_min_gain = max(cand_min_gain, float(ck_egonet_min_gain))
             accepted = (
                 cand_quality <= cur_quality + ck_quality_budget
                 and cand_proxy <= cur_proxy + ck_budget
                 and cand_proxy <= base_proxy + ck_total
-                and cand_proxy < cur_proxy - ck_min_gain
+                and cand_proxy < cur_proxy - cand_min_gain
             )
             if cand_quality > cur_quality + ck_quality_budget:
                 reason = "hierarchy_quality_failed"
             elif cand_proxy > cur_proxy + ck_budget or cand_proxy > base_proxy + ck_total:
                 reason = "proxy_budget_failed"
-            elif cand_proxy >= cur_proxy - ck_min_gain:
+            elif cand_proxy >= cur_proxy - cand_min_gain:
                 reason = "exact_proxy_failed"
             else:
                 reason = "accepted"
 
             cand["candidate_proxy"] = float(cand_proxy)
             cand["proxy_delta"] = float(cand_proxy) - float(cur_proxy)
+            cand["required_min_gain"] = float(cand_min_gain)
             cand["hierarchy_quality_after"] = float(cand_quality)
             cand["hierarchy_quality_delta"] = float(cand_quality) - float(cur_quality)
             cand["accepted"] = bool(accepted)
@@ -677,12 +998,14 @@ def run_coldspot_tightening(
                 old_proxy=float(cur_proxy),
                 candidate_proxy=float(candidate_proxy_val),
                 proxy_delta=cand.get("proxy_delta"),
+                required_min_gain=cand.get("required_min_gain"),
                 hierarchy_quality_before=float(cur_quality),
                 hierarchy_quality_after=cand.get("hierarchy_quality_after"),
                 hierarchy_quality_delta=cand.get("hierarchy_quality_delta"),
                 accepted=bool(cand.get("accepted", False)),
                 committed=bool(cand.get("committed", False)),
                 rejection_reason=cand.get("rejection_reason"),
+                prefiltered=bool(cand.get("prefiltered", False)),
                 **(cand.get("trace", {})),
             )
 

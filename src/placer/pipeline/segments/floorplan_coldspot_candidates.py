@@ -33,15 +33,25 @@ def graph_candidate_score(cand: dict) -> float:
 def rank_exact_coldspot_candidates(
     candidates: list[dict],
     cur_proxy: float,
+    *,
+    graph_delta_weight: float = 0.0,
 ) -> list[dict]:
     """Rank candidates by exact pre-evaluated proxy plus graph score tie-break."""
+    weight = max(0.0, float(graph_delta_weight))
     scored = []
     for idx, cand in enumerate(candidates):
         proxy = float(cand.get("candidate_proxy_precomputed", cur_proxy))
         graph_score = graph_candidate_score(cand)
-        scored.append((proxy, -graph_score, idx, cand))
-    scored.sort(key=lambda row: (row[0], row[1], row[2]))
-    return [cand for _proxy, _graph, _idx, cand in scored]
+        trace = cand.get("trace", {})
+        graph_delta = float(trace.get("graph_candidate_delta", 0.0) or 0.0)
+        graph_penalty = weight * max(0.0, graph_delta)
+        if weight > 0.0:
+            trace["graph_delta_rank_weight"] = float(weight)
+            trace["graph_delta_rank_penalty"] = float(graph_penalty)
+            trace["graph_delta_rank_proxy"] = float(proxy + graph_penalty)
+        scored.append((proxy + graph_penalty, proxy, -graph_score, idx, cand))
+    scored.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
+    return [cand for _adj_proxy, _proxy, _graph, _idx, cand in scored]
 
 
 def hot_cluster_fallback_candidates(

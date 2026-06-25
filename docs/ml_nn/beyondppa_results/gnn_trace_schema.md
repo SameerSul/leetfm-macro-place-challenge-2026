@@ -150,6 +150,28 @@ Coldspot tightening candidate. Additional fields:
 - `member_area`
 - `cluster_heat`
 - `source_field`, `target_field`, `score`
+- `graph_tension`, when graph-tension ordering is active for the candidate's
+  source cluster
+- graph-edge delta fields: `edge_stretch_delta`, `corridor_congestion_delta`,
+  `weighted_edge_delta`, `graph_candidate_delta`, and `graph_delta_edges`
+- default-off graph-delta ranking fields: `graph_delta_rank_weight`,
+  `graph_delta_rank_penalty`, and `graph_delta_rank_proxy`
+- default-off prefilter fields: `prefiltered` and `local_relief`
+- decompression feasibility fields: `feasibility_rejected`,
+  `feasible_free_ratio`, `feasible_blockage_ratio`,
+  `feasible_required_area`, and `feasible_available_area`
+- default-off decompression graph-rescue fields: `graph_rescue_attempted`,
+  `graph_rescue_used`, `graph_rescue_attempts`, `graph_rescue_trigger`, and
+  `graph_rescue_trigger_delta`
+- decompression graph-survivor fields: `graph_survivor_attempted`,
+  `graph_survivor_used`, `graph_survivor_trials`, and
+  `graph_survivor_pre_score`
+- default-off graph-anchor fields: `graph_anchor_enabled`,
+  `graph_anchor_weight`, `graph_anchor_target_x`, `graph_anchor_target_y`, and
+  `graph_anchor_distance`
+- default-off ego-net fields: `egonet_candidate`, `egonet_anchor_cluster`,
+  `egonet_clusters`, `egonet_neighbor_count`, `egonet_member_count`,
+  `egonet_neighbor_hard_count`, `egonet_soft_mode`, and `required_min_gain`
 - `anchor_x`, `anchor_y`
 - whole-cluster variant fields such as `whole_variant`,
   `whole_anchor_rank`, `whole_anchor_field`, `whole_orientation`,

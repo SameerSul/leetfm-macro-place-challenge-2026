@@ -203,7 +203,7 @@ foreach inst [$block getInsts] {
     if {[$inst isBlock]} {
         set name [$inst getName]
         # Match the genblk pattern
-        if {[regexp {^(.+)\\.genblk1_(\d+)__i_ram\\.macro_mem_(\d+)$} $name -> prefix genblk_idx mem_idx]} {
+        if {[regexp {^(.+)\\.genblk1_(\\d+)__i_ram\\.macro_mem_(\\d+)$} $name -> prefix genblk_idx mem_idx]} {
             dict lappend _odb_groups $prefix [list $genblk_idx $mem_idx $name]
         }
     }

@@ -133,6 +133,7 @@ def coldspot_opportunity(
         "target_field": 0.0,
         "displacement_windows": 0.0,
         "cluster_ids": [],
+        "cluster_tension_by_id": {},
     }
     rows = []
     priority = cluster_priority or {}
@@ -198,6 +199,9 @@ def coldspot_opportunity(
         and float(row["score"]) >= ck_opportunity_min_score
     ]
     best["cluster_ids"] = [int(row["cluster"]) for row in usable[:ck_opportunity_top_clusters]]
+    best["cluster_tension_by_id"] = {
+        int(row["cluster"]): float(row.get("graph_tension", 0.0)) for row in rows
+    }
     best["run"] = bool(
         int(best["eligible_clusters"]) > 0
         and float(best["field_gap"]) >= ck_min_field_gap
