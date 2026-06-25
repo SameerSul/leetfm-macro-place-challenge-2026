@@ -17,13 +17,23 @@ always routes through `_hierarchy_floorplan()` in
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
-Current accepted hierarchy result: `uv run evaluate src/main.py --all` =
-**AVG 1.1714**, 17/17 VALID, 0 overlaps, 961.79s. The accepted post-Stage-6
-cleanup adds swap-round micro-shift replay, stronger opportunity gates for
-expensive decompression/coldspot work, and component-aware scheduling telemetry
-for late cleanup. The flow also now uses adaptive per-pass continuation by exact
-proxy gain using `HIER_PLATEAU_PROXY_GAIN` (currently `0.00005`) and skips to the
-next stage when the last pass gain is too small.
+Current accepted hierarchy-audit result: `uv run evaluate src/main.py --all` =
+**AVG 1.1999**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
+1147.08s. The current production cleanup adds swap-round micro-shift replay,
+stronger opportunity gates for expensive decompression/coldspot work,
+component-aware scheduling telemetry, adaptive per-pass continuation by exact
+proxy gain, post-survivor small-design polish, no-release low-net small-design
+soft/SS breadth, a default-on medium/large soft-continuation hook gated by
+structural shape and prior strong-soft exact gain, component-aware region
+expansion toward contiguous cold congestion components, local-component-biased
+cluster decompression, and strict final hierarchy-quality audit rollback. The
+pipeline tracks a separate audit-safe checkpoint, independent of proxy-best
+state, and small-design polish can only promote audit-passing polished states.
+The previous **AVG 1.1627** sweep remains a proxy reference, but its final
+hierarchy audit was report-only and failed on several designs. The weak/hot
+early region-reshape hook remains default-off and is candidate-gated when
+enabled. `HIER_PLATEAU_PROXY_GAIN` is currently `0.00005`, and stages skip
+forward when the last pass gain is too small.
 Early strong-soft repair, early swap-lite, early survivor search, and
 ArchGen-style seed top-k repair were tested and rejected/removed because they
 regressed final proxy or consumed budget needed by late cleanup.

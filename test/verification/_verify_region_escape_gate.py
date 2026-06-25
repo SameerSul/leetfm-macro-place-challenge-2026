@@ -12,12 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from macro_place.loader import load_benchmark_from_dir  # noqa: E402
-from placer.local_search.clusters import (  # noqa: E402
-    compute_region_bbox,
-    compute_soft_region_bbox,
-    derive_cluster_softs,
-    derive_hard_clusters,
-)
+from placer.local_search.clusters import hier_region_density, hier_region_singleton  # noqa: E402
+from placer.local_search.hierarchy_model import HierarchyModel  # noqa: E402
 from placer.local_search.region_rules import (  # noqa: E402
     accepts_region_score,
     any_outside_region,
@@ -42,12 +38,19 @@ def run_one(bench_name):
     soft_hh = sizes[n : n + ns, 1] / 2.0
     cw, ch = float(bench.canvas_width), float(bench.canvas_height)
 
-    labels, clusters = derive_hard_clusters(plc, n, n_soft=ns)
-    csofts = derive_cluster_softs(plc, n, ns, labels)
-    hard_region = compute_region_bbox(
-        hard, sizes[:n], hw, hh, cw, ch, n, labels, clusters, singleton_window=0.05
+    hierarchy = HierarchyModel.build(plc, n, ns, hard_sizes=sizes[:n])
+    clusters = hierarchy.clusters
+    csofts = hierarchy.cluster_softs
+    hard_region = hierarchy.hard_regions(
+        hard,
+        sizes[:n],
+        hw,
+        hh,
+        cw,
+        ch,
+        n,
     )
-    soft_region = compute_soft_region_bbox(
+    soft_region = hierarchy.soft_regions(
         hard,
         soft,
         sizes[:n],
@@ -58,9 +61,6 @@ def run_one(bench_name):
         cw,
         ch,
         n,
-        clusters,
-        csofts,
-        singleton_window=0.05,
     )
 
     assert np.all([point_in_region(hard_region, i, hard[i, 0], hard[i, 1]) for i in range(n)])
@@ -76,7 +76,8 @@ def run_one(bench_name):
 
     print(
         f"{bench_name}: region boxes OK hard={n} soft={ns} "
-        f"clusters={len(clusters)} assigned_softs={sum(len(v) for v in csofts.values())}"
+        f"clusters={len(clusters)} assigned_softs={sum(len(v) for v in csofts.values())} "
+        f"density={hier_region_density():.2f} singleton={hier_region_singleton():.2f}"
     )
 
 

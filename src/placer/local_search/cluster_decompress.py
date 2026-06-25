@@ -9,7 +9,7 @@ import torch
 
 from utils import constants as const
 from placer.legalize.spiral import _will_legalize
-from placer.local_search.fields import _congestion_field
+from placer.local_search.fields import _congestion_field, cold_connected_components
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.scoring.exact import _exact_proxy
 
@@ -127,6 +127,68 @@ def _axis_room_scale(
     if x_room <= y_room:
         return 1.0, 0.25
     return 0.25, 1.0
+
+
+def _local_component_bias(
+    hard_xy: np.ndarray,
+    members: np.ndarray,
+    components: list[dict[str, object]],
+    field: np.ndarray,
+    cw: float,
+    ch: float,
+    *,
+    max_distance_cells: int,
+) -> tuple[np.ndarray, tuple[float, float]] | None:
+    """Return a nearby cold-component anchor and preferred expansion axis."""
+    if not components:
+        return None
+    nr, nc = field.shape
+    cell_w, cell_h = cw / nc, ch / nr
+    x0, x1 = float(hard_xy[members, 0].min()), float(hard_xy[members, 0].max())
+    y0, y1 = float(hard_xy[members, 1].min()), float(hard_xy[members, 1].max())
+    c0 = int(np.clip(np.floor(x0 / cell_w), 0, nc - 1))
+    c1 = int(np.clip(np.floor(x1 / cell_w), 0, nc - 1))
+    r0 = int(np.clip(np.floor(y0 / cell_h), 0, nr - 1))
+    r1 = int(np.clip(np.floor(y1 / cell_h), 0, nr - 1))
+    max_dist = max(0, int(max_distance_cells))
+    best = None
+    for comp in components:
+        cr0 = int(comp["r0"])
+        cr1 = int(comp["r1"])
+        cc0 = int(comp["c0"])
+        cc1 = int(comp["c1"])
+        gap_c = max(0, max(c0 - cc1 - 1, cc0 - c1 - 1))
+        gap_r = max(0, max(r0 - cr1 - 1, cr0 - r1 - 1))
+        if gap_c > max_dist or gap_r > max_dist:
+            continue
+        dist = gap_c + gap_r
+        row = (
+            dist,
+            float(comp["avg"]),
+            -int(comp["size"]),
+            int(comp["r0"]),
+            int(comp["c0"]),
+            comp,
+        )
+        if best is None or row < best:
+            best = row
+    if best is None:
+        return None
+    comp = best[5]
+    anchor = np.array(
+        [
+            (float(comp["centroid_c"]) + 0.5) * cell_w,
+            (float(comp["centroid_r"]) + 0.5) * cell_h,
+        ],
+        dtype=np.float64,
+    )
+    center = hard_xy[members].mean(axis=0)
+    delta = anchor - center
+    if abs(float(delta[0])) >= abs(float(delta[1])):
+        axis = (1.0, float(const.HIER_DECOMPRESS_ANISO_SECONDARY))
+    else:
+        axis = (float(const.HIER_DECOMPRESS_ANISO_SECONDARY), 1.0)
+    return anchor, axis
 
 
 def _clip_to_region(xy, region, idx, hw, hh, cw, ch):
@@ -255,6 +317,11 @@ def _cluster_decompression_relief(
     anisotropic: bool = False,
     anisotropic_band: int = 3,
     anisotropic_secondary: float = 0.25,
+    local_component: bool = False,
+    local_component_cold_percentile: float = 45.0,
+    local_component_min_cells: int = 4,
+    local_component_max_distance_cells: int = 4,
+    local_component_shift_frac: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, int, float, float]:
     """Try group decompression candidates and accept exact proxy improvements."""
     if not clusters:
@@ -300,6 +367,13 @@ def _cluster_decompression_relief(
         field = _congestion_field(plc, nr, nc)
         if field is None:
             break
+        local_components = []
+        if local_component:
+            local_components = cold_connected_components(
+                field,
+                cold_percentile=float(local_component_cold_percentile),
+                min_cells=max(1, int(local_component_min_cells)),
+            )
         local = _cell_values(cur_h, field, cw, ch)
         heat = []
         for cid, meta in cluster_meta.items():
@@ -323,6 +397,7 @@ def _cluster_decompression_relief(
             center = centroids[cid]
             order = list(meta["order_by_area"])
             axis_x, axis_y = (1.0, 1.0)
+            local_anchor = None
             if anisotropic:
                 axis_x, axis_y = _axis_room_scale(
                     cur_h,
@@ -334,6 +409,20 @@ def _cluster_decompression_relief(
                 )
                 axis_x = max(float(anisotropic_secondary), float(axis_x))
                 axis_y = max(float(anisotropic_secondary), float(axis_y))
+            if local_components:
+                bias = _local_component_bias(
+                    cur_h,
+                    mem_all,
+                    local_components,
+                    field,
+                    cw,
+                    ch,
+                    max_distance_cells=max(0, int(local_component_max_distance_cells)),
+                )
+                if bias is not None:
+                    local_anchor, local_axis = bias
+                    axis_x = max(float(anisotropic_secondary), float(local_axis[0]))
+                    axis_y = max(float(anisotropic_secondary), float(local_axis[1]))
             for factor in factors:
                 if deadline is not None and time.monotonic() > deadline:
                     break
@@ -352,7 +441,15 @@ def _cluster_decompression_relief(
                     [1.0 + (factor - 1.0) * axis_x, 1.0 + (factor - 1.0) * axis_y],
                     dtype=np.float64,
                 )
-                cand_h[mem] = center + vec * scale
+                shift = np.zeros(2, dtype=np.float64)
+                if local_anchor is not None:
+                    shift = (
+                        np.asarray(local_anchor, dtype=np.float64)
+                        - np.asarray(center, dtype=np.float64)
+                    ) * max(0.0, float(local_component_shift_frac)) * max(
+                        0.0, float(factor) - 1.0
+                    )
+                cand_h[mem] = center + vec * scale + shift
                 cand_h[mem] = _clip_to_region(cand_h[mem], hard_region, mem, hw, hh, cw, ch)
                 soft_touched: list[int] = []
                 if cluster_soft_members.get(cid) is not None:
@@ -360,7 +457,7 @@ def _cluster_decompression_relief(
                     if sidx.size:
                         soft_touched.extend(sidx.tolist())
                         svec = cand_s[sidx] - center
-                        cand_s[sidx] = center + svec * scale
+                        cand_s[sidx] = center + svec * scale + shift
                         cand_s[sidx] = _clip_to_region(
                             cand_s[sidx], soft_region, sidx, soft_hw, soft_hh, cw, ch
                         )

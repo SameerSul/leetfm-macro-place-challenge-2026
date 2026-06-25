@@ -2,7 +2,7 @@
 
 ## Current Production System
 
-As of 2026-06-24, v2 is a hierarchy-preserving placer with exact-prescored
+As of 2026-06-25, v2 is a hierarchy-preserving placer with exact-prescored
 seed portfolio selection. The active
 `MacroPlacer.place()` path is:
 
@@ -22,6 +22,8 @@ benchmark input
        - synthetic-clearance seed
        - exact proxy selects the seed that enters hierarchy relief
   -> build congestion-expanded hard and soft hierarchy regions
+       - hot regions expand toward nearby contiguous cold congestion components when available
+       - default-off low-confidence hot-cluster extra room is available for experiments
   -> exact-gated local micro-shift polish
   -> exact-gated cluster decompression with composite hierarchy quality
   -> budget-aware interleaved soft repair
@@ -31,6 +33,7 @@ benchmark input
   -> post-swap hard propose-all relocation with spare-budget additive candidates
   -> post-swap soft relocation with spare-budget additive candidates
   -> plateau- and component-aware strong soft repair when telemetry shows useful spare work
+       - medium/large soft continuation runs only when structural shape and prior soft gain justify it
   -> coldspot tightening:
        - refresh current congestion field and cold-cell graph memory
        - generate coldspot kick candidates
@@ -51,8 +54,19 @@ benchmark input
        - generate hierarchy-safe cluster move variants from multiple states
        - GPU-rank cheap candidate scores when CUDA is available
        - exact-score the top candidates and keep the best survivor pool
+  -> feature-gated small-design polish:
+       - seed release candidates with weakest-k inferred hierarchy clusters
+       - keep only clusters below the confidence threshold
+       - release the hottest eligible weak clusters, capped by max clusters and weakest-k
+       - no-release low-net small designs shift candidate breadth toward soft relocation and soft-involving swaps
+       - build cold connected-component target pools
+       - run bounded hard/soft relocation, hard swaps only after useful released hard relocation, soft-involving swaps, and micro-shift polish
+       - restore the best audit-passing exact-scored state seen inside the small-design pass
+       - exact proxy, hard legality, and hierarchy audit budget remain the commit gates
   -> adaptive pass gate: skip remaining repeats when latest exact gain <= HIER_PLATEAU_PROXY_GAIN
   -> final scorer-compatible hard legality margin audit
+  -> final hierarchy-quality audit against the selected hierarchy seed:
+       - roll back to the best saved audit-passing checkpoint when needed
   -> final legality and bounds checks
   -> return center coordinates for hard and soft macros
 ```
@@ -82,17 +96,23 @@ The structural objectives that drive the hierarchy flow are documented in
 ranking and GNN trace logging are documented in
 [../ml_nn/beyondppa_results/](../ml_nn/beyondppa_results/).
 
-Current verified full sweep after swap-round micro-shift replay, stronger
-opportunity gates, and component-aware scheduling:
+Current verified full sweep with strict hierarchy-audit rollback,
+component-aware region expansion/decompression, swap-round micro-shift replay,
+stronger opportunity gates, component-aware scheduling, post-survivor
+small-design polish, no-release low-net soft/SS breadth, and medium/large
+soft-continuation scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1714  17/17 VALID  0 overlaps  961.79s
+AVG 1.1999  17/17 VALID  0 overlaps  1147.08s
 ```
 
-The prior accepted Stage-6 audit sweep was `AVG 1.1817`, 17/17 VALID,
-0 overlaps, 1383.28s. A same-day audit-equivalent sweep reached `AVG 1.1796`,
-but the current documented code path is the `AVG 1.1714` sweep above.
+The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
+0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
+several designs after late proxy-improving relief. The current `AVG 1.1999`
+path deliberately gives back proxy improvement when needed so hierarchy audit is
+an enforced invariant. Earlier Stage-6 audit sweeps are retained in
+`PROGRESS.md` as historical experiment records.
 
 Historical accepted hierarchy full sweep before the graph-local and six-stage
 architecture revamps:
@@ -243,9 +263,17 @@ placement quality and soft positions without hard legality constraints.
 
 `HierarchyModel.hard_regions()` and `HierarchyModel.soft_regions()` create the
 active production region boxes. Hot cluster regions are expanded toward colder
-neighboring congestion bands before relief. Hard and soft relocation then rank
-candidates by a congestion-heavy blended proposal field and by density while
-adding a penalty for leaving the assigned region.
+neighboring congestion bands before relief. The default expansion first looks
+for nearby contiguous cold congestion components and grows the hard/soft
+hierarchy boxes toward those components; if no useful component is adjacent,
+it falls back to the side-band comparison. A default-off experiment can give
+low-confidence hot clusters extra capped side expansion before micro-shift,
+relocation, decompression, and swaps run; the broad default-on version regressed
+the 2026-06-24 full sweep and was not promoted. The opt-in path is candidate
+gated to small-design-sized placements and to clusters that overlap the
+low-confidence release-candidate pool used by late small-design polish. Hard and
+soft relocation then rank candidates by a congestion-heavy blended proposal
+field and by density while adding a penalty for leaving the assigned region.
 Out-of-region moves are only accepted when the exact proxy gain clears
 `HIER_REGION_ESCAPE_MIN`.
 
@@ -259,6 +287,19 @@ HIER_REGION_BUDGET_S=40
 HIER_REGION_MARGIN=0
 HIER_REGION_SINGLETON=0.05
 HIER_REGION_ESCAPE_MIN=0.002
+HIER_REGION_COMPONENT_EXPAND=True
+HIER_REGION_COMPONENT_COLD_PCT=45
+HIER_REGION_COMPONENT_MIN_CELLS=4
+HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS=4
+HIER_REGION_WEAK_HOT_RESHAPE=False
+HIER_REGION_WEAK_CONFIDENCE_MAX=0.92
+HIER_REGION_WEAK_HOT_MAX_CLUSTERS=2
+HIER_REGION_WEAK_HOT_EXTRA_FRAC=0.03
+HIER_REGION_WEAK_HOT_SIDE_FLOOR=0.45
+HIER_REGION_WEAK_HOT_HARD_MIN=240
+HIER_REGION_WEAK_HOT_HARD_MAX=420
+HIER_REGION_WEAK_HOT_MACRO_MAX=1600
+HIER_REGION_WEAK_HOT_REQUIRE_RELEASE_CANDIDATE=True
 HIER_PROPOSAL_CONGESTION_WEIGHT=2.5
 HIER_PROPOSAL_DENSITY_WEIGHT=1.0
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08
@@ -293,12 +334,15 @@ authority for every committed move. The production default is
 ### 7. Cluster Decompression
 
 `_cluster_decompression_relief()` expands hot clusters inside their expanded
-regions to create local routing channels. Candidates are hard-legalized, owned
-softs move with their clusters, bridge softs are nudged toward their corridor
-centroid, and the move is accepted only if exact proxy improves while the
-composite hierarchy-quality metric remains within budget. The quality metric
-combines the old mean radius term with bounding-box spread and a small
-nearest-cluster crowding penalty, keeping the scale near the prior gate.
+regions to create local routing channels. It also checks for a nearby contiguous
+cold congestion component and, when one exists, biases the local decompression
+axis and applies a small whole-cluster shift toward that component. Candidates
+are hard-legalized, owned softs move with their clusters, bridge softs are
+nudged toward their corridor centroid, and the move is accepted only if exact
+proxy improves while the composite hierarchy-quality metric remains within
+budget. The quality metric combines the old mean radius term with bounding-box
+spread and a small nearest-cluster crowding penalty, keeping the scale near the
+prior gate.
 
 Constants in `src/utils/constants.py`:
 
@@ -309,6 +353,11 @@ HIER_QUALITY_BUDGET=0.03
 HIER_QUALITY_RADIUS_WEIGHT=0.75
 HIER_QUALITY_BBOX_WEIGHT=0.20
 HIER_QUALITY_CROWD_WEIGHT=0.05
+HIER_DECOMPRESS_LOCAL_COMPONENT=True
+HIER_DECOMPRESS_LOCAL_COLD_PCT=45
+HIER_DECOMPRESS_LOCAL_MIN_CELLS=4
+HIER_DECOMPRESS_LOCAL_MAX_DISTANCE_CELLS=4
+HIER_DECOMPRESS_LOCAL_SHIFT_FRAC=0.20
 ```
 
 ### 8. Region-Bounded Swaps

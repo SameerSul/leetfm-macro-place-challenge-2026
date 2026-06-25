@@ -27,14 +27,14 @@ Current smoke reference:
 
 ```text
 uv run evaluate src/main.py -b ibm10
-proxy=1.1576  VALID  [~90s locally]
+proxy=1.1534  VALID  audit=pass  [~78s locally]
 ```
 
 Current full IBM reference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1714  17/17 VALID  0 overlaps  [961.79s locally]
+AVG 1.1999  17/17 VALID  0 overlaps  all hierarchy audits passed  [1147.08s locally]
 ```
 
 Pass progression is now adaptive: the pipeline advances to the next stage when the

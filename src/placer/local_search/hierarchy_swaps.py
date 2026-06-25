@@ -138,6 +138,7 @@ def _swap_rejection_reason(
     in_bounds: bool = True,
     outside_region: bool = False,
     accepted_by_region_gate: bool = True,
+    accepted_by_quality_gate: bool = True,
     scored: bool = True,
 ) -> str:
     if not in_bounds:
@@ -148,7 +149,19 @@ def _swap_rejection_reason(
         return "not_scored"
     if outside_region and not accepted_by_region_gate:
         return "out_of_hierarchy_region"
+    if not accepted_by_quality_gate:
+        return "hierarchy_quality_failed"
     return "exact_proxy_failed"
+
+
+def _hard_quality_ok(
+    hard_pos: np.ndarray,
+    hierarchy_quality_fn,
+    hierarchy_quality_limit: "float | None",
+) -> bool:
+    if hierarchy_quality_fn is None or hierarchy_quality_limit is None:
+        return True
+    return float(hierarchy_quality_fn(hard_pos)) <= float(hierarchy_quality_limit)
 
 
 def _log_swap_candidates(
@@ -507,6 +520,8 @@ def _try_hard_hard(
     deadline,
     benchmark_name: str,
     field_name: str,
+    hierarchy_quality_fn=None,
+    hierarchy_quality_limit: "float | None" = None,
 ) -> tuple[int, float]:
     accepts = 0
     n = h_pos.shape[0]
@@ -589,6 +604,10 @@ def _try_hard_hard(
             for (j, outside_move), score in zip(scored, scores):
                 stats["hh_scores"] += 1
                 if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
+                    cand_h = h_pos.copy()
+                    cand_h[[i, j]] = cand_h[[j, i]]
+                    if not _hard_quality_ok(cand_h, hierarchy_quality_fn, hierarchy_quality_limit):
+                        continue
                     scorer.commit_swap_hard_hard(i, j)
                     h_pos[[i, j]] = h_pos[[j, i]]
                     _record_accept(stats, "hh", outside_move, best_score, score)
@@ -663,6 +682,22 @@ def _try_hard_hard(
                     accepted_by_region_gate=bool(region_ok),
                 )
             if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
+                cand_h = h_pos.copy()
+                cand_h[[i, j]] = cand_h[[j, i]]
+                quality_ok = _hard_quality_ok(
+                    cand_h,
+                    hierarchy_quality_fn,
+                    hierarchy_quality_limit,
+                )
+                if row is not None:
+                    row["rejection_reason"] = _swap_rejection_reason(
+                        legal=True,
+                        outside_region=bool(outside_move),
+                        accepted_by_region_gate=bool(region_ok),
+                        accepted_by_quality_gate=bool(quality_ok),
+                    )
+                if not quality_ok:
+                    continue
                 if row is not None:
                     row["accepted"] = True
                     row["rejection_reason"] = None
@@ -891,6 +926,8 @@ def _try_hard_soft(
     deadline,
     benchmark_name: str,
     field_name: str,
+    hierarchy_quality_fn=None,
+    hierarchy_quality_limit: "float | None" = None,
 ) -> tuple[int, float]:
     accepts = 0
     if h_pos.shape[0] == 0 or s_pos.shape[0] == 0:
@@ -983,6 +1020,10 @@ def _try_hard_soft(
                 stats["hs_scores"] += 1
                 required_gain = max(min_gain, soft_barrier_gain)
                 if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
+                    cand_h = h_pos.copy()
+                    cand_h[i, 0], cand_h[i, 1] = hx, hy
+                    if not _hard_quality_ok(cand_h, hierarchy_quality_fn, hierarchy_quality_limit):
+                        continue
                     scorer.commit_swap_hard_soft(i, k)
                     h_pos[i, 0], h_pos[i, 1] = hx, hy
                     s_pos[k, 0], s_pos[k, 1] = sx, sy
@@ -1067,6 +1108,22 @@ def _try_hard_soft(
                     accepted_by_region_gate=bool(region_ok),
                 )
             if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
+                cand_h = h_pos.copy()
+                cand_h[i, 0], cand_h[i, 1] = hx, hy
+                quality_ok = _hard_quality_ok(
+                    cand_h,
+                    hierarchy_quality_fn,
+                    hierarchy_quality_limit,
+                )
+                if row is not None:
+                    row["rejection_reason"] = _swap_rejection_reason(
+                        legal=True,
+                        outside_region=bool(outside_move),
+                        accepted_by_region_gate=bool(region_ok),
+                        accepted_by_quality_gate=bool(quality_ok),
+                    )
+                if not quality_ok:
+                    continue
                 if row is not None:
                     row["accepted"] = True
                     row["rejection_reason"] = None
@@ -1111,6 +1168,8 @@ def _region_bounded_swap_relief(
     enable_hs: bool = True,
     enable_ss: bool = True,
     use_density: bool = False,
+    hierarchy_quality_fn=None,
+    hierarchy_quality_limit: "float | None" = None,
 ) -> tuple[np.ndarray, np.ndarray, int, float, dict]:
     """Run bounded hierarchy-preserving swap relief."""
     nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
@@ -1159,6 +1218,8 @@ def _region_bounded_swap_relief(
                 deadline,
                 getattr(benchmark, "name", ""),
                 field_name,
+                hierarchy_quality_fn,
+                hierarchy_quality_limit,
             )
             accepts += got
         if enable_hs:
@@ -1189,6 +1250,8 @@ def _region_bounded_swap_relief(
                 deadline,
                 getattr(benchmark, "name", ""),
                 field_name,
+                hierarchy_quality_fn,
+                hierarchy_quality_limit,
             )
             accepts += got
         if enable_ss:
