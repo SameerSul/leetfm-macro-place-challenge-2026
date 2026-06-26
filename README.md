@@ -1,4 +1,4 @@
-# v2 - Varrahan's Submission
+# v2 - Sameer + Varrahan's Submission
 
 Active placer for the Partcl/HRT Macro Placement Challenge.
 
