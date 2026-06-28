@@ -1,4 +1,4 @@
-# CongFlow v2 — Architecture
+# VivaPlace v2 — Architecture
 
 ## Overview
 

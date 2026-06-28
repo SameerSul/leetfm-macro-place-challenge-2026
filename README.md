@@ -1,4 +1,4 @@
-# CongFlow: Hierarchy-Preserving Macro Placement
+# VivaPlace: Hierarchy-Preserving Macro Placement
 
 Macro placement is one of the hardest combinatorial problems in chip design.
 A modern SoC netlist contains hundreds of hard macros (SRAMs, analog blocks,

@@ -4,7 +4,7 @@ This file gives coding agents the context to work productively in this repositor
 
 ## What this repo is
 
-Submission to the **Partcl/HRT Macro Placement Challenge** (deadline May 21, 2026, $20K grand prize). The historical objective was to minimize proxy cost (lower is better; RePlAce avg **1.4578**), but the current selected system is a hierarchy-preserving macro placer.
+Submission to the **Partcl/HRT Macro Placement Challenge** (deadline May 21, 2026, $20K grand prize). The historical objective was to minimize proxy cost (lower is better; RePlAce avg **1.4578**), but the current selected system, **VivaPlace**, is a hierarchy-preserving macro placer.
 
 The active submission now lives at the repository root: `src/`, `docs/`,
 `test/`, `scripts/`, and `ml_data/`. The prior `system/v1/` checkpoint may be

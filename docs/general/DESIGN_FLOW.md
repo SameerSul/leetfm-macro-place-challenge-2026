@@ -1,4 +1,4 @@
-# v2 Design Flow
+# VivaPlace v2 — Design Flow
 
 `MacroPlacer.place()` is hierarchy-only: it always routes through
 `_hierarchy_floorplan()` and raises if grouped DREAMPlace is unavailable.
