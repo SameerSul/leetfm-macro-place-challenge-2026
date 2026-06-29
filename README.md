@@ -77,13 +77,13 @@ flowchart TD
     B --> C[Grouped DREAMPlace global placement<br/>synthetic clique nets per cluster]
     C --> D[Cluster-consecutive hard legalization]
 
-    D --> P{{Seed portfolio<br/>6 candidates derived from initial.plc + DP basin}}
+    D --> P[Seed portfolio: 6 candidates derived from initial.plc and DP basin]
     P --> S0[Legalized initial.plc]
     P --> S1[Grouped DREAMPlace basin]
-    P --> S2[DP × initial blend<br/>α = 0.35]
-    P --> S3[DP × initial blend<br/>α = 0.65]
-    P --> S4[Radial expansion<br/>from DP basin]
-    P --> S5[Synthetic-clearance<br/>push-apart from DP basin]
+    P --> S2[DP and initial blend, alpha = 0.35]
+    P --> S3[DP and initial blend, alpha = 0.65]
+    P --> S4[Radial expansion from DP basin]
+    P --> S5[Synthetic-clearance push-apart from DP basin]
     S0 --> E[Exact-score every candidate<br/>pick the lowest-proxy seed]
     S1 --> E
     S2 --> E
