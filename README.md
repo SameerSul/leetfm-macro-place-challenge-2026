@@ -76,7 +76,21 @@ flowchart TD
     A[Benchmark netlist] --> B[Infer hierarchy<br/>hard clusters, owned/bridge soft roles]
     B --> C[Grouped DREAMPlace global placement<br/>synthetic clique nets per cluster]
     C --> D[Cluster-consecutive hard legalization]
-    D --> E[Exact-proxy seed portfolio selection]
+
+    D --> P{{Seed portfolio<br/>6 candidates derived from initial.plc + DP basin}}
+    P --> S0[Legalized initial.plc]
+    P --> S1[Grouped DREAMPlace basin]
+    P --> S2[DP × initial blend<br/>α = 0.35]
+    P --> S3[DP × initial blend<br/>α = 0.65]
+    P --> S4[Radial expansion<br/>from DP basin]
+    P --> S5[Synthetic-clearance<br/>push-apart from DP basin]
+    S0 --> E[Exact-score every candidate<br/>pick the lowest-proxy seed]
+    S1 --> E
+    S2 --> E
+    S3 --> E
+    S4 --> E
+    S5 --> E
+
     E --> F[Congestion-expanded hierarchy regions]
     F --> G[Region-locked relocation + soft cleanup]
     G --> H[Exact-gated cluster decompression]
@@ -89,22 +103,34 @@ flowchart TD
     N --> M
 
     classDef seed fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef cand fill:#bbdefb,stroke:#1565c0,color:#0d47a1
     classDef search fill:#fff3e0,stroke:#ef6c00,color:#e65100
     classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
-    class A,B,C,D,E,F seed
-    class G,H,I,J,K search
+    class A,B,C,D,P,E seed
+    class S0,S1,S2,S3,S4,S5 cand
+    class F,G,H,I,J,K search
     class L,M,N audit
 ```
 
-Blue nodes build the hierarchy-aware seed; orange nodes are the exact-proxy-gated
-local search passes; green nodes are the final audit and rollback. The same flow,
-written as a linear pipeline:
+Blue nodes build the hierarchy-aware seed; the lighter blue row is the seed
+portfolio — grouped DREAMPlace is one of six candidates, sitting next to
+the legalized `initial.plc`, two DP/initial blends, a radial expansion of
+the DP basin, and a synthetic-clearance push-apart of the DP basin. Every
+candidate is exact-scored and only the lowest-proxy one advances. Orange
+nodes are the exact-proxy-gated local search passes; green nodes are the
+final audit and the rollback to the best audit-passing checkpoint if the
+post-search state drifts too far from the selected seed.
+
+The same flow, written as a linear pipeline:
 
 ```text
 benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
           -> grouped DREAMPlace global placement (synthetic clique nets)
           -> cluster-consecutive hard legalization
-          -> exact-proxy seed portfolio selection
+          -> seed portfolio: legalized initial.plc, DP basin,
+             two DP/initial blends (alpha = 0.35, 0.65), radial
+             expansion of DP basin, synthetic-clearance push-apart
+          -> exact-score all candidates, advance the lowest-proxy seed
           -> congestion-expanded hierarchy regions
           -> region-locked relocation + soft cleanup
           -> exact-gated cluster decompression
