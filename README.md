@@ -71,6 +71,35 @@ uv run python src/place_design.py \
 
 ## How It Works
 
+```mermaid
+flowchart TD
+    A[Benchmark netlist] --> B[Infer hierarchy<br/>hard clusters, owned/bridge soft roles]
+    B --> C[Grouped DREAMPlace global placement<br/>synthetic clique nets per cluster]
+    C --> D[Cluster-consecutive hard legalization]
+    D --> E[Exact-proxy seed portfolio selection]
+    E --> F[Congestion-expanded hierarchy regions]
+    F --> G[Region-locked relocation + soft cleanup]
+    G --> H[Exact-gated cluster decompression]
+    H --> I[Region-bounded hard/soft swaps]
+    I --> J[Coldspot tightening<br/>congestion-driven local relief]
+    J --> K[Bounded survivor search]
+    K --> L{Final legality,<br/>bounds, and<br/>hierarchy audit}
+    L -->|pass| M[Macro center coordinates]
+    L -->|drift| N[Roll back to best<br/>audit-passing checkpoint]
+    N --> M
+
+    classDef seed fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef search fill:#fff3e0,stroke:#ef6c00,color:#e65100
+    classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    class A,B,C,D,E,F seed
+    class G,H,I,J,K search
+    class L,M,N audit
+```
+
+Blue nodes build the hierarchy-aware seed; orange nodes are the exact-proxy-gated
+local search passes; green nodes are the final audit and rollback. The same flow,
+written as a linear pipeline:
+
 ```text
 benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
           -> grouped DREAMPlace global placement (synthetic clique nets)
