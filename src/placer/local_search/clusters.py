@@ -515,6 +515,26 @@ def derive_soft_cluster_roles(
     return owned_out, bridge
 
 
+def derive_cluster_softs(
+    plc,
+    n: int,
+    n_soft: int,
+    labels: np.ndarray,
+    max_fanout: int = 8,
+    bridge_ratio: float = 0.6,
+) -> dict[int, np.ndarray]:
+    """Backward-compatible alias for legacy verification utilities."""
+    owned, _bridge = derive_soft_cluster_roles(
+        plc,
+        n=n,
+        n_soft=n_soft,
+        labels=labels,
+        max_fanout=max_fanout,
+        bridge_ratio=bridge_ratio,
+    )
+    return owned
+
+
 def cluster_max_fanout() -> int:
     """Net pin-count ceiling for cluster unioning."""
     return max(2, int(const.CLUSTER_MAX_FANOUT))

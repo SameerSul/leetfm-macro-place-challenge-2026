@@ -21,13 +21,53 @@ benchmark input
         proxy enters relief)
   -> congestion-expanded hard/soft hierarchy regions
   -> exact-gated local micro-shift polish
-  -> exact-gated cluster decompression (hierarchy-quality budgeted)
+  -> exact-gated cluster decompression with composite hierarchy quality
+       - large designs can order opportunities by hierarchy graph tension
+  -> budget-aware interleaved soft repair
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
-  -> post-swap hard/soft relocation polish + micro-shift replay
-  -> coldspot tightening (congestion-driven local relief, graph-local fallback)
-  -> bounded survivor-pool search
-  -> final hard-legality, bounds, and hierarchy-quality audit
-       (rolls back to the best saved audit-passing checkpoint if needed)
+       - hard-moving swap candidates must stay inside the hierarchy audit budget
+       - optional micro-shift replay after each swap round
+  -> post-swap micro-shift replay
+  -> post-swap hard propose-all relocation with spare-budget additive candidates
+  -> post-swap soft relocation with spare-budget additive candidates
+  -> plateau- and component-aware strong soft repair when telemetry shows useful spare work
+       - medium/large soft continuation runs only when structural shape and prior soft gain justify it
+  -> coldspot tightening:
+       - refresh current congestion field and cold-cell graph memory
+       - generate coldspot kick candidates
+       - optional default-off hard-only ego-net candidate groups move small graph neighbors
+       - co-move owned/bridge soft macros
+       - legalize candidate hard macros
+       - expand local graph border through adjacent open cold cells
+       - apply hard-core padding
+       - run graph-bordered local swaps and hard/soft relocations
+       - graph-rank generated outcomes when the GNN selector is off
+       - exact proxy + hierarchy-quality gate before commit
+       - large designs can rank hot clusters by hierarchy graph tension
+  -> graph-local fallback when no coldspot kick commits:
+       - select hottest eligible current clusters
+       - reuse the same graph-expanded border
+       - run the same swaps and relocations without a kick
+       - exact proxy + hierarchy-quality gate before commit
+  -> post-coldspot micro-shift replay
+  -> bounded go-with-the-winners survivor search:
+       - generate hierarchy-safe cluster move variants from multiple states
+       - GPU-rank cheap candidate scores when CUDA is available
+       - exact-score the top candidates and keep the best survivor pool
+  -> feature-gated small-design polish:
+       - seed release candidates with weakest-k inferred hierarchy clusters
+       - keep only clusters below the confidence threshold
+       - release the hottest eligible weak clusters, capped by max clusters and weakest-k
+       - no-release low-net small designs shift candidate breadth toward soft relocation and soft-involving swaps
+       - build cold connected-component target pools
+       - run bounded hard/soft relocation, hard swaps only after useful released hard relocation, soft-involving swaps, and micro-shift polish
+       - restore the best audit-passing exact-scored state seen inside the small-design pass
+       - exact proxy, hard legality, and hierarchy audit budget remain the commit gates
+  -> adaptive pass gate: skip remaining repeats when latest exact gain <= HIER_PLATEAU_PROXY_GAIN
+  -> final scorer-compatible hard legality margin audit
+  -> final hierarchy-quality audit against the selected hierarchy seed:
+       - roll back to the best saved audit-passing checkpoint when needed
+  -> final legality and bounds checks
   -> return center coordinates for hard and soft macros
 ```
 
@@ -45,14 +85,99 @@ preservation** first: it deliberately keeps connected subsystems together
 even when a flatter, more-spread placement would score lower proxy. The
 structural reasoning behind this is in [OBJECTIVES.md](OBJECTIVES.md).
 
-Current full-suite result:
+The structural objectives that drive the hierarchy flow are documented in
+[OBJECTIVES.md](OBJECTIVES.md). BeyondPPA-style deterministic structural
+ranking and GNN trace logging are documented in
+[../ml_nn/beyondppa_results/](../ml_nn/beyondppa_results/).
+
+Current verified full sweep with strict hierarchy-audit rollback,
+audit-aware hard swap gating, component-aware region expansion/decompression,
+large-design hierarchy graph-tension opportunity ordering, swap-round
+micro-shift replay, stronger opportunity gates, component-aware scheduling,
+post-survivor small-design polish with subpass audit restore, no-release
+low-net soft/SS breadth, and medium/large soft-continuation scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1999  17/17 VALID  0 overlaps  all hierarchy audits passed  1147.08s
+AVG 1.1657  17/17 VALID  0 overlaps  1128.80s
 ```
 
-NG45 (RTL instance-path hierarchy tags):
+The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
+0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
+several designs after late proxy-improving relief. A strict final-rollback-only
+audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
+reached `AVG 1.1664`; the current graph-tension/survivor path is `AVG 1.1657`. The
+production path preserves the audit invariant earlier in local relief so fewer
+proxy-improving states need to be discarded at finalization. Earlier Stage-6
+audit sweeps are retained in `PROGRESS.md` as historical experiment records.
+
+The graph-tension signal is advisory and gated to large designs by default. It
+orders decompression/coldspot opportunities but does not change commit gates.
+Direct graph-tension swap ordering remains available through
+`HIER_GRAPH_TENSION_SWAP_WEIGHT`, but defaults to `0.0` after focused tests
+regressed `ibm08` and `ibm10`.
+Swap candidate ranking can also use temporary graph-derived masks and soft
+mask penalties when `HIER_SWAP_GRAPH_MASK_AWARE=True`:
+
+```text
+HIER_SWAP_GRAPH_MASK_AWARE=True
+HIER_SWAP_GRAPH_MASK_MAX_EDGES=0
+HIER_SWAP_GRAPH_MASK_PAD_CELLS=1
+HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT=0.30
+HIER_SWAP_GRAPH_DELTA_WEIGHT=0.0
+HIER_SWAP_GRAPH_DELTA_SAMPLES=9
+HIER_SWAP_GRAPH_FALLBACK=True
+HIER_SWAP_GRAPH_FALLBACK_BUDGET_S=2.5
+```
+
+These controls are diagnostic/ranking only in default mode; no candidate is
+rejected for violating the mask, and final commit still requires hard legality,
+hierarchy quality, exact proxy gain, and the active audit checks.
+Trace analysis for this signal lives in `scripts/gnn/analyze_graph_tension.py`.
+Coldspot and decompression candidates also log graph-edge candidate deltas:
+weighted edge stretch, corridor congestion change, weighted edge-length change,
+and a combined graph delta. These are diagnostic/ranking features only; they do
+not alter acceptance.
+The default-off `HIER_COLDSPOT_GRAPH_DELTA_RANK` hook can use that combined
+graph delta during exact coldspot candidate ordering by adding a small
+proxy-equivalent penalty for graph-worsening moves before the normal graph-score
+tie-break. Focused `ibm10`/`ibm12` tests were valid and audit-passing but did
+not improve proxy, so the default weight remains `0.0`.
+The default-off `HIER_REGION_GRAPH_COMPONENT_WEIGHT` hook uses hierarchy graph
+edge corridors to bias which contiguous cold congestion component a hot region
+expands toward. It changes only region construction; local relief still uses
+the normal legality, exact-proxy, and hierarchy gates.
+The default-off `HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT` hook keeps congestion as
+the primary coldspot anchor signal, then uses the selected cluster's weighted
+graph-neighbor centroid to break cold-window ties and near-ties. Candidate
+acceptance is unchanged.
+The default-on `HIER_DECOMPRESS_FEASIBILITY_FILTER` estimates the proposed
+decompression bbox's free area and neighbor blockage before legalization and
+exact scoring, and logs `feasibility_blocked` rejects.
+The default-off `HIER_DECOMPRESS_GRAPH_RESCUE` hook uses the graph-edge delta
+signal to rescue decompression candidates that improve graph geometry but fail
+feasibility or hard-overlap legalization. It tries a bounded set of smaller or
+cold-component-shifted variants, then returns to the normal hard legality,
+hierarchy-quality, exact-proxy, and audit gates. Full-suite validation was
+legal but not promoted because the average regressed to `1.1663`.
+The default-on `HIER_DECOMPRESS_GRAPH_SURVIVOR` hook is narrower: for legal,
+hierarchy-safe decompression candidates that miss exact proxy by a small amount
+while improving graph-edge geometry, it exact-scores a tiny hard/soft local
+polish pool around the moved cluster. It commits only if the final candidate
+clears the normal exact-proxy gain and audit gates. The accepted full sweep is
+`AVG 1.1657`.
+The default-off `HIER_GRAPH_PREFILTER` hook can reject low-tension
+decompression/coldspot candidates before exact scoring when their cheap local
+congestion estimate does not improve. It is trace-visible, but not promoted by
+default because focused A/B found `ibm10` better with the filter disabled.
+The default-off `HIER_COLDSPOT_EGONET` scaffold can synthesize temporary
+small-neighbor hard-only coldspot candidate groups. These groups are candidate
+generation inputs only; final acceptance still uses the original hierarchy
+quality and audit gates, plus an ego-net-specific exact-gain floor
+(`HIER_COLDSPOT_EGONET_MIN_GAIN`).
+
+Historical accepted hierarchy full sweep before the graph-local and six-stage
+architecture revamps:
 
 ```text
 uv run evaluate src/main.py --ng45
@@ -273,7 +398,79 @@ HIER_QUALITY_BBOX_WEIGHT=0.20     HIER_QUALITY_CROWD_WEIGHT=0.05
 HIER_DECOMPRESS_LOCAL_COMPONENT=True   HIER_DECOMPRESS_LOCAL_SHIFT_FRAC=0.20
 ```
 
-**Swaps**
+Rounds with no cheap hot-cluster to cold-window opportunity are skipped before
+candidate generation and exact candidate scoring. The predictor blends
+hot-to-cold field gap, open cold-cell capacity around the candidate window, and
+source-to-window displacement. Default production tries the top two opportunity
+clusters with five whole-cluster variants per cluster, then commits from
+exact-proxy-ranked refined candidates rather than from a graph-ranked prefix.
+Coldspot also stops after repeated generated pools fail to commit.
+Weak-opportunity and dry-limit exits skip graph-local and soft-only coldspot
+fallbacks too.
+
+This is not the old generic LSMC path. It is a narrow hierarchy-tightening
+helper. Candidate-local refinement runs hard-hard and hard-soft swaps with the
+kicked hard cluster locked in the local box, plus soft-soft swaps and soft
+relocation that may leave the local box only after a `0.0025` exact-proxy gain.
+The local box includes owned/bridge soft macros, but its base pad is derived from
+the kicked hard-core max dimension rather than the soft-inclusive bbox.
+The phase tracks a current cold-cell grid from the active congestion field,
+refreshes it after every finalized coldspot kick, masks out cells occupied by the
+candidate, and expands the pre-margin local border through adjacent open cold
+cells before applying the hard-core pad. This lets finalized cluster locations
+use nearby coldspots for local relief while preserving swap and soft-locked
+relocation room.
+`HIER_GNN_COLDSPOT_POLICY=1` can rank raw candidate proposals before this
+refinement step and limit how many raw candidates are refined. `HIER_GNN_COLDSPOT_SELECT=1`
+adds a second opt-in exact-score stage over the refined candidates.
+The graph supplies coldspot-local relocation target pools and gates relocation
+targets by graph mask; default candidate commitment uses exact-proxy-ranked
+refined outcomes.
+`HIER_COLDSPOT_SOFT_ONLY=0` is a default-off fallback that runs only when hard
+coldspot kicks and graph-local fallback commit no candidate. It keeps all hard
+macros fixed, builds a target pool from remembered open cold cells, and invokes
+the exact-gated soft relocation pass with hierarchy region boxes and the cold
+cell mask still active.
+Coldspot kick candidate generation augments each cluster's owned soft set with
+movable bridge soft macros tied to the same hierarchy cluster. The default pool
+now tries multiple opportunity-ranked clusters, with shape-preserving variants
+for each instead of only repeating one random gather: multiple cold anchors,
+compact original orientation, rotated orientation, source-facing border
+compaction, and a lower-displacement centroid-blended candidate. The hard
+cluster and those soft macros are placed into the cold window together, then the
+existing legalization, local refinement, exact-proxy gate, and hierarchy-quality
+gate accept or reject the resulting full candidate as one state.
+`HIER_COLDSPOT_PARTIAL_FRONTIER=0` is a default-off experiment that can add one
+capacity-aware partial frontier candidate to the same pool: it estimates the
+connected cold area around the chosen anchor, selects a true subset of the hot
+cluster nearest that anchor, biases the split by low-fanout net connectivity,
+places cross-cut-heavy macros near the source-facing coldspot border, and then
+uses the same legalization, local refinement, exact-proxy gate, and
+hierarchy-quality gate as the normal kick. The prototype skips tiny source
+clusters by default because far 2-of-3 splits can improve proxy while failing
+the radius/bbox hierarchy-quality metric. It also runs a cheap pre-exact
+split-shape predictor after partial hard legalization and rejects candidates
+whose source cluster radius, bbox radius, or moved-vs-remaining separation
+would grow beyond the configured ratios. Additional cheap gates reject majority
+splits, splits that leave too few source macros behind, disconnected selected
+subsets when low-fanout local edges are available, and high selected-vs-remaining
+cut ratios. When `HIER_GNN_TRACE=1`, generated-but-rejected partial candidates
+emit `hier_coldspot_partial_reject` rows with the reject reason and shape/connectivity
+stats. Majority/remaining-macro limits are applied during subset construction,
+not only after selection, so the partial generator can try smaller frontier
+groups before rejecting. When no coldspot kick commits, the
+graph-local fallback runs the same bordered swaps and relocations on the
+current placement for the hottest eligible clusters.
+Production then reruns `_micro_shift_polish()` once more after coldspot
+tightening; deterministic hot-cluster coldspot selection was tested and removed
+after regressing the full sweep.
+
+### 11. Trace Logging And Plateau Telemetry
+
+No GNN model is active in production. The current GNN-related implementation is
+opt-in trace logging attached to the hierarchy flow. These are runtime
+environment variables, not placement constants:
+
 ```text
 HIER_HARD_SWAP_K=16          HIER_SOFT_SWAP_K=48
 HIER_SWAP_MIN_GAIN=0.00001   HIER_GPU_RANK_SWAP_CANDIDATES=auto

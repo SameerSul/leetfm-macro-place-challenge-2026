@@ -16,9 +16,15 @@ _FALSE = {"0", "false", "False", "no", "NO", "off", ""}
 _CACHE: dict[tuple[str, str], tuple[Any, dict[str, Any], dict[str, Any]]] = {}
 
 
+def gnn_cluster_mode_enabled() -> bool:
+    return os.environ.get("HIER_GNN_CLUSTER_MODE", "0").strip() not in _FALSE
+
+
 def gnn_rank_enabled(operator: str) -> bool:
     if os.environ.get("HIER_GNN_RANK", "0").strip() in _FALSE:
         return False
+    if gnn_cluster_mode_enabled():
+        return operator == "coldspot_cluster"
     raw_ops = os.environ.get("HIER_GNN_OPERATORS", "relocation").strip()
     ops = {x.strip() for x in raw_ops.split(",") if x.strip()}
     return not ops or operator in ops
@@ -32,6 +38,10 @@ def gnn_coldspot_select_enabled() -> bool:
     return os.environ.get("HIER_GNN_COLDSPOT_SELECT", "0").strip() not in _FALSE
 
 
+def gnn_coldspot_policy_enabled() -> bool:
+    return os.environ.get("HIER_GNN_COLDSPOT_POLICY", "0").strip() not in _FALSE
+
+
 def gnn_coldspot_oracle_enabled() -> bool:
     return os.environ.get("HIER_GNN_COLDSPOT_ORACLE", "0").strip() not in _FALSE
 
@@ -43,6 +53,17 @@ def gnn_coldspot_kicks(default: int = 8) -> int:
 def gnn_coldspot_skip_micro(default: bool = True) -> bool:
     raw = os.environ.get("HIER_GNN_COLDSPOT_SKIP_MICRO", "1" if default else "0").strip()
     return raw not in _FALSE
+
+
+def _policy_model_env() -> str:
+    return os.environ.get("HIER_GNN_COLDSPOT_POLICY_MODEL", "").strip()
+
+
+def _cluster_from_row(row: dict[str, Any]) -> int:
+    cid = int(row.get("cluster", -1))
+    if cid < 0:
+        cid = int(row.get("egonet_anchor_cluster", -1))
+    return cid
 
 
 def _load_ranker(
@@ -312,7 +333,7 @@ def rank_coldspot_kick_candidates(
         source_node = []
         clusters = graph["cluster_node"]
         for row in rows:
-            cid = int(row.get("cluster", -1))
+            cid = int(_cluster_from_row(row))
             if 0 <= cid < int(clusters.numel()):
                 source_node.append(int(clusters[cid]))
             else:
@@ -351,3 +372,186 @@ def rank_coldspot_kick_candidates(
         active = [c for c in candidates if not c.get("is_noop", False)]
         noop = [c for c in candidates if c.get("is_noop", False)]
         return active + noop
+
+
+def reorder_cluster_coldspot_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    benchmark_name: str,
+) -> list[dict[str, Any]]:
+    """Rank cluster-level coldspot candidates before expensive exact scoring."""
+    if not candidates or not gnn_rank_enabled("coldspot_cluster"):
+        return candidates
+    try:
+        model, graph, helpers = _load_ranker(
+            benchmark_name,
+            model_env="HIER_GNN_COLDSPOT_MODEL",
+            default_model="",
+        )
+        rows = []
+        for cand in candidates:
+            row = dict(cand.get("trace", {}))
+            row.update(
+                {
+                    "event": "hier_coldspot_candidate",
+                    "operator": "coldspot_cluster",
+                    "kind": str(row.get("kind", "coldspot_kick")),
+                    "field": "congestion",
+                    "candidate_rank": int(cand.get("candidate_rank", row.get("candidate_rank", 0))),
+                    "old_proxy": cand.get("old_proxy"),
+                    "candidate_proxy": cand.get("candidate_proxy"),
+                    "proxy_delta": cand.get("proxy_delta"),
+                    "hierarchy_quality_before": cand.get("hierarchy_quality_before"),
+                    "hierarchy_quality_after": cand.get("hierarchy_quality_after"),
+                    "hierarchy_quality_delta": cand.get("hierarchy_quality_delta"),
+                    "cluster": int(_cluster_from_row(row)),
+                    "target_cluster": int(row.get("target_cluster", -1)),
+                    "legal": True,
+                }
+            )
+            rows.append(row)
+        features = _artifact_features(rows, graph, helpers)
+        clusters = graph["cluster_node"]
+        source_node = []
+        target_node = []
+        for row in rows:
+            source_cluster = int(_cluster_from_row(row))
+            if 0 <= source_cluster < int(clusters.numel()):
+                source_node.append(int(clusters[source_cluster]))
+            else:
+                source_node.append(0)
+            target_cluster = int(row.get("target_cluster", -1))
+            if target_cluster >= 0 and target_cluster < int(clusters.numel()):
+                target_node.append(int(clusters[target_cluster]))
+            else:
+                target_node.append(-1)
+        dataset = {
+            "graphs": [graph],
+            "examples": {
+                "features": features,
+                "graph_id": torch.zeros(len(candidates), dtype=torch.long),
+                "source_node": torch.tensor(source_node, dtype=torch.long),
+                "target_node": torch.tensor(target_node, dtype=torch.long),
+            },
+        }
+        with torch.no_grad():
+            scores = model(dataset, torch.arange(len(candidates), dtype=torch.long))
+        for cand, score in zip(candidates, scores.tolist()):
+            cand["gnn_score"] = float(score)
+        original_order = {id(c): i for i, c in enumerate(candidates)}
+        ranked = sorted(
+            candidates,
+            key=lambda c: (
+                -float(c.get("gnn_score", 0.0)),
+                bool(c.get("is_noop", False)),
+                float(c.get("trace", {}).get("score", 0.0)),
+                int(c.get("candidate_rank", 0)),
+                original_order[id(c)],
+            ),
+        )
+        top_k = max(1, int(os.environ.get("HIER_GNN_COLDSPOT_CLUSTER_TOP_K", "1") or "1"))
+        selected = ranked[:top_k]
+        selected_ids = {id(c) for c in selected}
+        return selected + [c for c in ranked if id(c) not in selected_ids]
+    except Exception as exc:
+        for cand in candidates:
+            cand["gnn_rank_error"] = str(exc)
+        active = [c for c in candidates if not c.get("is_noop", False)]
+        noop = [c for c in candidates if c.get("is_noop", False)]
+        return active + noop
+
+
+def rank_coldspot_policy_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    benchmark_name: str,
+) -> list[dict[str, Any]]:
+    """Rank candidate cluster/anchor proposals before expensive exact refinement."""
+    if not candidates or not gnn_coldspot_policy_enabled():
+        return candidates
+    model_path = _policy_model_env()
+    if not model_path:
+        model_path = os.environ.get("HIER_GNN_COLDSPOT_MODEL", "").strip()
+    if not model_path:
+        for cand in candidates:
+            cand["policy_rank_error"] = "no policy model path"
+            cand.setdefault("policy_selected", True)
+        return candidates
+
+    top_k = max(
+        1,
+        int(
+            os.environ.get("HIER_GNN_COLDSPOT_POLICY_TOP_K", str(len(candidates)))
+            or str(len(candidates))
+        ),
+    )
+    try:
+        model, graph, helpers = _load_ranker(
+            benchmark_name,
+            model_env="HIER_GNN_COLDSPOT_POLICY_MODEL",
+            default_model=model_path,
+        )
+        rows = []
+        for cand in candidates:
+            row = dict(cand)
+            row.update(dict(cand.get("trace", {})))
+            row.update(
+                {
+                    "event": "hier_coldspot_policy",
+                    "operator": "coldspot_tightening",
+                    "kind": str(row.get("kind", "coldspot_kick")),
+                    "field": "congestion",
+                    "old_proxy": float(row.get("old_proxy", 0.0)),
+                    "candidate_rank": int(row.get("candidate_rank", 0)),
+                    "candidate_pool_size": int(row.get("candidate_pool_size", len(candidates))),
+                    "selected_by_gnn": True,
+                }
+            )
+            rows.append(row)
+        features = _artifact_features(rows, graph, helpers)
+        clusters = graph["cluster_node"]
+        source_node = torch.full((len(rows),), 0, dtype=torch.long)
+        target_node = torch.full((len(rows),), -1, dtype=torch.long)
+        for i, row in enumerate(rows):
+            cid = int(_cluster_from_row(row))
+            if 0 <= cid < int(clusters.numel()):
+                source_node[i] = int(clusters[cid])
+            elif i >= 0:
+                source_node[i] = 0
+            target_cluster = int(row.get("target_cluster", -1))
+            if 0 <= target_cluster < int(clusters.numel()):
+                target_node[i] = int(clusters[target_cluster])
+        dataset = {
+            "graphs": [graph],
+            "examples": {
+                "features": features,
+                "graph_id": torch.zeros(len(candidates), dtype=torch.long),
+                "source_node": source_node,
+                "target_node": target_node,
+            },
+        }
+        with torch.no_grad():
+            scores = model(dataset, torch.arange(len(candidates), dtype=torch.long))
+        for cand, score in zip(candidates, scores.tolist()):
+            cand["policy_score"] = float(score)
+        original_order = {id(c): i for i, c in enumerate(candidates)}
+        ranked = sorted(
+            candidates,
+            key=lambda c: (
+                -float(c.get("policy_score", 0.0)),
+                float(c.get("target_field", 0.0)),
+                int(c.get("candidate_rank", 0)),
+                original_order[id(c)],
+            ),
+        )
+        for rank, cand in enumerate(ranked):
+            cand["policy_rank"] = int(rank)
+            cand["policy_selected"] = rank < max(1, top_k)
+        return ranked
+    except Exception as exc:
+        for cand in candidates:
+            cand["policy_rank_error"] = str(exc)
+            cand["policy_score"] = 0.0
+            cand["policy_rank"] = int(cand.get("candidate_rank", 0))
+            cand["policy_selected"] = True
+        return candidates
