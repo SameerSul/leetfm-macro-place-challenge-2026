@@ -52,9 +52,11 @@ def _component_anchors(
                 n=n,
                 n_soft=max(int(n_soft), 0),
                 hard_members=members,
-                soft_members=np.asarray(soft_members, dtype=np.int64)
-                if soft_members is not None
-                else np.zeros(0, dtype=np.int64),
+                soft_members=(
+                    np.asarray(soft_members, dtype=np.int64)
+                    if soft_members is not None
+                    else np.zeros(0, dtype=np.int64)
+                ),
             )
             if hard_edges:
                 edges = {tuple(k): float(v) for k, v in hard_edges.items()}
@@ -98,11 +100,7 @@ def _component_anchors(
         selected = [c for c in comp_sizes[:max_anchors] if c.size > 0]
         anchors: list[np.ndarray] = []
         for comp in selected:
-            local_idx = [
-                member_to_local.get(int(v), -1)
-                for v in comp
-                if int(v) in member_to_local
-            ]
+            local_idx = [member_to_local.get(int(v), -1) for v in comp if int(v) in member_to_local]
             local_idx = [v for v in local_idx if v >= 0]
             if not local_idx:
                 continue
@@ -199,9 +197,7 @@ def _cold_window_anchors_legacy(
     graph_weight = max(0.0, float(graph_weight))
     graph_target_xy = None
     source_points = (
-        np.asarray(source_points, dtype=np.float64)
-        if source_points is not None
-        else None
+        np.asarray(source_points, dtype=np.float64) if source_points is not None else None
     )
     source_weight = max(0.0, float(source_weight))
     if source_points is not None:
@@ -1146,7 +1142,9 @@ def _coldspot_cluster_kick_candidates(
         win_cells = max(1, int(np.ceil(win_microns / min(cell_w, cell_h))))
         anchor_count = max(1, int(getattr(const, "HIER_COLDSPOT_ANCHOR_VARIANTS", 3)))
         source_anchor_count = max(1, int(getattr(const, "HIER_COLDSPOT_COMPONENT_ANCHORS", 1)))
-        source_point_weight = max(0.0, float(getattr(const, "HIER_COLDSPOT_SOURCE_POINT_WEIGHT", 0.0)))
+        source_point_weight = max(
+            0.0, float(getattr(const, "HIER_COLDSPOT_SOURCE_POINT_WEIGHT", 0.0))
+        )
         source_points = _component_anchors(
             hard_xy,
             members,
@@ -1167,7 +1165,10 @@ def _coldspot_cluster_kick_candidates(
             graph_arr = np.asarray(graph_target, dtype=np.float64)
             if graph_arr.size == 2 and np.all(np.isfinite(graph_arr)):
                 graph_target = (float(graph_arr[0]), float(graph_arr[1]))
-                graph_key = (int(np.round(graph_arr[0] * 1000.0)), int(np.round(graph_arr[1] * 1000.0)))
+                graph_key = (
+                    int(np.round(graph_arr[0] * 1000.0)),
+                    int(np.round(graph_arr[1] * 1000.0)),
+                )
         else:
             graph_target = None
             effective_graph_weight = 0.0
@@ -1222,9 +1223,7 @@ def _coldspot_cluster_kick_candidates(
                 "border_compact",
                 "gaussian_gather",
             )
-            low_disp_blend = float(
-                getattr(const, "HIER_COLDSPOT_EGONET_LOW_DISP_BLEND", 0.75)
-            )
+            low_disp_blend = float(getattr(const, "HIER_COLDSPOT_EGONET_LOW_DISP_BLEND", 0.75))
         else:
             variant_cycle = (
                 "gaussian_gather",
@@ -1429,3 +1428,74 @@ def _coldspot_cluster_kick_candidates(
             all_out.extend(out)
             clusters_used += 1
     return all_out
+
+
+def _coldspot_cluster_kick(
+    hard_xy,
+    sizes,
+    hw,
+    hh,
+    cw,
+    ch,
+    movable,
+    n,
+    clusters,
+    cluster_softs,
+    soft_xy,
+    soft_hw,
+    soft_hh,
+    soft_movable,
+    cong_field,
+    nr,
+    nc,
+    rng,
+    deadline,
+    target_density=0.65,
+    pick="hot",
+    max_size=64,
+    plc=None,
+    benchmark_name=None,
+    preferred_cluster_ids=None,
+    max_clusters=1,
+    egonet_trace_by_cluster=None,
+    graph_anchor_targets_by_cluster=None,
+    graph_anchor_strength_by_cluster=None,
+    graph_anchor_weight: float = 0.0,
+):
+    """Backward-compatible single-candidate coldspot kick wrapper."""
+    pool = _coldspot_cluster_kick_candidates(
+        hard_xy,
+        sizes,
+        hw,
+        hh,
+        cw,
+        ch,
+        movable,
+        n,
+        clusters,
+        cluster_softs,
+        soft_xy,
+        soft_hw,
+        soft_hh,
+        soft_movable,
+        cong_field,
+        nr,
+        nc,
+        rng,
+        deadline,
+        target_density=target_density,
+        pick=pick,
+        max_size=max_size,
+        plc=plc,
+        benchmark_name=benchmark_name,
+        preferred_cluster_ids=preferred_cluster_ids,
+        max_clusters=max_clusters,
+        egonet_trace_by_cluster=egonet_trace_by_cluster,
+        graph_anchor_targets_by_cluster=graph_anchor_targets_by_cluster,
+        graph_anchor_strength_by_cluster=graph_anchor_strength_by_cluster,
+        graph_anchor_weight=graph_anchor_weight,
+        kick_count=1,
+    )
+    if not pool:
+        return None
+    return pool[0][0], pool[0][1]

@@ -11,6 +11,7 @@ from utils import constants as const
 from utils.config import HAS_NUMBA, _GPU_BACKEND, _GPU_DEVICE, _numba_njit
 from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
+from placer.local_search.graph_tension import candidate_graph_edge_delta
 from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.region_rules import accepts_region_score
 
@@ -158,6 +159,65 @@ def _outside_region_cell_mask(
     return np.logical_not(inside)
 
 
+def _graph_candidate_delta(
+    before_h: np.ndarray,
+    after_h: np.ndarray,
+    clusters: dict | None,
+    labels: np.ndarray | None,
+    edges,
+    *,
+    source: int,
+    target: int | None,
+    cw: float,
+    ch: float,
+    field: np.ndarray | None,
+    seed_hard_xy: np.ndarray | None = None,
+    graph_confidence=None,
+    weight: float = 0.0,
+    samples: int = 9,
+) -> float:
+    if (
+        float(weight) <= 0.0
+        or clusters is None
+        or edges is None
+        or labels is None
+        or before_h.shape != after_h.shape
+    ):
+        return 0.0
+    if int(source) < 0 or int(source) >= int(labels.size):
+        return 0.0
+    src_cluster = int(labels[int(source)])
+    if target is None:
+        dst_cluster = -1
+    else:
+        t = int(target)
+        if t < 0 or t >= int(labels.size):
+            return 0.0
+        dst_cluster = int(labels[t])
+    affected: list[int] = []
+    if src_cluster >= 0:
+        affected.append(src_cluster)
+    if dst_cluster >= 0 and dst_cluster != src_cluster:
+        affected.append(dst_cluster)
+    if not affected:
+        return 0.0
+    stats = candidate_graph_edge_delta(
+        before_h,
+        after_h,
+        clusters,
+        edges,
+        cw=float(cw),
+        ch=float(ch),
+        field=field,
+        seed_hard_xy=seed_hard_xy,
+        confidence=graph_confidence,
+        affected_clusters=affected,
+        samples=max(2, int(samples)),
+    )
+    delta = float(stats.get("graph_candidate_delta", 0.0))
+    return max(0.0, delta) * max(0.0, float(weight))
+
+
 def _swap_rejection_reason(
     *,
     legal: bool,
@@ -212,9 +272,7 @@ def _log_swap_candidates(
     if outside_bbox_count is None:
         outside_bbox_count = sum(1 for row in rows if bool(row.get("outside_region_bbox", False)))
     if outside_mask_count is None:
-        outside_mask_count = sum(
-            1 for row in rows if bool(row.get("outside_region_mask", False))
-        )
+        outside_mask_count = sum(1 for row in rows if bool(row.get("outside_region_mask", False)))
     if inside_mask_count is None:
         inside_mask_count = sum(
             1 for row in rows if not bool(row.get("outside_region_mask", False))
@@ -574,6 +632,14 @@ def _try_hard_hard(
     priority_weight: float = 0.0,
     region_mask: "np.ndarray | None" = None,
     region_mask_enabled: bool = False,
+    graph_clusters: dict | None = None,
+    graph_labels: np.ndarray | None = None,
+    graph_edges=None,
+    graph_confidence=None,
+    seed_hard_xy: np.ndarray | None = None,
+    graph_delta_weight: float = 0.0,
+    graph_delta_samples: int = 9,
+    graph_mask_penalty_weight: float = 0.0,
 ) -> tuple[int, float]:
     accepts = 0
     n = h_pos.shape[0]
@@ -655,10 +721,48 @@ def _try_hard_hard(
             legal_mask = legal_mask[keep]
             outside_bbox = outside_bbox_before[keep]
             outside_mask = outside_mask_before[keep]
+        graph_mask_penalty = (
+            max(0.0, float(graph_mask_penalty_weight)) * span * outside_mask.astype(np.float64)
+        )
+        graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
+        graph_delta_by_target: dict[int, float] = {}
+        if (
+            float(graph_delta_weight) > 0.0
+            and graph_clusters is not None
+            and graph_edges is not None
+            and graph_labels is not None
+            and graph_labels.size == h_pos.shape[0]
+        ):
+            raw_weight = max(0.0, float(graph_delta_weight))
+            for pos, j in enumerate(cand):
+                trial = h_pos.copy()
+                j_int = int(j)
+                trial[int(i)] = h_pos[j_int].copy()
+                trial[j_int] = h_pos[int(i)].copy()
+                delta = _graph_candidate_delta(
+                    h_pos,
+                    trial,
+                    graph_clusters,
+                    graph_labels,
+                    graph_edges,
+                    source=int(i),
+                    target=j_int,
+                    cw=float(cw),
+                    ch=float(ch),
+                    field=field,
+                    seed_hard_xy=seed_hard_xy,
+                    graph_confidence=graph_confidence,
+                    weight=raw_weight * span,
+                    samples=graph_delta_samples,
+                )
+                graph_delta_by_target[j_int] = float(delta)
+                graph_delta_penalty[pos] = delta
         rank = (
             local[cand]
             + region_bias * span * outside.astype(np.float64)
             + max(0.0, float(priority_weight)) * span * priority[cand]
+            + graph_mask_penalty
+            + graph_delta_penalty
         )
         ranked_idx = _gpu_swap_prescore_order(
             rank,
@@ -678,9 +782,7 @@ def _try_hard_hard(
         if not use_trace_or_rank:
             scored = [
                 (int(j), bool(outside_move))
-                for j, is_legal, outside_move in zip(
-                    ranked, ranked_legal, ranked_outside
-                )
+                for j, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside)
                 if bool(is_legal)
             ]
             scores = (
@@ -733,6 +835,17 @@ def _try_hard_hard(
                 "graph_tension": float(priority[i]),
                 "source_graph_tension": float(priority[i]),
                 "target_graph_tension": float(priority[j]),
+                "graph_candidate_delta": float(graph_delta_by_target.get(j, 0.0)),
+                "graph_mask_penalty": (
+                    float(graph_mask_penalty[candidate_rank])
+                    if int(candidate_rank) < len(graph_mask_penalty)
+                    else 0.0
+                ),
+                "graph_delta_rank_penalty": (
+                    float(graph_delta_penalty[candidate_rank])
+                    if int(candidate_rank) < len(graph_delta_penalty)
+                    else 0.0
+                ),
                 "outside_region": bool(outside_move),
                 "outside_region_bbox": bool(outside_bbox_move),
                 "outside_region_mask": bool(outside_mask_move),
@@ -852,6 +965,14 @@ def _try_soft_soft(
     field_name: str,
     region_mask: "np.ndarray | None" = None,
     region_mask_enabled: bool = False,
+    graph_clusters: dict | None = None,
+    graph_labels: np.ndarray | None = None,
+    graph_edges=None,
+    graph_confidence=None,
+    seed_hard_xy: np.ndarray | None = None,
+    graph_delta_weight: float = 0.0,
+    graph_delta_samples: int = 9,
+    graph_mask_penalty_weight: float = 0.0,
 ) -> tuple[int, float]:
     accepts = 0
     n_soft = s_pos.shape[0]
@@ -916,7 +1037,12 @@ def _try_soft_soft(
             keep = np.isin(cand_before, cand)
             outside_bbox = outside_bbox_before[keep]
             outside_mask = outside_mask_before[keep]
+        graph_mask_penalty = (
+            max(0.0, float(graph_mask_penalty_weight)) * span * outside_mask.astype(np.float64)
+        )
+        graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
         rank = local[cand] + region_bias * span * outside.astype(np.float64)
+        rank = rank + graph_mask_penalty + graph_delta_penalty
         ranked_idx = _gpu_swap_prescore_order(
             rank,
             enabled=const.HIER_GPU_SWAP_PRESCORE_SS,
@@ -986,7 +1112,20 @@ def _try_soft_soft(
                 "target": b,
                 "source_field": float(local[a]),
                 "target_field": float(local[b]),
+                "source_graph_tension": 0.0,
+                "target_graph_tension": 0.0,
                 "graph_tension": 0.0,
+                "graph_candidate_delta": 0.0,
+                "graph_mask_penalty": (
+                    float(graph_mask_penalty[candidate_rank])
+                    if int(candidate_rank) < len(graph_mask_penalty)
+                    else 0.0
+                ),
+                "graph_delta_rank_penalty": (
+                    float(graph_delta_penalty[candidate_rank])
+                    if int(candidate_rank) < len(graph_delta_penalty)
+                    else 0.0
+                ),
                 "outside_region_bbox": bool(outside_bbox_move),
                 "outside_region_mask": bool(outside_mask_move),
                 "outside_region": bool(outside_move),
@@ -1105,6 +1244,14 @@ def _try_hard_soft(
     priority_weight: float = 0.0,
     region_mask: "np.ndarray | None" = None,
     region_mask_enabled: bool = False,
+    graph_clusters: dict | None = None,
+    graph_labels: np.ndarray | None = None,
+    graph_edges=None,
+    graph_confidence=None,
+    seed_hard_xy: np.ndarray | None = None,
+    graph_delta_weight: float = 0.0,
+    graph_delta_samples: int = 9,
+    graph_mask_penalty_weight: float = 0.0,
 ) -> tuple[int, float]:
     accepts = 0
     if h_pos.shape[0] == 0 or s_pos.shape[0] == 0:
@@ -1176,7 +1323,43 @@ def _try_hard_soft(
             keep = np.isin(cand_before, cand)
             outside_bbox = outside_bbox_before[keep]
             outside_mask = outside_mask_before[keep]
+        graph_mask_penalty = (
+            max(0.0, float(graph_mask_penalty_weight)) * span * outside_mask.astype(np.float64)
+        )
+        graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
+        graph_delta_by_target: dict[int, float] = {}
+        if (
+            float(graph_delta_weight) > 0.0
+            and graph_clusters is not None
+            and graph_edges is not None
+            and graph_labels is not None
+            and graph_labels.size == h_pos.shape[0]
+        ):
+            raw_weight = max(0.0, float(graph_delta_weight))
+            for pos, k in enumerate(cand):
+                trial = h_pos.copy()
+                k_int = int(k)
+                trial[int(i)] = s_pos[k_int].copy()
+                delta = _graph_candidate_delta(
+                    h_pos,
+                    trial,
+                    graph_clusters,
+                    graph_labels,
+                    graph_edges,
+                    source=int(i),
+                    target=None,
+                    cw=float(cw),
+                    ch=float(ch),
+                    field=field,
+                    seed_hard_xy=seed_hard_xy,
+                    graph_confidence=graph_confidence,
+                    weight=raw_weight * span,
+                    samples=graph_delta_samples,
+                )
+                graph_delta_by_target[k_int] = float(delta)
+                graph_delta_penalty[pos] = delta
         rank = soft_local[cand] + region_bias * span * outside.astype(np.float64)
+        rank = rank + graph_mask_penalty + graph_delta_penalty
         legal_mask = _legal_hard_soft_candidates(
             h_pos,
             s_pos,
@@ -1262,6 +1445,18 @@ def _try_hard_soft(
                 "target_field": float(soft_local[k]),
                 "graph_tension": float(priority[i]),
                 "source_graph_tension": float(priority[i]),
+                "target_graph_tension": 0.0,
+                "graph_candidate_delta": float(graph_delta_by_target.get(k, 0.0)),
+                "graph_mask_penalty": (
+                    float(graph_mask_penalty[candidate_rank])
+                    if int(candidate_rank) < len(graph_mask_penalty)
+                    else 0.0
+                ),
+                "graph_delta_rank_penalty": (
+                    float(graph_delta_penalty[candidate_rank])
+                    if int(candidate_rank) < len(graph_delta_penalty)
+                    else 0.0
+                ),
                 "outside_region_bbox": bool(outside_bbox_move),
                 "outside_region_mask": bool(outside_mask_move),
                 "outside_region": bool(outside_move),
@@ -1402,6 +1597,14 @@ def _region_bounded_swap_relief(
     hard_priority: "np.ndarray | None" = None,
     priority_weight: float = 0.0,
     region_mask: "np.ndarray | None" = None,
+    graph_clusters: dict | None = None,
+    graph_labels: np.ndarray | None = None,
+    graph_edges=None,
+    graph_confidence=None,
+    seed_hard_xy: np.ndarray | None = None,
+    graph_delta_weight: float = 0.0,
+    graph_delta_samples: int = 9,
+    graph_mask_penalty_weight: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, int, float, dict]:
     """Run bounded hierarchy-preserving swap relief."""
     nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
@@ -1457,6 +1660,14 @@ def _region_bounded_swap_relief(
                 priority_weight,
                 region_mask,
                 region_mask_enabled,
+                graph_clusters,
+                graph_labels,
+                graph_edges,
+                graph_confidence,
+                seed_hard_xy,
+                graph_delta_weight,
+                graph_delta_samples,
+                graph_mask_penalty_weight,
             )
             accepts += got
         if enable_hs:
@@ -1493,6 +1704,14 @@ def _region_bounded_swap_relief(
                 priority_weight,
                 region_mask,
                 region_mask_enabled,
+                graph_clusters,
+                graph_labels,
+                graph_edges,
+                graph_confidence,
+                seed_hard_xy,
+                graph_delta_weight,
+                graph_delta_samples,
+                graph_mask_penalty_weight,
             )
             accepts += got
         if enable_ss:
@@ -1519,6 +1738,14 @@ def _region_bounded_swap_relief(
                 field_name,
                 region_mask,
                 region_mask_enabled,
+                graph_clusters,
+                graph_labels,
+                graph_edges,
+                graph_confidence,
+                seed_hard_xy,
+                graph_delta_weight,
+                graph_delta_samples,
+                graph_mask_penalty_weight,
             )
             accepts += got
 

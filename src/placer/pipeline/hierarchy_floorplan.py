@@ -249,6 +249,32 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     def _has_spare(deadline: "float | None", reserve_s: float) -> bool:
         return deadline is None or time.monotonic() + float(reserve_s) < float(deadline)
 
+    def _env_bool(name: str, default: bool) -> bool:
+        raw = os.environ.get(name)
+        if raw is None:
+            return bool(default)
+        return raw.strip().lower() not in {"0", "false", "off", "no", "disabled", ""}
+
+    def _env_float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return float(default)
+        try:
+            return float(raw)
+        except ValueError:
+            _log(f"  [hier] env parse fallback: {name}={raw!r}, using {float(default)}")
+            return float(default)
+
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return int(default)
+        try:
+            return int(raw)
+        except ValueError:
+            _log(f"  [hier] env parse fallback: {name}={raw!r}, using {int(default)}")
+            return int(default)
+
     def _empty_pass_stats() -> dict[str, int]:
         return {"candidates": 0, "legal": 0, "scored": 0, "accepts": 0}
 
@@ -366,29 +392,99 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     soft_mov = movable[n : n + n_soft]
     seed_hierarchy_quality = hierarchy_quality_metric(legal, clusters)
 
-    graph_tension_enabled = bool(getattr(const, "HIER_GRAPH_TENSION_ORDER", False)) and (
+    graph_tension_enabled = _env_bool(
+        "HIER_GRAPH_TENSION_ORDER",
+        bool(getattr(const, "HIER_GRAPH_TENSION_ORDER", False)),
+    ) and (
         int(n) >= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MIN", 0))
         and int(n) <= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MAX", 1000000))
     )
     graph_tension_weight = (
-        max(0.0, float(getattr(const, "HIER_GRAPH_TENSION_WEIGHT", 0.0)))
+        max(
+            0.0,
+            _env_float(
+                "HIER_GRAPH_TENSION_WEIGHT",
+                getattr(const, "HIER_GRAPH_TENSION_WEIGHT", 0.0),
+            ),
+        )
         if graph_tension_enabled
         else 0.0
     )
     graph_tension_decomp_weight = (
-        max(0.0, float(getattr(const, "HIER_GRAPH_TENSION_DECOMP_WEIGHT", graph_tension_weight)))
+        max(
+            0.0,
+            _env_float(
+                "HIER_GRAPH_TENSION_DECOMP_WEIGHT",
+                float(getattr(const, "HIER_GRAPH_TENSION_DECOMP_WEIGHT", graph_tension_weight)),
+            ),
+        )
         if graph_tension_enabled
         else 0.0
     )
     graph_tension_coldspot_weight = (
-        max(0.0, float(getattr(const, "HIER_GRAPH_TENSION_COLDSPOT_WEIGHT", graph_tension_weight)))
+        max(
+            0.0,
+            _env_float(
+                "HIER_GRAPH_TENSION_COLDSPOT_WEIGHT",
+                float(getattr(const, "HIER_GRAPH_TENSION_COLDSPOT_WEIGHT", graph_tension_weight)),
+            ),
+        )
         if graph_tension_enabled
         else 0.0
     )
     graph_tension_swap_weight = (
-        max(0.0, float(getattr(const, "HIER_GRAPH_TENSION_SWAP_WEIGHT", 0.0)))
+        max(
+            0.0,
+            _env_float(
+                "HIER_GRAPH_TENSION_SWAP_WEIGHT",
+                float(getattr(const, "HIER_GRAPH_TENSION_SWAP_WEIGHT", 0.0)),
+            ),
+        )
         if graph_tension_enabled
         else 0.0
+    )
+    graph_swap_delta_weight = (
+        max(
+            0.0,
+            _env_float(
+                "HIER_SWAP_GRAPH_DELTA_WEIGHT",
+                float(getattr(const, "HIER_SWAP_GRAPH_DELTA_WEIGHT", 0.0)),
+            ),
+        )
+        if graph_tension_enabled
+        else 0.0
+    )
+    graph_swap_mask_penalty_weight = (
+        max(
+            0.0,
+            _env_float(
+                "HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT",
+                float(getattr(const, "HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT", 0.0)),
+            ),
+        )
+        if graph_tension_enabled
+        else 0.0
+    )
+    graph_swap_delta_samples = max(
+        2,
+        int(
+            _env_int(
+                "HIER_SWAP_GRAPH_DELTA_SAMPLES",
+                int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9)),
+            )
+        ),
+    )
+    graph_swap_fallback_enabled = bool(
+        _env_bool(
+            "HIER_SWAP_GRAPH_FALLBACK", bool(getattr(const, "HIER_SWAP_GRAPH_FALLBACK", False))
+        )
+    )
+    graph_swap_fallback_budget_s = max(
+        0.0,
+        _env_float(
+            "HIER_SWAP_GRAPH_FALLBACK_BUDGET_S",
+            float(getattr(const, "HIER_SWAP_GRAPH_FALLBACK_BUDGET_S", 2.5)),
+        ),
     )
     graph_tension_active = max(
         graph_tension_decomp_weight,
@@ -433,6 +529,204 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             edge_count=int(len(hierarchy.edges)),
         )
 
+    def _build_graph_swap_mask(
+        *,
+        hard_xy: np.ndarray,
+        graph_weight: float,
+    ) -> tuple[np.ndarray | None, dict[str, object]]:
+        max_edges = max(
+            0,
+            _env_int(
+                "HIER_SWAP_GRAPH_MASK_MAX_EDGES",
+                int(getattr(const, "HIER_SWAP_GRAPH_MASK_MAX_EDGES", 0)),
+            ),
+        )
+        pad_cells = max(
+            0,
+            _env_int(
+                "HIER_SWAP_GRAPH_MASK_PAD_CELLS",
+                int(getattr(const, "HIER_SWAP_GRAPH_MASK_PAD_CELLS", 1)),
+            ),
+        )
+        if not bool(getattr(const, "HIER_SWAP_GRAPH_MASK_AWARE", False)):
+            return None, {"enabled": False, "graph_weight": float(graph_weight)}
+        if graph_weight <= 0.0:
+            return None, {
+                "enabled": False,
+                "graph_weight": float(graph_weight),
+                "reason": "zero_graph_tension_weight",
+            }
+        if not hierarchy.edges or not clusters:
+            return None, {
+                "enabled": False,
+                "graph_weight": float(graph_weight),
+                "reason": "no_graph_edges",
+            }
+
+        nr_, nc_ = int(benchmark.grid_rows), int(benchmark.grid_cols)
+        if nr_ <= 0 or nc_ <= 0:
+            return None, {
+                "enabled": False,
+                "graph_weight": float(graph_weight),
+                "reason": "invalid_grid",
+            }
+
+        try:
+            from placer.pipeline.segments.floorplan_coldspot_utils import dilate_cell_mask
+        except Exception:
+            return None, {
+                "enabled": False,
+                "graph_weight": float(graph_weight),
+                "reason": "missing_dilate",
+            }
+
+        cell_w, cell_h = float(cw) / nc_, float(ch) / nr_
+        if cell_w <= 0.0 or cell_h <= 0.0:
+            return None, {
+                "enabled": False,
+                "graph_weight": float(graph_weight),
+                "reason": "invalid_cell_size",
+            }
+
+        def _macro_cells(raw_mem: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+            mem = np.asarray(raw_mem, dtype=np.int64)
+            mem = mem[(mem >= 0) & (mem < n)]
+            if mem.size == 0:
+                return None
+            movable_mem = mem[movable[mem]]
+            if movable_mem.size:
+                mem = movable_mem
+            x = np.clip((hard_xy[mem, 0] / cell_w), 0.0, float(nc_ - 1))
+            y = np.clip((hard_xy[mem, 1] / cell_h), 0.0, float(nr_ - 1))
+            return np.rint(x).astype(np.int64), np.rint(y).astype(np.int64)
+
+        centers: dict[int, tuple[int, int]] = {}
+        for cid, raw_mem in clusters.items():
+            cells = _macro_cells(raw_mem)
+            if cells is None:
+                continue
+            cols, rows = cells
+            centers[int(cid)] = (int(float(rows.mean())), int(float(cols.mean())))
+
+        if not centers:
+            return None, {
+                "enabled": False,
+                "graph_weight": float(graph_weight),
+                "reason": "no_cluster_cells",
+            }
+
+        edges = sorted(
+            hierarchy.edges,
+            key=lambda edge: float(getattr(edge, "weight", 0.0)),
+            reverse=True,
+        )
+        if max_edges > 0:
+            edges = edges[:max_edges]
+
+        def _draw_line(
+            mask: np.ndarray,
+            r0: int,
+            c0: int,
+            r1: int,
+            c1: int,
+        ) -> None:
+            dr = abs(int(r1) - int(r0))
+            dc = abs(int(c1) - int(c0))
+            steps = max(dr, dc, 1)
+            rr = np.clip(
+                np.rint(np.linspace(float(r0), float(r1), steps + 1)).astype(np.int64),
+                0,
+                nr_ - 1,
+            )
+            cc = np.clip(
+                np.rint(np.linspace(float(c0), float(c1), steps + 1)).astype(np.int64),
+                0,
+                nc_ - 1,
+            )
+            mask[rr, cc] = True
+
+        graph_mask = np.zeros((nr_, nc_), dtype=np.bool_)
+        top_edges: list[tuple[int, int, float]] = []
+        top_weights: list[float] = []
+        for edge in edges:
+            a = int(getattr(edge, "src", -1))
+            b = int(getattr(edge, "dst", -1))
+            if a not in centers or b not in centers:
+                continue
+            ar, ac = centers[a]
+            br, bc = centers[b]
+            if ar == br and ac == bc:
+                continue
+            w = float(getattr(edge, "weight", 0.0))
+            top_edges.append((a, b, w))
+            top_weights.append(w)
+            _draw_line(graph_mask, ar, ac, br, bc)
+
+        for r, c in centers.values():
+            graph_mask[int(r), int(c)] = True
+
+        if not graph_mask.any():
+            return None, {
+                "enabled": False,
+                "graph_weight": float(graph_weight),
+                "reason": "no_drawn_corridors",
+                "requested_edges": int(len(hierarchy.edges)),
+                "used_edges": int(len(top_edges)),
+            }
+
+        if pad_cells > 0:
+            graph_mask = dilate_cell_mask(graph_mask, pad_cells, nr_, nc_)
+
+        used_edges = int(len(top_edges))
+        return graph_mask, {
+            "enabled": True,
+            "graph_weight": float(graph_weight),
+            "requested_edges": int(len(edges) if max_edges > 0 else len(hierarchy.edges)),
+            "used_edges": used_edges,
+            "requested_max_edges": max_edges,
+            "pad_cells": pad_cells,
+            "cell_count": int(np.count_nonzero(graph_mask)),
+            "top_edges": top_edges[: max(1, min(8, used_edges))],
+            "top_weights": sorted(top_weights, reverse=True)[: max(1, min(8, len(top_weights)))],
+            "min_weight": float(min(top_weights)) if top_weights else 0.0,
+            "max_weight": float(max(top_weights)) if top_weights else 0.0,
+        }
+
+    def _trace_swap_graph_mask(mask_info: dict[str, object]) -> None:
+        if not mask_info:
+            return
+        if bool(mask_info.get("enabled", False)):
+            top_weights = sorted(
+                [float(w) for w in mask_info.get("top_weights", [])],
+                reverse=True,
+            )
+            log_gnn_event(
+                "hier_graph_swap_mask",
+                benchmark=benchmark.name,
+                enabled=True,
+                graph_weight=float(mask_info.get("graph_weight", 0.0)),
+                requested_edges=int(mask_info.get("requested_edges", 0)),
+                used_edges=int(mask_info.get("used_edges", 0)),
+                requested_max_edges=int(mask_info.get("requested_max_edges", 0)),
+                pad_cells=int(mask_info.get("pad_cells", 0)),
+                cell_count=int(mask_info.get("cell_count", 0)),
+                top_edge_count=int(mask_info.get("used_edges", 0)),
+                top_weights=top_weights[: min(8, len(top_weights))],
+            )
+            _log(
+                "  [hier] swap graph-mask: "
+                f"enabled edges={int(mask_info.get('used_edges', 0))}/"
+                f"{int(mask_info.get('requested_edges', 0))}, "
+                f"cells={int(mask_info.get('cell_count', 0))}, "
+                f"pad_cells={int(mask_info.get('pad_cells', 0))}"
+            )
+        else:
+            _log(
+                "  [hier] swap graph-mask disabled: "
+                f"reason={str(mask_info.get('reason', 'disabled'))}, "
+                f"graph_weight={float(mask_info.get('graph_weight', 0.0)):.4f}"
+            )
+
     pre_relief = s_score
     region = None
     soft_region = None
@@ -440,6 +734,11 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     base_heat_field = _congestion_field(scorer, nr, nc)
     cluster_heat = None
     _trace_graph_tension("seed", legal, base_heat_field)
+    swap_mask, swap_mask_info = _build_graph_swap_mask(
+        hard_xy=legal,
+        graph_weight=float(graph_tension_swap_weight),
+    )
+    _trace_swap_graph_mask(swap_mask_info)
 
     def _cluster_heat(field):
         if field is None or not clusters:
@@ -1095,15 +1394,19 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     swap_round_micro_acc = 0
     pre_swap_score = r_score
     swap_t0 = time.monotonic()
+    swap_fallback_used = False
     fields = (False, True)
     for _swap_round in range(swap_rounds):
         if swap_deadline is not None and time.monotonic() >= swap_deadline:
             break
         swap_round_start = float(r_score)
         swap_round_start_acc = int(swap_acc)
+        swap_round_masked_accepts = 0
         for use_density in fields:
             swap_before = float(r_score)
-            swap_field = _congestion_field(rscorer, nr, nc) if graph_tension_swap_weight > 0.0 else None
+            swap_field = (
+                _congestion_field(rscorer, nr, nc) if graph_tension_swap_weight > 0.0 else None
+            )
             hard_graph_priority = (
                 _hard_graph_tension(h_pos, swap_field)
                 if graph_tension_swap_weight > 0.0 and swap_field is not None
@@ -1145,13 +1448,100 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 hierarchy_quality_limit=audit_limit,
                 hard_priority=hard_graph_priority,
                 priority_weight=graph_tension_swap_weight,
+                region_mask=swap_mask,
+                graph_clusters=clusters,
+                graph_labels=labels,
+                graph_edges=hierarchy.edges,
+                graph_confidence=hierarchy.cluster_confidence,
+                seed_hard_xy=seed_hard_for_tension,
+                graph_delta_weight=graph_swap_delta_weight,
+                graph_delta_samples=graph_swap_delta_samples,
+                graph_mask_penalty_weight=graph_swap_mask_penalty_weight,
             )
             swap_acc += got
+            swap_round_masked_accepts += int(got)
             for k, v in stats.items():
                 swap_stats[k] += v
             _enforce_audit_checkpoint("region_swaps")
             if not _adaptive_pass_gain(swap_before, r_score):
                 break
+        if (
+            graph_swap_fallback_enabled
+            and swap_round_masked_accepts <= 0
+            and swap_mask is not None
+            and bool(graph_swap_fallback_budget_s > 0.0)
+            and not swap_fallback_used
+            and _has_spare(swap_deadline, graph_swap_fallback_budget_s)
+        ):
+            swap_fallback_used = True
+            fallback_deadline = _deadline(graph_swap_fallback_budget_s, swap_deadline)
+            if fallback_deadline is not None:
+                fallback_before = float(r_score)
+                h_pos, s_pos, got, r_score, fallback_stats = _region_bounded_swap_relief(
+                    h_pos,
+                    s_pos,
+                    sizes[:n],
+                    hw,
+                    hh,
+                    soft_hw,
+                    soft_hh,
+                    cw,
+                    ch,
+                    movable[:n],
+                    soft_mov,
+                    benchmark,
+                    rscorer,
+                    r_score,
+                    region,
+                    soft_region,
+                    deadline=fallback_deadline,
+                    rounds=1,
+                    hard_k=hard_k,
+                    soft_k=soft_k,
+                    region_bias=bias,
+                    escape_min=escape_min,
+                    min_gain=swap_min_gain,
+                    soft_barrier_gain=hier_soft_barrier_gain,
+                    min_field_relief=swap_min_field,
+                    enable_hh=enable_hh,
+                    enable_hs=enable_hs,
+                    enable_ss=enable_ss,
+                    use_density=False,
+                    hierarchy_quality_fn=lambda cand_h: hierarchy_quality_metric(cand_h, clusters),
+                    hierarchy_quality_limit=audit_limit,
+                    hard_priority=hard_graph_priority,
+                    priority_weight=graph_tension_swap_weight,
+                    region_mask=None,
+                    graph_clusters=clusters,
+                    graph_labels=labels,
+                    graph_edges=hierarchy.edges,
+                    graph_confidence=hierarchy.cluster_confidence,
+                    seed_hard_xy=seed_hard_for_tension,
+                    graph_delta_weight=graph_swap_delta_weight,
+                    graph_delta_samples=graph_swap_delta_samples,
+                    graph_mask_penalty_weight=0.0,
+                )
+                if got:
+                    for k, v in fallback_stats.items():
+                        swap_stats[k] += v
+                swap_acc += int(got)
+                log_gnn_event(
+                    "hier_swap_graph_fallback",
+                    benchmark=benchmark.name,
+                    reason="masked_pass_stalled",
+                    accepts=int(got),
+                    budget_s=float(graph_swap_fallback_budget_s),
+                    score_before=float(fallback_before),
+                    score_after=float(r_score),
+                )
+                _log(
+                    "  [hier] region swap graph-mask fallback: "
+                    f"{int(got)} accepts, proxy"
+                    f" {fallback_before:.4f}->{r_score:.4f},"
+                    " budget="
+                    f"{float(graph_swap_fallback_budget_s):.2f}s"
+                )
+                _enforce_audit_checkpoint("region_swaps_graph_fallback")
         for micro_density in (False, True):
             swap_micro_before = float(r_score)
             h_pos, s_pos, got, r_score = _micro_shift_polish(

@@ -1,5 +1,8 @@
-# v2 - Varrahan's Submission
+# HierPlace: Hierarchy-Preserving Exact-Gated Macro Placement
 
+A hierarchy-preserving macro placer that uses grouped DREAMPlace and legality-safe region-constrained moves to keep connectivity structure intact.
+It applies staged local optimization (swaps, decompression, soft relocation) with exact-gated acceptance and hierarchy-quality checks.
+The goal is robust, near-final placement quality under constraints, optimized for real benchmark validity rather than raw proxy minimization.
 Active placer for the Partcl/HRT Macro Placement Challenge.
 
 **Current production mode (2026-06-25): hierarchy-only.** `MacroPlacer.place()`

@@ -41,9 +41,24 @@ most of that proxy loss while preserving the hierarchy invariant.
 
 Large designs additionally compute a hierarchy graph-tension signal from
 stretched inter-cluster edges and congestion along those edge corridors. The
-signal only orders decompression and coldspot opportunities by default; swap
-ordering remains disabled by `HIER_GRAPH_TENSION_SWAP_WEIGHT=0.0` because the
-focused swap-ordering trial regressed candidate quality.
+signal only orders decompression and coldspot opportunities by default. Optional
+swap-stage graph guidance uses:
+
+```text
+HIER_GRAPH_TENSION_SWAP_WEIGHT   (default 0.0)
+HIER_SWAP_GRAPH_MASK_AWARE       (default True)
+HIER_SWAP_GRAPH_MASK_MAX_EDGES   (default 0)
+HIER_SWAP_GRAPH_MASK_PAD_CELLS   (default 1)
+HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT (default 0.30)
+HIER_SWAP_GRAPH_DELTA_WEIGHT     (default 0.0)
+HIER_SWAP_GRAPH_DELTA_SAMPLES    (default 9)
+HIER_SWAP_GRAPH_FALLBACK         (default True)
+HIER_SWAP_GRAPH_FALLBACK_BUDGET_S (default 2.5)
+```
+
+Graph swap guidance is off in score terms unless you set
+`HIER_GRAPH_TENSION_SWAP_WEIGHT > 0` and/or `HIER_SWAP_GRAPH_DELTA_WEIGHT >
+0.0`, so current runs remain equivalent when those are unset.
 `scripts/gnn/analyze_graph_tension.py` summarizes trace rows for this signal.
 Candidate traces now include graph-edge deltas for coldspot and decompression:
 edge stretch, corridor congestion, weighted edge length, and combined graph
@@ -727,19 +742,37 @@ variables, not constants:
 ```text
 HIER_GNN_COLDSPOT_SELECT=1
 HIER_GNN_COLDSPOT_MODEL=path/to/model.pt
+HIER_GNN_COLDSPOT_POLICY=0
+HIER_GNN_COLDSPOT_POLICY_MODEL=path/to/model.pt
+HIER_GNN_CLUSTER_MODE=0
 HIER_GNN_COLDSPOT_KICKS=8
 HIER_GNN_COLDSPOT_TOP_K=1
+HIER_GNN_COLDSPOT_CLUSTER_TOP_K=1
+HIER_GNN_COLDSPOT_POLICY_TOP_K=1
 HIER_GNN_COLDSPOT_SKIP_MICRO=1
 HIER_GNN_COLDSPOT_ORACLE=0
+HIER_COLDSPOT_GNN_MAX_CLUSTERS=1
 ```
 
 When enabled, the same heuristic coldspot round still selects the hot cluster
 and cold window. The placer then generates a no-op candidate plus several kicked
-outcomes for that selected cluster/window, asks the model to rank them, and
-exact-scores only the selected top slice. The normal hard legality,
-hierarchy-quality, total-budget, and exact-proxy gates remain mandatory. With
-`HIER_GNN_COLDSPOT_SKIP_MICRO=1`, post-coldspot micro-shift replay is skipped so
-the selector replaces that local refinement step during diagnostics.
+outcomes for that selected cluster/window and asks a ranker to reorder them.
+
+`HIER_GNN_CLUSTER_MODE=1` shifts GNN usage from macro-level ranking to
+cluster-level coldspot ranking. In this mode, `HIER_GNN_RANK=1` is interpreted
+through `coldspot_cluster` policy only; relocation and swap re-ordering remain off.
+`HIER_GNN_COLDSPOT_CLUSTER_TOP_K` (default `1`) controls how many re-ordered coldspot
+cluster candidates are promoted into the top selector slice before exact scoring.
+
+With `HIER_GNN_COLDSPOT_SELECT=1`, exact scoring stays on the refined candidates,
+while `HIER_GNN_COLDSPOT_POLICY=1` can rank raw proposals first and send only
+the top policy proposals into the expensive local-refine path. The normal hard
+legality, hierarchy-quality, total-budget, and exact-proxy gates remain
+mandatory. With `HIER_GNN_COLDSPOT_SKIP_MICRO=1`, post-coldspot micro-shift
+replay is skipped so the selector replaces that local refinement step during
+diagnostics. Move
+`HIER_COLDSPOT_GNN_MAX_CLUSTERS` above `1` to allow multi-source
+candidate expansion.
 `HIER_GNN_COLDSPOT_ORACLE=1` is for trace collection: it exact-scores all
 generated candidates in the pool, but with selector disabled it still commits
 only the legacy first generated kick, preserving default placement behavior.

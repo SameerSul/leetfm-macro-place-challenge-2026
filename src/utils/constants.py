@@ -293,6 +293,20 @@ HIER_SOFT_BARRIER_GAIN = 0.0
 HIER_SWAP_MIN_FIELD_RELIEF = 0.0
 # Enable mask-aware swap region checks when a region mask is available.
 HIER_SWAP_GRAPH_MASK_AWARE = True
+# Draw graph-aware swap masks from the strongest graph relations only.
+HIER_SWAP_GRAPH_MASK_MAX_EDGES = 0
+HIER_SWAP_GRAPH_MASK_PAD_CELLS = 1
+# Soft penalty for candidates outside graph-derived swap masks.
+# Outside-mask candidates remain legal; they are only ranked with a small
+# additional advisory penalty.
+HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT = 0.30
+# Graph-edge ranking pressure for swap candidates (diagnostic/rank only).
+# Non-negative deltas indicate longer graph edges / worse corridor pressure.
+HIER_SWAP_GRAPH_DELTA_WEIGHT = 0.0
+# Optional single-shot fallback when a masked swap pass makes no accepts.
+HIER_SWAP_GRAPH_FALLBACK = True
+# Wall-clock budget reserved for the masked-pass fallback.
+HIER_SWAP_GRAPH_FALLBACK_BUDGET_S = 2.5
 
 # Optional bias for source-anchored coldspot expansion around graph/components.
 # Source points are used to prefer low-congestion windows near cluster anchors.
@@ -387,6 +401,9 @@ HIER_COLDSPOT_LOCAL_RELOC_TARGETS = 8
 # opportunity-ranked coldspot cluster when the GNN selector is not driving the
 # candidate count.
 HIER_COLDSPOT_WHOLE_VARIANTS = 5
+# Number of source clusters considered when GNN/Oracle policy is active.
+# Default 1 keeps historical single-source behavior.
+HIER_COLDSPOT_GNN_MAX_CLUSTERS = 1
 # Number of distinct low-congestion anchors considered by whole-cluster variants.
 HIER_COLDSPOT_ANCHOR_VARIANTS = 3
 # Component-derived anchor candidates are ranked by coldness, area, and source

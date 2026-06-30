@@ -126,6 +126,23 @@ orders decompression/coldspot opportunities but does not change commit gates.
 Direct graph-tension swap ordering remains available through
 `HIER_GRAPH_TENSION_SWAP_WEIGHT`, but defaults to `0.0` after focused tests
 regressed `ibm08` and `ibm10`.
+Swap candidate ranking can also use temporary graph-derived masks and soft
+mask penalties when `HIER_SWAP_GRAPH_MASK_AWARE=True`:
+
+```text
+HIER_SWAP_GRAPH_MASK_AWARE=True
+HIER_SWAP_GRAPH_MASK_MAX_EDGES=0
+HIER_SWAP_GRAPH_MASK_PAD_CELLS=1
+HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT=0.30
+HIER_SWAP_GRAPH_DELTA_WEIGHT=0.0
+HIER_SWAP_GRAPH_DELTA_SAMPLES=9
+HIER_SWAP_GRAPH_FALLBACK=True
+HIER_SWAP_GRAPH_FALLBACK_BUDGET_S=2.5
+```
+
+These controls are diagnostic/ranking only in default mode; no candidate is
+rejected for violating the mask, and final commit still requires hard legality,
+hierarchy quality, exact proxy gain, and the active audit checks.
 Trace analysis for this signal lives in `scripts/gnn/analyze_graph_tension.py`.
 Coldspot and decompression candidates also log graph-edge candidate deltas:
 weighted edge stretch, corridor congestion change, weighted edge-length change,
@@ -609,16 +626,20 @@ This is not the old generic LSMC path. It is a narrow hierarchy-tightening
 helper. Candidate-local refinement runs hard-hard and hard-soft swaps with the
 kicked hard cluster locked in the local box, plus soft-soft swaps and soft
 relocation that may leave the local box only after a `0.0025` exact-proxy gain.
-The local box includes owned/bridge soft macros, but its base pad is derived
-from the kicked hard-core max dimension rather than the soft-inclusive bbox.
+The local box includes owned/bridge soft macros, but its base pad is derived from
+the kicked hard-core max dimension rather than the soft-inclusive bbox.
 The phase tracks a current cold-cell grid from the active congestion field,
-refreshes it after every finalized coldspot kick, masks out cells occupied by
-the candidate, and expands the pre-margin local border through adjacent open
-cold cells before applying the hard-core pad. This lets finalized cluster
-locations use nearby coldspots for local relief while preserving swap and
-soft-locked relocation room. The graph supplies coldspot-local relocation target
-pools and gates relocation targets by graph mask; default candidate commitment
-uses exact-proxy-ranked refined outcomes.
+refreshes it after every finalized coldspot kick, masks out cells occupied by the
+candidate, and expands the pre-margin local border through adjacent open cold
+cells before applying the hard-core pad. This lets finalized cluster locations
+use nearby coldspots for local relief while preserving swap and soft-locked
+relocation room.
+`HIER_GNN_COLDSPOT_POLICY=1` can rank raw candidate proposals before this
+refinement step and limit how many raw candidates are refined. `HIER_GNN_COLDSPOT_SELECT=1`
+adds a second opt-in exact-score stage over the refined candidates.
+The graph supplies coldspot-local relocation target pools and gates relocation
+targets by graph mask; default candidate commitment uses exact-proxy-ranked
+refined outcomes.
 `HIER_COLDSPOT_SOFT_ONLY=0` is a default-off fallback that runs only when hard
 coldspot kicks and graph-local fallback commit no candidate. It keeps all hard
 macros fixed, builds a target pool from remembered open cold cells, and invokes
