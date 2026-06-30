@@ -110,6 +110,8 @@ def coldspot_opportunity(
     ck_min_field_gap: float,
     ck_opportunity_min_score: float,
     ck_opportunity_top_clusters: int,
+    cluster_priority: dict[int, float] | None = None,
+    cluster_priority_weight: float = 0.0,
 ) -> dict[str, float | int | bool]:
     """Rank cold-cluster relocation opportunities from a congestion field."""
     cell_w, cell_h = cw / nc, ch / nr
@@ -131,8 +133,12 @@ def coldspot_opportunity(
         "target_field": 0.0,
         "displacement_windows": 0.0,
         "cluster_ids": [],
+        "cluster_tension_by_id": {},
     }
     rows = []
+    priority = cluster_priority or {}
+    priority_weight = max(0.0, float(cluster_priority_weight))
+    field_span = max(float(field.max()) - float(field.min()), 1e-12)
     for cid, raw_members in clusters.items():
         members = np.asarray(raw_members, dtype=np.int64)
         members = members[(members >= 0) & (members < n)]
@@ -156,11 +162,18 @@ def coldspot_opportunity(
         c0, c1 = max(0, ac - radius), min(nc, ac + radius + 1)
         local_open = int(np.count_nonzero(open_cold[r0:r1, c0:c1]))
 
-        score = float(gap + 0.003 * np.log1p(local_open) - 0.002 * disp)
+        graph_tension = float(priority.get(int(cid), 0.0))
+        score = float(
+            gap
+            + priority_weight * field_span * graph_tension
+            + 0.003 * np.log1p(local_open)
+            - 0.002 * disp
+        )
         row = {
             "score": float(score),
             "field_gap": float(gap),
             "cluster": int(cid),
+            "graph_tension": float(graph_tension),
             "source_field": float(source),
             "target_field": float(target),
             "open_cold_cells": int(local_open),
@@ -186,6 +199,9 @@ def coldspot_opportunity(
         and float(row["score"]) >= ck_opportunity_min_score
     ]
     best["cluster_ids"] = [int(row["cluster"]) for row in usable[:ck_opportunity_top_clusters]]
+    best["cluster_tension_by_id"] = {
+        int(row["cluster"]): float(row.get("graph_tension", 0.0)) for row in rows
+    }
     best["run"] = bool(
         int(best["eligible_clusters"]) > 0
         and float(best["field_gap"]) >= ck_min_field_gap

@@ -591,10 +591,36 @@ def _source_target(row: dict[str, Any], graph: dict[str, Any]) -> tuple[int, int
             source += int(graph["num_hard_macros"])
             target += int(graph["num_hard_macros"])
         return source, target
+
+    source_cluster = -1
     if "cluster" in row:
         cid = int(row.get("cluster", -1))
-        if 0 <= cid < int(clusters.numel()):
-            return int(clusters[cid]), -1
+        if cid < 0:
+            cid = int(row.get("egonet_anchor_cluster", -1))
+        source_cluster = int(cid)
+    else:
+        source_cluster = int(row.get("source_cluster", -1))
+
+    source_node = -1
+    if 0 <= source_cluster < int(clusters.numel()):
+        source_node = int(clusters[source_cluster])
+    explicit_source = int(row.get("source", -1))
+    if 0 <= explicit_source < nm:
+        source_node = explicit_source
+
+    target_node = -1
+    target_cluster = int(row.get("target_cluster", -1))
+    if 0 <= target_cluster < int(clusters.numel()):
+        target_node = int(clusters[target_cluster])
+
+    if target_node >= 0 and source_node >= 0:
+        return source_node, target_node
+
+    if source_node >= 0:
+        return source_node, -1
+    if target_node >= 0:
+        return -1, target_node
+
     return -1 if nm == 0 else 0, -1
 
 

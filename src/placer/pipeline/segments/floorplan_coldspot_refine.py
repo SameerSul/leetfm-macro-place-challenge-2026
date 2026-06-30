@@ -149,6 +149,7 @@ def refine_coldspot_candidate(
             enable_hs=True,
             enable_ss=False,
             use_density=use_density,
+            region_mask=local_region_mask,
         )
         stats_total["swap_accepts"] += got
         if not _adaptive_gain(swap_before, score):
@@ -185,6 +186,7 @@ def refine_coldspot_candidate(
             enable_hs=False,
             enable_ss=True,
             use_density=use_density,
+            region_mask=local_region_mask,
         )
         stats_total["swap_accepts"] += got
         if not _adaptive_gain(soft_swap_before, score):

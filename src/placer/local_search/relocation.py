@@ -2941,7 +2941,10 @@ def _relocation_moves_propose_all(
         )
     )
     if getattr(benchmark, "name", ""):
-        from placer.local_search.gnn_ranker import reorder_hard_relocation_proposals
+        from placer.local_search.gnn_ranker import (
+            gnn_rank_enabled,
+            reorder_hard_relocation_proposals,
+        )
 
         proposals = reorder_hard_relocation_proposals(
             proposals,
@@ -2956,15 +2959,7 @@ def _relocation_moves_propose_all(
             deadline
         ):
             additive_extra = max(0, int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K))
-        gnn_rank_on = os.environ.get("HIER_GNN_RANK", "0").strip() not in {
-            "0",
-            "false",
-            "False",
-            "no",
-            "NO",
-            "off",
-            "",
-        }
+        gnn_rank_on = gnn_rank_enabled("relocation")
         if gnn_rank_on:
             top_m += max(0, int(os.environ.get("HIER_GNN_EXTRA_TOP_K", "0") or "0"))
         if additive_extra > 0 and bool(const.HIER_GPU_RANK_ADDITIVE_TAILS):
