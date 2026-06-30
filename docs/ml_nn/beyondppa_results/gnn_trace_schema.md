@@ -134,6 +134,8 @@ Coldspot tightening candidate. Additional fields:
 - `opportunity_cluster_ids`
 - `opportunity_displacement_windows`
 - `cluster`
+- `target_cluster`
+- `coldspot_permutation_id`
 - `candidate_pool_size`
 - `selector_enabled`
 - `oracle_enabled`
@@ -142,6 +144,9 @@ Coldspot tightening candidate. Additional fields:
 - `exact_selector_enabled`
 - `selected_by_exact`
 - `selected_by_policy`
+- `policy_rank`
+- `policy_selected`
+- `policy_rank_error`
 - `gnn_score`
 - `gnn_rank_error`
 - `is_noop`
