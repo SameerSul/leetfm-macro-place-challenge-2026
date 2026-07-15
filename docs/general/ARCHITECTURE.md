@@ -95,14 +95,15 @@ low-net soft/SS breadth, and medium/large soft-continuation scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1657  17/17 VALID  0 overlaps  1128.80s
+AVG 1.1666  17/17 VALID  0 overlaps  1216.10s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
 0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
 several designs after late proxy-improving relief. A strict final-rollback-only
 audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
-reached `AVG 1.1664`; the current graph-tension path is `AVG 1.1657`. The
+reached `AVG 1.1664`; the latest graph-tension-path verification is
+`AVG 1.1666`. The prior best same-path sweep was `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
 proxy-improving states need to be discarded at finalization. Earlier Stage-6
 audit sweeps are retained in `PROGRESS.md` as historical experiment records.
@@ -160,8 +161,8 @@ The default-on `HIER_DECOMPRESS_GRAPH_SURVIVOR` hook is narrower: for legal,
 hierarchy-safe decompression candidates that miss exact proxy by a small amount
 while improving graph-edge geometry, it exact-scores a tiny hard/soft local
 polish pool around the moved cluster. It commits only if the final candidate
-clears the normal exact-proxy gain and audit gates. The accepted full sweep is
-`AVG 1.1657`.
+clears the normal exact-proxy gain and audit gates. The latest full sweep is
+`AVG 1.1666`.
 The default-off `HIER_GRAPH_PREFILTER` hook can reject low-tension
 decompression/coldspot candidates before exact scoring when their cheap local
 congestion estimate does not improve. It is trace-visible, but not promoted by
@@ -172,12 +173,11 @@ generation inputs only; final acceptance still uses the original hierarchy
 quality and audit gates, plus an ego-net-specific exact-gain floor
 (`HIER_COLDSPOT_EGONET_MIN_GAIN`).
 
-Historical accepted hierarchy full sweep before the graph-local and six-stage
-architecture revamps:
+Current NG45 verification:
 
 ```text
 uv run evaluate src/main.py --ng45
-AVG 0.7320  4/4 VALID  0 overlaps
+AVG 0.7252  4/4 VALID  0 overlaps  232.41s
 ```
 
 Historical proxy-optimized scores in `PROGRESS.md` and `ISSUES.md` (avg

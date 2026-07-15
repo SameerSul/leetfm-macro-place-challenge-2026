@@ -6,6 +6,29 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-15 — post-cleanup full IBM and NG45 validation):**
+> `uv run evaluate src/main.py --all` completed at **AVG 1.1666**, 17/17 VALID,
+> 0 overlaps, all final hierarchy audits passed, in **1216.10s**. This is
+> `+0.0009` versus the prior best same-path `1.1657` sweep and remains in the
+> accepted hierarchy-preserving result family.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.9267/90.42s`, `ibm02=1.1193/57.63s`,
+> `ibm03=1.0127/64.00s`, `ibm04=1.0040/61.59s`,
+> `ibm06=1.2060/52.75s`, `ibm07=1.0489/72.87s`,
+> `ibm08=1.1327/76.80s`, `ibm09=0.8539/62.16s`,
+> `ibm10=1.1781/67.28s`, `ibm11=1.0090/71.26s`,
+> `ibm12=1.6790/96.38s`, `ibm13=1.0184/59.83s`,
+> `ibm14=1.2743/70.87s`, `ibm15=1.3605/94.54s`,
+> `ibm16=1.2110/67.17s`, `ibm17=1.4029/76.89s`, and
+> `ibm18=1.3946/73.65s`.
+>
+> `uv run evaluate src/main.py --ng45` completed at **AVG 0.7252**, 4/4 VALID,
+> 0 overlaps, all final hierarchy audits passed, in **232.41s**. Per-design
+> proxy/runtime: `ariane133=0.6852/65.57s`, `ariane136=0.7314/60.83s`,
+> `mempool_tile=0.7556/41.41s`, and `nvdla=0.7286/64.60s`. This improves the
+> prior hierarchy-tag sweep average `0.7320` by `0.0068`.
+
 > **Status (2026-07-15 — reproducible runtime, attributable scheduling, and
 > repository cleanup):** Added a clean-checkout DREAMPlace bootstrap pinned
 > to upstream commit `37214b40fe3837cc7d392c7d6092ccd6ff04a02c`, CUDA 12.1,

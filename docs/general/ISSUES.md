@@ -9,15 +9,15 @@ complete experiment history, including rejected proxy-path work, lives in
 ## Current State
 
 `MacroPlacer.place()` requires grouped DREAMPlace and always runs the hierarchy
-pipeline. The accepted full IBM sweep remains:
+pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1657  17/17 VALID  0 overlaps  1128.80s
+AVG 1.1666  17/17 VALID  0 overlaps  1216.10s
 ```
 
-All final hierarchy audits passed. The NG45 hierarchy-tag result remains
-`AVG 0.7320`, 4/4 VALID, with zero overlaps.
+All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
+4/4 VALID, zero overlaps, all audits passed, in 232.41s.
 
 No learned model is enabled in production. Structural candidate ordering and
 GNN inference hooks remain default-off; exact proxy, hard legality, bounds,

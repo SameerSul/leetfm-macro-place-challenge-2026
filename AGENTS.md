@@ -18,9 +18,9 @@ available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
-Current accepted result: `uv run evaluate src/main.py --all` =
-**AVG 1.1657**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
-1128.80s. Passes advance on gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
+Current verified result: `uv run evaluate src/main.py --all` =
+**AVG 1.1666**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
+1216.10s. Passes advance on gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
 than fixed repeat counts, and a final hierarchy-quality audit rolls back to
 the best saved audit-passing checkpoint if the post-search state drifts too
 far from the selected hierarchy seed. See `docs/general/ARCHITECTURE.md` for
@@ -28,7 +28,8 @@ the full pipeline, `docs/general/ISSUES.md` for current gaps, and
 `docs/general/PROGRESS.md` for rejected or superseded experiments.
 
 NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
-**AVG 0.7320**, 4/4 VALID, 0 overlaps; `uv run python
+**AVG 0.7252**, 4/4 VALID, 0 overlaps, all hierarchy audits passed, 232.41s;
+`uv run python
 test/verification/_verify_ng45_hierarchy_tags.py` passes. The hierarchy model
 uses slash-separated instance-path prefixes when macro names provide useful
 coverage, then falls back to inferred connectivity on flat-name benchmarks.
