@@ -209,7 +209,9 @@ def _prepare_cluster_metadata(clusters, sizes, movable_h):
         mem_all = np.asarray(mem, dtype=np.int64)
         if mem_all.size == 0:
             continue
-        movable_members = mem_all[movable_h[mem_all]] if mem_all.size else np.empty(0, dtype=np.int64)
+        movable_members = (
+            mem_all[movable_h[mem_all]] if mem_all.size else np.empty(0, dtype=np.int64)
+        )
         order_by_area = list(mem_all[np.argsort(-sizes[mem_all, 0] * sizes[mem_all, 1])])
         metadata[int(cid)] = {
             "mem_all": mem_all,
@@ -386,7 +388,6 @@ def _cluster_decompression_relief(
     anisotropic: bool = False,
     anisotropic_band: int = 3,
     anisotropic_secondary: float = 0.25,
-    local_component: bool = False,
     local_component_cold_percentile: float = 45.0,
     local_component_min_cells: int = 4,
     local_component_max_distance_cells: int = 4,
@@ -417,14 +418,12 @@ def _cluster_decompression_relief(
     trace_count = 0
     prefilter_enabled = os.environ.get(
         "HIER_GRAPH_PREFILTER",
-        "1" if bool(getattr(const, "HIER_GRAPH_PREFILTER", True)) else "0",
+        "1" if bool(getattr(const, "HIER_GRAPH_PREFILTER", False)) else "0",
     ).strip() not in {"0", "false", "False", "no", "NO", "off", ""}
-    prefilter_low_tension = max(0.0, float(getattr(const, "HIER_GRAPH_PREFILTER_LOW_TENSION", 0.05)))
+    prefilter_low_tension = max(
+        0.0, float(getattr(const, "HIER_GRAPH_PREFILTER_LOW_TENSION", 0.05))
+    )
     prefilter_min_relief = max(0.0, float(getattr(const, "HIER_GRAPH_PREFILTER_MIN_RELIEF", 0.0)))
-    feasibility_enabled = os.environ.get(
-        "HIER_DECOMPRESS_FEASIBILITY_FILTER",
-        "1" if bool(getattr(const, "HIER_DECOMPRESS_FEASIBILITY_FILTER", True)) else "0",
-    ).strip() not in {"0", "false", "False", "no", "NO", "off", ""}
     feasibility_min_free = max(
         0.0,
         float(getattr(const, "HIER_DECOMPRESS_FEASIBILITY_MIN_FREE_RATIO", 0.70)),
@@ -435,7 +434,7 @@ def _cluster_decompression_relief(
     )
     graph_rescue_enabled = os.environ.get(
         "HIER_DECOMPRESS_GRAPH_RESCUE",
-        "1" if bool(getattr(const, "HIER_DECOMPRESS_GRAPH_RESCUE", True)) else "0",
+        "1" if bool(getattr(const, "HIER_DECOMPRESS_GRAPH_RESCUE", False)) else "0",
     ).strip() not in {"0", "false", "False", "no", "NO", "off", ""}
     graph_rescue_max_delta = float(getattr(const, "HIER_DECOMPRESS_GRAPH_RESCUE_MAX_DELTA", 0.0))
     graph_rescue_shrinks = tuple(
@@ -447,10 +446,6 @@ def _cluster_decompression_relief(
     graph_rescue_max_variants = max(
         0, int(getattr(const, "HIER_DECOMPRESS_GRAPH_RESCUE_MAX_VARIANTS", 4))
     )
-    graph_survivor_enabled = os.environ.get(
-        "HIER_DECOMPRESS_GRAPH_SURVIVOR",
-        "1" if bool(getattr(const, "HIER_DECOMPRESS_GRAPH_SURVIVOR", False)) else "0",
-    ).strip() not in {"0", "false", "False", "no", "NO", "off", ""}
     graph_survivor_max_delta = float(
         getattr(const, "HIER_DECOMPRESS_GRAPH_SURVIVOR_MAX_DELTA", -0.01)
     )
@@ -495,13 +490,11 @@ def _cluster_decompression_relief(
         field = _congestion_field(plc, nr, nc)
         if field is None:
             break
-        local_components = []
-        if local_component:
-            local_components = cold_connected_components(
-                field,
-                cold_percentile=float(local_component_cold_percentile),
-                min_cells=max(1, int(local_component_min_cells)),
-            )
+        local_components = cold_connected_components(
+            field,
+            cold_percentile=float(local_component_cold_percentile),
+            min_cells=max(1, int(local_component_min_cells)),
+        )
         local = _cell_values(cur_h, field, cw, ch)
         heat = []
         for cid, meta in cluster_meta.items():
@@ -590,15 +583,16 @@ def _cluster_decompression_relief(
                     trial_shift = np.zeros(2, dtype=np.float64)
                     if local_anchor is not None:
                         trial_shift = (
-                            np.asarray(local_anchor, dtype=np.float64)
-                            - np.asarray(center, dtype=np.float64)
-                        ) * max(0.0, float(local_component_shift_frac)) * max(
-                            0.0, float(effective_factor) - 1.0
-                        ) * max(0.0, float(shift_mult))
+                            (
+                                np.asarray(local_anchor, dtype=np.float64)
+                                - np.asarray(center, dtype=np.float64)
+                            )
+                            * max(0.0, float(local_component_shift_frac))
+                            * max(0.0, float(effective_factor) - 1.0)
+                            * max(0.0, float(shift_mult))
+                        )
                     trial_h[mem] = center + vec * trial_scale + trial_shift
-                    trial_h[mem] = _clip_to_region(
-                        trial_h[mem], hard_region, mem, hw, hh, cw, ch
-                    )
+                    trial_h[mem] = _clip_to_region(trial_h[mem], hard_region, mem, hw, hh, cw, ch)
                     touched: list[int] = []
                     if cluster_soft_members.get(cid) is not None:
                         sidx = cluster_soft_members[cid]
@@ -638,8 +632,6 @@ def _cluster_decompression_relief(
                         "feasible_required_area": 0.0,
                         "feasible_available_area": 0.0,
                     }
-                    if not feasibility_enabled:
-                        return True, default_stats
                     return _decompression_feasibility(
                         trial_h,
                         mem,
@@ -700,16 +692,13 @@ def _cluster_decompression_relief(
                     base_score: float,
                 ) -> tuple[np.ndarray, np.ndarray, float | None, int]:
                     if (
-                        graph_survivor_top_hard <= 0
-                        and graph_survivor_top_soft <= 0
+                        graph_survivor_top_hard <= 0 and graph_survivor_top_soft <= 0
                     ) or graph_survivor_max_trials <= 0:
                         return trial_h, trial_s, None, 0
                     cell_w = float(cw) / max(1, nc)
                     cell_h = float(ch) / max(1, nr)
                     local_vals = (
-                        _cell_values(trial_h[mem], field, cw, ch)
-                        if mem.size
-                        else np.empty(0)
+                        _cell_values(trial_h[mem], field, cw, ch) if mem.size else np.empty(0)
                     )
                     order_idx = np.argsort(-local_vals)[: min(graph_survivor_top_hard, mem.size)]
                     hard_order = [int(mem[int(k)]) for k in order_idx]
@@ -999,8 +988,7 @@ def _cluster_decompression_relief(
                             <= graph_survivor_max_delta
                         )
                         if (
-                            graph_survivor_enabled
-                            and strong_graph_delta
+                            strong_graph_delta
                             and proxy_miss <= graph_survivor_proxy_miss
                             and deadline is not None
                             and time.monotonic() < deadline

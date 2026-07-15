@@ -6,28 +6,75 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
-> **Status (2026-07-15 — post-cleanup full IBM and NG45 validation):**
-> `uv run evaluate src/main.py --all` completed at **AVG 1.1666**, 17/17 VALID,
-> 0 overlaps, all final hierarchy audits passed, in **1216.10s**. This is
-> `+0.0009` versus the prior best same-path `1.1657` sweep and remains in the
-> accepted hierarchy-preserving result family.
+> **Status (2026-07-15 — cold-cache BB-on full IBM and NG45 validation):**
+> `uv run evaluate src/main.py --all` completed at **AVG 1.1653**, 17/17
+> VALID, 0 overlaps, all final
+> hierarchy audits passed, in **1248.00s**. This improves the prior accepted
+> `1.1666` sweep by `0.0013` and the prior best same-path `1.1657` sweep by
+> `0.0004`.
 >
 > Per-benchmark proxy/runtime:
-> `ibm01=0.9267/90.42s`, `ibm02=1.1193/57.63s`,
-> `ibm03=1.0127/64.00s`, `ibm04=1.0040/61.59s`,
-> `ibm06=1.2060/52.75s`, `ibm07=1.0489/72.87s`,
-> `ibm08=1.1327/76.80s`, `ibm09=0.8539/62.16s`,
-> `ibm10=1.1781/67.28s`, `ibm11=1.0090/71.26s`,
-> `ibm12=1.6790/96.38s`, `ibm13=1.0184/59.83s`,
-> `ibm14=1.2743/70.87s`, `ibm15=1.3605/94.54s`,
-> `ibm16=1.2110/67.17s`, `ibm17=1.4029/76.89s`, and
-> `ibm18=1.3946/73.65s`.
+> `ibm01=0.9246/99.36s`, `ibm02=1.1167/57.44s`,
+> `ibm03=1.0101/57.90s`, `ibm04=1.0060/68.76s`,
+> `ibm06=1.2002/50.41s`, `ibm07=1.0487/65.79s`,
+> `ibm08=1.1342/76.88s`, `ibm09=0.8528/60.67s`,
+> `ibm10=1.1741/84.72s`, `ibm11=1.0089/70.91s`,
+> `ibm12=1.6778/98.26s`, `ibm13=1.0191/57.80s`,
+> `ibm14=1.2726/62.98s`, `ibm15=1.3601/97.60s`,
+> `ibm16=1.2090/82.13s`, `ibm17=1.4026/82.17s`, and
+> `ibm18=1.3924/74.21s`.
+>
+> The same BB-on code with normal cache reads completed at `AVG 1.1652` in
+> `1133.15s`. The cold run therefore did not perform better: proxy changed by
+> `+0.0001` and runtime by `+114.85s`. The cold result is the representative
+> clean-environment verification; the warm-cache number is diagnostic only.
 >
 > `uv run evaluate src/main.py --ng45` completed at **AVG 0.7252**, 4/4 VALID,
 > 0 overlaps, all final hierarchy audits passed, in **232.41s**. Per-design
 > proxy/runtime: `ariane133=0.6852/65.57s`, `ariane136=0.7314/60.83s`,
 > `mempool_tile=0.7556/41.41s`, and `nvdla=0.7286/64.60s`. This improves the
 > prior hierarchy-tag sweep average `0.7320` by `0.0068`.
+>
+> Production cleanup later the same day removed the remaining Boolean/runtime
+> gates whose selected value was already on: BB and cache reads,
+> component-aware region expansion/decompression, decompression feasibility and
+> graph-survivor handling, graph-tension opportunity ordering, graph-mask
+> fallback, adaptive gain control, cold-component targets, structurally
+> eligible small/medium soft polish, final audit rollback, and buffered plateau
+> telemetry. Their structural, data, budget, legality, hierarchy, and exact
+> proxy conditions remain intact; default-off experiments were not promoted.
+> This also covers runtime environment gates: production no longer reads
+> `HIER_DREAMPLACE_BB`, `HIER_DREAMPLACE_CACHE`, `HIER_ADAPTIVE_PASSES`,
+> `HIER_PLATEAU_TRACE`, or `HIER_PLATEAU_TRACE_BUFFERED`. The default-on
+> `HIER_GNN_COLDSPOT_SKIP_MICRO` sub-switch was also removed; an active GNN
+> coldspot selector now always replaces the post-coldspot micro-shift replay.
+> Verification: `compileall` passed across `src/`, `test/`, and `scripts/`; all
+> **28** project tests plus the dedicated GNN-ranker verifier passed; and
+> `uv run evaluate src/main.py -b ibm10`
+> completed at **1.1720 VALID**, zero overlaps, final hierarchy audit pass, in
+> **67.37s**.
+
+> **Ablation (2026-07-15 — DREAMPlace BB-Nesterov on versus off):** A temporary
+> cache-separated switch compared production
+> DREAMPlace 4.1 short-BB Nesterov against the original Lipschitz/line-search
+> Nesterov path. Both arms bypassed cache reads, so total runtime includes a
+> fresh grouped global-placement subprocess. The ablation switches were removed
+> after BB and cache reads were selected as fixed production behavior.
+>
+> Focused results, all VALID and hierarchy-audit passing:
+> `ibm04`: BB-on `1.0048/72.63s` with `7.7s` DREAMPlace versus BB-off
+> `1.0219/80.95s` with `16.1s` DREAMPlace; `ibm10`: BB-on `1.1700/73.83s`
+> with `12.1s` DREAMPlace versus BB-off `1.1724/90.50s` with `27.8s`
+> DREAMPlace. The two-design average was `1.0874/73.23s` on versus
+> `1.09715/85.73s` off, favoring BB by `0.00975` proxy and `12.50s` total
+> runtime. BB also cut average DREAMPlace time from `21.95s` to `9.90s`.
+>
+> Seed behavior explains the quality result. On `ibm04`, BB produced
+> `proxy=1.0925/hierarchy=0.21082` and won seed selection, while BB-off produced
+> `1.4295/0.22779` and lost to `initial.plc`. On `ibm10`, BB favored hierarchy
+> (`1.8080/0.15792`) while BB-off favored raw proxy (`1.6146/0.24219`); both
+> lost to `initial.plc`. This focused A/B supports retaining production
+> `use_bb=1`; it is not a replacement for the accepted full-suite result.
 
 > **Status (2026-07-15 — reproducible runtime, attributable scheduling, and
 > repository cleanup):** Added a clean-checkout DREAMPlace bootstrap pinned

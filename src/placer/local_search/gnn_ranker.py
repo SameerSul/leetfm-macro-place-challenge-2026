@@ -50,11 +50,6 @@ def gnn_coldspot_kicks(default: int = 8) -> int:
     return max(1, int(os.environ.get("HIER_GNN_COLDSPOT_KICKS", str(default)) or str(default)))
 
 
-def gnn_coldspot_skip_micro(default: bool = True) -> bool:
-    raw = os.environ.get("HIER_GNN_COLDSPOT_SKIP_MICRO", "1" if default else "0").strip()
-    return raw not in _FALSE
-
-
 def _policy_model_env() -> str:
     return os.environ.get("HIER_GNN_COLDSPOT_POLICY_MODEL", "").strip()
 

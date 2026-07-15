@@ -13,7 +13,7 @@ pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1666  17/17 VALID  0 overlaps  1216.10s
+AVG 1.1653  17/17 VALID  0 overlaps  1248.00s
 ```
 
 All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
@@ -77,6 +77,20 @@ ABIs still need an explicit rebuild. The EDA I/O path supports converted
 LEF/DEF/Verilog inputs by attaching their generated source directory, but broad
 real-design parser coverage remains a validation task rather than a claimed
 guarantee.
+
+### 6. Paper-faithful BB line search is not evaluated
+
+Production already enables DREAMPlace 4.1's short Barzilai-Borwein Nesterov
+step. The ICCAD 2023 paper pairs that curvature-scaled initial step with a
+Zhang-Hager non-monotone line search, while the pinned upstream `step_bb()`
+implementation takes one BB-scaled step and applies the boundary constraint
+without that explicit line-search loop.
+
+Next step: only as a default-off experiment, add a bounded non-monotone line
+search and compare convergence, seed hierarchy quality, exact proxy, and runtime
+on multiple benchmarks. Each trial objective/gradient evaluation has real cost,
+so the paper-faithful variant must beat the current BB seed within the existing
+placement budget before promotion.
 
 ## Maintenance Rules
 
