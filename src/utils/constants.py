@@ -47,6 +47,19 @@ HIER_SEED_ROUTE_CHANNEL_LANE_FRAC = 0.10
 HIER_SEED_ROUTE_CHANNEL_PUSH_FRAC = 0.35
 # Maximum route-channel push as a fraction of the cluster local span.
 HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
+# Rich hierarchy-vector seed selection is opt-in until full-suite calibration.
+# When enabled, proxy breaks ties among candidates inside the best hierarchy
+# quality band instead of selecting the lowest-proxy seed unconditionally.
+HIER_SEED_HIERARCHY_SELECT = False
+HIER_SEED_HIERARCHY_ABS_SLACK = 0.002
+HIER_SEED_HIERARCHY_REL_SLACK = 0.15
+# Complete-placement hierarchy vector weights. Lower is better.
+HIER_VECTOR_COMPACTNESS_WEIGHT = 0.25
+HIER_VECTOR_WORST_SPREAD_WEIGHT = 0.15
+HIER_VECTOR_IMPURITY_WEIGHT = 0.20
+HIER_VECTOR_EDGE_STRETCH_WEIGHT = 0.15
+HIER_VECTOR_OWNED_SOFT_WEIGHT = 0.15
+HIER_VECTOR_BRIDGE_SOFT_WEIGHT = 0.10
 # Congestion-heavy proposal ranking. Exact proxy remains the accept gate.
 HIER_PROPOSAL_CONGESTION_WEIGHT = 2.5
 HIER_PROPOSAL_DENSITY_WEIGHT = 1.0
@@ -485,9 +498,10 @@ HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = 1.15
 HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = 1.20
 HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = 1.50
 
-# Bounded go-with-the-winners survivor search after coldspot cleanup. The pass
-# keeps a small pool of valid hierarchy-preserving states instead of continuing
-# from one greedy state.
+# Bounded go-with-the-winners survivor search after coldspot cleanup. Historical
+# plateau telemetry found zero gain in 636 runs, so production skips it while
+# retaining the implementation for controlled research experiments.
+HIER_SURVIVOR_ENABLED = False
 # Wall-clock budget for survivor search.
 HIER_SURVIVOR_BUDGET_S = 12.0
 # Number of survivor generations.
