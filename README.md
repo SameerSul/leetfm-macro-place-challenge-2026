@@ -37,7 +37,7 @@ Current full-suite result:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1653  17/17 VALID  0 overlaps  all hierarchy audits passed  (1248.00s)
+AVG 1.1575  17/17 VALID  0 overlaps  all hierarchy audits passed  (621.63s)
 
 uv run evaluate src/main.py --ng45
 AVG 0.7252  4/4 VALID  0 overlaps  all hierarchy audits passed  (232.41s)

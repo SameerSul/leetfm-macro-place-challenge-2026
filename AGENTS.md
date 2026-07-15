@@ -18,9 +18,10 @@ available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
-Current cold-cache verified result: `uv run evaluate src/main.py --all` =
-**AVG 1.1653**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
-1248.00s. Passes advance on gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
+Current verified result with normal BB/cache behavior:
+`uv run evaluate src/main.py --all` = **AVG 1.1575**, 17/17 VALID, 0
+overlaps, all final hierarchy audits passed, **621.63s**. Passes advance on
+gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
 than fixed repeat counts, and a final hierarchy-quality audit rolls back to
 the best saved audit-passing checkpoint if the post-search state drifts too
 far from the selected hierarchy seed. See `docs/general/ARCHITECTURE.md` for

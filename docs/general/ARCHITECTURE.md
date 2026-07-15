@@ -102,20 +102,22 @@ audit-aware hard swap gating, component-aware region expansion/decompression,
 large-design hierarchy graph-tension opportunity ordering, swap-round
 micro-shift replay, stronger opportunity gates, component-aware scheduling,
 post-coldspot small-design polish with subpass audit restore, no-release
-low-net soft/SS breadth, and medium/large soft-continuation scheduling:
+low-net soft/SS breadth, medium/large soft-continuation scheduling, prepared
+Numba routing/legalization kernels, and batched soft relocation/swap scoring:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1653  17/17 VALID  0 overlaps  1248.00s
+AVG 1.1575  17/17 VALID  0 overlaps  621.63s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
 0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
 several designs after late proxy-improving relief. A strict final-rollback-only
 audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
-reached `AVG 1.1664`; the latest BB-on same-path verification is
-`AVG 1.1653` cold (`AVG 1.1652` with cache hits). The prior best same-path
-sweep was `AVG 1.1657`. The
+reached `AVG 1.1664`; the pre-optimization BB-on verification was
+`AVG 1.1653` cold (`AVG 1.1652` with cache hits). The accepted optimized
+normal-cache sweep is `AVG 1.1575`. The prior best same-path sweep was
+`AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
 proxy-improving states need to be discarded at finalization. Earlier Stage-6
 audit sweeps are retained in `PROGRESS.md` as historical experiment records.
@@ -171,8 +173,9 @@ The graph-survivor path is narrower: for legal,
 hierarchy-safe decompression candidates that miss exact proxy by a small amount
 while improving graph-edge geometry, it exact-scores a tiny hard/soft local
 polish pool around the moved cluster. It commits only if the final candidate
-clears the normal exact-proxy gain and audit gates. The latest full sweep is
-`AVG 1.1653` cold.
+clears the normal exact-proxy gain and audit gates. The pre-optimization
+cold-cache sweep was `AVG 1.1653`; the current optimized normal-cache sweep is
+`AVG 1.1575`.
 The default-off `HIER_GRAPH_PREFILTER` hook can reject low-tension
 decompression/coldspot candidates before exact scoring when their cheap local
 congestion estimate does not improve. It is trace-visible, but not promoted by
@@ -215,7 +218,7 @@ not comparable to current numbers.
 | `src/placer/local_search/fields.py` | Congestion/coldspot fields used by relocation and coldspot tightening. |
 | `src/placer/local_search/gnn_trace.py` | JSONL trace + plateau telemetry writers (diagnostic only). |
 | `src/placer/scoring/exact.py` | Exact TILOS proxy wrapper. |
-| `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves. |
+| `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves, including Numba-JIT bbox re-smoothing. |
 | `src/placer/legalize/spiral.py` | Hard-macro legalization, with cluster-consecutive order support. |
 | `src/dreamplace_bridge/` | ICCAD04 pb/plc → Bookshelf, cluster grouping injection, DREAMPlace launcher, read-back. |
 | `scripts/dreamplace/` | Pinned source/toolchain bootstrap, CUDA-12 CUB patch, and native-extension preflight. |
@@ -268,12 +271,20 @@ secondary choice inside the best hierarchy-quality band. That policy remains
 default-off: on the 2026-07-15 ibm10 experiment it improved seed composite
 `0.29168 -> 0.16328` but regressed final proxy `1.1778 -> 1.5281`.
 
+Synthetic-clearance pair pushes are accumulated by a cached Numba kernel; the
+seed update, clipping, legalization, scoring, and selection semantics are
+unchanged.
+
 ### 4. Cluster-Consecutive Legalization
 
 Hard macros legalize in an order that keeps cluster members adjacent
 (largest clusters first, then connectivity-pressure × area within each
 cluster, then unclustered macros), followed by a default-order safety pass
-to guarantee legality.
+to guarantee legality. Each macro's expanding-ring search runs in a cached
+Numba kernel with the original lexicographic candidate order, strict overlap
+tests, and minimum-displacement tie behavior. Python retains the between-macro
+deadline check, and the former vectorized conflict-matrix path remains the
+diagnostic reference.
 
 ### 5. Soft Cleanup
 
@@ -311,6 +322,27 @@ the exact-proxy gate directly; out-of-region swaps must also clear the escape
 threshold. Swap scoring uses cached `IncrementalScorer` routing structs;
 candidate ranking can use CUDA batch sorting when available, but exact
 scoring remains the acceptance authority either way.
+
+The incremental scorer keeps raw and smoothed routing grids synchronized after
+each trial move. A prepared routing structure caches pin-to-module references,
+offsets, topology groups, weights, and scratch buffers. One cached Numba call
+gathers current pin cells, applies two-, three-, and high-fanout routes, and
+returns the touched bbox without Python buckets or sorting. Horizontal-column
+and vertical-row bbox smoothing then uses cached Numba kernels with reusable
+prefix buffers. The NumPy formulas remain the diagnostic oracle; both JIT
+stages preserve their reference accumulation order and incremental deltas.
+
+Prepared soft-relocation target sets of size two or more use a true batched
+CPU path. Cached JIT loops build per-target routing grids, touched bboxes,
+wirelength, and density occupancy without mutating committed scorer state;
+the congestion and density tail reductions then operate over the batch. Scalar
+trials remain the one-target path and the parity oracle.
+
+Soft-soft swap sets sharing one endpoint use the same batch reductions. Pair
+route structures are flattened from the existing topology cache, and a JIT
+loop performs the exact remove/swap/add sequence for each second endpoint.
+The committed routing, smoothing, density, and position caches remain
+read-only until the existing scalar commit method accepts a winner.
 
 ### 9. Post-Swap Polish
 

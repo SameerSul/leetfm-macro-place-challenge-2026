@@ -10,6 +10,45 @@ import torch
 import time
 
 from placer.local_search.hierarchy_quality import hierarchy_quality_vector
+from utils.config import HAS_NUMBA, _numba_njit
+
+if HAS_NUMBA:
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _synthetic_clearance_delta_jit(hard, eligible, temp_hw, temp_hh, delta):
+        """Accumulate one synthetic-clearance push iteration."""
+        delta.fill(0.0)
+        n = hard.shape[0]
+        for i in range(n):
+            for j in range(i + 1, n):
+                move_i = eligible[i]
+                move_j = eligible[j]
+                if not (move_i or move_j):
+                    continue
+                dx = hard[i, 0] - hard[j, 0]
+                dy = hard[i, 1] - hard[j, 1]
+                overlap_x = temp_hw[i] + temp_hw[j] - abs(dx)
+                overlap_y = temp_hh[i] + temp_hh[j] - abs(dy)
+                if overlap_x <= 0.0 or overlap_y <= 0.0:
+                    continue
+                if overlap_x <= overlap_y:
+                    push_x = 0.5 * overlap_x * (1.0 if dx >= 0.0 else -1.0)
+                    if move_i and move_j:
+                        delta[i, 0] += push_x
+                        delta[j, 0] -= push_x
+                    elif move_i:
+                        delta[i, 0] += 2.0 * push_x
+                    else:
+                        delta[j, 0] -= 2.0 * push_x
+                else:
+                    push_y = 0.5 * overlap_y * (1.0 if dy >= 0.0 else -1.0)
+                    if move_i and move_j:
+                        delta[i, 1] += push_y
+                        delta[j, 1] -= push_y
+                    elif move_i:
+                        delta[i, 1] += 2.0 * push_y
+                    else:
+                        delta[j, 1] -= 2.0 * push_y
 
 
 def select_seed_candidate(
@@ -222,33 +261,37 @@ def run_seed_portfolio(
         temp_hw[eligible] *= 1.0 + float(const.HIER_SEED_CLEARANCE_FRAC)
         temp_hh[eligible] *= 1.0 + float(const.HIER_SEED_CLEARANCE_FRAC)
         iters = max(1, int(const.HIER_SEED_CLEARANCE_ITERS))
+        delta = np.zeros_like(hard)
         for _ in range(iters):
-            delta = np.zeros_like(hard)
-            for i in range(n):
-                for j in range(i + 1, n):
-                    move_i = bool(eligible[i])
-                    move_j = bool(eligible[j])
-                    if not (move_i or move_j):
-                        continue
-                    dx = float(hard[i, 0] - hard[j, 0])
-                    dy = float(hard[i, 1] - hard[j, 1])
-                    ox = float(temp_hw[i] + temp_hw[j] - abs(dx))
-                    oy = float(temp_hh[i] + temp_hh[j] - abs(dy))
-                    if ox <= 0.0 or oy <= 0.0:
-                        continue
-                    if ox <= oy:
-                        sx = 1.0 if dx >= 0.0 else -1.0
-                        push = np.array([0.5 * ox * sx, 0.0], dtype=np.float64)
-                    else:
-                        sy = 1.0 if dy >= 0.0 else -1.0
-                        push = np.array([0.0, 0.5 * oy * sy], dtype=np.float64)
-                    if move_i and move_j:
-                        delta[i] += push
-                        delta[j] -= push
-                    elif move_i:
-                        delta[i] += 2.0 * push
-                    elif move_j:
-                        delta[j] -= 2.0 * push
+            if HAS_NUMBA:
+                _synthetic_clearance_delta_jit(hard, eligible, temp_hw, temp_hh, delta)
+            else:
+                delta.fill(0.0)
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        move_i = bool(eligible[i])
+                        move_j = bool(eligible[j])
+                        if not (move_i or move_j):
+                            continue
+                        dx = float(hard[i, 0] - hard[j, 0])
+                        dy = float(hard[i, 1] - hard[j, 1])
+                        ox = float(temp_hw[i] + temp_hw[j] - abs(dx))
+                        oy = float(temp_hh[i] + temp_hh[j] - abs(dy))
+                        if ox <= 0.0 or oy <= 0.0:
+                            continue
+                        if ox <= oy:
+                            sx = 1.0 if dx >= 0.0 else -1.0
+                            push = np.array([0.5 * ox * sx, 0.0], dtype=np.float64)
+                        else:
+                            sy = 1.0 if dy >= 0.0 else -1.0
+                            push = np.array([0.0, 0.5 * oy * sy], dtype=np.float64)
+                        if move_i and move_j:
+                            delta[i] += push
+                            delta[j] -= push
+                        elif move_i:
+                            delta[i] += 2.0 * push
+                        elif move_j:
+                            delta[j] -= 2.0 * push
             hard[eligible] += 0.5 * delta[eligible]
             hard, _soft = _clip_seed(hard, base_soft)
         return hard, base_soft.copy()

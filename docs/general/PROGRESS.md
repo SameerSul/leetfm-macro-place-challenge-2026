@@ -6,6 +6,32 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-15 — accepted Numba/vectorization full IBM sweep):**
+> `uv run evaluate src/main.py --all` completed at **AVG 1.1575**, 17/17
+> VALID, 0 overlaps, all final hierarchy audits passed, in **621.63s** with
+> normal BB and DREAMPlace cache behavior. Versus the prior normal-cache sweep
+> (`AVG 1.1652`, `1133.15s`), proxy improved by `0.0077` and runtime fell by
+> `511.52s` / **45.1%**.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.9244/38.50s`, `ibm02=1.1172/25.21s`,
+> `ibm03=1.0023/26.00s`, `ibm04=1.0036/30.97s`,
+> `ibm06=1.1958/20.36s`, `ibm07=1.0454/32.02s`,
+> `ibm08=1.1309/36.25s`, `ibm09=0.8554/26.88s`,
+> `ibm10=1.1544/35.39s`, `ibm11=0.9869/43.75s`,
+> `ibm12=1.6556/42.53s`, `ibm13=1.0137/30.99s`,
+> `ibm14=1.2596/40.06s`, `ibm15=1.3523/54.94s`,
+> `ibm16=1.2035/40.63s`, `ibm17=1.3861/47.82s`, and
+> `ibm18=1.3899/49.32s`.
+>
+> This accepts the staged runtime stack: exact-order Numba incremental
+> re-smoothing, prepared touched-net routing, spiral legalization, synthetic
+> clearance accumulation, batched soft relocation, and batched soft-soft swap
+> scoring. Direct parity verifiers were bit-exact; all **31** project tests,
+> bytecode compilation, formatting, and `git diff --check` passed before the
+> sweep. The direct-NumPy exact-proxy experiment remained rejected and reverted
+> because its focused ibm10 runtime did not improve.
+
 > **Status (2026-07-15 — cold-cache BB-on full IBM and NG45 validation):**
 > `uv run evaluate src/main.py --all` completed at **AVG 1.1653**, 17/17
 > VALID, 0 overlaps, all final
@@ -53,6 +79,67 @@ Target: beat RePlAce avg of 1.4578.
 > `uv run evaluate src/main.py -b ibm10`
 > completed at **1.1720 VALID**, zero overlaps, final hierarchy audit pass, in
 > **67.37s**.
+>
+> Runtime optimization Stage 1 replaced incremental routing-grid bbox
+> re-smoothing with cached Numba horizontal-column and vertical-row kernels
+> backed by reusable prefix buffers. The dedicated bit-exact reference test,
+> incremental region-swap verifier, bytecode compilation, and all **29** project
+> tests passed. The production ibm10 acceptance run improved to **1.1655
+> VALID** (`wl=0.079`, `den=0.591`, `cong=1.581`), zero overlaps and final
+> hierarchy audit pass, in **66.82s**. This focused smoke accepts the runtime
+> implementation but does not replace the full-suite headline above.
+>
+> Runtime optimization Stage 2 moved prepared incremental net routing into one
+> cached Numba call. Pin gathering, collapsed-net classification, high-fanout
+> sink deduplication, route application, and touched-bbox calculation now reuse
+> precomputed arrays and scratch space instead of per-trial Python/NumPy
+> buckets. A dedicated ibm10 verifier matched the NumPy reference grids and
+> bbox bit-exactly across moved/unmoved positions, full/sample net sets, and
+> both add/remove signs. The incremental swap oracle remained within
+> `4.44e-16`, all **29** tests passed, and the production ibm10 run improved
+> again to **1.1570 VALID** (`wl=0.081`, `den=0.589`, `cong=1.564`), zero
+> overlaps and final hierarchy audit pass, in **59.55s**. The lower runtime let
+> the budget-aware search score `33,556` soft-soft swaps versus Stage 1's
+> `22,494` before the same deadline.
+>
+> Runtime optimization Stage 3 JIT-compiled each hard macro's spiral candidate
+> and conflict scan while leaving the deadline check between macros in Python.
+> The same stage JIT-compiled synthetic-clearance pair pushes into a reusable
+> delta buffer. Randomized legalization and clearance tests were bit-exact
+> against their NumPy/scalar references, bytecode compilation passed, and all
+> **31** tests passed. The production ibm10 acceptance run improved to **1.1552
+> VALID** (`wl=0.080`, `den=0.587`, `cong=1.562`), zero overlaps and final
+> hierarchy audit pass, in **51.84s**. Region-swap trials increased to
+> `4,312` hard-hard, `6,668` hard-soft, and `34,232` soft-soft under the same
+> deadline-aware flow.
+>
+> Runtime optimization Stage 4 added true batched soft-relocation scoring for
+> target sets of size two or more. Compiled loops produce per-target raw routes,
+> touched bboxes, HPWL, and density occupancy without mutating committed scorer
+> state; tail-cost reductions operate across the batch. The ibm10 oracle
+> matched **256/256** scalar scores bit-exactly and verified all maintained
+> grids unchanged; compilation and all **31** tests passed. The production
+> acceptance run was **1.1557 VALID** (`wl=0.080`, `den=0.588`, `cong=1.563`),
+> zero overlaps and final hierarchy audit pass, in **45.11s**. This is `6.73s`
+> faster than Stage 3, with a small `+0.0005` proxy variation; it scored
+> `37,201` soft-soft swaps, `2,969` more than Stage 3, under the same deadline.
+>
+> Runtime optimization Stage 4b completed the batch-scoring scope by batching
+> soft-soft candidates that share one endpoint. The direct ibm10 oracle matched
+> another **128/128** scalar swap scores bit-exactly and verified routing,
+> smoothing, density, and placement caches unchanged. Compilation and all
+> **31** tests passed. The production acceptance run improved to **1.1544
+> VALID** (`wl=0.080`, `den=0.586`, `cong=1.562`), zero overlaps and final
+> hierarchy audit pass, in **40.13s**. It scored `46,230` soft-soft swaps and
+> accepted `182`; versus the original pre-optimization `67.37s` smoke, the
+> accepted Stage 1–4b stack is `27.24s` / **40.4% faster**.
+>
+> Runtime optimization Stage 5 tested direct NumPy inputs for internal exact
+> proxy calls to remove temporary Torch tensor construction and unwrapping.
+> NumPy and Torch inputs matched total proxy and all components exactly, and
+> all **31** tests passed, but the production ibm10 run took **46.25s** versus
+> Stage 4's **45.11s**. The change was therefore reverted; exact-proxy call
+> sites retain the established tensor interface.
 
 > **Ablation (2026-07-15 — DREAMPlace BB-Nesterov on versus off):** A temporary
 > cache-separated switch compared production
