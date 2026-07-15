@@ -6,6 +6,42 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-15 — reproducible runtime, hierarchy vector, and
+> attributable scheduling):** Added a clean-checkout DREAMPlace bootstrap pinned
+> to upstream commit `37214b40fe3837cc7d392c7d6092ccd6ff04a02c`, CUDA 12.1,
+> GCC 11.4, PyTorch 2.4.1+cu121, and the tracked CUB-2 compatibility patch.
+> Runtime availability now imports representative native ops in the build
+> Python instead of checking for files. Restored the public structural-metric
+> module required by the collected verification suite and added tests for the
+> DREAMPlace ABI, hierarchy vector/seed selector, and telemetry analyzer.
+>
+> Every seed candidate now records a complete hierarchy vector: mean and worst
+> hard-cluster spread, nearest-neighbor impurity, weighted hierarchy-edge
+> stretch, owned-soft distance, and bridge-soft corridor distance. Production
+> still selects lowest exact proxy. The opt-in hierarchy-first policy improved
+> the ibm10 seed composite from `0.29168` (`initial`) to `0.16328` (`expand`),
+> but final proxy regressed from the same-day default check `1.1778` to
+> `1.5281`; it therefore remains default-off.
+>
+> Plateau/GNN rows now include run id, code revision, and PID. Plateau rows are
+> schema v2; candidate traces remain schema v1 for dataset-builder compatibility.
+> `scripts/analyze_plateau_telemetry.py` provides provenance filters and
+> pass-yield aggregation. Historical aggregation found **636 survivor-search
+> records across 17 benchmarks, zero total proxy gain, 132.68 cumulative
+> seconds**, so production now skips the broad survivor-pool pass through
+> `HIER_SURVIVOR_ENABLED=False`; its implementation remains available for
+> controlled research. The narrower decompression graph-survivor hook is
+> unchanged.
+>
+> Verification: DREAMPlace source and native-extension preflights passed;
+> `uv run pytest test/ -q` = **27 passed** (including the hierarchy-only EDA
+> CLI integration path);
+> bytecode compilation and `git diff --check` passed. Fresh production-default
+> checks were `ibm01=0.9248` (94.64s), `ibm04=1.0041` (70.37s), and
+> `ibm10=1.1778` (65.10s), all VALID with final hierarchy audits passing.
+> These focused checks do not replace the accepted full-suite result below:
+> **AVG 1.1657**, 17/17 VALID, 0 overlaps, all audits passed, 1128.80s.
+
 > **Status (2026-06-25 — graph-tension ordering plus decompression survivor):**
 > Added a hierarchy graph-tension signal that compares current cluster-centroid
 > relations with the selected hierarchy seed, weights stretched inter-cluster

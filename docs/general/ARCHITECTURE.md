@@ -17,8 +17,8 @@ benchmark input
   -> cluster-consecutive hard legalization
   -> exact-proxy seed portfolio selection
        (grouped DREAMPlace, legalized initial.plc, DP/initial blends,
-        radial expansion, synthetic-clearance push-apart; lowest exact
-        proxy enters relief)
+        radial expansion, synthetic-clearance push-apart; every candidate gets
+        a complete hierarchy vector and lowest exact proxy enters relief)
   -> congestion-expanded hard/soft hierarchy regions
   -> exact-gated local micro-shift polish
   -> exact-gated cluster decompression with composite hierarchy quality
@@ -50,10 +50,9 @@ benchmark input
        - run the same swaps and relocations without a kick
        - exact proxy + hierarchy-quality gate before commit
   -> post-coldspot micro-shift replay
-  -> bounded go-with-the-winners survivor search:
-       - generate hierarchy-safe cluster move variants from multiple states
-       - GPU-rank cheap candidate scores when CUDA is available
-       - exact-score the top candidates and keep the best survivor pool
+  -> skip the research survivor-pool search in production
+       - 636 historical pass records across 17 benchmarks had zero proxy gain
+       - implementation remains available behind HIER_SURVIVOR_ENABLED
   -> feature-gated small-design polish:
        - seed release candidates with weakest-k inferred hierarchy clusters
        - keep only clusters below the confidence threshold
@@ -196,16 +195,17 @@ not comparable to current numbers.
 | `src/main.py` | Evaluator entrypoint. Exposes `MacroPlacer`; applies `SEED` only. |
 | `src/utils/constants.py` | All tunable hierarchy constants (see appendix below). |
 | `src/placer/pipeline/macro_placer.py` | Production flow entrypoint; raises if `_hierarchy_floorplan()` cannot run. |
-| `src/placer/pipeline/hierarchy_floorplan.py` | The hierarchy pipeline itself: seed portfolio, region relief, swaps, coldspot, survivor search. |
+| `src/placer/pipeline/hierarchy_floorplan.py` | The hierarchy pipeline itself: seed portfolio, region relief, swaps, and coldspot cleanup. |
 | `src/placer/pipeline/hierarchy_context.py` | Shared `PlacementState`, `PassContext`, `PassResult`, `PlateauTelemetry` used across pipeline stages. |
 | `src/placer/local_search/hierarchy_model.py` | Inferred hierarchy: hard clusters, soft roles, cluster graph, region builders. |
+| `src/placer/local_search/hierarchy_quality.py` | Complete hierarchy vector: compactness, worst spread, neighbor impurity, graph stretch, and owned/bridge soft-role distances. |
 | `src/placer/local_search/clusters.py` | Hard-cluster derivation, oversized-cluster splitting, region-box primitives. |
 | `src/placer/local_search/relocation.py` | Hard and soft relocation used by region-locked relief and post-swap polish. |
 | `src/placer/local_search/hierarchy_swaps.py` | Region-bounded hard-hard, hard-soft, soft-soft swap relief. |
 | `src/placer/local_search/cluster_decompress.py` | Exact-gated decompression of hot hierarchy blobs. |
 | `src/placer/local_search/region_expand.py` | Expands hot cluster regions toward colder congestion bands. |
 | `src/placer/local_search/lsmc_explore.py` | Coldspot kick candidate generation. |
-| `src/placer/local_search/survivor_search.py` | Bounded survivor-pool search over hierarchy-safe cluster moves; CUDA-rankable. |
+| `src/placer/local_search/survivor_search.py` | Default-off research survivor-pool search retained for controlled experiments. |
 | `src/placer/local_search/fields.py` | Congestion/coldspot fields used by relocation and coldspot tightening. |
 | `src/placer/local_search/structural_fields.py` | Deterministic BeyondPPA-style edge-keepout/grid-alignment/notch metrics; opt-in candidate reordering only. |
 | `src/placer/local_search/gnn_trace.py` | JSONL trace + plateau telemetry writers (diagnostic only). |
@@ -213,6 +213,8 @@ not comparable to current numbers.
 | `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves. |
 | `src/placer/legalize/spiral.py` | Hard-macro legalization, with cluster-consecutive order support. |
 | `src/dreamplace_bridge/` | ICCAD04 pb/plc → Bookshelf, cluster grouping injection, DREAMPlace launcher, read-back. |
+| `scripts/dreamplace/` | Pinned source/toolchain bootstrap, CUDA-12 CUB patch, and native-extension preflight. |
+| `scripts/analyze_plateau_telemetry.py` | Provenance-filtered pass-yield aggregation and conservative skip-candidate report. |
 | `src/eda_io/` | Standard EDA file I/O; converts inputs to the same benchmark object. |
 
 ## Hierarchy Pipeline
@@ -232,14 +234,24 @@ a region spanning the clusters they connect).
 `run_dreamplace()` accepts `cluster_groups` and `group_weight`; the bridge
 adds synthetic clique nets among each cluster's hard and soft members so
 DREAMPlace's global placement pulls each subsystem together. DREAMPlace is
-required — there is no proxy-only fallback.
+required — there is no proxy-only fallback. Runtime availability is a real
+subprocess import probe using the Python ABI that compiled DREAMPlace, including
+representative native density, HPWL, and boundary ops. A clean checkout can
+reproduce the local CUDA 12.1 build with `scripts/dreamplace/bootstrap.sh all`;
+`scripts/dreamplace/bootstrap.sh preflight` checks an existing install.
 
 ### 3. Seed Portfolio Selection
 
 Grouped DREAMPlace is one candidate seed among several: legalized
 `initial.plc`, two DP/initial blends, a radial expansion from the DP basin,
 and a synthetic-clearance push-apart from the DP basin. All are exact-scored;
-the lowest-proxy seed enters hierarchy relief.
+the lowest-proxy seed enters hierarchy relief. Each seed also records a richer
+hierarchy vector covering mean and worst hard-cluster spread, nearest-neighbor
+cluster impurity, weighted inter-cluster edge stretch, owned-soft distance, and
+bridge-soft corridor distance. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
+secondary choice inside the best hierarchy-quality band. That policy remains
+default-off: on the 2026-07-15 ibm10 experiment it improved seed composite
+`0.29168 -> 0.16328` but regressed final proxy `1.1778 -> 1.5281`.
 
 ### 4. Cluster-Consecutive Legalization
 
@@ -303,12 +315,14 @@ and the hierarchy-quality metric stays within budget. When no kick commits,
 a graph-local fallback runs the same bordered refinement on the hottest
 eligible cluster without a kick.
 
-### 11. Survivor Search and Final Audit
+### 11. Final Audit
 
-A bounded go-with-the-winners search generates hierarchy-safe cluster move
-variants from multiple states, optionally GPU-ranks cheap candidate scores,
-and exact-scores the top survivors. The pipeline finishes with a hard-legality
-margin audit and a final hierarchy-quality audit against the selected seed,
+The former bounded survivor-pool pass is skipped by default. Historical
+plateau telemetry contained 636 survivor records across 17 benchmarks with
+zero total proxy gain and 132.68 cumulative seconds. Its implementation is
+retained behind `HIER_SURVIVOR_ENABLED` for controlled research. Production
+continues directly to feature-gated small-design polish, then a hard-legality
+margin audit and final hierarchy-quality audit against the selected seed,
 rolling back to the best saved audit-passing checkpoint if the final state
 fails.
 
@@ -316,10 +330,13 @@ fails.
 
 No learned ranker is active in production. `HIER_GNN_TRACE=1` writes
 schema-v1 JSONL candidate traces (relocation, swaps, decompression, coldspot)
-for offline GNN experiments; it does not change placement output.
-`HIER_PLATEAU_TRACE` (default on) writes lightweight pass-level telemetry
-(proxy before/after, elapsed time, accept rate, plateau flag) for future
-ML/DL scheduling work. See
+for offline GNN experiments; it does not change placement output. Candidate
+schema v1 remains compatible with the existing dataset builder while adding
+`run_id`, `code_revision`, and `pid` provenance fields.
+`HIER_PLATEAU_TRACE` (default on) writes schema-v2 pass-level telemetry
+(proxy before/after, elapsed time, accept rate, plateau flag, and the same
+provenance). `scripts/analyze_plateau_telemetry.py` filters by run, revision,
+or benchmark and reports aggregate yield and conservative skip candidates. See
 [`../ml_nn/beyondppa_results/`](../ml_nn/beyondppa_results/) for the current
 state of GNN-assisted candidate ranking experiments — all are default-off.
 
@@ -483,6 +500,7 @@ HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S=8   HIER_STRONG_SOFT_REPAIR_BUDGET_S=12
 HIER_STRONG_SOFT_REPAIR_MIN_SPARE_S=2   HIER_STRONG_SOFT_REPAIR_ROUNDS=2
 HIER_PLATEAU_ACCEPT_RATE=0.002          HIER_PLATEAU_PROXY_GAIN=0.00005
 HIER_PLATEAU_ESCAPE_BUDGET_S=4
+HIER_SURVIVOR_ENABLED=False
 ```
 
 **Coldspot tightening**
@@ -499,6 +517,7 @@ HIER_COLDSPOT_SOFT_ONLY=0           HIER_COLDSPOT_PARTIAL_FRONTIER=0
 HIER_GNN_TRACE=0                 HIER_GNN_TRACE_DIR=ml_data/beyondppa_gnn
 HIER_GNN_TRACE_MAX_CANDIDATES=512
 HIER_PLATEAU_TRACE=1             HIER_PLATEAU_TRACE_DIR=ml_data/beyondppa_gnn/plateau
+VIVAPLACE_RUN_ID=<optional attributable run id>
 ```
 
 Experiments that were tried and not promoted (full recursive bisection,

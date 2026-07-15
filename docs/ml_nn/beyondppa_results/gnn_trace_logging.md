@@ -29,6 +29,9 @@ run. The logger appends to the selected JSONL file.
 
 All events include `schema_version`. The current schema is documented in
 [`gnn_trace_schema.md`](gnn_trace_schema.md).
+Rows also include `run_id`, `code_revision`, and `pid`. Set
+`VIVAPLACE_RUN_ID` to group candidate and plateau streams under one run id;
+the logger generates a process-unique id when none is supplied.
 
 - `hier_relocation_candidates`
   - hard propose-all candidate pool after proxy/structural candidate scoring
@@ -52,8 +55,15 @@ All events include `schema_version`. The current schema is documented in
   - pass-level summaries for micro-shift, decompression, swaps, post-swap
     relocation, coldspot tightening, and post-coldspot micro-shift
 - `hier_final`
-  - final proxy, pre-relief proxy, hierarchy quality, cluster count, and group
-    weight
+  - final proxy, pre-relief proxy, the legacy hard hierarchy audit metric, the
+    complete hard/soft/graph hierarchy vector, cluster count, and group weight
+
+Pass-yield telemetry is default-on, separate from candidate tracing, and uses
+schema v2. It can be summarized without loading placement traces:
+
+```bash
+uv run python scripts/analyze_plateau_telemetry.py --min-runs 3
+```
 
 ## Design Decision
 
