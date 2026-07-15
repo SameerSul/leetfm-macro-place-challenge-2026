@@ -14,6 +14,7 @@ from placer.local_search.fields import (
     weighted_congestion_field,
 )
 from placer.local_search.gnn_trace import flush_plateau_events, log_gnn_event
+from placer.local_search.hierarchy_quality import hierarchy_quality_vector
 from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
 from placer.local_search.relocation import (
     _micro_shift_polish,
@@ -270,62 +271,70 @@ def run_post_coldspot_finalize(
 
     pre_survivor_score = float(cur_proxy)
     survivor_t0 = time.monotonic()
-    survivor_deadline = _deadline(float(const.HIER_SURVIVOR_BUDGET_S), region_deadline)
-    legal, s_pos, survivor_acc, cur_proxy = _parallel_survivor_search(
-        legal,
-        s_pos,
-        sizes[:n],
-        hw,
-        hh,
-        soft_hw,
-        soft_hh,
-        float(cw),
-        float(ch),
-        movable[:n],
-        soft_mov,
-        int(n),
-        plc,
-        benchmark,
-        float(cur_proxy),
-        clusters,
-        cluster_softs=csofts,
-        bridge_softs=bridge_softs,
-        hard_region=region,
-        soft_region=soft_region,
-        deadline=survivor_deadline,
-    )
-    if not _is_hard_valid(legal):
-        legal, s_pos, cur_proxy = best_h.copy(), best_s.copy(), best_score
-        survivor_acc = 0
-    survivor_stats = getattr(_parallel_survivor_search, "last_stats", {})
-
-    _log(
-        f"  [hier] survivor search: {survivor_acc} accepts, "
-        f"proxy {pre_survivor_score:.4f}->{cur_proxy:.4f}"
-    )
-    _trace_pass(
-        "survivor_search",
-        pre_survivor_score,
-        float(cur_proxy),
-        int(survivor_acc),
-        quality=hierarchy_quality_metric_fn(legal, clusters),
-        gpu_rank=bool(survivor_stats.get("gpu_rank", False)),
-    )
-    _record_plateau(
-        "survivor_search",
-        pre_survivor_score,
-        float(cur_proxy),
-        int(survivor_acc),
-        time.monotonic() - survivor_t0,
-        candidates=int(survivor_stats.get("candidates", 0)),
-        legal=int(survivor_stats.get("legal", 0)),
-        scored=int(survivor_stats.get("scored", 0)),
-        quality=hierarchy_quality_metric_fn(legal, clusters),
-        gpu_rank=bool(survivor_stats.get("gpu_rank", False)),
-    )
-    if _is_hard_valid(legal) and float(cur_proxy) < float(best_score) - 1e-9:
-        best_h, best_s, best_score = legal.copy(), s_pos.copy(), float(cur_proxy)
-    _update_audit_checkpoint(legal, s_pos, float(cur_proxy))
+    if bool(const.HIER_SURVIVOR_ENABLED):
+        survivor_deadline = _deadline(float(const.HIER_SURVIVOR_BUDGET_S), region_deadline)
+        legal, s_pos, survivor_acc, cur_proxy = _parallel_survivor_search(
+            legal,
+            s_pos,
+            sizes[:n],
+            hw,
+            hh,
+            soft_hw,
+            soft_hh,
+            float(cw),
+            float(ch),
+            movable[:n],
+            soft_mov,
+            int(n),
+            plc,
+            benchmark,
+            float(cur_proxy),
+            clusters,
+            cluster_softs=csofts,
+            bridge_softs=bridge_softs,
+            hard_region=region,
+            soft_region=soft_region,
+            deadline=survivor_deadline,
+        )
+        if not _is_hard_valid(legal):
+            legal, s_pos, cur_proxy = best_h.copy(), best_s.copy(), best_score
+            survivor_acc = 0
+        survivor_stats = getattr(_parallel_survivor_search, "last_stats", {})
+        _log(
+            f"  [hier] survivor search: {survivor_acc} accepts, "
+            f"proxy {pre_survivor_score:.4f}->{cur_proxy:.4f}"
+        )
+        _trace_pass(
+            "survivor_search",
+            pre_survivor_score,
+            float(cur_proxy),
+            int(survivor_acc),
+            quality=hierarchy_quality_metric_fn(legal, clusters),
+            gpu_rank=bool(survivor_stats.get("gpu_rank", False)),
+        )
+        _record_plateau(
+            "survivor_search",
+            pre_survivor_score,
+            float(cur_proxy),
+            int(survivor_acc),
+            time.monotonic() - survivor_t0,
+            candidates=int(survivor_stats.get("candidates", 0)),
+            legal=int(survivor_stats.get("legal", 0)),
+            scored=int(survivor_stats.get("scored", 0)),
+            quality=hierarchy_quality_metric_fn(legal, clusters),
+            gpu_rank=bool(survivor_stats.get("gpu_rank", False)),
+        )
+        if _is_hard_valid(legal) and float(cur_proxy) < float(best_score) - 1e-9:
+            best_h, best_s, best_score = legal.copy(), s_pos.copy(), float(cur_proxy)
+        _update_audit_checkpoint(legal, s_pos, float(cur_proxy))
+    else:
+        log_gnn_event(
+            "hier_budget_schedule",
+            benchmark=benchmark.name,
+            pass_name="survivor_search",
+            run=False,
+            reason="historical_zero_yield",
+        )
 
     if _small_design_polish_enabled():
         small_t0 = time.monotonic()
@@ -743,6 +752,16 @@ def run_post_coldspot_finalize(
     out = torch.tensor(state.full().astype(np.float32), dtype=torch.float32)
     proxy = float(state.proxy)
     hq_breakdown = hierarchy_quality_breakdown(legal, clusters)
+    hq_vector = hierarchy_quality_vector(
+        legal,
+        s_pos,
+        clusters,
+        csofts,
+        bridge_softs,
+        hierarchy.edges,
+        cw,
+        ch,
+    )
     margin_eps = float(const.HIER_LEGALITY_MARGIN_EPS)
     legality_margin = _hard_legality_margin(legal, margin_eps)
 
@@ -774,6 +793,13 @@ def run_post_coldspot_finalize(
         hierarchy_quality_radius=float(hq_breakdown["radius"]),
         hierarchy_quality_bbox=float(hq_breakdown["bbox"]),
         hierarchy_quality_crowd=float(hq_breakdown["crowd"]),
+        hierarchy_vector_composite=float(hq_vector["composite"]),
+        hierarchy_vector_compactness=float(hq_vector["cluster_compactness"]),
+        hierarchy_vector_worst_spread=float(hq_vector["worst_cluster_spread"]),
+        hierarchy_vector_impurity=float(hq_vector["neighbor_impurity"]),
+        hierarchy_vector_edge_stretch=float(hq_vector["edge_stretch"]),
+        hierarchy_vector_owned_soft=float(hq_vector["owned_soft_distance"]),
+        hierarchy_vector_bridge_soft=float(hq_vector["bridge_soft_distance"]),
         clusters=int(len(clusters)),
         hierarchy_edges=int(len(hierarchy.edges)),
         hierarchy_oversize_split=True,

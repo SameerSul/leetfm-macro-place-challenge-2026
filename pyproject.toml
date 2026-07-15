@@ -74,3 +74,8 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v"
+markers = [
+    "slow: integration tests that run a placer or exact evaluator",
+    "integration: tests that exercise multiple runtime components",
+    "cuda: tests that require a CUDA-capable runtime",
+]

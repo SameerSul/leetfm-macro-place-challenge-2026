@@ -94,7 +94,11 @@ class MacroPlacer:
 
         hier = self._hierarchy_floorplan(benchmark)
         if hier is None:
+            from dreamplace_bridge.run_bridge import availability_error
+
+            detail = availability_error()
+            suffix = f": {detail}" if detail else ""
             raise RuntimeError(
-                "hierarchy floorplan path unavailable; proxy fallback has been removed"
+                "hierarchy floorplan path unavailable; proxy fallback has been removed" + suffix
             )
         return hier
