@@ -32,14 +32,17 @@ import json
 import torch
 import dreamplace.configure as configure
 import dreamplace.NonLinearPlace
+from dreamplace.NesterovAcceleratedGradientOptimizer import NesterovAcceleratedGradientOptimizer
 from dreamplace.ops.density_map import density_map
 from dreamplace.ops.hpwl import hpwl
 from dreamplace.ops.move_boundary import move_boundary
+assert callable(getattr(NesterovAcceleratedGradientOptimizer, "step_bb", None))
 print(json.dumps({
     "python_torch": torch.__version__,
     "torch_cuda": torch.version.cuda,
     "cuda_available": torch.cuda.is_available(),
     "dreamplace_cuda_found": configure.compile_configurations.get("CUDA_FOUND"),
+    "bb_nesterov": True,
     "native_ops": [density_map.__name__, hpwl.__name__, move_boundary.__name__],
 }))
 """

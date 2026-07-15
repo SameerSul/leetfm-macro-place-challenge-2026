@@ -2,7 +2,7 @@
 
 Candidate trace rows are JSONL events emitted only when `HIER_GNN_TRACE=1`.
 Plateau telemetry is a separate lightweight JSONL stream for ML/DL scheduling
-data and is controlled by `HIER_PLATEAU_TRACE` instead.
+data and is always buffered and flushed by the production hierarchy flow.
 
 Every row includes:
 
@@ -42,7 +42,7 @@ Candidate-level events use these fields when applicable:
 
 Plateau rows are written to
 `ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` by default. Override
-with `HIER_PLATEAU_TRACE_PATH`, or disable with `HIER_PLATEAU_TRACE=0`.
+the destination with `HIER_PLATEAU_TRACE_PATH`.
 
 Common fields:
 

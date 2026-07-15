@@ -163,7 +163,6 @@ def expand_regions_by_congestion(
     weak_hot_max_clusters: int = 0,
     weak_hot_side_floor: float = 0.35,
     weak_candidate_clusters=None,
-    component_expand: bool = False,
     component_cold_percentile: float = 45.0,
     component_min_cells: int = 4,
     component_max_distance_cells: int = 4,
@@ -200,13 +199,11 @@ def expand_regions_by_congestion(
     expanded = 0
     component_expanded = 0
     graph_component_expanded = 0
-    cold_components = []
-    if component_expand:
-        cold_components = cold_connected_components(
-            field,
-            cold_percentile=float(component_cold_percentile),
-            min_cells=max(1, int(component_min_cells)),
-        )
+    cold_components = cold_connected_components(
+        field,
+        cold_percentile=float(component_cold_percentile),
+        min_cells=max(1, int(component_min_cells)),
+    )
     weak_hot_clusters: set[int] = set()
     weak_candidates = None
     if weak_candidate_clusters is not None:
@@ -250,8 +247,12 @@ def expand_regions_by_congestion(
             weight = max(0.0, float(getattr(edge, "weight", 1.0)))
             if weight <= 0.0:
                 continue
-            graph_corridors_by_cluster.setdefault(a, []).append((centroids[a], centroids[b], weight))
-            graph_corridors_by_cluster.setdefault(b, []).append((centroids[b], centroids[a], weight))
+            graph_corridors_by_cluster.setdefault(a, []).append(
+                (centroids[a], centroids[b], weight)
+            )
+            graph_corridors_by_cluster.setdefault(b, []).append(
+                (centroids[b], centroids[a], weight)
+            )
 
     for cid, h in heat:
         if h < threshold:

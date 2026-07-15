@@ -227,33 +227,17 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             float(const.HIER_PLATEAU_PROXY_GAIN),
         )
 
-    adaptive_passes = os.environ.get("HIER_ADAPTIVE_PASSES", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-        "disable",
-    }
     adaptive_floor_proxy_gain = float(const.HIER_PLATEAU_PROXY_GAIN)
-    if adaptive_passes:
-        hier_micro_shift_min_gain = max(
-            float(hier_micro_shift_min_gain),
-            adaptive_floor_proxy_gain,
-        )
+    hier_micro_shift_min_gain = max(
+        float(hier_micro_shift_min_gain),
+        adaptive_floor_proxy_gain,
+    )
 
     def _adaptive_pass_gain(before: float, after: float) -> bool:
-        if not adaptive_passes:
-            return True
         return float(before) - float(after) > adaptive_floor_proxy_gain
 
     def _has_spare(deadline: "float | None", reserve_s: float) -> bool:
         return deadline is None or time.monotonic() + float(reserve_s) < float(deadline)
-
-    def _env_bool(name: str, default: bool) -> bool:
-        raw = os.environ.get(name)
-        if raw is None:
-            return bool(default)
-        return raw.strip().lower() not in {"0", "false", "off", "no", "disabled", ""}
 
     def _env_float(name: str, default: float) -> float:
         raw = os.environ.get(name)
@@ -394,13 +378,9 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     soft_mov = movable[n : n + n_soft]
     seed_hierarchy_quality = hierarchy_quality_metric(legal, clusters)
 
-    graph_tension_enabled = _env_bool(
-        "HIER_GRAPH_TENSION_ORDER",
-        bool(getattr(const, "HIER_GRAPH_TENSION_ORDER", False)),
-    ) and (
-        int(n) >= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MIN", 0))
-        and int(n) <= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MAX", 1000000))
-    )
+    graph_tension_enabled = int(n) >= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MIN", 0)) and int(
+        n
+    ) <= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MAX", 1000000))
     graph_tension_weight = (
         max(
             0.0,
@@ -476,11 +456,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             )
         ),
     )
-    graph_swap_fallback_enabled = bool(
-        _env_bool(
-            "HIER_SWAP_GRAPH_FALLBACK", bool(getattr(const, "HIER_SWAP_GRAPH_FALLBACK", False))
-        )
-    )
     graph_swap_fallback_budget_s = max(
         0.0,
         _env_float(
@@ -550,8 +525,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 int(getattr(const, "HIER_SWAP_GRAPH_MASK_PAD_CELLS", 1)),
             ),
         )
-        if not bool(getattr(const, "HIER_SWAP_GRAPH_MASK_AWARE", False)):
-            return None, {"enabled": False, "graph_weight": float(graph_weight)}
         if graph_weight <= 0.0:
             return None, {
                 "enabled": False,
@@ -810,11 +783,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 key=lambda item: (item[0], item[1]),
             )[:weakest_k]
             weak_hot_candidate_clusters = [int(cid) for _conf, cid in weakest_rows]
-    if (
-        weak_hot_enabled
-        and bool(getattr(const, "HIER_REGION_WEAK_HOT_REQUIRE_RELEASE_CANDIDATE", True))
-        and not weak_hot_candidate_clusters
-    ):
+    if weak_hot_enabled and not weak_hot_candidate_clusters:
         weak_hot_enabled = False
     region, soft_region, n_expanded = expand_regions_by_congestion(
         region,
@@ -841,12 +810,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         weak_hot_extra_frac=float(const.HIER_REGION_WEAK_HOT_EXTRA_FRAC),
         weak_hot_max_clusters=max(0, int(const.HIER_REGION_WEAK_HOT_MAX_CLUSTERS)),
         weak_hot_side_floor=float(const.HIER_REGION_WEAK_HOT_SIDE_FLOOR),
-        weak_candidate_clusters=(
-            weak_hot_candidate_clusters
-            if bool(getattr(const, "HIER_REGION_WEAK_HOT_REQUIRE_RELEASE_CANDIDATE", True))
-            else None
-        ),
-        component_expand=bool(getattr(const, "HIER_REGION_COMPONENT_EXPAND", False)),
+        weak_candidate_clusters=weak_hot_candidate_clusters,
         component_cold_percentile=float(getattr(const, "HIER_REGION_COMPONENT_COLD_PCT", 45.0)),
         component_min_cells=max(1, int(getattr(const, "HIER_REGION_COMPONENT_MIN_CELLS", 4))),
         component_max_distance_cells=max(
@@ -1125,7 +1089,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         )
         _enforce_audit_checkpoint("region_soft_relocation")
         round_accepts = int(micro_acc + reloc_acc + soft_reloc_acc)
-        if adaptive_passes and not _adaptive_pass_gain(round_start, r_score):
+        if not _adaptive_pass_gain(round_start, r_score):
             _log(
                 f"  [hier] region-round adaptation: early exit after round {round_idx}, "
                 f"gain={round_start - float(r_score):.4f}, accepts={round_accepts}"
@@ -1178,9 +1142,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             field_gap=float(decomp_gap),
         )
     else:
-        decomp_min_gain = float(const.HIER_DECOMPRESS_MIN_GAIN)
-        if adaptive_passes:
-            decomp_min_gain = max(decomp_min_gain, adaptive_floor_proxy_gain)
+        decomp_min_gain = max(
+            float(const.HIER_DECOMPRESS_MIN_GAIN),
+            adaptive_floor_proxy_gain,
+        )
         d_deadline = _deadline(float(const.HIER_DECOMPRESS_BUDGET_S), rdeadline)
         decomp_t0 = time.monotonic()
         d_acc = 0
@@ -1221,7 +1186,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 anisotropic=True,
                 anisotropic_band=max(1, int(const.HIER_DECOMPRESS_ANISO_BAND)),
                 anisotropic_secondary=float(const.HIER_DECOMPRESS_ANISO_SECONDARY),
-                local_component=bool(getattr(const, "HIER_DECOMPRESS_LOCAL_COMPONENT", False)),
                 local_component_cold_percentile=float(
                     getattr(const, "HIER_DECOMPRESS_LOCAL_COLD_PCT", 45.0)
                 ),
@@ -1287,12 +1251,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         and bool(np.any(soft_mov))
         and _has_spare(rdeadline, float(const.HIER_INTERLEAVED_SOFT_REPAIR_MIN_SPARE_S))
     ):
-        interleaved_soft_min_gain = float(const.HIER_INTERLEAVED_SOFT_REPAIR_MIN_GAIN)
-        if adaptive_passes:
-            interleaved_soft_min_gain = max(
-                interleaved_soft_min_gain,
-                adaptive_floor_proxy_gain,
-            )
+        interleaved_soft_min_gain = max(
+            float(const.HIER_INTERLEAVED_SOFT_REPAIR_MIN_GAIN),
+            adaptive_floor_proxy_gain,
+        )
         inter_soft_deadline = _deadline(
             float(const.HIER_INTERLEAVED_SOFT_REPAIR_BUDGET_S), rdeadline
         )
@@ -1373,9 +1335,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         extra_k = max(0, int(const.HIER_ADDITIVE_SWAP_EXTRA_K))
         hard_k += extra_k
         soft_k += extra_k
-    swap_min_gain = float(const.HIER_SWAP_MIN_GAIN)
-    if adaptive_passes:
-        swap_min_gain = max(swap_min_gain, adaptive_floor_proxy_gain)
+    swap_min_gain = max(float(const.HIER_SWAP_MIN_GAIN), adaptive_floor_proxy_gain)
     swap_min_field = float(const.HIER_SWAP_MIN_FIELD_RELIEF)
     enable_hh = True
     enable_hs = True
@@ -1468,8 +1428,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             if not _adaptive_pass_gain(swap_before, r_score):
                 break
         if (
-            graph_swap_fallback_enabled
-            and swap_round_masked_accepts <= 0
+            swap_round_masked_accepts <= 0
             and swap_mask is not None
             and bool(graph_swap_fallback_budget_s > 0.0)
             and not swap_fallback_used
@@ -1575,7 +1534,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             _enforce_audit_checkpoint("swap_round_micro_shift")
             if not _adaptive_pass_gain(swap_micro_before, r_score):
                 break
-        if adaptive_passes and not _adaptive_pass_gain(swap_round_start, r_score):
+        if not _adaptive_pass_gain(swap_round_start, r_score):
             _log(
                 f"  [hier] swap-round adaptation: early exit after round {_swap_round}, "
                 f"gain={swap_round_start - float(r_score):.4f}, "
@@ -1625,9 +1584,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         quality=hierarchy_quality_metric(h_pos, clusters),
         stats=swap_stats,
     )
-    plateau_escape_min_gain = float(const.HIER_PLATEAU_ESCAPE_MIN_GAIN)
-    if adaptive_passes:
-        plateau_escape_min_gain = max(plateau_escape_min_gain, adaptive_floor_proxy_gain)
+    plateau_escape_min_gain = max(
+        float(const.HIER_PLATEAU_ESCAPE_MIN_GAIN),
+        adaptive_floor_proxy_gain,
+    )
     if n_soft and bool(np.any(soft_mov)) and _is_plateau(swap_record):
         escape_budget = float(const.HIER_PLATEAU_ESCAPE_BUDGET_S)
         escape_spare = float(const.HIER_PLATEAU_ESCAPE_MIN_SPARE_S)
@@ -1775,12 +1735,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         quality=hierarchy_quality_metric(h_pos, clusters),
     )
     if hier_post_reloc_propose:
-        post_reloc_propose_min_gain = float(hier_reloc_propose_min_gain)
-        if adaptive_passes:
-            post_reloc_propose_min_gain = max(
-                post_reloc_propose_min_gain,
-                adaptive_floor_proxy_gain,
-            )
+        post_reloc_propose_min_gain = max(
+            float(hier_reloc_propose_min_gain),
+            adaptive_floor_proxy_gain,
+        )
         post_deadline = _deadline(float(const.HIER_POST_RELOC_PROPOSE_BUDGET_S), rdeadline)
         pre_post_score = r_score
         post_t0 = time.monotonic()
@@ -1843,9 +1801,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     pre_post_soft_score = r_score
     post_soft_acc = 0
     post_soft_t0 = time.monotonic()
-    post_soft_min_gain = float(hier_post_soft_reloc_min_gain)
-    if adaptive_passes:
-        post_soft_min_gain = max(post_soft_min_gain, adaptive_floor_proxy_gain)
+    post_soft_min_gain = max(
+        float(hier_post_soft_reloc_min_gain),
+        adaptive_floor_proxy_gain,
+    )
     post_soft_stats = _empty_pass_stats()
     for use_density in (False, True):
         post_soft_before = float(r_score)
@@ -2040,8 +1999,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         total_macros = max(1, int(n) + int(n_soft))
         nets_per_macro = float(getattr(benchmark, "num_nets", 0)) / float(total_macros)
         medium_soft_shape = bool(
-            bool(getattr(const, "HIER_MEDIUM_SOFT_CONTINUATION", False))
-            and int(n) >= int(const.HIER_MEDIUM_SOFT_HARD_MIN)
+            int(n) >= int(const.HIER_MEDIUM_SOFT_HARD_MIN)
             and int(n) <= int(const.HIER_MEDIUM_SOFT_HARD_MAX)
             and total_macros >= int(const.HIER_MEDIUM_SOFT_MACRO_MIN)
             and total_macros <= int(const.HIER_MEDIUM_SOFT_MACRO_MAX)
@@ -2078,9 +2036,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             strong_acc = 0
             strong_stats = _empty_pass_stats()
             strong_t0 = time.monotonic()
-            strong_min_gain = float(const.HIER_STRONG_SOFT_REPAIR_MIN_GAIN)
-            if adaptive_passes:
-                strong_min_gain = max(strong_min_gain, adaptive_floor_proxy_gain)
+            strong_min_gain = max(
+                float(const.HIER_STRONG_SOFT_REPAIR_MIN_GAIN),
+                adaptive_floor_proxy_gain,
+            )
             for _strong_round in range(scheduled_strong_rounds):
                 strong_round_before = float(r_score)
                 for use_density in (False, True):
@@ -2119,7 +2078,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         break
                     if strong_deadline is not None and time.monotonic() >= strong_deadline:
                         break
-                if adaptive_passes and not _adaptive_pass_gain(strong_round_before, r_score):
+                if not _adaptive_pass_gain(strong_round_before, r_score):
                     break
                 if strong_deadline is not None and time.monotonic() >= strong_deadline:
                     break
@@ -2184,9 +2143,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 medium_acc = 0
                 medium_stats = _empty_pass_stats()
                 medium_t0 = time.monotonic()
-                medium_min_gain = float(const.HIER_MEDIUM_SOFT_MIN_GAIN)
-                if adaptive_passes:
-                    medium_min_gain = max(medium_min_gain, adaptive_floor_proxy_gain)
+                medium_min_gain = max(
+                    float(const.HIER_MEDIUM_SOFT_MIN_GAIN),
+                    adaptive_floor_proxy_gain,
+                )
                 for _medium_round in range(max(1, int(const.HIER_MEDIUM_SOFT_ROUNDS))):
                     medium_round_before = float(r_score)
                     for use_density in (False, True):
@@ -2225,7 +2185,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                             break
                         if medium_deadline is not None and time.monotonic() >= medium_deadline:
                             break
-                    if adaptive_passes and not _adaptive_pass_gain(medium_round_before, r_score):
+                    if not _adaptive_pass_gain(medium_round_before, r_score):
                         break
                     if medium_deadline is not None and time.monotonic() >= medium_deadline:
                         break

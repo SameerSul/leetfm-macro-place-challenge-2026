@@ -134,10 +134,12 @@ def _probe_install(timeout_s: float = 30.0) -> tuple[bool, str]:
     code = """
 import dreamplace.configure as configure
 import dreamplace.NonLinearPlace
+from dreamplace.NesterovAcceleratedGradientOptimizer import NesterovAcceleratedGradientOptimizer
 from dreamplace.ops.density_map import density_map
 from dreamplace.ops.hpwl import hpwl
 from dreamplace.ops.move_boundary import move_boundary
 assert configure.compile_configurations
+assert callable(getattr(NesterovAcceleratedGradientOptimizer, "step_bb", None))
 """
     try:
         proc = subprocess.run(

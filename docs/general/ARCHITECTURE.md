@@ -50,7 +50,7 @@ benchmark input
        - run the same swaps and relocations without a kick
        - exact proxy + hierarchy-quality gate before commit
   -> post-coldspot micro-shift replay
-  -> feature-gated small-design polish:
+  -> structurally eligible small-design polish:
        - seed release candidates with weakest-k inferred hierarchy clusters
        - keep only clusters below the confidence threshold
        - release the hottest eligible weak clusters, capped by max clusters and weakest-k
@@ -59,7 +59,7 @@ benchmark input
        - run bounded hard/soft relocation, hard swaps only after useful released hard relocation, soft-involving swaps, and micro-shift polish
        - restore the best audit-passing exact-scored state seen inside the small-design pass
        - exact proxy, hard legality, and hierarchy audit budget remain the commit gates
-  -> adaptive pass gate: skip remaining repeats when latest exact gain <= HIER_PLATEAU_PROXY_GAIN
+  -> gain-controlled passes: stop repeats when latest exact gain <= HIER_PLATEAU_PROXY_GAIN
   -> final scorer-compatible hard legality margin audit
   -> final hierarchy-quality audit against the selected hierarchy seed:
        - roll back to the best saved audit-passing checkpoint when needed
@@ -70,6 +70,17 @@ benchmark input
 Passes advance on gain, not fixed repeat counts: each stage keeps running
 while its most recent exact-proxy improvement exceeds
 `HIER_PLATEAU_PROXY_GAIN`, then moves on.
+
+There are no Boolean switches around promoted production behavior. BB and
+DREAMPlace cache reads, component-aware expansion/decompression, decompression
+feasibility and survivor handling, graph-mask fallback, adaptive gain control,
+cold-component targets, structurally eligible small/medium soft polish, final
+audit rollback, and plateau telemetry always run when their data, structural,
+budget, and safety preconditions apply. Default-off research hooks remain
+separate experiments. The former `HIER_DREAMPLACE_BB`,
+`HIER_DREAMPLACE_CACHE`, `HIER_ADAPTIVE_PASSES`, `HIER_PLATEAU_TRACE`, and
+`HIER_PLATEAU_TRACE_BUFFERED` feature switches are not read by production code;
+legacy values cannot disable the selected behavior.
 
 ```text
 proxy_cost = wirelength + 0.5 * density + 0.5 * congestion
@@ -95,35 +106,34 @@ low-net soft/SS breadth, and medium/large soft-continuation scheduling:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1666  17/17 VALID  0 overlaps  1216.10s
+AVG 1.1653  17/17 VALID  0 overlaps  1248.00s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
 0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
 several designs after late proxy-improving relief. A strict final-rollback-only
 audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
-reached `AVG 1.1664`; the latest graph-tension-path verification is
-`AVG 1.1666`. The prior best same-path sweep was `AVG 1.1657`. The
+reached `AVG 1.1664`; the latest BB-on same-path verification is
+`AVG 1.1653` cold (`AVG 1.1652` with cache hits). The prior best same-path
+sweep was `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
 proxy-improving states need to be discarded at finalization. Earlier Stage-6
 audit sweeps are retained in `PROGRESS.md` as historical experiment records.
 
-The graph-tension signal is advisory and gated to large designs by default. It
+The graph-tension signal is advisory and applies to structurally eligible large designs. It
 orders decompression/coldspot opportunities but does not change commit gates.
 Direct graph-tension swap ordering remains available through
 `HIER_GRAPH_TENSION_SWAP_WEIGHT`, but defaults to `0.0` after focused tests
 regressed `ibm08` and `ibm10`.
-Swap candidate ranking can also use temporary graph-derived masks and soft
-mask penalties when `HIER_SWAP_GRAPH_MASK_AWARE=True`:
+Swap candidate ranking uses temporary graph-derived masks and soft mask
+penalties whenever a graph mask is available:
 
 ```text
-HIER_SWAP_GRAPH_MASK_AWARE=True
 HIER_SWAP_GRAPH_MASK_MAX_EDGES=0
 HIER_SWAP_GRAPH_MASK_PAD_CELLS=1
 HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT=0.30
 HIER_SWAP_GRAPH_DELTA_WEIGHT=0.0
 HIER_SWAP_GRAPH_DELTA_SAMPLES=9
-HIER_SWAP_GRAPH_FALLBACK=True
 HIER_SWAP_GRAPH_FALLBACK_BUDGET_S=2.5
 ```
 
@@ -148,21 +158,21 @@ The default-off `HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT` hook keeps congestion as
 the primary coldspot anchor signal, then uses the selected cluster's weighted
 graph-neighbor centroid to break cold-window ties and near-ties. Candidate
 acceptance is unchanged.
-The default-on `HIER_DECOMPRESS_FEASIBILITY_FILTER` estimates the proposed
-decompression bbox's free area and neighbor blockage before legalization and
-exact scoring, and logs `feasibility_blocked` rejects.
+Decompression always estimates the proposed bbox's free area and neighbor
+blockage before legalization and exact scoring, and logs `feasibility_blocked`
+rejects.
 The default-off `HIER_DECOMPRESS_GRAPH_RESCUE` hook uses the graph-edge delta
 signal to rescue decompression candidates that improve graph geometry but fail
 feasibility or hard-overlap legalization. It tries a bounded set of smaller or
 cold-component-shifted variants, then returns to the normal hard legality,
 hierarchy-quality, exact-proxy, and audit gates. Full-suite validation was
 legal but not promoted because the average regressed to `1.1663`.
-The default-on `HIER_DECOMPRESS_GRAPH_SURVIVOR` hook is narrower: for legal,
+The graph-survivor path is narrower: for legal,
 hierarchy-safe decompression candidates that miss exact proxy by a small amount
 while improving graph-edge geometry, it exact-scores a tiny hard/soft local
 polish pool around the moved cluster. It commits only if the final candidate
 clears the normal exact-proxy gain and audit gates. The latest full sweep is
-`AVG 1.1666`.
+`AVG 1.1653` cold.
 The default-off `HIER_GRAPH_PREFILTER` hook can reject low-tension
 decompression/coldspot candidates before exact scoring when their cheap local
 congestion estimate does not improve. It is trace-visible, but not promoted by
@@ -231,9 +241,19 @@ adds synthetic clique nets among each cluster's hard and soft members so
 DREAMPlace's global placement pulls each subsystem together. DREAMPlace is
 required — there is no proxy-only fallback. Runtime availability is a real
 subprocess import probe using the Python ABI that compiled DREAMPlace, including
-representative native density, HPWL, and boundary ops. A clean checkout can
-reproduce the local CUDA 12.1 build with `scripts/dreamplace/bootstrap.sh all`;
-`scripts/dreamplace/bootstrap.sh preflight` checks an existing install.
+representative native density, HPWL, and boundary ops plus the DREAMPlace 4.1
+BB-Nesterov optimizer used by this stage. The bridge sets `macro_place_flag=1`
+and `use_bb=1`. At each global-placement update, DREAMPlace uses the short
+Barzilai-Borwein step
+`alpha = (s^T y) / (y^T y)`, where `s` is the change in reference position and
+`y` is the corresponding gradient change. This is a scalar inverse-Hessian
+approximation that scales the Nesterov step from observed curvature without
+forming or storing a Hessian. A non-positive BB step falls back to the predicted
+Lipschitz step. A clean checkout can reproduce the local CUDA 12.1 build with
+`scripts/dreamplace/bootstrap.sh all`; `scripts/dreamplace/bootstrap.sh preflight`
+checks an existing install and now rejects builds without BB-Nesterov support.
+BB and cache reads are fixed production behavior rather than runtime-gated
+options.
 
 ### 3. Seed Portfolio Selection
 
@@ -311,8 +331,8 @@ eligible cluster without a kick.
 
 ### 11. Final Audit
 
-Production continues from post-coldspot replay directly to feature-gated
-small-design polish, then a hard-legality margin audit and final
+Production continues from post-coldspot replay directly to structurally
+eligible small-design polish, then a hard-legality margin audit and final
 hierarchy-quality audit against the selected seed. It rolls back to the best
 saved audit-passing checkpoint if the final state fails. The former broad
 survivor pool was removed after 636 telemetry records showed no proxy gain.
@@ -324,9 +344,10 @@ schema-v1 JSONL candidate traces (relocation, swaps, decompression, coldspot)
 for offline GNN experiments; it does not change placement output. Candidate
 schema v1 remains compatible with the existing dataset builder while adding
 `run_id`, `code_revision`, and `pid` provenance fields.
-`HIER_PLATEAU_TRACE` (default on) writes schema-v2 pass-level telemetry
-(proxy before/after, elapsed time, accept rate, plateau flag, and the same
-provenance). `scripts/analyze_plateau_telemetry.py` filters by run, revision,
+The hierarchy flow always buffers schema-v2 pass-level telemetry (proxy
+before/after, elapsed time, accept rate, plateau flag, and the same provenance).
+`HIER_PLATEAU_TRACE_PATH` can redirect it. `scripts/analyze_plateau_telemetry.py`
+filters by run, revision,
 or benchmark and reports aggregate yield and conservative skip candidates. See
 [`../ml_nn/beyondppa_results/`](../ml_nn/beyondppa_results/) for the current
 state of GNN-assisted candidate ranking experiments — all are default-off.
@@ -383,7 +404,7 @@ HIER_SEED_CLEARANCE_AREA_PCT=97
 ```text
 HIER_REGION_DENSITY=0.65        REGION_BIAS=1.0
 HIER_REGION_ROUNDS=2            HIER_REGION_BUDGET_S=40
-HIER_REGION_ESCAPE_MIN=0.002    HIER_REGION_COMPONENT_EXPAND=True
+HIER_REGION_ESCAPE_MIN=0.002
 HIER_REGION_COMPONENT_COLD_PCT=45     HIER_REGION_COMPONENT_MIN_CELLS=4
 HIER_PROPOSAL_CONGESTION_WEIGHT=2.5   HIER_PROPOSAL_DENSITY_WEIGHT=1.0
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08
@@ -403,7 +424,7 @@ HIER_GRID_ALIGN_WEIGHT=0.2             HIER_NOTCH_WEIGHT=0.6
 HIER_DECOMPRESS_ROUNDS=2          HIER_DECOMPRESS_BUDGET_S=18
 HIER_QUALITY_BUDGET=0.03          HIER_QUALITY_RADIUS_WEIGHT=0.75
 HIER_QUALITY_BBOX_WEIGHT=0.20     HIER_QUALITY_CROWD_WEIGHT=0.05
-HIER_DECOMPRESS_LOCAL_COMPONENT=True   HIER_DECOMPRESS_LOCAL_SHIFT_FRAC=0.20
+HIER_DECOMPRESS_LOCAL_SHIFT_FRAC=0.20
 ```
 
 Rounds with no cheap hot-cluster to cold-window opportunity are skipped before
@@ -504,7 +525,8 @@ HIER_COLDSPOT_SOFT_ONLY=0           HIER_COLDSPOT_PARTIAL_FRONTIER=0
 ```text
 HIER_GNN_TRACE=0                 HIER_GNN_TRACE_DIR=ml_data/beyondppa_gnn
 HIER_GNN_TRACE_MAX_CANDIDATES=512
-HIER_PLATEAU_TRACE=1             HIER_PLATEAU_TRACE_DIR=ml_data/beyondppa_gnn/plateau
+HIER_PLATEAU_TRACE_DIR=ml_data/beyondppa_gnn/plateau
+HIER_PLATEAU_TRACE_PATH=<optional output override>
 VIVAPLACE_RUN_ID=<optional attributable run id>
 ```
 

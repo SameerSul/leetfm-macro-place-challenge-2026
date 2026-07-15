@@ -1628,7 +1628,7 @@ def _region_bounded_swap_relief(
         )
         if field is None:
             break
-        region_mask_enabled = bool(const.HIER_SWAP_GRAPH_MASK_AWARE and region_mask is not None)
+        region_mask_enabled = region_mask is not None
         field_name = (
             "density" if use_density else ("weighted_congestion" if weighted_rank else "congestion")
         )
