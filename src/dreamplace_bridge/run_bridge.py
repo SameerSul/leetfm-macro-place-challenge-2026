@@ -133,6 +133,7 @@ def _probe_install(timeout_s: float = 30.0) -> tuple[bool, str]:
     env["PYTHONPATH"] = os.pathsep.join(paths)
     code = """
 import dreamplace.configure as configure
+import dreamplace.NonLinearPlace
 from dreamplace.ops.density_map import density_map
 from dreamplace.ops.hpwl import hpwl
 from dreamplace.ops.move_boundary import move_boundary

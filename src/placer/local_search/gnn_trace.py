@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-TRACE_SCHEMA_VERSION = 2
+TRACE_SCHEMA_VERSION = 1
 PLATEAU_SCHEMA_VERSION = 2
 
 _FALSE = {"0", "false", "False", "no", "NO", "off", ""}

@@ -158,16 +158,10 @@ distance. Production still advances the lowest exact-proxy seed. The
 best hierarchy-quality band; it is default-off after the ibm10 hierarchy win
 caused a large proxy regression.
 
-The bounded survivor-pool implementation is also default-off. Aggregate
-telemetry found zero gain in 636 records across all 17 IBM benchmarks. The
-production flow now spends no time there and records the scheduling decision
-in opt-in GNN traces.
-
 After post-coldspot cleanup, small designs can run one extra exact-gated polish pass.
-This pass targets the high-SA-ratio primary subset shape documented in
-`docs/general/benchmark_patterns/SA_RATIO_SUBSET_PATTERNS.md`: small hard-macro
-population, moderate total macro count, and no fixed hard macros. It is still
-feature-gated rather than benchmark-name gated. The release candidate pool now
+This pass targets a feature-defined shape: small hard-macro population,
+moderate total macro count, and no fixed hard macros. It is feature-gated rather
+than benchmark-name gated. The release candidate pool
 starts with the weakest-k inferred hierarchy clusters by confidence, filters
 that set by the confidence threshold, and releases the hottest remaining weak
 clusters. The release count is capped by
@@ -285,11 +279,9 @@ only the legacy first generated kick, preserving default placement behavior.
 
 ## BeyondPPA And GNN Hooks
 
-The current BeyondPPA integration is deterministic and hierarchy-integrated:
-
-- structural metrics live in `src/placer/local_search/structural_fields.py`;
-- structural candidate ordering lives inside existing relocation ranking;
-- production defaults keep structural ranking disabled.
+The current BeyondPPA integration is hierarchy-integrated: a local structural
+term can reorder existing relocation candidates, and production keeps that
+ranking disabled by default. It does not create a separate placement path.
 
 The current production GNN behavior is still non-mutating. Trace logging is
 controlled by runtime environment variables, not `src/utils/constants.py`.
@@ -315,4 +307,4 @@ is no batched GPU exact-scoring kernel.
 
 See [OBJECTIVES.md](OBJECTIVES.md) for the structural objectives behind these
 passes, and [`../ml_nn/beyondppa_results/`](../ml_nn/beyondppa_results/) for
-the GNN trace roadmap.
+the active GNN trace and dataset schemas.

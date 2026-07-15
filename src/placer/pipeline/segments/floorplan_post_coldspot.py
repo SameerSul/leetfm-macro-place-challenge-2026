@@ -21,7 +21,6 @@ from placer.local_search.relocation import (
     _relocation_moves,
     _soft_relocation_moves,
 )
-from placer.local_search.survivor_search import _parallel_survivor_search
 from placer.pipeline.hierarchy_context import PlacementState
 from placer.scoring.exact import _exact_proxy
 from placer.scoring.incremental import IncrementalScorer
@@ -268,73 +267,6 @@ def run_post_coldspot_finalize(
             audit_checkpoint_quality = float(quality)
             return True, float(quality)
         return False, float(quality)
-
-    pre_survivor_score = float(cur_proxy)
-    survivor_t0 = time.monotonic()
-    if bool(const.HIER_SURVIVOR_ENABLED):
-        survivor_deadline = _deadline(float(const.HIER_SURVIVOR_BUDGET_S), region_deadline)
-        legal, s_pos, survivor_acc, cur_proxy = _parallel_survivor_search(
-            legal,
-            s_pos,
-            sizes[:n],
-            hw,
-            hh,
-            soft_hw,
-            soft_hh,
-            float(cw),
-            float(ch),
-            movable[:n],
-            soft_mov,
-            int(n),
-            plc,
-            benchmark,
-            float(cur_proxy),
-            clusters,
-            cluster_softs=csofts,
-            bridge_softs=bridge_softs,
-            hard_region=region,
-            soft_region=soft_region,
-            deadline=survivor_deadline,
-        )
-        if not _is_hard_valid(legal):
-            legal, s_pos, cur_proxy = best_h.copy(), best_s.copy(), best_score
-            survivor_acc = 0
-        survivor_stats = getattr(_parallel_survivor_search, "last_stats", {})
-        _log(
-            f"  [hier] survivor search: {survivor_acc} accepts, "
-            f"proxy {pre_survivor_score:.4f}->{cur_proxy:.4f}"
-        )
-        _trace_pass(
-            "survivor_search",
-            pre_survivor_score,
-            float(cur_proxy),
-            int(survivor_acc),
-            quality=hierarchy_quality_metric_fn(legal, clusters),
-            gpu_rank=bool(survivor_stats.get("gpu_rank", False)),
-        )
-        _record_plateau(
-            "survivor_search",
-            pre_survivor_score,
-            float(cur_proxy),
-            int(survivor_acc),
-            time.monotonic() - survivor_t0,
-            candidates=int(survivor_stats.get("candidates", 0)),
-            legal=int(survivor_stats.get("legal", 0)),
-            scored=int(survivor_stats.get("scored", 0)),
-            quality=hierarchy_quality_metric_fn(legal, clusters),
-            gpu_rank=bool(survivor_stats.get("gpu_rank", False)),
-        )
-        if _is_hard_valid(legal) and float(cur_proxy) < float(best_score) - 1e-9:
-            best_h, best_s, best_score = legal.copy(), s_pos.copy(), float(cur_proxy)
-        _update_audit_checkpoint(legal, s_pos, float(cur_proxy))
-    else:
-        log_gnn_event(
-            "hier_budget_schedule",
-            benchmark=benchmark.name,
-            pass_name="survivor_search",
-            run=False,
-            reason="historical_zero_yield",
-        )
 
     if _small_design_polish_enabled():
         small_t0 = time.monotonic()

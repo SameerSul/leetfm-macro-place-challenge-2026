@@ -13,12 +13,20 @@ def _resolve_benchmark_dir(name: str, benchmark: Optional[Benchmark] = None) -> 
 
     Supported layouts:
     - legacy ICCAD04: ``external/MacroPlacement/Testcases/ICCAD04/<name>``
+    - generated EDA/challenge inputs attached as ``benchmark._source_dir``
     - NG45 aliases: ``<design>_ng45`` (e.g., ``ariane133_ng45``)
     - generated/loaded NG45 output directories via exact canvas-size match
     """
     iccad = Path("external/MacroPlacement/Testcases/ICCAD04") / name
     if iccad.exists():
         return iccad
+
+    if benchmark is not None:
+        source_dir = getattr(benchmark, "_source_dir", None)
+        if source_dir is not None:
+            source_dir = Path(source_dir)
+            if (source_dir / "netlist.pb.txt").exists():
+                return source_dir
 
     ng45_base = Path("external/MacroPlacement/Flows/NanGate45")
     if not ng45_base.exists():

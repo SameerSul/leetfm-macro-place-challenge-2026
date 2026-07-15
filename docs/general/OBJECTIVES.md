@@ -19,11 +19,9 @@ These are the structural objectives we use to guide macro placement.
   coldspot tightening.
 - Congestion pressure comes from the density/congestion fields used by
   relocation, swaps, decompression, micro-shift polish, and coldspot tightening.
-- I/O keepout, grid alignment, and notch avoidance are implemented as
-  deterministic BeyondPPA-style metrics in
-  `src/placer/local_search/structural_fields.py`.
-- Those structural metrics are diagnostic by default and can opt into hierarchy
-  relocation candidate ordering with
+- I/O keepout, grid alignment, and notch avoidance contribute to the local
+  structural ordering term inside hierarchy relocation.
+- That term is disabled by default and can opt into candidate ordering with
   `HIER_OBJECTIVE_STRUCTURAL_WEIGHT>0`. They do not bypass legality,
   region, hierarchy-quality, or exact-proxy gates.
 - GNN support is currently logging only. The `HIER_GNN_TRACE*` runtime

@@ -111,7 +111,7 @@ flowchart TD
     classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     class A,B,C,D,P,E seed
     class S0,S1,S2,S3,S4,S5 cand
-    class F,G,H,I,J,K search
+    class F,G,H,I,J search
     class L,M,N audit
 ```
 
@@ -168,8 +168,8 @@ src/dreamplace_bridge/     pb.txt <-> Bookshelf bridge and DREAMPlace launcher
 src/eda_io/                LEF/DEF/Verilog/SDC/Liberty I/O layer
 test/verification/         correctness checks
 test/benchmarks/           synthetic anti-overfitting suite
-docs/general/              architecture, design flow, objectives, experiment history
-docs/ml_nn/                BeyondPPA structural metrics and GNN trace notes
+docs/general/              architecture, design flow, objectives, issues, experiment ledger
+docs/ml_nn/                current GNN status plus trace and dataset schemas
 ```
 
 ## Documentation
@@ -177,5 +177,6 @@ docs/ml_nn/                BeyondPPA structural metrics and GNN trace notes
 - [`docs/general/ARCHITECTURE.md`](docs/general/ARCHITECTURE.md) - current pipeline and module reference
 - [`docs/general/DESIGN_FLOW.md`](docs/general/DESIGN_FLOW.md) - flow diagram
 - [`docs/general/OBJECTIVES.md`](docs/general/OBJECTIVES.md) - the structural objectives that motivate the design
-- [`docs/general/ISSUES.md`](docs/general/ISSUES.md), [`docs/general/PROGRESS.md`](docs/general/PROGRESS.md) - experiment history; numbers there predate the hierarchy-only system and should not be read as current results
-- [`docs/ml_nn/beyondppa_results/`](docs/ml_nn/beyondppa_results/) - BeyondPPA integration and GNN trace logging notes
+- [`docs/general/ISSUES.md`](docs/general/ISSUES.md) - current unresolved work
+- [`docs/general/PROGRESS.md`](docs/general/PROGRESS.md) - chronological experiment ledger; only its first status entry describes current production
+- [`docs/ml_nn/`](docs/ml_nn/) - default-off learned-ranking status and active schemas

@@ -50,9 +50,6 @@ benchmark input
        - run the same swaps and relocations without a kick
        - exact proxy + hierarchy-quality gate before commit
   -> post-coldspot micro-shift replay
-  -> skip the research survivor-pool search in production
-       - 636 historical pass records across 17 benchmarks had zero proxy gain
-       - implementation remains available behind HIER_SURVIVOR_ENABLED
   -> feature-gated small-design polish:
        - seed release candidates with weakest-k inferred hierarchy clusters
        - keep only clusters below the confidence threshold
@@ -93,7 +90,7 @@ Current verified full sweep with strict hierarchy-audit rollback,
 audit-aware hard swap gating, component-aware region expansion/decompression,
 large-design hierarchy graph-tension opportunity ordering, swap-round
 micro-shift replay, stronger opportunity gates, component-aware scheduling,
-post-survivor small-design polish with subpass audit restore, no-release
+post-coldspot small-design polish with subpass audit restore, no-release
 low-net soft/SS breadth, and medium/large soft-continuation scheduling:
 
 ```text
@@ -105,7 +102,7 @@ The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
 0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
 several designs after late proxy-improving relief. A strict final-rollback-only
 audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
-reached `AVG 1.1664`; the current graph-tension/survivor path is `AVG 1.1657`. The
+reached `AVG 1.1664`; the current graph-tension path is `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
 proxy-improving states need to be discarded at finalization. Earlier Stage-6
 audit sweeps are retained in `PROGRESS.md` as historical experiment records.
@@ -205,9 +202,7 @@ not comparable to current numbers.
 | `src/placer/local_search/cluster_decompress.py` | Exact-gated decompression of hot hierarchy blobs. |
 | `src/placer/local_search/region_expand.py` | Expands hot cluster regions toward colder congestion bands. |
 | `src/placer/local_search/lsmc_explore.py` | Coldspot kick candidate generation. |
-| `src/placer/local_search/survivor_search.py` | Default-off research survivor-pool search retained for controlled experiments. |
 | `src/placer/local_search/fields.py` | Congestion/coldspot fields used by relocation and coldspot tightening. |
-| `src/placer/local_search/structural_fields.py` | Deterministic BeyondPPA-style edge-keepout/grid-alignment/notch metrics; opt-in candidate reordering only. |
 | `src/placer/local_search/gnn_trace.py` | JSONL trace + plateau telemetry writers (diagnostic only). |
 | `src/placer/scoring/exact.py` | Exact TILOS proxy wrapper. |
 | `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves. |
@@ -274,11 +269,10 @@ congestion-weighted proposal field plus density; moves that leave the
 assigned region are accepted only when the exact-proxy gain clears
 `HIER_REGION_ESCAPE_MIN`.
 
-Structural candidate ordering (`structural_fields.py`) can add edge-keepout,
-grid-alignment, and notch-avoidance penalties into relocation candidate
-ranking when `HIER_OBJECTIVE_STRUCTURAL_WEIGHT > 0` (default `0.0`). It only
-reorders proposals — legality, region, hierarchy-quality, and exact-proxy
-gates are unaffected.
+Relocation has a default-off structural ordering term
+(`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0`) that combines edge clearance, grid
+alignment, and local gap penalties. It only reorders proposals; legality,
+region, hierarchy-quality, and exact-proxy gates are unaffected.
 
 ### 7. Cluster Decompression
 
@@ -317,14 +311,11 @@ eligible cluster without a kick.
 
 ### 11. Final Audit
 
-The former bounded survivor-pool pass is skipped by default. Historical
-plateau telemetry contained 636 survivor records across 17 benchmarks with
-zero total proxy gain and 132.68 cumulative seconds. Its implementation is
-retained behind `HIER_SURVIVOR_ENABLED` for controlled research. Production
-continues directly to feature-gated small-design polish, then a hard-legality
-margin audit and final hierarchy-quality audit against the selected seed,
-rolling back to the best saved audit-passing checkpoint if the final state
-fails.
+Production continues from post-coldspot replay directly to feature-gated
+small-design polish, then a hard-legality margin audit and final
+hierarchy-quality audit against the selected seed. It rolls back to the best
+saved audit-passing checkpoint if the final state fails. The former broad
+survivor pool was removed after 636 telemetry records showed no proxy gain.
 
 ### 12. Trace Logging and Plateau Telemetry
 
@@ -361,7 +352,7 @@ uv run python -m py_compile $(find src -type f -name "*.py")
 uv run python test/verification/_verify_region_escape_gate.py
 uv run python test/verification/_verify_score_region_swaps.py
 uv run python test/verification/_verify_coldspot_kick.py ibm10
-uv run pytest test/verification/test_structural_fields.py -q
+uv run pytest test/ -q
 uv run evaluate src/main.py -b ibm10
 uv run evaluate src/main.py --all
 ```
@@ -482,11 +473,9 @@ Production then reruns `_micro_shift_polish()` once more after coldspot
 tightening; deterministic hot-cluster coldspot selection was tested and removed
 after regressing the full sweep.
 
-### 11. Trace Logging And Plateau Telemetry
+**Swap ranking**
 
-No GNN model is active in production. The current GNN-related implementation is
-opt-in trace logging attached to the hierarchy flow. These are runtime
-environment variables, not placement constants:
+The current swap breadth and optional GPU ranking controls are:
 
 ```text
 HIER_HARD_SWAP_K=16          HIER_SOFT_SWAP_K=48
@@ -500,7 +489,6 @@ HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S=8   HIER_STRONG_SOFT_REPAIR_BUDGET_S=12
 HIER_STRONG_SOFT_REPAIR_MIN_SPARE_S=2   HIER_STRONG_SOFT_REPAIR_ROUNDS=2
 HIER_PLATEAU_ACCEPT_RATE=0.002          HIER_PLATEAU_PROXY_GAIN=0.00005
 HIER_PLATEAU_ESCAPE_BUDGET_S=4
-HIER_SURVIVOR_ENABLED=False
 ```
 
 **Coldspot tightening**

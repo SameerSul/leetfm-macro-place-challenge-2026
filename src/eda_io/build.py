@@ -145,6 +145,7 @@ def build_benchmark(
 
     from macro_place.loader import load_benchmark
     benchmark, plc = load_benchmark(str(pb_path), str(workdir / "initial.plc"))
+    benchmark._source_dir = workdir
     benchmark.name = design.name
     benchmark._cached_plc = plc  # exact scoring without an ICCAD04 path
     _attach_net_tensors(benchmark, nets, len(hard_names))
