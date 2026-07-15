@@ -24,7 +24,6 @@ import argparse
 import importlib.util
 import json
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -90,11 +89,6 @@ def _fmt_pct(p):
     return f"{sign}{p:6.1f}%"
 
 
-def _avg(values):
-    v = [x for x in values if x is not None]
-    return sum(v) / len(v) if v else None
-
-
 # ── Per-benchmark result table ───────────────────────────────────────────────
 
 def _print_per_benchmark(benchmarks, all_results, names):
@@ -110,27 +104,16 @@ def _print_per_benchmark(benchmarks, all_results, names):
     print(f"  Proxy Cost by Benchmark")
     print("=" * (14 + (col_w + 2) * cols))
     print(header_row(names))
-    print(header_row(["SA_base", "RePlAce"] + [""] * max(0, cols - 2)))
     print("-" * (14 + (col_w + 2) * cols))
 
     for bmark in benchmarks:
-        sa = SA_BASELINES.get(bmark)
-        rep = REPLACE_BASELINES.get(bmark)
         row = f"  {bmark:>10}"
-        vals = []
         for name in names:
             r = all_results.get(name, {}).get(bmark)
             if r is not None:
-                vals.append(r["proxy_cost"])
                 row += f"  {r['proxy_cost']:>{col_w}.4f}"
             else:
-                vals.append(None)
                 row += f"  {'-':>{col_w}}"
-        # Indicate the winner
-        valid_vals = [(v, i) for i, v in enumerate(vals) if v is not None]
-        if valid_vals:
-            best_idx = min(valid_vals, key=lambda x: x[0])[1]
-            # Add star to winner column
         print(row)
 
     print("-" * (14 + (col_w + 2) * cols))

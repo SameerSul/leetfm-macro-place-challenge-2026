@@ -12,11 +12,29 @@ git submodule update --init external/MacroPlacement
 
 # Create virtual environment and install the package (editable)
 uv sync
+
+# Build the required pinned DREAMPlace runtime. This creates the ignored
+# dreamplace_src/ and dreamplace_build/ trees without changing tracked code.
+scripts/dreamplace/bootstrap.sh all
 ```
+
+The bootstrap pins DREAMPlace commit
+`37214b40fe3837cc7d392c7d6092ccd6ff04a02c`, CUDA 12.1, GCC 11.4,
+PyTorch 2.4.1+cu121, and the repository's CUDA-12 CUB compatibility patch.
+Set `DREAMPLACE_CUDA_ARCH` when building for a GPU other than compute
+capability 8.9. To diagnose an existing install without rebuilding it:
+
+```bash
+scripts/dreamplace/bootstrap.sh preflight
+```
+
+Production performs the same native-extension import probe before placement.
+An ABI-incompatible or incomplete build produces an actionable error instead
+of silently falling back to another placer.
 
 ## Project Structure
 
-```
+```text
 ├── macro_place/            # Installable Python package
 │   ├── __init__.py
 │   ├── benchmark.py        # Benchmark dataclass (PyTorch tensors)
@@ -29,9 +47,10 @@ uv sync
 │   ├── placer/             # Hierarchy pipeline, scoring, routing, legalization
 │   ├── dreamplace_bridge/  # ICCAD04 pb/plc <-> Bookshelf bridge
 │   └── eda_io/             # LEF/DEF/Verilog/SDC/Liberty import/export
-├── docs/                   # Active docs plus archived experiment notes
+├── docs/                   # Current architecture plus the experiment ledger
 ├── test/                   # Smoke tests, diagnostics, verification scripts
 ├── scripts/                # Comparison and conversion helpers
+│   └── dreamplace/         # Pinned DREAMPlace bootstrap, patch, and preflight
 ├── ml_data/                # Historical traces/models/logs and generated data
 ├── system/                 # Optional historical checkpoints if present
 │   └── v1/                 # Frozen checkpoint placer; read-only if present
@@ -54,6 +73,7 @@ benchmark, plc = load_benchmark_from_dir('external/MacroPlacement/Testcases/ICCA
 ```
 
 Returns:
+
 - `benchmark`: A `Benchmark` dataclass with PyTorch tensors
 - `plc`: A `PlacementCost` object (needed for cost computation)
 
@@ -62,7 +82,7 @@ Returns:
 The `Benchmark` dataclass contains:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `name` | `str` | Benchmark name (e.g., "ibm01") |
 | `canvas_width` | `float` | Canvas width in microns |
 | `canvas_height` | `float` | Canvas height in microns |
@@ -79,6 +99,7 @@ The `Benchmark` dataclass contains:
 | `soft_macro_indices` | `List[int]` | Map tensor index → PlacementCost module index (soft) |
 
 Helper methods:
+
 - `benchmark.get_movable_mask()` — returns `~macro_fixed`
 - `benchmark.get_hard_macro_mask()` — True for hard macros (first `num_hard_macros` entries)
 - `benchmark.get_soft_macro_mask()` — True for soft macros
@@ -97,7 +118,7 @@ costs = compute_proxy_cost(placement, benchmark, plc)
 **Output**: A dictionary with:
 
 | Key | Description |
-|-----|-------------|
+| ----- | ------------- |
 | `proxy_cost` | Weighted sum: 1.0 × WL + 0.5 × density + 0.5 × congestion |
 | `wirelength_cost` | Normalized HPWL across all nets |
 | `density_cost` | Top 10% grid cell density |
@@ -115,6 +136,7 @@ is_valid, violations = validate_placement(placement, benchmark)
 ```
 
 Checks:
+
 - Correct tensor shape
 - No NaN/Inf values
 - All macros within canvas bounds
@@ -133,7 +155,7 @@ visualize_placement(placement, benchmark, save_path='output.png')
 
 Your placer takes a `Benchmark` and returns a `[num_macros, 2]` tensor of positions. The tensor contains both hard macros (indices `[0, num_hard_macros)`) and soft macros (indices `[num_hard_macros, num_macros)`).
 
-**Both hard and soft macros are movable.** Hard macros are the primary optimization targets (SRAMs, IPs, etc.). Soft macros are standard cell clusters — co-optimizing their positions alongside hard macros will improve wirelength, density, and congestion. The SA baseline does this by running force-directed placement on soft macros after each batch of hard macro moves.
+**Both hard and soft macros are movable.** Hard macros are the primary optimization targets (SRAMs, IPs, etc.). Soft macros are standard cell clusters; the current hierarchy flow assigns them owned or bridge roles and moves them with their related hard clusters.
 
 ```python
 import torch
@@ -153,12 +175,13 @@ class MyPlacer:
         # Your algorithm here
         # - Move hard macros to optimize placement
         # - Optionally reposition soft macros to follow hard macro changes
-        #   (the SA baseline uses PlacementCost.optimize_stdcells() for this)
+        #   while preserving their hierarchy roles
 
         return placement
 ```
 
 Key constraints:
+
 - Positions are **center coordinates** (not corners)
 - Fixed macros must stay at their original positions
 - All macros must be fully within canvas bounds
@@ -185,25 +208,6 @@ for i, module in enumerate(plc.modules_w_pins):
 ```
 
 See the [TILOS MacroPlacement source](https://github.com/TILOS-AI-Institute/MacroPlacement/blob/main/CodeElements/Plc_client/plc_client_os.py) for the full PlacementCost API.
-
-## Soft Macro Optimization
-
-Soft macros (standard cell clusters) are connected to hard macros via nets. When you move hard macros, the optimal soft macro positions change. The PlacementCost API provides a built-in force-directed placer for soft macros:
-
-```python
-# After setting hard macro positions, reoptimize soft macros:
-canvas_size = max(benchmark.canvas_width, benchmark.canvas_height)
-plc.optimize_stdcells(
-    use_current_loc=False, move_stdcells=True, move_macros=False,
-    log_scale_conns=False, use_sizes=False, io_factor=1.0,
-    num_steps=[100, 100, 100],
-    max_move_distance=[canvas_size/100]*3,
-    attract_factor=[100, 1.0e-3, 1.0e-5],
-    repel_factor=[0, 1.0e6, 1.0e7],
-)
-```
-
-This is what the SA baseline does between iterations. Note: this is slow in Python (~minutes per call). You can reduce `num_steps` for faster but less optimal results, or implement your own soft macro optimization (e.g., jointly in a GPU-based optimizer).
 
 ## Running Benchmarks
 
@@ -242,7 +246,7 @@ for name in BENCHMARKS:
 
 The top 7 submissions by proxy score will be evaluated through the full OpenROAD PnR flow on NanGate45 designs. These designs are located in the TILOS repository:
 
-```
+```text
 external/MacroPlacement/Flows/NanGate45/
 ├── ariane133/    # RISC-V core, 133 macros
 ├── ariane136/    # RISC-V core, 136 macros
@@ -259,42 +263,3 @@ benchmark = Benchmark.load('benchmarks/processed/public/ariane133_ng45_random.pt
 ```
 
 The OpenROAD flow evaluation measures WNS (worst negative slack), TNS (total negative slack), and Area. Participants do not need to run OpenROAD themselves — the judges will run it on top submissions.
-
-#### Running ORFS Locally (Optional)
-
-If you want to test your placement through the full PnR flow locally, we provide `scripts/evaluate_with_orfs.py` which automates the entire process.
-
-**Prerequisites**: Install [OpenROAD-flow-scripts](https://github.com/The-OpenROAD-Project/OpenROAD-flow-scripts) adjacent to this repository:
-
-```bash
-cd ..
-git clone --depth=1 https://github.com/The-OpenROAD-Project/OpenROAD-flow-scripts
-cd macro-place-challenge-2026
-```
-
-**Run the ORFS evaluation**:
-
-```bash
-# Evaluate a single NG45 design (uses default placement)
-python scripts/evaluate_with_orfs.py --benchmark ariane133_ng45 --no-docker
-
-# Evaluate with your own placement (saved as a [num_macros, 2] tensor)
-python scripts/evaluate_with_orfs.py --benchmark ariane133_ng45 --no-docker \
-    --placement my_placement.pt
-
-# Evaluate all NG45 designs
-python scripts/evaluate_with_orfs.py --all --no-docker
-
-# Point to a custom ORFS installation
-python scripts/evaluate_with_orfs.py --benchmark ariane133_ng45 \
-    --orfs-root /path/to/OpenROAD-flow-scripts --no-docker
-```
-
-The script will:
-1. Load the benchmark and compute proxy cost
-2. Generate a macro placement TCL script (handling the name mapping between protobuf and ODB formats)
-3. Copy the design config into ORFS with necessary patches
-4. Run the full ORFS flow (synthesis → floorplan → placement → CTS → routing)
-5. Parse and report WNS, TNS, Area, and other metrics
-
-A full ORFS run takes approximately 3-8 hours per design depending on the benchmark and machine.

@@ -6,6 +6,46 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-15 — reproducible runtime, attributable scheduling, and
+> repository cleanup):** Added a clean-checkout DREAMPlace bootstrap pinned
+> to upstream commit `37214b40fe3837cc7d392c7d6092ccd6ff04a02c`, CUDA 12.1,
+> GCC 11.4, PyTorch 2.4.1+cu121, and the tracked CUB-2 compatibility patch.
+> Runtime availability now imports representative native ops in the build
+> Python instead of checking for files. Added tests for the DREAMPlace ABI,
+> hierarchy vector/seed selector, and telemetry analyzer.
+>
+> Every seed candidate now records a complete hierarchy vector: mean and worst
+> hard-cluster spread, nearest-neighbor impurity, weighted hierarchy-edge
+> stretch, owned-soft distance, and bridge-soft corridor distance. Production
+> still selects lowest exact proxy. The opt-in hierarchy-first policy improved
+> the ibm10 seed composite from `0.29168` (`initial`) to `0.16328` (`expand`),
+> but final proxy regressed from the same-day default check `1.1778` to
+> `1.5281`; it therefore remains default-off.
+>
+> Plateau/GNN rows now include run id, code revision, and PID. Plateau rows are
+> schema v2; candidate traces remain schema v1 for dataset-builder compatibility.
+> `scripts/analyze_plateau_telemetry.py` provides provenance filters and
+> pass-yield aggregation. Historical aggregation found **636 survivor-search
+> records across 17 benchmarks, zero total proxy gain, 132.68 cumulative
+> seconds**, so the broad survivor-pool implementation and its unused constants
+> were removed. The narrower decompression graph-survivor hook is unchanged.
+> The same cleanup removed broken legacy ORFS/ML entrypoints, dated orchestration
+> wrappers, an unused standalone structural-metric module, and duplicate proxy-era
+> documentation. `ARCHITECTURE.md`, `DESIGN_FLOW.md`, `ISSUES.md`, and the GNN
+> schemas are now the canonical documentation set; this file remains the
+> historical experiment ledger.
+>
+> Verification after cleanup: DREAMPlace native-extension preflight passed;
+> `uv run pytest test/ -q` = **23 passed** (including the hierarchy-only EDA
+> CLI integration path); bytecode compilation, script `--help` checks,
+> Markdown link validation, and `git diff --check` passed. A fresh
+> production-default smoke was `ibm10=1.1766` (65.58s), VALID with the final
+> hierarchy audit passing. Earlier same-day checks were `ibm01=0.9248`
+> (94.64s), `ibm04=1.0041` (70.37s), and `ibm10=1.1778` (65.10s), also VALID
+> and audit-passing.
+> These focused checks do not replace the accepted full-suite result below:
+> **AVG 1.1657**, 17/17 VALID, 0 overlaps, all audits passed, 1128.80s.
+
 > **Status (2026-06-25 — graph-tension ordering plus decompression survivor):**
 > Added a hierarchy graph-tension signal that compares current cluster-centroid
 > relations with the selected hierarchy seed, weights stretched inter-cluster
@@ -901,8 +941,8 @@ Target: beat RePlAce avg of 1.4578.
 > Stage-G1 `ibm01` trace produced 1 graph, 4526 examples, and 78 accepted
 > labels; repeated builds were tensor-identical. Verification: broad
 > `py_compile` over `src`, `scripts`, and `test/verification` passed
-> (with an unrelated existing regex escape warning in
-> `scripts/generate_macro_placement_tcl.py`); the G2 verifier passed.
+> (with an unrelated regex escape warning in a legacy TCL generator that was
+> later removed); the G2 verifier passed.
 
 > **[HISTORICAL] Status (2026-06-19 — GNN Stage G1 trace completeness and schema v1):**
 > completed candidate-level trace coverage for the active hierarchy GNN data
@@ -924,8 +964,8 @@ Target: beat RePlAce avg of 1.4578.
 
 > **[HISTORICAL] Status (2026-06-18 — BeyondPPA structural objective and GNN trace logging
 > integrated, defaults unchanged):** added deterministic edge-keepout,
-> grid-alignment, notch, and combined structural metrics in
-> `src/placer/local_search/structural_fields.py`; and integrated the structural term
+> grid-alignment, notch, and combined structural metrics in a standalone module
+> (later removed after the useful ordering stayed local to relocation); and integrated the structural term
 > into existing hierarchy relocation candidate ordering behind
 > the `HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant. This is not a
 > second BeyondPPA path: legality, fixed-macro immobility, bounds,
@@ -1168,8 +1208,7 @@ Target: beat RePlAce avg of 1.4578.
 > there — relevant if eval hardware ever lacks the full stack.
 
 > **[HISTORICAL] Status (2026-06-12 — GPU staged rollout: Stage 0 re-baseline + Stage 1
-> propose-all A/B done; verdict WASH, stays opt-in; see docs/gpu/GPU-ops.md and
-> ISSUES.md S17):**
+> propose-all A/B done; verdict WASH, stays opt-in):**
 >
 > **Stage 0 re-baseline (2026-06-11): avg 1.1243, 17/17 VALID, 2679s** — same
 > placer as the 1.1252 record within single-seed noise, locked as the pre-GPU
@@ -1198,8 +1237,7 @@ Target: beat RePlAce avg of 1.4578.
 > 35233s) with per-benchmark monotonic budgets unaffected. **Takeaway for
 > Stage 2:** the GPU pool-scoring machinery is validated and fast; the ±0.02
 > per-benchmark policy divergence is exactly what an exact-gated multi-candidate
-> selector can harvest. Next: Stage 2 exploration engine (GPU_EXPLORE) per
-> docs/gpu/GPU-ops.md §2–3.
+> selector can harvest. The later Stage 2 exploration engine was not retained.
 
 > **[HISTORICAL] Status (2026-06-11 — ML hard-relocation ranker connected as production
 > default, ISSUES.md S10):** The trained XGBoost filter was validated 2026-06-05
@@ -2103,7 +2141,7 @@ baseline; no restarts possible. ibm10, ibm12 already beat RePlAce at legalizatio
   exactly the baseline placement — no real movement; (b) on ibm04, the greedy clustered
   macros tightly enough that congestion increased more than wirelength dropped, producing
   a placement (1.4127) STRICTLY WORSE than baseline (1.4101). This is exactly the failure
-  mode CLAUDE.md and PAPERS_NOTES.md predicted: pure HPWL minimization clusters connected
+  known failure mode: pure HPWL minimization clusters connected
   macros, hurting the congestion-dominated proxy. Reverted. The function and call site
   were both removed (see git history for the implementation if revisiting). Possible
   salvage paths (each is a separate experiment): wire-mask + per-cell congestion penalty,
@@ -2196,7 +2234,7 @@ SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
        After confirming ibm08 behavior, add more cong-grad restarts at larger scales.
 8. [~] Multiple congestion-grad starting points (Phase 4): TESTED 2026-05-09 with 2% perturbed start. Strictly worse on all 4 benchmarks tested. Reverted. Could retry with 0.5% or 4-6% scales.
 9. [x] ibm04 congestion-grad: Phase 3 cong-grad now consistently lands at 1.3316 on clean CPU (was 1.3390 in v11). Confirmed 3-for-3 on 2026-05-09. Gap to RePlAce closed from -2.8% to -2.2%.
-10. [~] **WireMask-BBO greedy evaluator** -- IMPLEMENTED AND REVERTED 2026-05-09. Two failure patterns: (a) sparse benchmarks legalized back to baseline (no movement), (b) ibm04 produced 1.4127 vs baseline 1.4101 (clustered macros → worse congestion). Confirms CLAUDE.md/PAPERS_NOTES warning that pure HPWL minimization hurts congestion-dominated proxy. See "Key Findings" section above. Salvage paths: wire-mask + congestion penalty, wire-mask + outer BBO loop, wire-mask on top-net-weight subset.
+10. [~] **WireMask-BBO greedy evaluator** -- IMPLEMENTED AND REVERTED 2026-05-09. Two failure patterns: (a) sparse benchmarks legalized back to baseline (no movement), (b) ibm04 produced 1.4127 vs baseline 1.4101 (clustered macros → worse congestion). Confirms that pure HPWL minimization hurts the congestion-dominated proxy. See "Key Findings" section above. Salvage paths: wire-mask + congestion penalty, wire-mask + outer BBO loop, wire-mask on top-net-weight subset.
 11. [~] **DREAMPlace bridge sync** (`pb.txt → Bookshelf → DREAMPlace global → legalize`) -- IMPLEMENTED AND REVERTED 2026-05-11. v13 --all = 1.4897 vs v12's 1.4854 (+0.0043 worse). Real wins on ibm04 (−0.0075) and ibm11 (−0.0019). 10-15s subprocess overhead displaced productive restarts on 7 benchmarks. Bridge module deleted in a93a5ae but restored 2026-05-20.
 12. [x] **Tier 1/2/3 vectorize core paths** -- DONE 2026-05-19. Vectorized `_will_legalize` (12× speedup on ibm04), `_routing_congestion_perturb`, `_score` pl_scratch buffer. Critical float32 precision fix in vectorized legalize (without it, ibm04 lands at 1.3364 instead of 1.3316). Bit-equivalent to scalar baseline; ibm04/ibm06/ibm02 preserved.
 13. [x] **Running-max t_one_score** -- DONE 2026-05-19. Defensive; re-adds v11 logic that v12 removed. Adapts to --all CPU contention.

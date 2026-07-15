@@ -10,6 +10,10 @@ Every row includes:
 - `time_s`: wall-clock timestamp from `time.time()`.
 - `event`: event type.
 - `benchmark`: benchmark name when available.
+- `run_id`: explicit `HIER_GNN_TRACE_RUN`/`VIVAPLACE_RUN_ID`, or a generated
+  process run id.
+- `code_revision`: Git revision, or `VIVAPLACE_CODE_REVISION` outside Git.
+- `pid`: writer process id.
 
 ## Common Candidate Fields
 
@@ -42,10 +46,12 @@ with `HIER_PLATEAU_TRACE_PATH`, or disable with `HIER_PLATEAU_TRACE=0`.
 
 Common fields:
 
-- `schema_version`: plateau schema version. Current version: `1`.
+- `schema_version`: plateau schema version. Current version: `2`.
 - `event`: `hier_plateau_telemetry` or `hier_budget_schedule`.
 - `benchmark`
 - `diagnostic_no_deadlines`
+- `run_id`, `code_revision`, `pid`: provenance used to separate code states and
+  evaluation runs in append-only telemetry.
 
 `hier_plateau_telemetry` rows include:
 
@@ -64,6 +70,14 @@ Common fields:
 - `useful_soft_trigger`
 - `budget_s`
 - `min_spare_s`
+
+Aggregate and filter the stream with:
+
+```bash
+uv run python scripts/analyze_plateau_telemetry.py \
+  ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl \
+  --run-id my_run
+```
 
 ### `hier_relocation_candidates`
 

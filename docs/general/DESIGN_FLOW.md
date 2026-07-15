@@ -39,6 +39,11 @@ proxy-improving state drifts too far from the selected hierarchy seed. The
 strict final-rollback-only sweep was `AVG 1.1999`; earlier enforcement recovers
 most of that proxy loss while preserving the hierarchy invariant.
 
+The required DREAMPlace runtime is reproducible from a clean checkout through
+`scripts/dreamplace/bootstrap.sh all`. Production probes representative native
+extensions in the build Python before placement; use
+`scripts/dreamplace/bootstrap.sh preflight` for the same standalone check.
+
 Large designs additionally compute a hierarchy graph-tension signal from
 stretched inter-cluster edges and congestion along those edge corridors. The
 signal only orders decompression and coldspot opportunities by default. Optional
@@ -113,7 +118,7 @@ flowchart TD
     C --> D[Classify soft macros as owned or bridge]
     D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
     E --> F[Cluster-consecutive hard legalization]
-    F --> E1[Exact-prescore seed portfolio]
+    F --> E1[Exact-prescore seed portfolio + hierarchy vector]
     E1 --> G[Default-order safety legalization]
     G --> H[Soft relocation cleanup]
     H --> R[Congestion-expanded hard/soft regions]
@@ -133,8 +138,7 @@ flowchart TD
     X1 -->|No| L
     X2 --> L[Coldspot cluster tightening with optional ego-net candidates]
     L --> Z[Post-coldspot micro-shift replay]
-    Z --> Z1[Bounded survivor-pool search]
-    Z1 --> Z2{Small-design polish gated?}
+    Z --> Z2{Small-design polish gated?}
     Z2 -->|Yes| Z3[Low-confidence hierarchy release + exact polish]
     Z2 -->|No| M
     Z3 --> M[Final hierarchy audit + rollback checkpoint]
@@ -146,11 +150,18 @@ Every return path passes through a final in-bounds clamp for movable macros.
 pipeline; each pass returns a `PassResult` summary, optionally written to the
 GNN trace logger (`HIER_GNN_TRACE=1`, default off).
 
-After survivor search, small designs can run one extra exact-gated polish pass.
-This pass targets the high-SA-ratio primary subset shape documented in
-`docs/general/benchmark_patterns/SA_RATIO_SUBSET_PATTERNS.md`: small hard-macro
-population, moderate total macro count, and no fixed hard macros. It is still
-feature-gated rather than benchmark-name gated. The release candidate pool now
+The seed portfolio records a complete hierarchy vector for every candidate:
+hard-cluster compactness and worst spread, nearest-neighbor cluster impurity,
+weighted hierarchy-edge stretch, owned-soft distance, and bridge-soft corridor
+distance. Production still advances the lowest exact-proxy seed. The
+`HIER_SEED_HIERARCHY_SELECT=1` experiment instead uses proxy only within the
+best hierarchy-quality band; it is default-off after the ibm10 hierarchy win
+caused a large proxy regression.
+
+After post-coldspot cleanup, small designs can run one extra exact-gated polish pass.
+This pass targets a feature-defined shape: small hard-macro population,
+moderate total macro count, and no fixed hard macros. It is feature-gated rather
+than benchmark-name gated. The release candidate pool
 starts with the weakest-k inferred hierarchy clusters by confidence, filters
 that set by the confidence threshold, and releases the hottest remaining weak
 clusters. The release count is capped by
@@ -268,11 +279,9 @@ only the legacy first generated kick, preserving default placement behavior.
 
 ## BeyondPPA And GNN Hooks
 
-The current BeyondPPA integration is deterministic and hierarchy-integrated:
-
-- structural metrics live in `src/placer/local_search/structural_fields.py`;
-- structural candidate ordering lives inside existing relocation ranking;
-- production defaults keep structural ranking disabled.
+The current BeyondPPA integration is hierarchy-integrated: a local structural
+term can reorder existing relocation candidates, and production keeps that
+ranking disabled by default. It does not create a separate placement path.
 
 The current production GNN behavior is still non-mutating. Trace logging is
 controlled by runtime environment variables, not `src/utils/constants.py`.
@@ -298,4 +307,4 @@ is no batched GPU exact-scoring kernel.
 
 See [OBJECTIVES.md](OBJECTIVES.md) for the structural objectives behind these
 passes, and [`../ml_nn/beyondppa_results/`](../ml_nn/beyondppa_results/) for
-the GNN trace roadmap.
+the active GNN trace and dataset schemas.

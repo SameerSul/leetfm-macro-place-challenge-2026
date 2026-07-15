@@ -365,6 +365,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             movable=movable,
             groups=groups,
             csofts=csofts,
+            bridge_softs=bridge_softs,
+            hierarchy_edges=hierarchy.edges,
             cw=cw,
             ch=ch,
             const=const,

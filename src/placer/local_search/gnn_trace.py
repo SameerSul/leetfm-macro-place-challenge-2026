@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 import atexit
 from pathlib import Path
@@ -12,11 +13,47 @@ from typing import Any
 import numpy as np
 
 TRACE_SCHEMA_VERSION = 1
-PLATEAU_SCHEMA_VERSION = 1
+PLATEAU_SCHEMA_VERSION = 2
 
 _FALSE = {"0", "false", "False", "no", "NO", "off", ""}
 _PLATEAU_BUFFER: list[str] = []
 _PLATEAU_BUFFER_PATH: Path | None = None
+_PROCESS_RUN_ID = os.environ.get("VIVAPLACE_RUN_ID", "").strip() or (
+    f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-pid{os.getpid()}"
+)
+_CODE_REVISION: str | None = None
+
+
+def _code_revision() -> str:
+    global _CODE_REVISION
+    if _CODE_REVISION is not None:
+        return _CODE_REVISION
+    override = os.environ.get("VIVAPLACE_CODE_REVISION", "").strip()
+    if override:
+        _CODE_REVISION = override
+        return _CODE_REVISION
+    try:
+        root = Path(__file__).resolve().parents[3]
+        _CODE_REVISION = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        _CODE_REVISION = "unknown"
+    return _CODE_REVISION
+
+
+def _provenance(trace_kind: str) -> dict[str, Any]:
+    specific = os.environ.get(f"HIER_{trace_kind}_TRACE_RUN", "").strip()
+    return {
+        "run_id": specific or _PROCESS_RUN_ID,
+        "code_revision": _code_revision(),
+        "pid": os.getpid(),
+    }
 
 
 def gnn_trace_enabled() -> bool:
@@ -95,6 +132,7 @@ def log_gnn_event(event: str, **payload: Any) -> None:
         "schema_version": TRACE_SCHEMA_VERSION,
         "time_s": time.time(),
         "event": event,
+        **_provenance("GNN"),
         **payload,
     }
     with path.open("a", encoding="utf-8") as f:
@@ -111,6 +149,7 @@ def log_plateau_event(event: str, **payload: Any) -> None:
         "schema_version": PLATEAU_SCHEMA_VERSION,
         "time_s": time.time(),
         "event": event,
+        **_provenance("PLATEAU"),
         **payload,
     }
     line = json.dumps(_jsonable(row), sort_keys=True, separators=(",", ":")) + "\n"

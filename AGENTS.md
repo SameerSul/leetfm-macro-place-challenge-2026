@@ -11,7 +11,7 @@ The active submission now lives at the repository root: `src/`, `docs/`,
 absent after the root-layout migration; if present, treat it as frozen /
 read-only.
 
-**Current production mode (2026-06-25): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-07-15): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py` and raises if grouped DREAMPlace is not
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
@@ -19,13 +19,13 @@ hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
 Current accepted result: `uv run evaluate src/main.py --all` =
-**AVG 1.1999**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
-1147.08s. Passes advance on gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
+**AVG 1.1657**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
+1128.80s. Passes advance on gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
 than fixed repeat counts, and a final hierarchy-quality audit rolls back to
 the best saved audit-passing checkpoint if the post-search state drifts too
 far from the selected hierarchy seed. See `docs/general/ARCHITECTURE.md` for
-the full pipeline and `docs/general/ISSUES.md` for what was tried and not
-promoted.
+the full pipeline, `docs/general/ISSUES.md` for current gaps, and
+`docs/general/PROGRESS.md` for rejected or superseded experiments.
 
 NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
 **AVG 0.7320**, 4/4 VALID, 0 overlaps; `uv run python
@@ -34,12 +34,12 @@ uses slash-separated instance-path prefixes when macro names provide useful
 coverage, then falls back to inferred connectivity on flat-name benchmarks.
 
 BeyondPPA-style work is integrated into the hierarchy path, not as a separate
-placer. The current shipped pieces are deterministic structural metrics and
-default-off hierarchy relocation candidate ordering
+placer. The current shipped piece is default-off hierarchy relocation candidate ordering
 (`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant). The trace logger is
 default-off through the `HIER_GNN_TRACE=0` runtime environment variable.
 Pass-level plateau telemetry is default-on for future ML/DL scheduling work and
-writes to `ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` unless
+writes attributable schema-v2 rows to
+`ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` unless
 `HIER_PLATEAU_TRACE=0` or `HIER_PLATEAU_TRACE_PATH` is supplied.
 Stage-G3 offline baseline tooling lives in `scripts/gnn/train_gnn_baseline.py`, and
 the accepted default-off baseline artifact is
@@ -52,7 +52,7 @@ Stage-G5 relocation-only candidate reordering hook exists behind
 because average proxy and runtime regressed. No inference ranker is default-on,
 and no DQN policy is active in placement.
 
-For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For the team's research notes see [`PAPERS_NOTES.md`](docs/general/PAPERS_NOTES.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
+For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
 
 ## Common commands
 
@@ -60,6 +60,9 @@ For the full problem statement see [`README.md`](README.md). For the API contrac
 # Setup (run once - submodule is required, no-op evaluator otherwise)
 git submodule update --init external/MacroPlacement
 uv sync
+scripts/dreamplace/bootstrap.sh all
+# Existing install/ABI check without rebuilding:
+scripts/dreamplace/bootstrap.sh preflight
 # Optional mirror install if the environment was not created by uv sync. Numba is
 # a first-class pyproject dependency; missing numba now raises unless
 # ALLOW_NUMBA_FALLBACK=1 is set for slow diagnostic-only runs.
@@ -194,9 +197,8 @@ src/utils/         Runtime config, logging shim, and accepted placement constant
 src/dreamplace_bridge/  pb.txt <-> Bookshelf converters + DREAMPlace launcher.
 src/eda_io/        Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR-report out.
 src/place_design.py CLI tying eda_io together - see src/eda_io/README.md.
-docs/general/      ARCHITECTURE.md / ISSUES.md / PROGRESS.md / DESIGN_FLOW.md.
-docs/gpu/          Archived CUDA/GPU proxy-path notes.
-docs/ml_nn/        Current BeyondPPA/GNN notes plus archived learned-ranker history.
+docs/general/      Current architecture/flow/issues plus the PROGRESS experiment ledger.
+docs/ml_nn/        Current BeyondPPA/GNN schemas and status.
 test/benchmarks/   Synthetic anti-overfitting suite: generator, runner, impact analyzer.
 test/diagnostic/   Maintained smoke tests plus current profiling/recall probes.
 test/eda_io/       eda_io pytest suite + LEF/DEF/Verilog/SDC/Liberty fixture design.
@@ -213,7 +215,6 @@ scripts/                  Comparison + benchmark-conversion utilities.
 - **DREAMPlace is required for the current production path.** `_place_impl()` raises if `_hierarchy_floorplan()` cannot run; the old proxy fallback has been deleted.
 - **Exact scoring is slow on large grids.** ibm15 (n=393, grid=2166) takes ~160s; ibm18 (grid=2145) takes ~220s. Always factor scoring time into a per-benchmark time budget. The harness has a 200s/benchmark soft limit and post-scoring budget guard.
 - **CPU contention slows scoring 3–5×.** ibm08 scores in 31s clean but 95–131s under load; ibm11 scored 263s under heat. Use a running-max `t_one_score` for budget estimation, not the baseline-only measurement.
-- **`docs/general/PAPERS_NOTES.md` describes the MaskRegulate regularity mask incorrectly.** The actual paper formula `min(x, X_max-x) + min(y, Y_max-y)` rewards placing macros near canvas *edges*. The notes describe distance-to-center, which is the opposite. The implementation in `_density_gradient_perturb` does neither - it is a pure occupancy-spreading gradient. If you see comments referencing "MaskRegulate centering", the comments are wrong, not the code.
 - **`initial.plc` is already a good seed.** It comes from a prior EDA flow with hand-tuned spread. The job of legalization is to resolve overlaps without destroying that spread. Restart from random or grid layouts has consistently lost to restarting from `initial.plc + small perturbation`.
 - **Soft macros must move with hierarchy.** The current path classifies soft macros as owned or bridge, gives them region boxes, lets grouped DREAMPlace place them, and uses soft relocation plus soft-heavy region swaps after hard legalization/relief. The accepted `HIER_SOFT_SWAP_K=48` default is intentional; `24` was worse on ibm12/15/17, while `64` regressed ibm17.
 - **BeyondPPA/GNN must stay inside hierarchy.** Structural metrics and future
@@ -237,7 +238,7 @@ scripts/                  Comparison + benchmark-conversion utilities.
 - Iterate on one benchmark (`-b ibm10` is the current hierarchy smoke) until the change is sound; run `--all` only when you need a full benchmark sweep.
 - When a change alters hierarchy quality or proxy cost, verify it on more than one benchmark before treating it as a system improvement.
 - Record concrete numbers in `docs/general/PROGRESS.md` when a change becomes a new accepted system result - that file is the source of truth for "what works", not commit messages.
-- Documentation updates are part of every system modification. If a change alters placement flow, operator order, acceptance gates, constants, default behavior, diagnostics, graph/GNN hooks, verification status, or user-facing commands, update `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and all other relevant docs in the same turn. Relevant docs may include `README.md`, `docs/general/ISSUES.md`, `docs/general/PROGRESS.md`, `docs/graph/**`, `docs/theory/**`, `docs/ml_nn/**`, or test/diagnostic READMEs. If no documentation needs an update, explicitly note why in the final response.
+- Documentation updates are part of every system modification. If a change alters placement flow, operator order, acceptance gates, constants, default behavior, diagnostics, graph/GNN hooks, verification status, or user-facing commands, update `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and all other relevant docs in the same turn. Relevant docs may include `README.md`, `docs/general/ISSUES.md`, `docs/general/PROGRESS.md`, `docs/ml_nn/**`, or test/diagnostic READMEs. If no documentation needs an update, explicitly note why in the final response.
 - Once a change has been accepted and verified as a new system result, record concrete numbers in `docs/general/PROGRESS.md` and make sure `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and any related subsystem docs describe the accepted behavior instead of stale experiment behavior.
 - **All v2-specific tests, diagnostics, and probes live under `test/`** (current subdirs: `benchmarks/`, `diagnostic/`, `eda_io/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks an agent to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `test/` under the matching subdirectory - and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.
 - Never commit unless asked.
@@ -246,5 +247,5 @@ scripts/                  Comparison + benchmark-conversion utilities.
 ## When in doubt
 
 - For current work, start with `docs/general/DESIGN_FLOW.md` and `docs/general/ARCHITECTURE.md`; they describe the hierarchy system.
-- `docs/gpu/` and `docs/theory/LSMC.md` are archived proxy-path notes unless explicitly revived by the user. `docs/ml_nn/beyondppa_results/` is active for the hierarchy-integrated BeyondPPA/GNN trace work.
+- `docs/ml_nn/beyondppa_results/` contains the active hierarchy-integrated GNN schemas. Deleted proxy-path research must not be reintroduced unless the user explicitly changes direction.
 - Do not reintroduce deleted proxy-only code unless the user explicitly asks to restore the proxy path.
