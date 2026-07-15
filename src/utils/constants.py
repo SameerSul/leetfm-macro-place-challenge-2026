@@ -47,6 +47,19 @@ HIER_SEED_ROUTE_CHANNEL_LANE_FRAC = 0.10
 HIER_SEED_ROUTE_CHANNEL_PUSH_FRAC = 0.35
 # Maximum route-channel push as a fraction of the cluster local span.
 HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
+# Rich hierarchy-vector seed selection is opt-in until full-suite calibration.
+# When enabled, proxy breaks ties among candidates inside the best hierarchy
+# quality band instead of selecting the lowest-proxy seed unconditionally.
+HIER_SEED_HIERARCHY_SELECT = False
+HIER_SEED_HIERARCHY_ABS_SLACK = 0.002
+HIER_SEED_HIERARCHY_REL_SLACK = 0.15
+# Complete-placement hierarchy vector weights. Lower is better.
+HIER_VECTOR_COMPACTNESS_WEIGHT = 0.25
+HIER_VECTOR_WORST_SPREAD_WEIGHT = 0.15
+HIER_VECTOR_IMPURITY_WEIGHT = 0.20
+HIER_VECTOR_EDGE_STRETCH_WEIGHT = 0.15
+HIER_VECTOR_OWNED_SOFT_WEIGHT = 0.15
+HIER_VECTOR_BRIDGE_SOFT_WEIGHT = 0.10
 # Congestion-heavy proposal ranking. Exact proxy remains the accept gate.
 HIER_PROPOSAL_CONGESTION_WEIGHT = 2.5
 HIER_PROPOSAL_DENSITY_WEIGHT = 1.0
@@ -485,28 +498,6 @@ HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = 1.15
 HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = 1.20
 HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = 1.50
 
-# Bounded go-with-the-winners survivor search after coldspot cleanup. The pass
-# keeps a small pool of valid hierarchy-preserving states instead of continuing
-# from one greedy state.
-# Wall-clock budget for survivor search.
-HIER_SURVIVOR_BUDGET_S = 12.0
-# Number of survivor generations.
-HIER_SURVIVOR_ROUNDS = 2
-# Number of placement states kept between generations.
-HIER_SURVIVOR_WIDTH = 4
-# Number of hottest hierarchy clusters used to generate each candidate pool.
-HIER_SURVIVOR_HOT_CLUSTERS = 6
-# Candidate cluster translation distances in congestion-grid cells.
-HIER_SURVIVOR_STEP_CELLS = (2.0, 4.0, 7.0)
-# Exact-score only the best cheap-ranked candidates per generation.
-HIER_SURVIVOR_EXACT_TOP_K = 10
-# Minimum exact-proxy gain required to commit the final survivor result.
-HIER_SURVIVOR_MIN_GAIN = 0.0001
-# Maximum hierarchy-quality degradation allowed for survivor candidates.
-HIER_SURVIVOR_QUALITY_BUDGET = 0.015
-# Uses CUDA for cheap candidate-pool ranking when available.
-HIER_SURVIVOR_GPU_RANK = "auto"
-
 # Extra exact-gated late polish for the SA-ratio primary struggle subset shape:
 # small hard-macro population, no fixed hard macros, and moderate total macro
 # count. This is structural, not benchmark-name gated.
@@ -568,13 +559,6 @@ HIER_KEEP_OUT_WEIGHT = 0.2
 HIER_GRID_ALIGN_WEIGHT = 0.2
 # Relative weight for notch-avoidance structural penalty.
 HIER_NOTCH_WEIGHT = 0.6
-# Minimum pair count before structural notch scoring uses numba.
-HIER_STRUCTURAL_NOTCH_NUMBA_MIN_PAIRS = 24
-# Enables experimental GPU path for structural notch scoring.
-HIER_STRUCTURAL_NOTCH_GPU = False
-# Minimum macro count before structural notch scoring may use GPU.
-HIER_STRUCTURAL_NOTCH_GPU_MIN_N = 128
-
 # Scorer implementation used for propose-all relocation candidates.
 RELOC_PROPOSE_SCORER = "cuda_delta"
 # Default CUDA chunk size for relocation proposal scoring.

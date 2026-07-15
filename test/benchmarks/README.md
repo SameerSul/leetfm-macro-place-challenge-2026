@@ -79,52 +79,10 @@ hard failures (invalid placements, score regressions on a specific axis).
 
 ## How the runner wires into v2
 
-`benchmark.name` for synthetic cases does not resolve under
-`external/MacroPlacement/Testcases/ICCAD04/`. The runner sets
-`benchmark._cached_plc` (the cache attribute `_load_plc` already honors) so v2
-gets exact scoring from the generated seed. The current production placer is
-hierarchy-only and requires grouped DREAMPlace for normal challenge runs, so
-synthetic use should be treated as a diagnostic compatibility path rather than
-a substitute for the IBM acceptance sequence.
-
-## Findings log
-
-The first entries below refer to proxy-path modules that were later deleted
-(`soft_moves.py`, `two_opt.py`, `hard_soft.py`). They are retained as historical
-overfitting findings; the current hierarchy-only placer no longer contains those
-passes.
-
-- **2026-06-09, v2 @ 90s budget, first full run:** 9 of 10 benchmarks INVALID
-  with small out-of-bounds overhangs (0.15-0.52um, 1-15 macros each; only
-  `syn05_sparse` survived). Initial hypothesis was a square-canvas assumption
-  (`syn01_wide` failed first), but square benchmarks failed too. Probing
-  `syn03_sram` showed every OOB macro was **soft**. Root cause: the soft-2opt
-  swap (`src/placer/local_search/soft_moves.py`) exchanged positions with no
-  bounds check, so a larger soft macro inheriting a smaller macro's edge-flush
-  slot overhung the canvas by `hw_large - hw_small`. IBM never exposes this
-  because its hand-tuned seeds keep soft macros off the canvas edge - a
-  textbook overfit to the seed style. Fixed by clamping swap targets per-macro
-  (soft_moves.py) and tightening the EPS=0.05 overhang tolerance in the hard
-  bounds checks (two_opt.py, relocation.py, legalize/swap.py) to strict, since
-  `validate_placement` has zero tolerance. Verified: syn03 VALID with a
-  slightly better proxy (4.3063 vs 4.3113); ibm01 unaffected (0.9111 VALID).
-- **2026-06-09, second leak, same shape:** rerun after the fix left only
-  `syn07_ports` INVALID (1 macro, 0.253um vertical). `hard_soft.py` (HXS
-  cross-swap + HS3 3-cycle) bounds-checked only the HARD macro's destination -
-  the soft macros inheriting slots in the exchange were never checked. Fixed
-  identically (clamp each soft's inherited slot by its own half-size, strict
-  hard bounds). All 10 synthetics now VALID; ibm01 still 0.9111 VALID.
-- **2026-06-09, budget overrun at scale:** `syn10_xl` (820 hard macros) ran
-  **504s against a 90s budget** and `syn09_seedless` ran 173s - the per-phase
-  deadline logic does not bound whatever dominates at this scale. The IBM
-  suite (max 786 macros, and DREAMPlace handles the big ones) never shows
-  this; an `--all`-style 17-benchmark run made of syn10-sized cases would
-  blow the 1-hour harness cap.
-- **2026-06-09, seed dependence:** `syn09_seedless` (random seed, identical
-  netlist style to syn08) lands at proxy 3.27 vs ~1.14 when a coherent seed
-  exists. v2 recovers overlaps (240 -> 0) but cannot rebuild global structure
-  from a bad seed - consistent with CLAUDE.md's "initial.plc is already a
-  good seed" note, and a real risk on any benchmark without a curated seed.
+Synthetic names do not resolve under the challenge benchmark tree. The runner
+therefore attaches both `benchmark._source_dir` for grouped DREAMPlace and
+`benchmark._cached_plc` for exact scoring. This suite is diagnostic coverage;
+it does not replace the IBM acceptance sequence.
 
 ## Files
 

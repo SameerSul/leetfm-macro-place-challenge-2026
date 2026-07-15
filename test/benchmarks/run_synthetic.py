@@ -120,8 +120,9 @@ def main():
         if axis:
             print(f"  axis: {axis}")
         benchmark, plc = load_benchmark(str(netlist), str(netlist.parent / "initial.plc"))
-        # v2 resolves its exact-scoring plc by benchmark name, which only works
-        # for ICCAD04/NG45 paths; hand it the plc directly instead
+        # Give the hierarchy path both the generated source files for
+        # DREAMPlace and the already-loaded exact scorer.
+        benchmark._source_dir = netlist.parent
         benchmark._cached_plc = plc
 
         entry = {"name": name, "axis": axis}

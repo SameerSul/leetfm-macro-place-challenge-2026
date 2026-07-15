@@ -5,8 +5,29 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import numpy as np
+import os
 import torch
 import time
+
+from placer.local_search.hierarchy_quality import hierarchy_quality_vector
+
+
+def select_seed_candidate(
+    rows: list[dict[str, object]],
+    *,
+    hierarchy_first: bool,
+    absolute_slack: float,
+    relative_slack: float,
+) -> dict[str, object]:
+    """Select a seed using hierarchy feasibility first and proxy second."""
+    if not rows:
+        raise ValueError("seed portfolio is empty")
+    if not hierarchy_first:
+        return min(rows, key=lambda row: (float(row["score"]), str(row["name"])))
+    best_quality = min(float(row["hierarchy_composite"]) for row in rows)
+    slack = max(float(absolute_slack), abs(best_quality) * float(relative_slack))
+    eligible = [row for row in rows if float(row["hierarchy_composite"]) <= best_quality + slack]
+    return min(eligible, key=lambda row: (float(row["score"]), str(row["name"])))
 
 
 def run_seed_portfolio(
@@ -26,6 +47,8 @@ def run_seed_portfolio(
     movable: np.ndarray,
     groups: dict | list | tuple | None,
     csofts,
+    bridge_softs,
+    hierarchy_edges,
     cw: float,
     ch: float,
     const: Any,
@@ -233,11 +256,7 @@ def run_seed_portfolio(
     def _has_explicit_path_tags() -> bool:
         try:
             hard_b = list(plc.hard_macro_indices[:n])
-            tagged = sum(
-                1
-                for idx in hard_b
-                if "/" in str(plc.modules_w_pins[int(idx)].get_name())
-            )
+            tagged = sum(1 for idx in hard_b if "/" in str(plc.modules_w_pins[int(idx)].get_name()))
         except Exception:
             return False
         min_group = max(2, int(const.HIER_TAG_PREFIX_MIN_GROUP))
@@ -331,24 +350,55 @@ def run_seed_portfolio(
             soft = (1.0 - alpha) * dp_soft + alpha * init_soft
             raw_candidates.append((f"blend_{alpha:.2f}", hard, soft))
         raw_candidates.append(("expand", *_expanded_seed(dp_hard, dp_soft)))
-        raw_candidates.append(
-            ("synthetic_clearance", *_synthetic_clearance_seed(dp_hard, dp_soft))
-        )
+        raw_candidates.append(("synthetic_clearance", *_synthetic_clearance_seed(dp_hard, dp_soft)))
         if _has_explicit_path_tags():
             raw_candidates.append(("route_channel", *_route_channel_seed(dp_hard, dp_soft)))
         for name, cand_h, cand_s in raw_candidates:
             try:
                 rows.append(_legalize_seed(name, cand_h, cand_s, budget_s=45.0))
             except Exception as exc:
-                logger(
-                    f"  [hier] seed {name} failed prescore: {type(exc).__name__}: {exc}"
-                )
-        rows.sort(key=lambda r: (float(r["score"]), str(r["name"])) )
-        summary = ", ".join(f"{r['name']}={float(r['score']):.4f}" for r in rows)
-        logger(
-            f"  [hier] seed portfolio prescore: {summary}; selected={rows[0]['name']}"
+                logger(f"  [hier] seed {name} failed prescore: {type(exc).__name__}: {exc}")
+        for row in rows:
+            vector = hierarchy_quality_vector(
+                np.asarray(row["hard"], dtype=np.float64),
+                np.asarray(row["soft"], dtype=np.float64),
+                clusters,
+                csofts,
+                bridge_softs,
+                hierarchy_edges,
+                cw,
+                ch,
+            )
+            row["hierarchy_vector"] = vector
+            row["hierarchy_composite"] = float(vector["composite"])
+        hierarchy_first = os.environ.get(
+            "HIER_SEED_HIERARCHY_SELECT",
+            "1" if bool(const.HIER_SEED_HIERARCHY_SELECT) else "0",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        selected = select_seed_candidate(
+            rows,
+            hierarchy_first=hierarchy_first,
+            absolute_slack=float(const.HIER_SEED_HIERARCHY_ABS_SLACK),
+            relative_slack=float(const.HIER_SEED_HIERARCHY_REL_SLACK),
         )
-        return rows[0]["hard"], rows[0]["soft"], float(rows[0]["score"]), rows
+        rows.sort(
+            key=lambda row: (
+                row is not selected,
+                float(row["score"]),
+                str(row["name"]),
+            )
+        )
+        for row in rows:
+            row["selected"] = row is selected
+        summary = ", ".join(
+            f"{r['name']}={float(r['score']):.4f}/hq={float(r['hierarchy_composite']):.5f}"
+            for r in rows
+        )
+        logger(
+            f"  [hier] seed portfolio prescore: {summary}; selected={selected['name']}; "
+            f"hierarchy_first={int(hierarchy_first)}"
+        )
+        return selected["hard"], selected["soft"], float(selected["score"]), rows
 
     hard, soft, s_score = _prepare_dreamplace_candidate(
         group_weight=group_weight,

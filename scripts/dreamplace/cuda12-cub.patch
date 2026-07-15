@@ -1,0 +1,26 @@
+diff --git a/dreamplace/ops/utility/src/utils_cub.cuh b/dreamplace/ops/utility/src/utils_cub.cuh
+index 3e53a76..664df61 100644
+--- a/dreamplace/ops/utility/src/utils_cub.cuh
++++ b/dreamplace/ops/utility/src/utils_cub.cuh
+@@ -11,13 +11,14 @@
+ 
+ #include "utility/src/namespace.h"
+ 
+-// include cub in a safe manner
+-#define CUB_NS_PREFIX namespace DREAMPLACE_NAMESPACE {
+-#define CUB_NS_POSTFIX }
+-#define CUB_NS_QUALIFIER DREAMPLACE_NAMESPACE::cub
++// include cub.
++// CUB 2.x (CUDA 12.1) cannot be wrapped in an extra namespace: both the legacy
++// CUB_NS_PREFIX/POSTFIX macros and CUB_WRAPPED_NAMESPACE leave
++// dispatch_histogram.cuh referencing libcu++ (`::cuda::std`) symbols that fail
++// to resolve once cub is nested ("global scope has no value"). Modern thrust
++// already isolates its own cub (thrust::cuda_cub::cub), so the historical ODR
++// reason for wrapping is gone — include cub at global ::cub. The bare `cub::`
++// references inside `namespace DreamPlace` resolve to ::cub via normal lookup.
+ #include "cub/cub.cuh"
+-#undef CUB_NS_QUALIFIER
+-#undef CUB_NS_POSTFIX
+-#undef CUB_NS_PREFIX
+ 
+ #endif
