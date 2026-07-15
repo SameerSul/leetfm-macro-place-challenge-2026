@@ -37,7 +37,7 @@ Current full-suite result:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1999  17/17 VALID  0 overlaps  all hierarchy audits passed  (~1147s)
+AVG 1.1657  17/17 VALID  0 overlaps  all hierarchy audits passed  (1128.80s)
 ```
 
 ## Setup
@@ -46,6 +46,10 @@ AVG 1.1999  17/17 VALID  0 overlaps  all hierarchy audits passed  (~1147s)
 git submodule update --init external/MacroPlacement
 uv sync
 uv pip install -r requirements.txt   # numba is required, not optional
+# Required on a clean checkout: pinned DREAMPlace source/toolchain/build.
+scripts/dreamplace/bootstrap.sh all
+# Fast diagnosis for an existing build (native extensions and Python ABI).
+scripts/dreamplace/bootstrap.sh preflight
 ```
 
 ## Commands
@@ -96,8 +100,7 @@ flowchart TD
     G --> H[Exact-gated cluster decompression]
     H --> I[Region-bounded hard/soft swaps]
     I --> J[Coldspot tightening<br/>congestion-driven local relief]
-    J --> K[Bounded survivor search]
-    K --> L{Final legality,<br/>bounds, and<br/>hierarchy audit}
+    J --> L{Final legality,<br/>bounds, and<br/>hierarchy audit}
     L -->|pass| M[Macro center coordinates]
     L -->|drift| N[Roll back to best<br/>audit-passing checkpoint]
     N --> M
@@ -116,7 +119,11 @@ Blue nodes build the hierarchy-aware seed; the lighter blue row is the seed
 portfolio — grouped DREAMPlace is one of six candidates, sitting next to
 the legalized `initial.plc`, two DP/initial blends, a radial expansion of
 the DP basin, and a synthetic-clearance push-apart of the DP basin. Every
-candidate is exact-scored and only the lowest-proxy one advances. Orange
+candidate is exact-scored and only the lowest-proxy one advances. A richer
+hard/soft/graph hierarchy vector is recorded for every seed; an experimental
+hierarchy-first selector is available through `HIER_SEED_HIERARCHY_SELECT=1`,
+but remains default-off because focused validation materially regressed proxy.
+Orange
 nodes are the exact-proxy-gated local search passes; green nodes are the
 final audit and the rollback to the best audit-passing checkpoint if the
 post-search state drifts too far from the selected seed.
@@ -136,7 +143,6 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
           -> exact-gated cluster decompression
           -> region-bounded hard/soft swaps
           -> coldspot tightening (congestion-driven local relief)
-          -> bounded survivor search
           -> final legality, bounds, and hierarchy audit
           -> macro center coordinates
 ```
@@ -153,7 +159,7 @@ for the structural objectives behind it.
 ```text
 src/main.py                evaluator-facing entrypoint
 src/placer/pipeline/       hierarchy orchestration
-src/placer/local_search/   cluster fields, relocation, swaps, coldspot, survivor search
+src/placer/local_search/   hierarchy metrics, relocation, swaps, and coldspot search
 src/placer/scoring/        exact and incremental proxy scoring
 src/placer/routing/        routing demand and congestion helpers
 src/placer/legalize/       hard-macro legalization

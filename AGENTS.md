@@ -11,7 +11,7 @@ The active submission now lives at the repository root: `src/`, `docs/`,
 absent after the root-layout migration; if present, treat it as frozen /
 read-only.
 
-**Current production mode (2026-06-25): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-07-15): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py` and raises if grouped DREAMPlace is not
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
@@ -19,8 +19,8 @@ hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
 Current accepted result: `uv run evaluate src/main.py --all` =
-**AVG 1.1999**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
-1147.08s. Passes advance on gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
+**AVG 1.1657**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
+1128.80s. Passes advance on gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
 than fixed repeat counts, and a final hierarchy-quality audit rolls back to
 the best saved audit-passing checkpoint if the post-search state drifts too
 far from the selected hierarchy seed. See `docs/general/ARCHITECTURE.md` for
@@ -39,7 +39,8 @@ default-off hierarchy relocation candidate ordering
 (`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant). The trace logger is
 default-off through the `HIER_GNN_TRACE=0` runtime environment variable.
 Pass-level plateau telemetry is default-on for future ML/DL scheduling work and
-writes to `ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` unless
+writes attributable schema-v2 rows to
+`ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` unless
 `HIER_PLATEAU_TRACE=0` or `HIER_PLATEAU_TRACE_PATH` is supplied.
 Stage-G3 offline baseline tooling lives in `scripts/gnn/train_gnn_baseline.py`, and
 the accepted default-off baseline artifact is
@@ -60,6 +61,9 @@ For the full problem statement see [`README.md`](README.md). For the API contrac
 # Setup (run once - submodule is required, no-op evaluator otherwise)
 git submodule update --init external/MacroPlacement
 uv sync
+scripts/dreamplace/bootstrap.sh all
+# Existing install/ABI check without rebuilding:
+scripts/dreamplace/bootstrap.sh preflight
 # Optional mirror install if the environment was not created by uv sync. Numba is
 # a first-class pyproject dependency; missing numba now raises unless
 # ALLOW_NUMBA_FALLBACK=1 is set for slow diagnostic-only runs.

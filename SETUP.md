@@ -12,7 +12,25 @@ git submodule update --init external/MacroPlacement
 
 # Create virtual environment and install the package (editable)
 uv sync
+
+# Build the required pinned DREAMPlace runtime. This creates the ignored
+# dreamplace_src/ and dreamplace_build/ trees without changing tracked code.
+scripts/dreamplace/bootstrap.sh all
 ```
+
+The bootstrap pins DREAMPlace commit
+`37214b40fe3837cc7d392c7d6092ccd6ff04a02c`, CUDA 12.1, GCC 11.4,
+PyTorch 2.4.1+cu121, and the repository's CUDA-12 CUB compatibility patch.
+Set `DREAMPLACE_CUDA_ARCH` when building for a GPU other than compute
+capability 8.9. To diagnose an existing install without rebuilding it:
+
+```bash
+scripts/dreamplace/bootstrap.sh preflight
+```
+
+Production performs the same native-extension import probe before placement.
+An ABI-incompatible or incomplete build produces an actionable error instead
+of silently falling back to another placer.
 
 ## Project Structure
 
@@ -32,6 +50,7 @@ uv sync
 ├── docs/                   # Active docs plus archived experiment notes
 ├── test/                   # Smoke tests, diagnostics, verification scripts
 ├── scripts/                # Comparison and conversion helpers
+│   └── dreamplace/         # Pinned DREAMPlace bootstrap, patch, and preflight
 ├── ml_data/                # Historical traces/models/logs and generated data
 ├── system/                 # Optional historical checkpoints if present
 │   └── v1/                 # Frozen checkpoint placer; read-only if present
