@@ -22,7 +22,9 @@ combination is merged into one neutral `Design` (design.py) and converted to
 the ICCAD04 `netlist.pb.txt` + `initial.plc` pair the whole stack already
 understands (build.py). The standard loader and exact TILOS scorer still work
 unchanged. The placement algorithm itself is the hierarchy path described in
-`docs/general/DESIGN_FLOW.md`.
+`docs/general/DESIGN_FLOW.md`. `build_benchmark()` attaches the generated
+ICCAD04 work directory to the benchmark so the hierarchy-only DREAMPlace bridge
+can consume converted LEF/DEF/Verilog designs as well as named challenge cases.
 
 ## Supported inputs (mix freely)
 
