@@ -24,11 +24,12 @@ stronger opportunity gates, component-aware cleanup scheduling, component-aware
 region expansion/decompression, small-design polish, no-release low-net soft/SS
 breadth, medium/large soft-continuation scheduling, and strict final hierarchy
 audit rollback with audit-aware local relief plus large-design graph-tension
-opportunity ordering:
+opportunity ordering, prepared Numba routing/legalization kernels, and batched
+soft relocation/swap scoring:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1653  17/17 VALID  0 overlaps  1248.00s
+AVG 1.1575  17/17 VALID  0 overlaps  621.63s
 ```
 
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7252`,
@@ -312,6 +313,36 @@ batches stay on the faster incremental CPU path by default. Region swaps and
 cluster decompression remain sequential exact-gated CPU/NumPy passes — region
 swap candidate ranking can use CUDA sorting for large rank arrays, but there
 is no batched GPU exact-scoring kernel.
+
+Incremental CPU scoring uses cached Numba kernels for routing-grid
+re-smoothing over only the touched net bbox. Reusable prefix buffers avoid the
+temporary arrays created by the former per-row/per-column NumPy cumulative-sum
+path while preserving its exact accumulation order.
+
+Touched-net routing is likewise prepared once per cached module/net set. A
+single JIT dispatch gathers current pin cells and applies collapsed two-pin,
+three-pin, and high-fanout routing directly into the raw grids; high-fanout
+sink deduplication and ordering happen in reusable scratch space rather than
+Python lists, masks, `lexsort`, and concatenations.
+
+Hard legalization also keeps its hot candidate/conflict scan in Numba. The
+outer Python loop still enforces the runtime deadline between macros, while
+the kernel reproduces expanding-ring and lexicographic tie behavior. The
+synthetic-clearance seed's quadratic pair-push accumulation uses a separate
+cached JIT with a reusable delta buffer.
+
+Soft relocation target sets are batch-scored on CPU once at least two targets
+are present. Per-target raw routing, touched-bbox smoothing values, touched-net
+HPWL, and density grids are produced in compiled loops, followed by batched
+top-tail proxy reductions. The operation is read-only with respect to the
+prepared scorer state; the winning target still goes through the existing
+commit method and acceptance gates.
+
+Soft-soft swap candidates are also batched when at least two share the same
+first endpoint. Cached pair topologies are flattened into one compiled call;
+each row removes both endpoints, swaps their centers, restores their routing
+and density contributions, and scores the union bbox. The operation restores
+the placement cache per row and leaves all committed grids unchanged.
 
 See [OBJECTIVES.md](OBJECTIVES.md) for the structural objectives behind these
 passes, and [`../ml_nn/beyondppa_results/`](../ml_nn/beyondppa_results/) for
