@@ -28,8 +28,11 @@ opportunity ordering:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1657  17/17 VALID  0 overlaps  1128.80s
+AVG 1.1666  17/17 VALID  0 overlaps  1216.10s
 ```
+
+The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7252`,
+4/4 VALID, zero overlaps, all hierarchy audits passed, in 232.41s.
 
 The earlier `AVG 1.1627` hierarchy sweep remains an important proxy reference,
 but its hierarchy audit was report-only. The current default enforces the audit
