@@ -39,6 +39,11 @@ proxy-improving state drifts too far from the selected hierarchy seed. The
 strict final-rollback-only sweep was `AVG 1.1999`; earlier enforcement recovers
 most of that proxy loss while preserving the hierarchy invariant.
 
+The required DREAMPlace runtime is reproducible from a clean checkout through
+`scripts/dreamplace/bootstrap.sh all`. Production probes representative native
+extensions in the build Python before placement; use
+`scripts/dreamplace/bootstrap.sh preflight` for the same standalone check.
+
 Large designs additionally compute a hierarchy graph-tension signal from
 stretched inter-cluster edges and congestion along those edge corridors. The
 signal only orders decompression and coldspot opportunities by default. Optional
@@ -113,7 +118,7 @@ flowchart TD
     C --> D[Classify soft macros as owned or bridge]
     D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
     E --> F[Cluster-consecutive hard legalization]
-    F --> E1[Exact-prescore seed portfolio]
+    F --> E1[Exact-prescore seed portfolio + hierarchy vector]
     E1 --> G[Default-order safety legalization]
     G --> H[Soft relocation cleanup]
     H --> R[Congestion-expanded hard/soft regions]
@@ -133,8 +138,7 @@ flowchart TD
     X1 -->|No| L
     X2 --> L[Coldspot cluster tightening with optional ego-net candidates]
     L --> Z[Post-coldspot micro-shift replay]
-    Z --> Z1[Bounded survivor-pool search]
-    Z1 --> Z2{Small-design polish gated?}
+    Z --> Z2{Small-design polish gated?}
     Z2 -->|Yes| Z3[Low-confidence hierarchy release + exact polish]
     Z2 -->|No| M
     Z3 --> M[Final hierarchy audit + rollback checkpoint]
@@ -146,7 +150,20 @@ Every return path passes through a final in-bounds clamp for movable macros.
 pipeline; each pass returns a `PassResult` summary, optionally written to the
 GNN trace logger (`HIER_GNN_TRACE=1`, default off).
 
-After survivor search, small designs can run one extra exact-gated polish pass.
+The seed portfolio records a complete hierarchy vector for every candidate:
+hard-cluster compactness and worst spread, nearest-neighbor cluster impurity,
+weighted hierarchy-edge stretch, owned-soft distance, and bridge-soft corridor
+distance. Production still advances the lowest exact-proxy seed. The
+`HIER_SEED_HIERARCHY_SELECT=1` experiment instead uses proxy only within the
+best hierarchy-quality band; it is default-off after the ibm10 hierarchy win
+caused a large proxy regression.
+
+The bounded survivor-pool implementation is also default-off. Aggregate
+telemetry found zero gain in 636 records across all 17 IBM benchmarks. The
+production flow now spends no time there and records the scheduling decision
+in opt-in GNN traces.
+
+After post-coldspot cleanup, small designs can run one extra exact-gated polish pass.
 This pass targets the high-SA-ratio primary subset shape documented in
 `docs/general/benchmark_patterns/SA_RATIO_SUBSET_PATTERNS.md`: small hard-macro
 population, moderate total macro count, and no fixed hard macros. It is still

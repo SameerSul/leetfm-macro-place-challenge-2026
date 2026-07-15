@@ -1,4 +1,4 @@
-# Open issues and recent shipped items — v2 placer (last revised 2026-06-24)
+# Open issues and recent shipped items — v2 placer (last revised 2026-07-15)
 
 This file tracks current gaps, speculative score ideas, follow-up work, and a
 small number of recent shipped items that still explain active knobs. Older
@@ -9,14 +9,14 @@ resolved or rejected findings are primarily captured in commit messages and
 
 ## Current state (headline)
 
-**Current production mode (2026-06-24): hierarchy-only.** The old
+**Current production mode (2026-07-15): hierarchy-only.** The old
 proxy-optimized production path (candidate restarts, R2/2-opt/LSMC, ML ranker
 defaults, and generic LSMC cluster kicks) has been deleted from active code.
 `MacroPlacer.place()` now always routes through `_hierarchy_floorplan()` and
-raises if that path is unavailable. Current smoke: `ibm10` proxy `1.1576`,
-VALID, ~90s locally. Current full IBM run:
-`uv run evaluate src/main.py --all` = **AVG 1.1714**, 17/17 VALID, 0 overlaps,
-961.79s. The historical proxy table below is retained as context for the
+raises if that path is unavailable. Current focused smoke: `ibm10` proxy
+`1.1778`, VALID/audit-pass, 65.10s locally. Latest accepted full IBM run:
+`uv run evaluate src/main.py --all` = **AVG 1.1657**, 17/17 VALID, 0 overlaps,
+all final hierarchy audits passed, 1128.80s. The historical proxy table below is retained as context for the
 removed proxy path, not the current hierarchy-preserving output.
 The pass stack now uses adaptive continuation: stages move on only when the last
 exact-gated gain is above `HIER_PLATEAU_PROXY_GAIN` (`0.00005`).
@@ -30,8 +30,8 @@ second placement path.
 
 | Metric | Value |
 |---|---|
-| Current hierarchy `--all` avg | **1.1714** (2026-06-24 — adaptive pass continuation by exact-gain threshold, 17/17 VALID, 0 overlaps, 961.79s). |
-| Current hierarchy gap to RePlAce | **+19.7% vs RePlAce** (1.1714 vs 1.4578). |
+| Current hierarchy `--all` avg | **1.1657** (2026-06-25 — graph-tension ordering and decompression survivor, 17/17 VALID, 0 overlaps, all audits passed, 1128.80s). |
+| Current hierarchy gap to RePlAce | **−20.0% vs RePlAce** (1.1657 vs 1.4578; lower is better). |
 | Best `--all` avg | **1.1252** (2026-06-11 — S10 ML hard-relocation ranker connected as production default; 17/17 VALID, 0 overlaps, **2337s ~39min**). |
 | Prior `--all` avg | 1.1272 (S16, DP basins restored) → 1.1379 (S14, **DP-OFF** — hand-JIT) → 1.1380 (S13) → 1.1403 (S12) → 1.1423 (S11) → 1.1500 (refactor) |
 | RePlAce target | 1.4578 |
@@ -84,6 +84,32 @@ cumulative lands at exactly 3300. Combined-stack `--all` confirmed ibm18 =
 ---
 
 ## Current issues and shipped context
+
+### S23. Reproducibility, hierarchy-vector calibration, and pass-yield scheduling (SHIPPED 2026-07-15)
+
+The required DREAMPlace install is now reproducible through
+`scripts/dreamplace/bootstrap.sh`: exact upstream revision, CUDA/GCC/CMake
+toolchain, Python ABI, and the CUDA-12 CUB patch are tracked. Availability is a
+native import probe, not a path-existence test. The collected test contract is
+healthy again after restoring `structural_fields.py`; the non-slow suite has 26
+passing tests, including the installed DREAMPlace ABI.
+
+Seed candidates now emit a complete hierarchy vector covering hard compactness,
+worst-cluster spread, nearest-neighbor impurity, hierarchy-edge stretch, and
+owned/bridge soft-role distance. The hierarchy-first selector is intentionally
+default-off: ibm10 seed composite improved `0.29168 -> 0.16328`, but final proxy
+regressed `1.1778 -> 1.5281`. The next objective work should calibrate a Pareto
+or feasibility constraint against downstream hierarchy audit outcomes rather
+than promote the current weighted sum.
+
+Plateau telemetry schema v2 adds run/revision/PID provenance and has a tracked
+analyzer. The first scheduling simplification is conservative: the broad
+survivor-pool pass is default-off after 636 historical records across all 17
+IBM benchmarks produced zero gain while consuming 132.68 seconds. Fresh
+three-benchmark telemetry also marked post-swap hard and soft cleanup as
+low-yield, but historical data contains real gains for both, so they remain
+enabled pending attributable full-suite evidence. The narrower decompression
+graph-survivor is separate and remains unchanged.
 
 ### S22. BeyondPPA structural signal and GNN trace/data foundation (SHIPPED 2026-06-18; G1/G2 UPDATED 2026-06-19)
 
