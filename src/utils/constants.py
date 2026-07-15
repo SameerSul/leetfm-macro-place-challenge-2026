@@ -498,29 +498,6 @@ HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = 1.15
 HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = 1.20
 HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = 1.50
 
-# Bounded go-with-the-winners survivor search after coldspot cleanup. Historical
-# plateau telemetry found zero gain in 636 runs, so production skips it while
-# retaining the implementation for controlled research experiments.
-HIER_SURVIVOR_ENABLED = False
-# Wall-clock budget for survivor search.
-HIER_SURVIVOR_BUDGET_S = 12.0
-# Number of survivor generations.
-HIER_SURVIVOR_ROUNDS = 2
-# Number of placement states kept between generations.
-HIER_SURVIVOR_WIDTH = 4
-# Number of hottest hierarchy clusters used to generate each candidate pool.
-HIER_SURVIVOR_HOT_CLUSTERS = 6
-# Candidate cluster translation distances in congestion-grid cells.
-HIER_SURVIVOR_STEP_CELLS = (2.0, 4.0, 7.0)
-# Exact-score only the best cheap-ranked candidates per generation.
-HIER_SURVIVOR_EXACT_TOP_K = 10
-# Minimum exact-proxy gain required to commit the final survivor result.
-HIER_SURVIVOR_MIN_GAIN = 0.0001
-# Maximum hierarchy-quality degradation allowed for survivor candidates.
-HIER_SURVIVOR_QUALITY_BUDGET = 0.015
-# Uses CUDA for cheap candidate-pool ranking when available.
-HIER_SURVIVOR_GPU_RANK = "auto"
-
 # Extra exact-gated late polish for the SA-ratio primary struggle subset shape:
 # small hard-macro population, no fixed hard macros, and moderate total macro
 # count. This is structural, not benchmark-name gated.
@@ -582,13 +559,6 @@ HIER_KEEP_OUT_WEIGHT = 0.2
 HIER_GRID_ALIGN_WEIGHT = 0.2
 # Relative weight for notch-avoidance structural penalty.
 HIER_NOTCH_WEIGHT = 0.6
-# Minimum pair count before structural notch scoring uses numba.
-HIER_STRUCTURAL_NOTCH_NUMBA_MIN_PAIRS = 24
-# Enables experimental GPU path for structural notch scoring.
-HIER_STRUCTURAL_NOTCH_GPU = False
-# Minimum macro count before structural notch scoring may use GPU.
-HIER_STRUCTURAL_NOTCH_GPU_MIN_N = 128
-
 # Scorer implementation used for propose-all relocation candidates.
 RELOC_PROPOSE_SCORER = "cuda_delta"
 # Default CUDA chunk size for relocation proposal scoring.

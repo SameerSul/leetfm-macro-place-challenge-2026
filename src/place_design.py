@@ -81,6 +81,7 @@ def main():
         from macro_place.loader import load_benchmark
         benchmark, plc = load_benchmark(args.netlist_pb, args.plc)
         benchmark._cached_plc = plc
+        benchmark._source_dir = Path(args.netlist_pb).resolve().parent
         print(f"loaded {benchmark}")
     else:
         import eda_io

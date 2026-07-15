@@ -31,6 +31,7 @@ def probe(build_root: Path, timeout_s: float = 30.0) -> tuple[bool, str]:
 import json
 import torch
 import dreamplace.configure as configure
+import dreamplace.NonLinearPlace
 from dreamplace.ops.density_map import density_map
 from dreamplace.ops.hpwl import hpwl
 from dreamplace.ops.move_boundary import move_boundary
