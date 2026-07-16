@@ -51,7 +51,7 @@ benchmark input
        - expand local graph border through adjacent open cold cells
        - apply hard-core padding
        - run graph-bordered local swaps and hard/soft relocations
-       - graph-rank generated outcomes when the GNN selector is off
+       - exact-rank refined outcomes with deterministic graph tie-breaks
        - exact proxy + hierarchy-quality gate before commit
        - large designs can rank hot clusters by hierarchy graph tension
   -> graph-local fallback when no coldspot kick commits:
@@ -105,9 +105,10 @@ even when a flatter, more-spread placement would score lower proxy. The
 structural reasoning behind this is in [OBJECTIVES.md](OBJECTIVES.md).
 
 The structural objectives that drive the hierarchy flow are documented in
-[OBJECTIVES.md](OBJECTIVES.md). BeyondPPA-style deterministic structural
-ranking and GNN trace logging are documented in
-[../ml_nn/beyondppa_results/](../ml_nn/beyondppa_results/).
+[OBJECTIVES.md](OBJECTIVES.md). The retired learned-GNN stack is preserved only
+as historical experiment results in [PROGRESS.md](PROGRESS.md); its inference,
+candidate tracing, offline training, artifacts, and dedicated documentation
+are no longer part of the system.
 
 Current verified full sweep with strict hierarchy-audit rollback,
 audit-aware hard swap gating, component-aware region expansion/decompression,
@@ -161,10 +162,9 @@ HIER_SWAP_GRAPH_FALLBACK_BUDGET_S=2.5
 These controls are diagnostic/ranking only in default mode; no candidate is
 rejected for violating the mask, and final commit still requires hard legality,
 hierarchy quality, exact proxy gain, and the active audit checks.
-Trace analysis for this signal lives in `scripts/gnn/analyze_graph_tension.py`.
-Coldspot and decompression candidates also log graph-edge candidate deltas:
-weighted edge stretch, corridor congestion change, weighted edge-length change,
-and a combined graph delta. These are diagnostic/ranking features only; they do
+Coldspot and decompression use graph-edge candidate deltas internally: weighted
+edge stretch, corridor congestion change, weighted edge-length change, and a
+combined graph delta. These are deterministic ranking features only; they do
 not alter acceptance.
 The default-off `HIER_COLDSPOT_GRAPH_DELTA_RANK` hook can use that combined
 graph delta during exact coldspot candidate ordering by adding a small
@@ -235,7 +235,7 @@ not comparable to current numbers.
 | `src/placer/local_search/region_expand.py` | Expands hot cluster regions toward colder congestion bands. |
 | `src/placer/local_search/lsmc_explore.py` | Coldspot kick candidate generation. |
 | `src/placer/local_search/fields.py` | Congestion/coldspot fields used by relocation and coldspot tightening. |
-| `src/placer/local_search/gnn_trace.py` | JSONL trace + plateau telemetry writers (diagnostic only). |
+| `src/placer/local_search/plateau_telemetry.py` | Buffered schema-v2 pass-yield telemetry with run/revision provenance. |
 | `src/placer/scoring/exact.py` | Exact TILOS proxy wrapper. |
 | `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves, including Numba-JIT bbox re-smoothing. |
 | `src/placer/legalize/spiral.py` | Hard-macro legalization, with cluster-consecutive order support. |
@@ -414,20 +414,17 @@ hierarchy-quality audit against the selected seed. It rolls back to the best
 saved audit-passing checkpoint if the final state fails. The former broad
 survivor pool was removed after 636 telemetry records showed no proxy gain.
 
-### 12. Trace Logging and Plateau Telemetry
+### 12. Plateau Telemetry
 
-No learned ranker is active in production. `HIER_GNN_TRACE=1` writes
-schema-v1 JSONL candidate traces (relocation, swaps, decompression, coldspot)
-for offline GNN experiments; it does not change placement output. Candidate
-schema v1 remains compatible with the existing dataset builder while adding
-`run_id`, `code_revision`, and `pid` provenance fields.
-The hierarchy flow always buffers schema-v2 pass-level telemetry (proxy
-before/after, elapsed time, accept rate, plateau flag, and the same provenance).
-`HIER_PLATEAU_TRACE_PATH` can redirect it. `scripts/analyze_plateau_telemetry.py`
-filters by run, revision,
-or benchmark and reports aggregate yield and conservative skip candidates. See
-[`../ml_nn/beyondppa_results/`](../ml_nn/beyondppa_results/) for the current
-state of GNN-assisted candidate ranking experiments — all are default-off.
+The hierarchy flow always buffers schema-v2 pass-level telemetry: proxy
+before/after, elapsed time, accept rate, plateau flag, run id, code revision,
+and process id. The default output is
+`ml_data/plateau_telemetry/plateau_telemetry.jsonl`;
+`HIER_PLATEAU_TRACE_PATH` can redirect it. Candidate-level trace logging and
+learned ranking were removed because they added overhead and repeatedly failed
+to improve placement. `scripts/analyze_plateau_telemetry.py` filters the
+remaining scheduling telemetry by run, revision, or benchmark and reports
+aggregate yield and conservative skip candidates.
 
 ## Scoring and Legality
 
@@ -499,7 +496,7 @@ HIER_PLATEAU_ESCAPE_BUDGET_S=4        HIER_PLATEAU_ESCAPE_SOFT_TOP_K=384
 HIER_PLATEAU_ESCAPE_SOFT_TARGETS=10
 ```
 
-**Structural candidate ordering (BeyondPPA, opt-in)**
+**Deterministic structural candidate ordering (opt-in)**
 ```text
 HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0   HIER_KEEP_OUT_WEIGHT=0.2
 HIER_GRID_ALIGN_WEIGHT=0.2             HIER_NOTCH_WEIGHT=0.6
@@ -535,9 +532,6 @@ candidate, and expands the pre-margin local border through adjacent open cold
 cells before applying the hard-core pad. This lets finalized cluster locations
 use nearby coldspots for local relief while preserving swap and soft-locked
 relocation room.
-`HIER_GNN_COLDSPOT_POLICY=1` can rank raw candidate proposals before this
-refinement step and limit how many raw candidates are refined. `HIER_GNN_COLDSPOT_SELECT=1`
-adds a second opt-in exact-score stage over the refined candidates.
 The graph supplies coldspot-local relocation target pools and gates relocation
 targets by graph mask; default candidate commitment uses exact-proxy-ranked
 refined outcomes.
@@ -569,11 +563,9 @@ whose source cluster radius, bbox radius, or moved-vs-remaining separation
 would grow beyond the configured ratios. Additional cheap gates reject majority
 splits, splits that leave too few source macros behind, disconnected selected
 subsets when low-fanout local edges are available, and high selected-vs-remaining
-cut ratios. When `HIER_GNN_TRACE=1`, generated-but-rejected partial candidates
-emit `hier_coldspot_partial_reject` rows with the reject reason and shape/connectivity
-stats. Majority/remaining-macro limits are applied during subset construction,
-not only after selection, so the partial generator can try smaller frontier
-groups before rejecting. When no coldspot kick commits, the
+cut ratios. Majority/remaining-macro limits are applied during subset
+construction, not only after selection, so the partial generator can try
+smaller frontier groups before rejecting. When no coldspot kick commits, the
 graph-local fallback runs the same bordered swaps and relocations on the
 current placement for the hottest eligible clusters.
 Production then reruns `_micro_shift_polish()` once more after coldspot
@@ -612,11 +604,9 @@ HIER_COLDSPOT_WHOLE_VARIANTS=5      HIER_COLDSPOT_ANCHOR_VARIANTS=3
 HIER_COLDSPOT_SOFT_ONLY=0           HIER_COLDSPOT_PARTIAL_FRONTIER=0
 ```
 
-**Trace / telemetry (runtime env vars, not constants)**
+**Plateau telemetry (runtime env vars, not constants)**
 ```text
-HIER_GNN_TRACE=0                 HIER_GNN_TRACE_DIR=ml_data/beyondppa_gnn
-HIER_GNN_TRACE_MAX_CANDIDATES=512
-HIER_PLATEAU_TRACE_DIR=ml_data/beyondppa_gnn/plateau
+HIER_PLATEAU_TRACE_DIR=ml_data/plateau_telemetry
 HIER_PLATEAU_TRACE_PATH=<optional output override>
 VIVAPLACE_RUN_ID=<optional attributable run id>
 ```
@@ -624,6 +614,6 @@ VIVAPLACE_RUN_ID=<optional attributable run id>
 Experiments that were tried and not promoted (full recursive bisection,
 cluster-room/bridge-corridor modeling, broad weak-hot region reshape, early
 strong-soft repair, early swap-lite, deterministic hot-cluster coldspot
-selection, GNN candidate reordering at full-suite scale) are recorded in
+selection, learned candidate reordering at full-suite scale) are recorded in
 `ISSUES.md` and `PROGRESS.md`, not here — this document describes only the
 active system.

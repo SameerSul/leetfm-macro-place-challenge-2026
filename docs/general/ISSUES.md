@@ -1,6 +1,6 @@
 # Current Issues
 
-Last revised: 2026-07-15.
+Last revised: 2026-07-16.
 
 This file tracks unresolved work in the hierarchy-only VivaPlace system. The
 complete experiment history, including rejected proxy-path work, lives in
@@ -19,10 +19,9 @@ AVG 1.1205  17/17 VALID  0 overlaps  541.67s
 All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
 4/4 VALID, zero overlaps, all audits passed, in 232.41s.
 
-No learned model is enabled in production. Structural candidate ordering and
-GNN inference hooks remain default-off; exact proxy, hard legality, bounds,
-fixed-macro immobility, hierarchy regions, and hierarchy-quality gates remain
-authoritative.
+The learned-ranking stack has been removed. Candidate ordering is deterministic;
+exact proxy, hard legality, bounds, fixed-macro immobility, hierarchy regions,
+and hierarchy-quality gates remain authoritative.
 
 ## Open Work
 
@@ -72,17 +71,17 @@ scoring. Ordinary post-swap soft relocation produced zero gain in the same run,
 matching the preceding component-contract sweep and providing the clean
 two-revision evidence needed for the next schedule change.
 
-### 3. Learned ranking has not cleared the production gate
+### 3. Keep retired learned ranking out of production
 
-The accepted Stage-G3 baseline and Stage-G4 macro-net ranker artifacts remain
-available under `ml_data/beyondppa_gnn/models/`. Relocation-only inference is
-implemented behind `HIER_GNN_RANK=1`, but the Stage-G6 full sweep regressed both
-average proxy and runtime. Coldspot and regional-swap experiments also failed
-to justify promotion.
+The former relocation, regional-swap, and coldspot learned rankers failed to
+clear offline and closed-loop gates and repeatedly increased runtime. Their
+model loader, inference hooks, candidate logger, training scripts, datasets,
+models, diagnostics, tests, and active schemas were removed on 2026-07-16.
 
-Next step: favor additive, budgeted candidates that preserve the deterministic
-prefix. Promote nothing without repeatable held-out ranking quality, closed-loop
-proxy gain, unchanged legality/audit behavior, and acceptable runtime.
+Next step: improve deterministic proposal generation and exact-score efficiency.
+Do not rebuild the learned-ranking stack without an explicit direction change
+and evidence that a new target provides information beyond the existing
+proposal score.
 
 ### 4. Exact scoring remains the runtime bottleneck
 
@@ -111,6 +110,7 @@ guarantee.
 
 - Keep the production path hierarchy-only.
 - Do not restore deleted proxy-only operators or archived research scripts.
-- Keep GNN/structural signals inside existing hierarchy operators and gates.
+- Keep deterministic structural signals inside existing hierarchy operators
+  and gates. Do not restore learned ranking without explicit direction.
 - Record accepted full-suite numbers in `PROGRESS.md`.
 - Keep `ARCHITECTURE.md` and `DESIGN_FLOW.md` synchronized with active code.

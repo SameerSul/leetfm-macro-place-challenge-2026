@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
 from analyze_plateau_telemetry import aggregate, load_rows
-from placer.local_search import gnn_trace
+from placer.local_search import plateau_telemetry
 from utils import constants
 
 REMOVED_DEFAULT_ON_GATES = (
@@ -31,7 +31,6 @@ REMOVED_DEFAULT_ON_ENV_GATES = (
     "HIER_ADAPTIVE_PASSES",
     "HIER_PLATEAU_TRACE",
     "HIER_PLATEAU_TRACE_BUFFERED",
-    "HIER_GNN_COLDSPOT_SKIP_MICRO",
 )
 
 
@@ -82,15 +81,22 @@ def test_production_source_no_longer_reads_default_on_env_gates():
         assert f"'{name}'" not in source
 
 
+def test_learned_ranker_hooks_are_absent_from_production_source():
+    source = "\n".join(path.read_text() for path in (ROOT / "src").rglob("*.py"))
+    assert "HIER_GNN_" not in source
+    assert "gnn_ranker" not in source
+    assert "gnn_trace" not in source
+
+
 def test_plateau_telemetry_always_records_even_with_legacy_disable_env(tmp_path, monkeypatch):
     path = tmp_path / "plateau.jsonl"
     monkeypatch.setenv("HIER_PLATEAU_TRACE", "0")
     monkeypatch.setenv("HIER_PLATEAU_TRACE_PATH", str(path))
-    gnn_trace._PLATEAU_BUFFER.clear()
-    gnn_trace._PLATEAU_BUFFER_PATH = None
+    plateau_telemetry._PLATEAU_BUFFER.clear()
+    plateau_telemetry._PLATEAU_BUFFER_PATH = None
 
-    gnn_trace.log_plateau_event("hier_plateau_telemetry", benchmark="test")
-    gnn_trace.flush_plateau_events()
+    plateau_telemetry.log_plateau_event("hier_plateau_telemetry", benchmark="test")
+    plateau_telemetry.flush_plateau_events()
 
     row = json.loads(path.read_text())
     assert row["event"] == "hier_plateau_telemetry"

@@ -18,7 +18,6 @@ from utils.config import (
 )
 from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
-from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.region_rules import accepts_region_score, point_in_region
 from placer.plc.placement import _ensure_pos_cache
 
@@ -241,31 +240,6 @@ def _structural_weights() -> tuple[float, float, float]:
 def _hierarchy_structural_weight() -> float:
     """Weight for BeyondPPA-style structure inside hierarchy candidate ordering."""
     return max(0.0, float(const.HIER_OBJECTIVE_STRUCTURAL_WEIGHT))
-
-
-def _candidate_trace_sample(proposals: list[dict], limit: int) -> list[dict]:
-    if limit <= 0:
-        return []
-    out = []
-    for p in proposals[:limit]:
-        out.append(
-            {
-                "macro": int(p["i"]),
-                "hot_rank": int(p.get("hot_rank", -1)),
-                "candidate_rank": int(p.get("candidate_rank", -1)),
-                "target_index": int(p.get("target_index", -1)),
-                "score": float(p.get("score", 0.0)),
-                "local_field": float(p.get("local_field", 0.0)),
-                "target_field": float(p.get("target_field", 0.0)),
-                "component_penalty": float(p.get("component_penalty", 0.0)),
-                "structural_delta": float(p.get("structural_delta", 0.0)),
-                "x": float(p["xy"][0]),
-                "y": float(p["xy"][1]),
-                "gnn_score": float(p["gnn_score"]) if "gnn_score" in p else None,
-                "gnn_rank_error": p.get("gnn_rank_error"),
-            }
-        )
-    return out
 
 
 def _full_committed_pos(incremental_scorer) -> np.ndarray:
@@ -2940,17 +2914,6 @@ def _relocation_moves_propose_all(
             p["target_index"],
         )
     )
-    if getattr(benchmark, "name", ""):
-        from placer.local_search.gnn_ranker import (
-            gnn_rank_enabled,
-            reorder_hard_relocation_proposals,
-        )
-
-        proposals = reorder_hard_relocation_proposals(
-            proposals,
-            benchmark_name=str(getattr(benchmark, "name", "")),
-            field=field,
-        )
     if propose_top_m is not None and propose_top_m > 0:
         base_top_m = int(propose_top_m)
         top_m = base_top_m
@@ -2959,9 +2922,6 @@ def _relocation_moves_propose_all(
             deadline
         ):
             additive_extra = max(0, int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K))
-        gnn_rank_on = gnn_rank_enabled("relocation")
-        if gnn_rank_on:
-            top_m += max(0, int(os.environ.get("HIER_GNN_EXTRA_TOP_K", "0") or "0"))
         if additive_extra > 0 and bool(const.HIER_GPU_RANK_ADDITIVE_TAILS):
             prefix = proposals[:top_m]
             tail = proposals[top_m:]
@@ -2988,25 +2948,7 @@ def _relocation_moves_propose_all(
             top_m += additive_extra
             proposals = proposals[:top_m]
 
-    log_gnn_event(
-        "hier_relocation_candidates",
-        benchmark=getattr(benchmark, "name", ""),
-        kind="hard_propose_all",
-        field=field,
-        scorer=scorer_mode,
-        initial_proxy=float(initial_score),
-        proposal_count=int(len(proposals)),
-        legal_count=int(legal_count),
-        frozen_scores=int(frozen_scores),
-        additive_candidate_pools=True,
-        additive_extra_top_k=int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K),
-        gpu_rank_additive_tails=bool(const.HIER_GPU_RANK_ADDITIVE_TAILS),
-        structural_weight=float(_hierarchy_structural_weight()),
-        candidates=_candidate_trace_sample(proposals, gnn_trace_limit()),
-    )
-
     moved = set()
-    accepted_trace = []
     for p in proposals:
         if deadline is not None and time.monotonic() > deadline:
             break
@@ -3040,42 +2982,16 @@ def _relocation_moves_propose_all(
                 float(region_escape_min) if outside else 0.0,
             )
             if float(score) < float(best_score) - min_gain:
-                old_score = float(best_score)
                 incremental_scorer._commit_after_prep(prep, (nx, ny))
                 pos[i, 0], pos[i, 1] = nx, ny
                 best_score = float(score)
                 accepts += 1
                 moved.add(i)
-                accepted_trace.append(
-                    {
-                        "macro": i,
-                        "x": float(nx),
-                        "y": float(ny),
-                        "old_proxy": old_score,
-                        "new_proxy": float(score),
-                        "proxy_delta": float(score) - old_score,
-                        "target_index": int(p.get("target_index", -1)),
-                        "candidate_rank": int(p.get("candidate_rank", -1)),
-                        "structural_delta": float(p.get("structural_delta", 0.0)),
-                    }
-                )
             else:
                 incremental_scorer._revert_prep(prep)
         except Exception:
             incremental_scorer._revert_prep(prep)
             raise
-
-    log_gnn_event(
-        "hier_relocation_result",
-        benchmark=getattr(benchmark, "name", ""),
-        kind="hard_propose_all",
-        field=field,
-        initial_proxy=float(initial_score),
-        final_proxy=float(best_score),
-        verify_scores=int(verify_scores),
-        accepts=int(accepts),
-        accepted=accepted_trace[: gnn_trace_limit()],
-    )
 
     if os.environ.get("RELOC_PROPOSE_LOG", "").strip() in {
         "1",
@@ -3325,7 +3241,6 @@ def _relocation_moves(
     _span2 = float(max(cw, ch)) ** 2
     full_pos_for_struct = _full_committed_pos(incremental_scorer)
     sizes_for_struct = _full_macro_sizes(incremental_scorer)
-    accepted_trace = []
     for i in hot:
         i = int(i)
         if deadline is not None and time.monotonic() > deadline:
@@ -3385,7 +3300,6 @@ def _relocation_moves(
         ox = pos[mask, 0]
         oy = pos[mask, 1]
         best_i_xy = None
-        score_before_i = float(best_score)
         try:
             targets = []
             for candidate_rank, t in enumerate(cand):
@@ -3433,31 +3347,9 @@ def _relocation_moves(
                 pos[i, 0], pos[i, 1] = best_i_xy
                 full_pos_for_struct[i, 0], full_pos_for_struct[i, 1] = best_i_xy
                 accepts += 1
-                accepted_trace.append(
-                    {
-                        "macro": i,
-                        "x": float(best_i_xy[0]),
-                        "y": float(best_i_xy[1]),
-                        "old_proxy": score_before_i,
-                        "new_proxy": float(best_score),
-                        "proxy_delta": float(best_score) - score_before_i,
-                    }
-                )
         except Exception:
             # Restore committed state if a trial failed.
             raise
-    log_gnn_event(
-        "hier_relocation_result",
-        benchmark=getattr(benchmark, "name", ""),
-        kind="hard_sequential",
-        field=trace_field,
-        initial_proxy=float(initial_score),
-        final_proxy=float(best_score),
-        hot_count=int(len(hot)),
-        accepts=int(accepts),
-        structural_weight=float(_hierarchy_structural_weight()),
-        accepted=accepted_trace[: gnn_trace_limit()],
-    )
     _relocation_moves.last_stats = {
         "candidates": int(candidate_count),
         "legal": int(legal_count),
@@ -3557,7 +3449,6 @@ def _soft_relocation_moves(
     gpu_rank_fallbacks = 0
     full_pos_for_struct = _full_committed_pos(incremental_scorer)
     sizes_for_struct = _full_macro_sizes(incremental_scorer)
-    accepted_trace = []
     gpu_soft_order = None
     if gpu_batch_rank:
         gpu_soft_order = _gpu_rank_soft_targets_batch(
@@ -3645,7 +3536,6 @@ def _soft_relocation_moves(
             )
             cand = cand[order][:n_targets]
         best_k_xy = None
-        score_before_k = float(best_score)
         try:
             targets = []
             for t in cand:
@@ -3701,32 +3591,8 @@ def _soft_relocation_moves(
                 soft_pos[k, 0], soft_pos[k, 1] = best_k_xy
                 full_pos_for_struct[n + k, 0], full_pos_for_struct[n + k, 1] = best_k_xy
                 accepts += 1
-                accepted_trace.append(
-                    {
-                        "soft_macro": k,
-                        "x": float(best_k_xy[0]),
-                        "y": float(best_k_xy[1]),
-                        "old_proxy": score_before_k,
-                        "new_proxy": float(best_score),
-                        "proxy_delta": float(best_score) - score_before_k,
-                    }
-                )
         except Exception:
             raise
-    log_gnn_event(
-        "hier_relocation_result",
-        benchmark=getattr(benchmark, "name", ""),
-        kind="soft_sequential",
-        field=(
-            "density" if use_density else ("weighted_congestion" if weighted_rank else "congestion")
-        ),
-        initial_proxy=float(initial_score),
-        final_proxy=float(best_score),
-        hot_count=int(len(hot)),
-        accepts=int(accepts),
-        structural_weight=float(_hierarchy_structural_weight()),
-        accepted=accepted_trace[: gnn_trace_limit()],
-    )
     _soft_relocation_moves.last_stats = {
         "candidates": int(candidate_count),
         "legal": int(legal_count),

@@ -11,8 +11,8 @@ Status terms used below:
   the cited implementation or technique.
 - **Basis**: the work defines a benchmark, baseline, objective, or upstream
   algorithm on which the program depends.
-- **Research-only**: code, data, or documentation remains in the repository but
-  the technique is default-off or offline-only.
+- **Research-only**: a deterministic technique remains default-off or
+  offline-only.
 - **Historical**: the technique was evaluated and rejected or its code was
   removed; it remains cited because the experiment is recorded in
   `PROGRESS.md`.
@@ -142,14 +142,16 @@ Status terms used below:
     for I/O keepout, alignment, and notch avoidance. It does not run the
     paper's reinforcement-learning policy.
 
-16. **MacroDiff+ — research-only data-schema inspiration.** Jongho Yoon,
+16. **MacroDiff+ — historical data-schema inspiration.** Jongho Yoon,
     Jinsung Jeon, and Seokhyeong Kang, “Physics-Guided Geometric Diffusion for
     Macro Placement Generation,” arXiv:2605.16451, 2026.
     [arXiv](https://arxiv.org/abs/2605.16451). Only the heterogeneous macro-net
-    graph view inspired the offline Stage-G4 dataset schema; no diffusion model
-    or physics-guided sampler is used in placement. The repository URL stated
-    by the paper returned `404` during this reference audit, so it is not
-    presented as a working source link here.
+    graph view inspired the removed Stage-G4 dataset schema; no diffusion model
+    or physics-guided sampler was used in placement. The schema, trainer, and
+    artifacts were deleted after learned ranking repeatedly failed its quality
+    and runtime gates. The repository URL stated by the paper returned `404`
+    during this reference audit, so it is not presented as a working source
+    link here.
 
 17. **WireMask-BBO — historical / removed.** Yunqi Shi, Ke Xue, Lei Song, and
     Chao Qian, “Macro Placement by Wire-Mask-Guided Black-Box Optimization,”

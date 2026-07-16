@@ -10,17 +10,6 @@ import numpy as np
 import torch
 
 from placer.local_search.fields import _congestion_field
-from placer.local_search.gnn_ranker import (
-    gnn_cluster_mode_enabled,
-    gnn_coldspot_kicks,
-    gnn_coldspot_policy_enabled,
-    gnn_coldspot_oracle_enabled,
-    gnn_coldspot_select_enabled,
-    reorder_cluster_coldspot_candidates,
-    rank_coldspot_kick_candidates,
-    rank_coldspot_policy_candidates,
-)
-from placer.local_search.gnn_trace import log_gnn_event
 from placer.local_search.graph_tension import candidate_graph_edge_delta
 from placer.local_search.lsmc_explore import _coldspot_cluster_kick_candidates
 from placer.local_search.relocation import (
@@ -28,7 +17,6 @@ from placer.local_search.relocation import (
     _micro_shift_polish,
 )
 from placer.pipeline.segments.floorplan_coldspot_candidates import (
-    graph_candidate_score,
     hot_cluster_fallback_candidates,
     rank_exact_coldspot_candidates,
 )
@@ -69,8 +57,6 @@ def run_coldspot_tightening(
     s_pos: np.ndarray,
     const: Any,
     log_fn: Callable[[str], None],
-    trace_pass_fn: Callable[..., None],
-    record_plateau_fn: Callable[..., object],
     hard_valid_fn: Callable[[np.ndarray], bool],
     deadline_fn: Callable[[float, float | None], float | None],
     hierarchy_quality_metric_fn: Callable[[np.ndarray, dict], float],
@@ -113,17 +99,7 @@ def run_coldspot_tightening(
     )
     ck_deadline = deadline_fn(float(const.HIER_COLDSPOT_BUDGET_S))
 
-    ck_gnn_select = gnn_coldspot_select_enabled()
-    ck_policy_active = gnn_coldspot_policy_enabled()
-    ck_oracle = gnn_coldspot_oracle_enabled()
-    ck_gnn_kicks = gnn_coldspot_kicks() if (ck_gnn_select or ck_oracle or ck_policy_active) else 1
-    if not (ck_gnn_select or ck_oracle):
-        ck_gnn_kicks = max(ck_gnn_kicks, max(1, int(const.HIER_COLDSPOT_WHOLE_VARIANTS)))
-    ck_gnn_top_k = max(1, int(os.environ.get("HIER_GNN_COLDSPOT_TOP_K", "1") or "1"))
-    ck_skip_micro = ck_gnn_select or ck_policy_active
-    ck_cluster_mode = gnn_cluster_mode_enabled()
-    if ck_cluster_mode and ck_gnn_select:
-        ck_policy_active = False
+    ck_whole_variants = max(1, int(const.HIER_COLDSPOT_WHOLE_VARIANTS))
 
     def _env_bool(name: str, default: bool) -> bool:
         raw = os.environ.get(name)
@@ -142,19 +118,6 @@ def run_coldspot_tightening(
         if raw is None or not raw.strip():
             return float(default)
         return float(raw)
-
-    ck_gnn_max_clusters = max(
-        1,
-        _env_int(
-            "HIER_COLDSPOT_GNN_MAX_CLUSTERS",
-            int(getattr(const, "HIER_COLDSPOT_GNN_MAX_CLUSTERS", 1)),
-        ),
-    )
-    if ck_cluster_mode:
-        ck_gnn_max_clusters = max(
-            ck_gnn_max_clusters,
-            max(2, int(ck_opportunity_top_clusters)),
-        )
 
     ck_graph_anchor_weight = max(
         0.0,
@@ -691,8 +654,6 @@ def run_coldspot_tightening(
     ck_rng = np.random.default_rng(0)
 
     ck_acc = 0
-    ck_candidate_id = 0
-    ck_candidate_pool_id = 0
     cold_memory = np.zeros((nr, nc), dtype=bool)
     ck_dry_rounds = 0
     ck_run_fallbacks = True
@@ -716,45 +677,6 @@ def run_coldspot_tightening(
                 reason = "cold_capacity_below_threshold"
             else:
                 reason = "opportunity_score_below_threshold"
-            log_gnn_event(
-                "hier_coldspot_candidate",
-                benchmark=benchmark.name,
-                operator="coldspot_tightening",
-                candidate_id=int(ck_acc),
-                field_gap=float(field_gap),
-                min_field_gap=float(ck_min_field_gap),
-                opportunity_score=float(opportunity["score"]),
-                opportunity_min_score=float(ck_opportunity_min_score),
-                opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
-                opportunity_min_cold_cells=int(ck_opportunity_min_cold_cells),
-                opportunity_cluster=int(opportunity["cluster"]),
-                opportunity_cluster_ids=list(opportunity["cluster_ids"]),
-                opportunity_displacement_windows=float(opportunity["displacement_windows"]),
-                old_proxy=float(cur_proxy),
-                candidate_proxy=None,
-                proxy_delta=None,
-                hierarchy_quality_before=float(cur_quality),
-                hierarchy_quality_after=None,
-                hierarchy_quality_delta=None,
-                accepted=False,
-                rejection_reason=reason,
-            )
-            log_gnn_event(
-                "hier_coldspot_opportunity",
-                benchmark=benchmark.name,
-                operator="coldspot_tightening",
-                opportunity_score=float(opportunity["score"]),
-                opportunity_cluster=int(opportunity["cluster"]),
-                opportunity_cluster_count=int(opportunity["eligible_clusters"]),
-                opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
-                opportunity_min_cold_cells=int(ck_opportunity_min_cold_cells),
-                opportunity_min_score=float(ck_opportunity_min_score),
-                field_gap=float(field_gap),
-                min_field_gap=float(ck_min_field_gap),
-                cluster_ids=list(opportunity["cluster_ids"]),
-                displacement_windows=float(opportunity["displacement_windows"]),
-                reason=reason,
-            )
             log_fn(
                 f"  [hier] coldspot tightening: skipped, "
                 f"reason={reason}, field_gap={field_gap:.4f}, "
@@ -765,29 +687,6 @@ def run_coldspot_tightening(
             break
 
         if ck_dry_rounds >= ck_max_dry_rounds:
-            log_gnn_event(
-                "hier_coldspot_candidate",
-                benchmark=benchmark.name,
-                operator="coldspot_tightening",
-                candidate_id=int(ck_acc),
-                field_gap=float(field_gap),
-                min_field_gap=float(ck_min_field_gap),
-                opportunity_score=float(opportunity["score"]),
-                opportunity_min_score=float(ck_opportunity_min_score),
-                opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
-                opportunity_min_cold_cells=int(ck_opportunity_min_cold_cells),
-                opportunity_cluster=int(opportunity["cluster"]),
-                opportunity_cluster_ids=list(opportunity["cluster_ids"]),
-                graph_tension=float(opportunity.get("graph_tension", 0.0)),
-                old_proxy=float(cur_proxy),
-                candidate_proxy=None,
-                proxy_delta=None,
-                hierarchy_quality_before=float(cur_quality),
-                hierarchy_quality_after=None,
-                hierarchy_quality_delta=None,
-                accepted=False,
-                rejection_reason="dry_round_limit",
-            )
             log_fn(f"  [hier] coldspot tightening: stopped after {ck_dry_rounds} dry rounds")
             ck_run_fallbacks = False
             break
@@ -818,105 +717,23 @@ def run_coldspot_tightening(
             ck_rng,
             deadline=ck_deadline,
             pick="random",
-            kick_count=ck_gnn_kicks,
+            kick_count=ck_whole_variants,
             plc=plc,
             benchmark_name=benchmark.name,
             max_size=(max(64, int(ck_egonet_max_hard)) if ck_egonet_enabled else 64),
             preferred_cluster_ids=preferred_ids,
-            max_clusters=(
-                ck_gnn_max_clusters
-                if (ck_gnn_select or ck_oracle or ck_policy_active)
-                else min(ck_opportunity_top_clusters, len(opportunity["cluster_ids"]))
-            ),
+            max_clusters=min(ck_opportunity_top_clusters, len(opportunity["cluster_ids"])),
             egonet_trace_by_cluster=egonet_trace,
             graph_anchor_targets_by_cluster=graph_anchor_targets,
             graph_anchor_strength_by_cluster=graph_anchor_strength,
             graph_anchor_weight=ck_graph_anchor_weight,
         )
         if not generated:
-            log_gnn_event(
-                "hier_coldspot_candidate",
-                benchmark=benchmark.name,
-                operator="coldspot_tightening",
-                candidate_id=int(ck_acc),
-                field_gap=float(field_gap),
-                min_field_gap=float(ck_min_field_gap),
-                opportunity_score=float(opportunity["score"]),
-                opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
-                opportunity_cluster=int(opportunity["cluster"]),
-                opportunity_cluster_ids=list(opportunity["cluster_ids"]),
-                graph_tension=float(opportunity.get("graph_tension", 0.0)),
-                old_proxy=float(cur_proxy),
-                candidate_proxy=None,
-                proxy_delta=None,
-                hierarchy_quality_before=float(cur_quality),
-                hierarchy_quality_after=None,
-                hierarchy_quality_delta=None,
-                accepted=False,
-                rejection_reason="no_eligible_cluster",
-            )
             ck_dry_rounds += 1
             continue
 
         candidate_records: list[dict] = []
-        pool_id = ck_candidate_pool_id
-        ck_candidate_pool_id += 1
-        include_noop = ck_gnn_select or ck_oracle or ck_policy_active
-        if include_noop:
-            noop_trace = dict(generated[0][2])
-            source_cluster = int(noop_trace.get("cluster", -1))
-            noop_trace.update(
-                {
-                    "candidate_rank": 0,
-                    "source_field": float(noop_trace.get("cluster_heat", 0.0)),
-                    "target_field": float(noop_trace.get("cluster_heat", 0.0)),
-                    "score": 0.0,
-                    "soft_moved": 0,
-                    "hard_disp_mean": 0.0,
-                    "hard_disp_max": 0.0,
-                    "hard_dx_mean": 0.0,
-                    "hard_dy_mean": 0.0,
-                    "soft_disp_mean": 0.0,
-                    "soft_disp_max": 0.0,
-                    "cluster_cx_after": float(noop_trace.get("cluster_cx_before", 0.0)),
-                    "cluster_cy_after": float(noop_trace.get("cluster_cy_before", 0.0)),
-                    "cluster_bbox_after": noop_trace.get("cluster_bbox_before"),
-                    "coldspot_permutation_id": -1,
-                    "target_cluster": int(
-                        _coldspot_target_cluster(
-                            (
-                                float(noop_trace.get("cluster_cx_before", 0.0)),
-                                float(noop_trace.get("cluster_cy_before", 0.0)),
-                            ),
-                            clusters,
-                            cur_h,
-                        )
-                        if source_cluster >= 0
-                        else (-1)
-                    ),
-                }
-            )
-            candidate_records.append(
-                {
-                    "candidate_id": ck_candidate_id,
-                    "candidate_pool_id": pool_id,
-                    "candidate_rank": 0,
-                    "hard": cur_h,
-                    "soft": cur_s,
-                    "trace": noop_trace,
-                    "is_noop": True,
-                    "policy_selected": False,
-                    "policy_rank": 0,
-                    "policy_rank_error": None,
-                    "old_proxy": float(cur_proxy),
-                    "hierarchy_quality_before": float(cur_quality),
-                }
-            )
-            ck_candidate_id += 1
-
-        for rank, (cand_h, cand_s, cand_trace) in enumerate(
-            generated, start=1 if include_noop else 0
-        ):
+        for rank, (cand_h, cand_s, cand_trace) in enumerate(generated):
             cand_trace = dict(cand_trace)
             cand_trace["candidate_rank"] = int(rank)
             anchor_x = float(cand_trace.get("anchor_x", cur_h[0, 0]))
@@ -934,64 +751,17 @@ def run_coldspot_tightening(
             cand_soft = cand_s if cand_s is not None else cur_s
             prefilter_reason = _prefilter_coldspot_trace(cand_trace)
             if prefilter_reason is not None:
-                candidate_records.append(
-                    {
-                        "candidate_id": ck_candidate_id,
-                        "candidate_pool_id": pool_id,
-                        "candidate_rank": int(rank),
-                        "hard": cand_h,
-                        "soft": cand_soft,
-                        "trace": cand_trace,
-                        "is_noop": False,
-                        "prefiltered": True,
-                        "old_proxy": float(cur_proxy),
-                        "hierarchy_quality_before": float(cur_quality),
-                        "accepted": False,
-                        "committed": False,
-                        "policy_selected": True,
-                        "policy_rank": int(rank),
-                        "policy_rank_error": None,
-                        "rejection_reason": prefilter_reason,
-                    }
-                )
-                ck_candidate_id += 1
                 continue
             candidate_records.append(
                 {
-                    "candidate_id": ck_candidate_id,
-                    "candidate_pool_id": pool_id,
                     "candidate_rank": int(rank),
                     "hard": cand_h,
                     "soft": cand_soft,
                     "trace": cand_trace,
-                    "is_noop": False,
-                    "policy_selected": True,
-                    "policy_rank": int(rank),
-                    "policy_rank_error": None,
-                    "old_proxy": float(cur_proxy),
-                    "hierarchy_quality_before": float(cur_quality),
                 }
             )
-            ck_candidate_id += 1
 
-        ranked_by_policy = (
-            rank_coldspot_policy_candidates(candidate_records, benchmark_name=benchmark.name)
-            if ck_policy_active
-            else candidate_records
-        )
-        policy_selected_ids = {
-            id(cand) for cand in ranked_by_policy if cand.get("policy_selected", True)
-        }
-
-        for cand in ranked_by_policy:
-            if cand.get("prefiltered", False) or cand.get("is_noop", False):
-                continue
-            if ck_policy_active and not ck_oracle and not cand.get("policy_selected", True):
-                cand["policy_skipped"] = True
-                cand["accepted"] = False
-                cand["committed"] = False
-                cand["rejection_reason"] = "not_selected_by_policy"
-                continue
+        for cand in candidate_records:
             refined_h, refined_s, refined_proxy, refine_stats = _refine_coldspot_candidate(
                 cand["hard"],
                 cand["soft"],
@@ -1005,60 +775,10 @@ def run_coldspot_tightening(
                 _coldspot_target_cluster_from_trace(cand["trace"], cand["hard"], clusters)
             )
 
-        rankable_records = [
-            cand
-            for cand in ranked_by_policy
-            if not cand.get("prefiltered", False) and not cand.get("policy_skipped", False)
-        ]
-        if ck_gnn_select:
-            if ck_cluster_mode:
-                ranked_records = reorder_cluster_coldspot_candidates(
-                    rankable_records,
-                    benchmark_name=benchmark.name,
-                )
-            else:
-                ranked_records = rank_coldspot_kick_candidates(
-                    rankable_records,
-                    benchmark_name=benchmark.name,
-                )
-        else:
-            ranked_records = _rank_exact_coldspot_candidates(rankable_records, cur_proxy)
-        if ck_gnn_select:
-            selector_records = ranked_records[: max(1, min(ck_gnn_top_k, len(ranked_records)))]
-        else:
-            selector_records = [cand for cand in ranked_records if not cand.get("is_noop", False)]
-        selected_ids = {id(c) for c in selector_records}
+        ranked_records = _rank_exact_coldspot_candidates(candidate_records, cur_proxy)
 
         accepted_record = None
-        accepted_any = False
-        committed_any = False
-        for selector_rank, cand in enumerate(ranked_records):
-            cand["selector_rank"] = int(selector_rank)
-            selected = id(cand) in selected_ids
-            should_score = bool(ck_oracle or selected)
-            if not should_score:
-                cand["accepted"] = False
-                cand["committed"] = False
-                if cand.get("policy_skipped", False):
-                    cand["rejection_reason"] = "not_selected_by_policy"
-                else:
-                    cand["rejection_reason"] = "not_selected_by_gnn"
-                continue
-            if committed_any and selected and not ck_oracle:
-                cand["accepted"] = False
-                cand["committed"] = False
-                cand["rejection_reason"] = "not_evaluated_after_accept"
-                continue
-            if cand.get("is_noop", False):
-                cand["candidate_proxy"] = float(cur_proxy)
-                cand["proxy_delta"] = 0.0
-                cand["hierarchy_quality_after"] = float(cur_quality)
-                cand["hierarchy_quality_delta"] = 0.0
-                cand["accepted"] = False
-                cand["committed"] = False
-                cand["rejection_reason"] = "no_op"
-                continue
-
+        for cand in ranked_records:
             cand_h = cand["hard"]
             cand_s = cand["soft"]
             cand_proxy = float(cand.get("candidate_proxy_precomputed", cur_proxy))
@@ -1072,92 +792,13 @@ def run_coldspot_tightening(
                 and cand_proxy <= base_proxy + ck_total
                 and cand_proxy < cur_proxy - cand_min_gain
             )
-            if cand_quality > cur_quality + ck_quality_budget:
-                reason = "hierarchy_quality_failed"
-            elif cand_proxy > cur_proxy + ck_budget or cand_proxy > base_proxy + ck_total:
-                reason = "proxy_budget_failed"
-            elif cand_proxy >= cur_proxy - cand_min_gain:
-                reason = "exact_proxy_failed"
-            else:
-                reason = "accepted"
-
             cand["candidate_proxy"] = float(cand_proxy)
-            cand["proxy_delta"] = float(cand_proxy) - float(cur_proxy)
-            cand["required_min_gain"] = float(cand_min_gain)
             cand["hierarchy_quality_after"] = float(cand_quality)
-            cand["hierarchy_quality_delta"] = float(cand_quality) - float(cur_quality)
-            cand["accepted"] = bool(accepted)
-            cand["committed"] = bool(accepted and selected and not committed_any)
-            cand["rejection_reason"] = None if accepted else reason
-            if cand["committed"]:
+            if accepted:
                 accepted_record = cand
-                accepted_any = True
-                committed_any = True
+                break
 
-            if ck_gnn_select:
-                _ = graph_candidate_score(cand)
-
-        for cand in candidate_records:
-            if "candidate_rank" not in cand["trace"]:
-                cand["trace"]["candidate_rank"] = int(cand.get("candidate_rank", 0))
-            candidate_proxy_val = cand.get("candidate_proxy")
-            if candidate_proxy_val is None:
-                candidate_proxy_val = float("nan")
-                if cand.get("proxy_delta") is None:
-                    cand["proxy_delta"] = 0.0
-            log_gnn_event(
-                "hier_coldspot_candidate",
-                benchmark=benchmark.name,
-                operator="coldspot_tightening",
-                kind="coldspot_kick",
-                field="congestion",
-                candidate_id=int(cand["candidate_id"]),
-                candidate_pool_id=int(cand["candidate_pool_id"]),
-                candidate_pool_size=int(len(candidate_records)),
-                selector_enabled=bool(ck_gnn_select),
-                oracle_enabled=bool(ck_oracle),
-                selector_rank=int(
-                    cand.get("selector_rank", cand["trace"].get("candidate_rank", 0))
-                ),
-                selector_top_k=int(
-                    ck_gnn_top_k if ck_gnn_select else max(1, len(selector_records))
-                ),
-                selected_by_gnn=bool(ck_gnn_select and id(cand) in selected_ids),
-                graph_selector_enabled=False,
-                exact_selector_enabled=bool(not ck_gnn_select),
-                selected_by_graph=False,
-                selected_by_exact=bool((not ck_gnn_select) and id(cand) in selected_ids),
-                selected_by_policy=bool(id(cand) in policy_selected_ids and bool(ck_policy_active)),
-                policy_rank=int(cand.get("policy_rank", cand["trace"].get("candidate_rank", 0))),
-                policy_rank_error=cand.get("policy_rank_error"),
-                policy_selected=bool(ck_policy_active and id(cand) in policy_selected_ids),
-                gnn_score=cand.get("gnn_score"),
-                gnn_rank_error=cand.get("gnn_rank_error"),
-                is_noop=bool(cand.get("is_noop", False)),
-                field_gap=float(field_gap),
-                min_field_gap=float(ck_min_field_gap),
-                opportunity_score=float(opportunity["score"]),
-                opportunity_min_score=float(ck_opportunity_min_score),
-                opportunity_open_cold_cells=int(opportunity["open_cold_cells"]),
-                opportunity_min_cold_cells=int(ck_opportunity_min_cold_cells),
-                opportunity_cluster=int(opportunity["cluster"]),
-                opportunity_cluster_ids=list(opportunity["cluster_ids"]),
-                opportunity_displacement_windows=float(opportunity["displacement_windows"]),
-                old_proxy=float(cur_proxy),
-                candidate_proxy=float(candidate_proxy_val),
-                proxy_delta=cand.get("proxy_delta"),
-                required_min_gain=cand.get("required_min_gain"),
-                hierarchy_quality_before=float(cur_quality),
-                hierarchy_quality_after=cand.get("hierarchy_quality_after"),
-                hierarchy_quality_delta=cand.get("hierarchy_quality_delta"),
-                accepted=bool(cand.get("accepted", False)),
-                committed=bool(cand.get("committed", False)),
-                rejection_reason=cand.get("rejection_reason"),
-                prefiltered=bool(cand.get("prefiltered", False)),
-                **(cand.get("trace", {})),
-            )
-
-        if accepted_any and accepted_record is not None:
+        if accepted_record is not None:
             cur_h = accepted_record["hard"]
             cur_s = accepted_record["soft"]
             cur_proxy = float(accepted_record["candidate_proxy"])
@@ -1178,7 +819,6 @@ def run_coldspot_tightening(
             ck_run_fallbacks = False
             break
 
-    graph_fallback_acc = 0
     if ck_run_fallbacks and ck_acc == 0 and (ck_deadline is None or time.monotonic() < ck_deadline):
         fallback_field = _congestion_field(ck_scorer, nr, nc)
         if fallback_field is not None:
@@ -1192,7 +832,6 @@ def run_coldspot_tightening(
         )
 
         accepted_fallback = None
-        fallback_log_records = []
         for rank, fallback_trace in enumerate(fallback_records):
             if ck_deadline is not None and time.monotonic() >= ck_deadline:
                 break
@@ -1207,85 +846,26 @@ def run_coldspot_tightening(
             fallback_trace.update(refine_stats)
             fallback_quality = hierarchy_quality_metric_fn(fallback_h, clusters)
             fallback_proxy = float(fallback_proxy)
+            fallback_valid = hard_valid_fn(fallback_h)
             accepted = (
-                hard_valid_fn(fallback_h)
+                fallback_valid
                 and fallback_quality <= cur_quality + ck_quality_budget
                 and fallback_proxy <= cur_proxy + ck_budget
                 and fallback_proxy <= base_proxy + ck_total
                 and fallback_proxy < cur_proxy - ck_min_gain
             )
-            if not hard_valid_fn(fallback_h):
-                reason = "hard_legality_failed"
-            elif fallback_quality > cur_quality + ck_quality_budget:
-                reason = "hierarchy_quality_failed"
-            elif fallback_proxy > cur_proxy + ck_budget or fallback_proxy > base_proxy + ck_total:
-                reason = "proxy_budget_failed"
-            elif fallback_proxy >= cur_proxy - ck_min_gain:
-                reason = "exact_proxy_failed"
-            else:
-                reason = "accepted"
-
             candidate = {
                 "hard": fallback_h,
                 "soft": fallback_s,
                 "candidate_proxy": float(fallback_proxy),
                 "hierarchy_quality_after": float(fallback_quality),
                 "accepted": bool(accepted),
-                "candidate_id": int(ck_candidate_id),
-                "candidate_pool_id": int(ck_candidate_pool_id),
-                "candidate_pool_size": int(len(fallback_records)),
-                "candidate_rank": int(rank),
-                "rejection_reason": None if accepted else reason,
-                "proxy_delta": float(fallback_proxy) - float(cur_proxy),
-                "hierarchy_quality_delta": float(fallback_quality) - float(cur_quality),
-                "trace": fallback_trace,
             }
             if accepted and (
                 accepted_fallback is None
                 or fallback_proxy < float(accepted_fallback["candidate_proxy"])
             ):
                 accepted_fallback = candidate
-
-            fallback_log_records.append(candidate)
-            ck_candidate_id += 1
-
-        committed_fallback_id = (
-            int(accepted_fallback["candidate_id"]) if accepted_fallback is not None else None
-        )
-        for candidate in fallback_log_records:
-            log_gnn_event(
-                "hier_coldspot_candidate",
-                benchmark=benchmark.name,
-                operator="coldspot_tightening",
-                kind="graph_local_fallback",
-                field="congestion",
-                candidate_id=int(candidate["candidate_id"]),
-                candidate_pool_id=int(candidate["candidate_pool_id"]),
-                candidate_pool_size=int(candidate["candidate_pool_size"]),
-                selector_enabled=False,
-                oracle_enabled=False,
-                selector_rank=int(candidate["candidate_rank"]),
-                selector_top_k=int(fallback_top_k),
-                selected_by_gnn=False,
-                graph_selector_enabled=False,
-                selected_by_graph=False,
-                selected_by_policy=True,
-                is_noop=False,
-                field_gap=None,
-                min_field_gap=float(ck_min_field_gap),
-                old_proxy=float(cur_proxy),
-                candidate_proxy=float(candidate["candidate_proxy"]),
-                proxy_delta=float(candidate["proxy_delta"]),
-                hierarchy_quality_before=float(cur_quality),
-                hierarchy_quality_after=float(candidate["hierarchy_quality_after"]),
-                hierarchy_quality_delta=float(candidate["hierarchy_quality_delta"]),
-                accepted=bool(candidate["accepted"]),
-                committed=bool(candidate["candidate_id"] == committed_fallback_id),
-                rejection_reason=candidate["rejection_reason"],
-                **candidate["trace"],
-            )
-
-        ck_candidate_pool_id += 1
         if accepted_fallback is not None:
             cur_h = accepted_fallback["hard"]
             cur_s = accepted_fallback["soft"]
@@ -1299,7 +879,6 @@ def run_coldspot_tightening(
             refreshed_field = _congestion_field(ck_scorer, nr, nc)
             if refreshed_field is not None:
                 cold_memory = _remember_cold_cells(refreshed_field)
-            graph_fallback_acc = 1
             ck_acc += 1
             log_fn(
                 f"  [hier] graph-local coldspot fallback: 1 accept, "
@@ -1351,14 +930,6 @@ def run_coldspot_tightening(
                     target_pool=target_pool,
                     region_mask=target_mask,
                 )
-        trace_pass_fn(
-            "coldspot_soft_only",
-            soft_only_before,
-            cur_proxy,
-            soft_only_acc,
-            quality=float(cur_quality),
-            target_cells=int(soft_only_target_cells),
-        )
         log_fn(
             f"  [hier] coldspot soft-only fallback: {soft_only_acc} accepts, "
             f"targets={soft_only_target_cells}, "
@@ -1370,17 +941,7 @@ def run_coldspot_tightening(
         f"  [hier] coldspot tightening: {ck_acc} accepts, "
         f"quality={cur_quality:.4f}, proxy {base_proxy:.4f}->{cur_proxy:.4f}"
     )
-    trace_pass_fn(
-        "coldspot_tightening",
-        base_proxy,
-        cur_proxy,
-        ck_acc,
-        quality=float(cur_quality),
-        graph_fallback_accepts=int(graph_fallback_acc),
-        soft_only_accepts=int(soft_only_acc),
-    )
-
-    if not ck_skip_micro and region is not None and soft_region is not None:
+    if region is not None and soft_region is not None:
         post_ck_micro_deadline = deadline_fn(
             float(const.HIER_POST_COLDSPOT_MICRO_SHIFT_BUDGET_S),
             ck_deadline,
@@ -1422,23 +983,6 @@ def run_coldspot_tightening(
         log_fn(
             f"  [hier] post-coldspot micro-shift replay: {post_ck_micro_acc} accepts, "
             f"proxy {pre_post_ck_micro_score:.4f}->{cur_proxy:.4f}"
-        )
-        trace_pass_fn(
-            "post_coldspot_micro_shift",
-            pre_post_ck_micro_score,
-            cur_proxy,
-            post_ck_micro_acc,
-            quality=hierarchy_quality_metric_fn(legal, clusters),
-        )
-    elif ck_skip_micro:
-        log_fn("  [hier] post-coldspot micro-shift replay: skipped by GNN selector")
-        trace_pass_fn(
-            "post_coldspot_micro_shift",
-            cur_proxy,
-            cur_proxy,
-            0,
-            quality=hierarchy_quality_metric_fn(legal, clusters),
-            skipped_by_gnn_coldspot_selector=True,
         )
 
     return legal, s_pos, cur_proxy, cur_quality

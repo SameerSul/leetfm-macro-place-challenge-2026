@@ -11,7 +11,6 @@ import torch
 from utils import constants as const
 from placer.legalize.spiral import _will_legalize
 from placer.local_search.fields import _congestion_field, cold_connected_components
-from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.graph_tension import candidate_graph_edge_delta
 from placer.scoring.exact import _exact_proxy
 
@@ -414,8 +413,6 @@ def _cluster_decompression_relief(
     cur_quality = hierarchy_quality_metric(cur_h, clusters)
     accepts = 0
     factors = const.HIER_DECOMPRESS_FACTORS
-    trace_limit = gnn_trace_limit()
-    trace_count = 0
     prefilter_enabled = os.environ.get(
         "HIER_GRAPH_PREFILTER",
         "1" if bool(getattr(const, "HIER_GRAPH_PREFILTER", False)) else "0",
@@ -1054,47 +1051,6 @@ def _cluster_decompression_relief(
                                 reason = "exact_proxy_failed"
                         else:
                             reason = "exact_proxy_failed"
-                if trace_count < trace_limit:
-                    log_gnn_event(
-                        "hier_decompression_candidate",
-                        benchmark=getattr(benchmark, "name", ""),
-                        operator="cluster_decompression",
-                        candidate_id=trace_count,
-                        cluster=int(cid),
-                        movable_count=int(mem.size),
-                        member_count=int(mem_all.size),
-                        soft_count=int(
-                            0 if cluster_softs.get(cid) is None else len(cluster_softs.get(cid))
-                        ),
-                        graph_tension=float(graph_tension),
-                        source_field=float(source_field),
-                        target_field=float(target_field),
-                        local_relief=float(local_relief),
-                        prefiltered=bool(prefiltered),
-                        feasibility_rejected=bool(feasibility_rejected),
-                        graph_rescue_attempted=bool(graph_rescue_attempted),
-                        graph_rescue_used=bool(graph_rescue_used),
-                        graph_rescue_attempts=int(graph_rescue_attempts),
-                        graph_rescue_trigger=graph_rescue_trigger,
-                        graph_rescue_trigger_delta=float(trigger_delta),
-                        graph_survivor_attempted=bool(graph_survivor_attempted),
-                        graph_survivor_used=bool(graph_survivor_used),
-                        graph_survivor_trials=int(graph_survivor_trials),
-                        graph_survivor_pre_score=graph_survivor_pre_score,
-                        **graph_delta_stats,
-                        **feasible_stats,
-                        expansion_factor=float(factor),
-                        axis_scale=[float(scale[0]), float(scale[1])],
-                        hierarchy_quality_before=old_quality,
-                        hierarchy_quality_after=None if q is None else float(q),
-                        hierarchy_quality_delta=None if q is None else float(q) - old_quality,
-                        old_proxy=old_score,
-                        candidate_proxy=None if score is None else float(score),
-                        proxy_delta=None if score is None else float(score) - old_score,
-                        accepted=bool(accepted),
-                        rejection_reason=None if accepted else reason,
-                    )
-                    trace_count += 1
                 if accepted:
                     break
             if accepted_round:

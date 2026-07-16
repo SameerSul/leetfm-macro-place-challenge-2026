@@ -186,7 +186,6 @@ src/eda_io/                LEF/DEF/Verilog/SDC/Liberty I/O layer
 test/verification/         correctness checks
 test/benchmarks/           synthetic anti-overfitting suite
 docs/general/              architecture, design flow, objectives, issues, experiment ledger
-docs/ml_nn/                current GNN status plus trace and dataset schemas
 ```
 
 ## Documentation
@@ -197,4 +196,3 @@ docs/ml_nn/                current GNN status plus trace and dataset schemas
 - [`docs/general/REFERENCES.md`](docs/general/REFERENCES.md) - research papers, technical sources, and external dependency links
 - [`docs/general/ISSUES.md`](docs/general/ISSUES.md) - current unresolved work
 - [`docs/general/PROGRESS.md`](docs/general/PROGRESS.md) - chronological experiment ledger; only its first status entry describes current production
-- [`docs/ml_nn/`](docs/ml_nn/) - default-off learned-ranking status and active schemas

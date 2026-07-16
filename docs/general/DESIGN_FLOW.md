@@ -73,10 +73,9 @@ HIER_SWAP_GRAPH_FALLBACK_BUDGET_S (default 2.5)
 Graph swap guidance is off in score terms unless you set
 `HIER_GRAPH_TENSION_SWAP_WEIGHT > 0` and/or `HIER_SWAP_GRAPH_DELTA_WEIGHT >
 0.0`, so current runs remain equivalent when those are unset.
-`scripts/gnn/analyze_graph_tension.py` summarizes trace rows for this signal.
-Candidate traces now include graph-edge deltas for coldspot and decompression:
+Coldspot and decompression compute graph-edge deltas for deterministic ranking:
 edge stretch, corridor congestion, weighted edge length, and combined graph
-delta. These are used for analysis only, not commit gates.
+delta. These do not change commit gates.
 The default-off `HIER_COLDSPOT_GRAPH_DELTA_RANK` hook can add a
 proxy-equivalent penalty for graph-worsening coldspot candidates before the
 normal exact-proxy rank. It remains opt-in because focused `ibm10`/`ibm12`
@@ -167,8 +166,8 @@ flowchart TD
 
 Every return path passes through a final in-bounds clamp for movable macros.
 `PlacementState` carries hard/soft coordinates and exact proxy through the
-pipeline; each pass returns a `PassResult` summary, optionally written to the
-GNN trace logger (`HIER_GNN_TRACE=1`, default off).
+pipeline; each pass returns a `PassResult` summary used by the deterministic
+scheduler and buffered plateau telemetry.
 
 The seed portfolio records a complete hierarchy vector for every candidate:
 hard-cluster compactness and worst spread, nearest-neighbor cluster impurity,
@@ -286,55 +285,23 @@ HIER_MEDIUM_SOFT_TOP_K=768
 HIER_MEDIUM_SOFT_TARGETS=14
 ```
 
-A default-off coldspot GNN selector can be enabled with runtime environment
-variables, not constants:
+## Structural Ordering And Telemetry
 
-```text
-HIER_GNN_COLDSPOT_SELECT=1
-HIER_GNN_COLDSPOT_MODEL=path/to/model.pt
-HIER_GNN_COLDSPOT_POLICY=0
-HIER_GNN_COLDSPOT_POLICY_MODEL=path/to/model.pt
-HIER_GNN_CLUSTER_MODE=0
-HIER_GNN_COLDSPOT_KICKS=8
-HIER_GNN_COLDSPOT_TOP_K=1
-HIER_GNN_COLDSPOT_CLUSTER_TOP_K=1
-HIER_GNN_COLDSPOT_POLICY_TOP_K=1
-HIER_GNN_COLDSPOT_ORACLE=0
-HIER_COLDSPOT_GNN_MAX_CLUSTERS=1
-```
+Candidate ordering is deterministic. The default-off local structural term can
+reorder existing relocation candidates without creating a separate placement
+or acceptance path. Coldspot generates its bounded whole-cluster variants,
+refines them, then exact-ranks the completed outcomes with deterministic graph
+tie-breaks.
 
-When enabled, the same heuristic coldspot round still selects the hot cluster
-and cold window. The placer then generates a no-op candidate plus several kicked
-outcomes for that selected cluster/window and asks a ranker to reorder them.
+The learned candidate ranker, coldspot selectors, candidate-level trace logger,
+offline training tools, and model/dataset artifacts were removed after
+repeatedly regressing quality or runtime. The remaining pass-level plateau
+telemetry is independent of ML and is written by default to
+`ml_data/plateau_telemetry/plateau_telemetry.jsonl`. It can be redirected with
+`HIER_PLATEAU_TRACE_PATH` and analyzed with
+`scripts/analyze_plateau_telemetry.py`.
 
-`HIER_GNN_CLUSTER_MODE=1` shifts GNN usage from macro-level ranking to
-cluster-level coldspot ranking. In this mode, `HIER_GNN_RANK=1` is interpreted
-through `coldspot_cluster` policy only; relocation and swap re-ordering remain off.
-`HIER_GNN_COLDSPOT_CLUSTER_TOP_K` (default `1`) controls how many re-ordered coldspot
-cluster candidates are promoted into the top selector slice before exact scoring.
-
-With `HIER_GNN_COLDSPOT_SELECT=1`, exact scoring stays on the refined candidates,
-while `HIER_GNN_COLDSPOT_POLICY=1` can rank raw proposals first and send only
-the top policy proposals into the expensive local-refine path. The normal hard
-legality, hierarchy-quality, total-budget, and exact-proxy gates remain
-mandatory. When either selector is active, post-coldspot micro-shift replay is
-always skipped so the selector replaces that local refinement step during
-diagnostics. Move
-`HIER_COLDSPOT_GNN_MAX_CLUSTERS` above `1` to allow multi-source
-candidate expansion.
-`HIER_GNN_COLDSPOT_ORACLE=1` is for trace collection: it exact-scores all
-generated candidates in the pool, but with selector disabled it still commits
-only the legacy first generated kick, preserving default placement behavior.
-
-## BeyondPPA And GNN Hooks
-
-The current BeyondPPA integration is hierarchy-integrated: a local structural
-term can reorder existing relocation candidates, and production keeps that
-ranking disabled by default. It does not create a separate placement path.
-
-The current production GNN behavior is still non-mutating. Trace logging is
-controlled by runtime environment variables, not `src/utils/constants.py`.
-Enable it with:
+Useful commands remain:
 
 ```bash
 uv run evaluate src/main.py -b ibm10                          # single benchmark
@@ -385,5 +352,5 @@ and density contributions, and scores the union bbox. The operation restores
 the placement cache per row and leaves all committed grids unchanged.
 
 See [OBJECTIVES.md](OBJECTIVES.md) for the structural objectives behind these
-passes, and [`../ml_nn/beyondppa_results/`](../ml_nn/beyondppa_results/) for
-the active GNN trace and dataset schemas.
+passes and [PROGRESS.md](PROGRESS.md) for the historical learned-ranking
+experiments and their rejection results.

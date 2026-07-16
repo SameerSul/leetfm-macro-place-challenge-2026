@@ -297,7 +297,6 @@ HIER_GRAPH_TENSION_SWAP_WEIGHT = 0.0
 HIER_GRAPH_TENSION_HARD_MIN = 600
 HIER_GRAPH_TENSION_HARD_MAX = 1000000
 HIER_GRAPH_TENSION_CORRIDOR_SAMPLES = 9
-HIER_GRAPH_TENSION_TRACE_TOP = 6
 # Conservative graph-aware rejection prefilters. These only skip low graph-tension
 # candidates whose cheap local congestion estimate does not improve before exact
 # scoring/refinement; high-tension candidates still reach the normal exact gates.
@@ -322,7 +321,7 @@ HIER_SOFT_SWAP_K = 48
 # Minimum exact-proxy gain required for a swap move.
 HIER_SWAP_MIN_GAIN = 0.00001
 # Optional soft-macro barrier for soft relocation and soft-involving swaps.
-# Keep 0.0 for production parity; set to 0.01 in regional GNN diagnostics.
+# Keep 0.0 for production parity.
 HIER_SOFT_BARRIER_GAIN = 0.0
 # Minimum congestion-field relief required for a swap move.
 HIER_SWAP_MIN_FIELD_RELIEF = 0.0
@@ -426,12 +425,8 @@ HIER_COLDSPOT_LOCAL_SOFT_RELOC_TOP_K = 64
 # Candidate cold cells considered per local relocation source.
 HIER_COLDSPOT_LOCAL_RELOC_TARGETS = 8
 # Number of shape-preserving whole-cluster variants generated for each selected
-# opportunity-ranked coldspot cluster when the GNN selector is not driving the
-# candidate count.
+# opportunity-ranked coldspot cluster.
 HIER_COLDSPOT_WHOLE_VARIANTS = 5
-# Number of source clusters considered when GNN/Oracle policy is active.
-# Default 1 keeps historical single-source behavior.
-HIER_COLDSPOT_GNN_MAX_CLUSTERS = 1
 # Number of distinct low-congestion anchors considered by whole-cluster variants.
 HIER_COLDSPOT_ANCHOR_VARIANTS = 3
 # Component-derived anchor candidates are ranked by coldness, area, and source

@@ -8,12 +8,10 @@ from typing import Any, Callable
 import numpy as np
 import torch
 
-from placer.local_search.cluster_decompress import hierarchy_quality_breakdown
 from placer.local_search.fields import (
     cold_connected_component_target_pool,
     weighted_congestion_field,
 )
-from placer.local_search.gnn_trace import flush_plateau_events, log_gnn_event
 from placer.local_search.hierarchy_quality import (
     hierarchy_quality_vector,
     hierarchy_vector_contract,
@@ -25,6 +23,7 @@ from placer.local_search.relocation import (
     _relocation_moves,
     _soft_relocation_moves,
 )
+from placer.local_search.plateau_telemetry import flush_plateau_events, log_plateau_event
 from placer.pipeline.hierarchy_context import PlacementState
 from placer.scoring.exact import _exact_proxy
 from placer.scoring.incremental import IncrementalScorer
@@ -40,7 +39,6 @@ def run_post_coldspot_finalize(
     hierarchy,
     hierarchy_quality_metric_fn: Callable[[np.ndarray, dict], float],
     selected_seed_name: str,
-    seed_rows: list[dict[str, object]],
     pre_relief: float,
     seed_hierarchy_quality: float,
     seed_hierarchy_vector: dict[str, float],
@@ -69,7 +67,6 @@ def run_post_coldspot_finalize(
     group_weight: int,
     region_deadline: float | None,
     log_fn: Callable[[str], None],
-    trace_pass_fn: Callable[..., None],
     record_plateau_fn: Callable[..., None],
     hard_valid_fn: Callable[[np.ndarray], bool],
     deadline_fn: Callable[[float, float | None], float | None],
@@ -77,7 +74,6 @@ def run_post_coldspot_finalize(
     """Run survivor search and emit the final hierarchy floorplan output."""
 
     _log = log_fn
-    _trace_pass = trace_pass_fn
     _record_plateau = record_plateau_fn
     _is_hard_valid = hard_valid_fn
     _deadline = deadline_fn
@@ -664,13 +660,6 @@ def run_post_coldspot_finalize(
             "released_cluster_count": int(len(released_cids)),
             "swap_stats": swap_stats,
         }
-        _trace_pass(
-            "small_design_released_polish",
-            small_before,
-            float(cur_proxy),
-            int(small_acc),
-            **trace_extra,
-        )
         _record_plateau(
             "small_design_released_polish",
             small_before,
@@ -683,7 +672,7 @@ def run_post_coldspot_finalize(
             **trace_extra,
         )
     else:
-        log_gnn_event(
+        log_plateau_event(
             "hier_budget_schedule",
             benchmark=benchmark.name,
             pass_name="small_design_released_polish",
@@ -731,74 +720,9 @@ def run_post_coldspot_finalize(
     )
     out = torch.tensor(state.full().astype(np.float32), dtype=torch.float32)
     proxy = float(state.proxy)
-    hq_breakdown = hierarchy_quality_breakdown(legal, clusters)
     margin_eps = float(const.HIER_LEGALITY_MARGIN_EPS)
     legality_margin = _hard_legality_margin(legal, margin_eps)
 
-    log_gnn_event(
-        "hier_final_audit",
-        benchmark=benchmark.name,
-        seed_hierarchy_quality=float(seed_hierarchy_quality),
-        final_hierarchy_quality=float(final_quality),
-        max_degradation=float(audit_budget),
-        audit_limit=float(audit_limit),
-        passed=bool(audit_passed),
-        rollback=bool(audit_rollback),
-        rollback_quality=rollback_quality,
-        rollback_proxy=rollback_proxy,
-        audit_checkpoint_quality=float(audit_checkpoint_quality),
-        audit_checkpoint_proxy=float(audit_checkpoint_score),
-        hierarchy_vector_passed=bool(vector_audit_passed),
-        hierarchy_vector_violations={key: float(value) for key, value in vector_violations.items()},
-        hierarchy_vector_limits={
-            key: float(value) for key, value in hierarchy_contract_limits.items()
-        },
-    )
-
-    log_gnn_event(
-        "hier_final",
-        benchmark=benchmark.name,
-        proxy=float(proxy),
-        pre_relief_proxy=float(pre_relief),
-        seed_hierarchy_quality=float(seed_hierarchy_quality),
-        hierarchy_audit_limit=float(audit_limit),
-        hierarchy_audit_passed=bool(audit_passed),
-        hierarchy_audit_rollback=bool(audit_rollback),
-        hierarchy_quality=float(hq_breakdown["quality"]),
-        hierarchy_quality_radius=float(hq_breakdown["radius"]),
-        hierarchy_quality_bbox=float(hq_breakdown["bbox"]),
-        hierarchy_quality_crowd=float(hq_breakdown["crowd"]),
-        hierarchy_vector_composite=float(hq_vector["composite"]),
-        hierarchy_vector_compactness=float(hq_vector["cluster_compactness"]),
-        hierarchy_vector_worst_spread=float(hq_vector["worst_cluster_spread"]),
-        hierarchy_vector_impurity=float(hq_vector["neighbor_impurity"]),
-        hierarchy_vector_edge_stretch=float(hq_vector["edge_stretch"]),
-        hierarchy_vector_owned_soft=float(hq_vector["owned_soft_distance"]),
-        hierarchy_vector_bridge_soft=float(hq_vector["bridge_soft_distance"]),
-        hierarchy_vector_audit_passed=bool(vector_audit_passed),
-        hierarchy_vector_limits={
-            key: float(value) for key, value in hierarchy_contract_limits.items()
-        },
-        clusters=int(len(clusters)),
-        hierarchy_edges=int(len(hierarchy.edges)),
-        hierarchy_oversize_split=True,
-        hierarchy_split_parents=int(len(hierarchy.split_parents)),
-        seed_portfolio=True,
-        selected_seed=selected_seed_name,
-        seed_candidates=int(len(seed_rows)),
-        additive_candidate_pools=True,
-        legality_margin_audit=True,
-        legality_margin_eps=float(margin_eps),
-        legality_pair_margin=float(legality_margin["pair_margin"]),
-        legality_bounds_margin=float(legality_margin["bounds_margin"]),
-        legality_min_margin=float(legality_margin["min_margin"]),
-        hierarchy_confidence_mean=float(
-            np.mean(list(hierarchy.cluster_confidence.values()))
-            if getattr(hierarchy, "cluster_confidence", None)
-            else 0.0
-        ),
-        group_weight=int(group_weight),
-    )
     _log(
         f"  [hier] {len(clusters)} clusters, {len(hierarchy.edges)} edges, "
         f"oversize=1, "
