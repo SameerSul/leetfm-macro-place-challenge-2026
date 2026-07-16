@@ -14,7 +14,11 @@ from placer.local_search.fields import (
     weighted_congestion_field,
 )
 from placer.local_search.gnn_trace import flush_plateau_events, log_gnn_event
-from placer.local_search.hierarchy_quality import hierarchy_quality_vector
+from placer.local_search.hierarchy_quality import (
+    hierarchy_quality_vector,
+    hierarchy_vector_contract,
+    hierarchy_vector_limits,
+)
 from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
 from placer.local_search.relocation import (
     _micro_shift_polish,
@@ -39,6 +43,7 @@ def run_post_coldspot_finalize(
     seed_rows: list[dict[str, object]],
     pre_relief: float,
     seed_hierarchy_quality: float,
+    seed_hierarchy_vector: dict[str, float],
     legal: np.ndarray,
     s_pos: np.ndarray,
     cur_proxy: float,
@@ -226,22 +231,55 @@ def run_post_coldspot_finalize(
     soft_mov = movable[n : n + n_soft]
     audit_budget = max(0.0, float(getattr(const, "HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION", 0.0)))
     audit_limit = float(seed_hierarchy_quality) + audit_budget
+    hierarchy_contract_limits = hierarchy_vector_limits(
+        seed_hierarchy_vector,
+        const.HIER_VECTOR_CONTRACT_ABS_SLACK,
+        float(const.HIER_VECTOR_CONTRACT_REL_SLACK),
+    )
+
+    def _placement_hierarchy_vector(hard_xy: np.ndarray, soft_xy: np.ndarray):
+        return hierarchy_quality_vector(
+            hard_xy,
+            soft_xy,
+            clusters,
+            csofts,
+            bridge_softs,
+            hierarchy.edges,
+            cw,
+            ch,
+        )
+
+    def _vector_contract(hard_xy: np.ndarray, soft_xy: np.ndarray):
+        vector = _placement_hierarchy_vector(hard_xy, soft_xy)
+        passed, violations = hierarchy_vector_contract(vector, hierarchy_contract_limits)
+        return passed, vector, violations
+
     audit_checkpoint_h = np.array(audit_h, dtype=np.float64, copy=True)
     audit_checkpoint_s = np.array(audit_s, dtype=np.float64, copy=True)
     audit_checkpoint_score = float(audit_score)
     audit_checkpoint_quality = hierarchy_quality_metric_fn(audit_checkpoint_h, clusters)
+    audit_checkpoint_vector_passed, audit_checkpoint_vector, _checkpoint_violations = (
+        _vector_contract(audit_checkpoint_h, audit_checkpoint_s)
+    )
 
-    if not _is_hard_valid(audit_checkpoint_h) or audit_checkpoint_quality > audit_limit:
+    if (
+        not _is_hard_valid(audit_checkpoint_h)
+        or audit_checkpoint_quality > audit_limit
+        or not audit_checkpoint_vector_passed
+    ):
         for cand_h, cand_s, cand_score in (
             (legal, s_pos, cur_proxy),
             (best_h, best_s, best_score),
         ):
             cand_quality = hierarchy_quality_metric_fn(cand_h, clusters)
-            if _is_hard_valid(cand_h) and cand_quality <= audit_limit:
+            cand_vector_passed, cand_vector, _violations = _vector_contract(cand_h, cand_s)
+            if _is_hard_valid(cand_h) and cand_quality <= audit_limit and cand_vector_passed:
                 audit_checkpoint_h = np.array(cand_h, dtype=np.float64, copy=True)
                 audit_checkpoint_s = np.array(cand_s, dtype=np.float64, copy=True)
                 audit_checkpoint_score = float(cand_score)
                 audit_checkpoint_quality = float(cand_quality)
+                audit_checkpoint_vector = dict(cand_vector)
+                audit_checkpoint_vector_passed = True
                 break
 
     def _update_audit_checkpoint(
@@ -250,17 +288,21 @@ def run_post_coldspot_finalize(
         score: float,
     ) -> tuple[bool, float]:
         nonlocal audit_checkpoint_h, audit_checkpoint_s
-        nonlocal audit_checkpoint_score, audit_checkpoint_quality
+        nonlocal audit_checkpoint_score, audit_checkpoint_quality, audit_checkpoint_vector
         if not _is_hard_valid(hard_xy):
             return False, float("inf")
         quality = hierarchy_quality_metric_fn(hard_xy, clusters)
         if quality > audit_limit:
+            return False, float(quality)
+        vector_passed, vector, _violations = _vector_contract(hard_xy, soft_xy)
+        if not vector_passed:
             return False, float(quality)
         if float(score) < audit_checkpoint_score - 1e-9 or audit_checkpoint_quality > audit_limit:
             audit_checkpoint_h = np.array(hard_xy, dtype=np.float64, copy=True)
             audit_checkpoint_s = np.array(soft_xy, dtype=np.float64, copy=True)
             audit_checkpoint_score = float(score)
             audit_checkpoint_quality = float(quality)
+            audit_checkpoint_vector = dict(vector)
             return True, float(quality)
         return False, float(quality)
 
@@ -291,9 +333,13 @@ def run_post_coldspot_finalize(
         small_audit_rollback = False
 
         def _remember_small_state() -> bool:
-            nonlocal best_small_score, best_small_legal, best_small_s_pos, best_small_quality
+            nonlocal best_small_score, best_small_legal, best_small_s_pos
+            nonlocal best_small_quality
             cur_quality_local = hierarchy_quality_metric_fn(legal, clusters)
             if cur_quality_local > audit_limit:
+                return False
+            vector_passed, _vector, _violations = _vector_contract(legal, s_pos)
+            if not vector_passed:
                 return False
             if float(cur_proxy) < best_small_score - 1e-9 or best_small_quality > audit_limit:
                 best_small_score = float(cur_proxy)
@@ -306,7 +352,8 @@ def run_post_coldspot_finalize(
         def _restore_small_if_needed() -> bool:
             nonlocal legal, s_pos, cur_proxy, small_scorer, small_audit_rollback
             cur_quality_local = hierarchy_quality_metric_fn(legal, clusters)
-            if cur_quality_local <= audit_limit:
+            vector_passed, _vector, _violations = _vector_contract(legal, s_pos)
+            if cur_quality_local <= audit_limit and vector_passed:
                 _remember_small_state()
                 return False
             legal = best_small_legal.copy()
@@ -572,16 +619,21 @@ def run_post_coldspot_finalize(
             if float(round_before) - float(cur_proxy) <= min_gain:
                 break
         cur_quality = hierarchy_quality_metric_fn(legal, clusters)
-        if float(cur_proxy) < best_small_score and cur_quality <= audit_limit:
+        cur_vector_passed, _cur_vector, _violations = _vector_contract(legal, s_pos)
+        if float(cur_proxy) < best_small_score and cur_quality <= audit_limit and cur_vector_passed:
             best_small_score = float(cur_proxy)
             best_small_legal = np.array(legal, dtype=np.float64, copy=True)
             best_small_s_pos = np.array(s_pos, dtype=np.float64, copy=True)
             best_small_quality = float(cur_quality)
-        elif cur_quality > audit_limit or best_small_score < float(cur_proxy):
+        elif (
+            cur_quality > audit_limit
+            or not cur_vector_passed
+            or best_small_score < float(cur_proxy)
+        ):
             legal = best_small_legal
             s_pos = best_small_s_pos
             cur_proxy = float(best_small_score)
-            small_audit_rollback = cur_quality > audit_limit
+            small_audit_rollback = cur_quality > audit_limit or not cur_vector_passed
             small_scorer = IncrementalScorer(
                 plc,
                 benchmark,
@@ -644,12 +696,13 @@ def run_post_coldspot_finalize(
     full = np.vstack([legal, s_pos]).astype(np.float32)
     full_proxy = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
     final_quality = hierarchy_quality_metric_fn(legal, clusters)
-    audit_passed = final_quality <= audit_limit
+    vector_audit_passed, hq_vector, vector_violations = _vector_contract(legal, s_pos)
+    audit_passed = final_quality <= audit_limit and vector_audit_passed
     audit_rollback = False
     rollback_quality = None
     rollback_proxy = None
     if not audit_passed and _is_hard_valid(audit_checkpoint_h):
-        if audit_checkpoint_quality <= audit_limit:
+        if audit_checkpoint_quality <= audit_limit and audit_checkpoint_vector_passed:
             rollback_quality = float(audit_checkpoint_quality)
             rollback_proxy = float(
                 _exact_proxy(
@@ -666,6 +719,9 @@ def run_post_coldspot_finalize(
             full = np.vstack([legal, s_pos]).astype(np.float32)
             full_proxy = float(rollback_proxy)
             final_quality = float(audit_checkpoint_quality)
+            hq_vector = dict(audit_checkpoint_vector)
+            vector_audit_passed = True
+            vector_violations = {}
             audit_passed = True
             audit_rollback = True
     state = PlacementState(
@@ -676,16 +732,6 @@ def run_post_coldspot_finalize(
     out = torch.tensor(state.full().astype(np.float32), dtype=torch.float32)
     proxy = float(state.proxy)
     hq_breakdown = hierarchy_quality_breakdown(legal, clusters)
-    hq_vector = hierarchy_quality_vector(
-        legal,
-        s_pos,
-        clusters,
-        csofts,
-        bridge_softs,
-        hierarchy.edges,
-        cw,
-        ch,
-    )
     margin_eps = float(const.HIER_LEGALITY_MARGIN_EPS)
     legality_margin = _hard_legality_margin(legal, margin_eps)
 
@@ -702,6 +748,11 @@ def run_post_coldspot_finalize(
         rollback_proxy=rollback_proxy,
         audit_checkpoint_quality=float(audit_checkpoint_quality),
         audit_checkpoint_proxy=float(audit_checkpoint_score),
+        hierarchy_vector_passed=bool(vector_audit_passed),
+        hierarchy_vector_violations={key: float(value) for key, value in vector_violations.items()},
+        hierarchy_vector_limits={
+            key: float(value) for key, value in hierarchy_contract_limits.items()
+        },
     )
 
     log_gnn_event(
@@ -724,6 +775,10 @@ def run_post_coldspot_finalize(
         hierarchy_vector_edge_stretch=float(hq_vector["edge_stretch"]),
         hierarchy_vector_owned_soft=float(hq_vector["owned_soft_distance"]),
         hierarchy_vector_bridge_soft=float(hq_vector["bridge_soft_distance"]),
+        hierarchy_vector_audit_passed=bool(vector_audit_passed),
+        hierarchy_vector_limits={
+            key: float(value) for key, value in hierarchy_contract_limits.items()
+        },
         clusters=int(len(clusters)),
         hierarchy_edges=int(len(hierarchy.edges)),
         hierarchy_oversize_split=True,
@@ -750,7 +805,8 @@ def run_post_coldspot_finalize(
         f"seed={selected_seed_name}, "
         f"additive=1, "
         f"margin={float(legality_margin['min_margin']):.3f}, "
-        f"audit={'pass' if audit_passed else 'fail'}, "
+        f"audit={'rollback' if audit_rollback else ('pass' if audit_passed else 'fail')}, "
+        f"vector_audit={'pass' if vector_audit_passed else 'fail'}, "
         f"weight={group_weight}: proxy={proxy:.4f} "
         f"(pre-relief {pre_relief:.4f}; hierarchy-preserving NON-proxy mode)"
     )

@@ -6,7 +6,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from placer.local_search.hierarchy_quality import hierarchy_quality_vector
+from placer.local_search.hierarchy_quality import (
+    HIERARCHY_VECTOR_METRICS,
+    hierarchy_quality_vector,
+    hierarchy_vector_contract,
+    hierarchy_vector_limits,
+)
 from placer.pipeline.segments.floorplan_seed import select_seed_candidate
 
 
@@ -59,3 +64,57 @@ def test_seed_selector_uses_proxy_within_best_hierarchy_band():
 
     assert proxy["name"] == "proxy_only"
     assert hierarchy["name"] == "balanced"
+
+
+def test_component_contract_rejects_one_dimension_regression():
+    reference = _vector(
+        [[20, 20], [24, 20], [70, 20], [74, 20]],
+        [[22, 22], [72, 22], [47, 20]],
+    )
+    worse_soft = dict(reference)
+    worse_soft["owned_soft_distance"] += 0.05
+    rows = [
+        {
+            "name": "initial",
+            "score": 1.10,
+            "hierarchy_composite": reference["composite"],
+            "hierarchy_vector": reference,
+        },
+        {
+            "name": "proxy_only",
+            "score": 1.00,
+            "hierarchy_composite": reference["composite"],
+            "hierarchy_vector": worse_soft,
+        },
+    ]
+    slack = {key: 0.01 for key in HIERARCHY_VECTOR_METRICS}
+
+    selected = select_seed_candidate(
+        rows,
+        hierarchy_first=False,
+        absolute_slack=0.0,
+        relative_slack=0.0,
+        component_absolute_slack=slack,
+        component_relative_slack=0.0,
+    )
+
+    assert selected["name"] == "initial"
+    assert rows[1]["hierarchy_contract_eligible"] is False
+    assert "owned_soft_distance" in rows[1]["hierarchy_contract_violations"]
+
+
+def test_component_contract_uses_independent_relative_and_absolute_limits():
+    reference = {key: 0.1 for key in HIERARCHY_VECTOR_METRICS}
+    limits = hierarchy_vector_limits(
+        reference,
+        {key: 0.01 for key in HIERARCHY_VECTOR_METRICS},
+        0.2,
+    )
+    candidate = dict(reference)
+    candidate["edge_stretch"] = 0.119
+
+    passed, violations = hierarchy_vector_contract(candidate, limits)
+
+    assert passed
+    assert violations == {}
+    assert limits["edge_stretch"] == 0.12000000000000001

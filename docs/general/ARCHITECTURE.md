@@ -19,7 +19,9 @@ benchmark input
        (grouped DREAMPlace, legalized initial.plc, DP/initial blends,
         radial expansion, synthetic-clearance push-apart, and a
         constraint-graph-legalized initial.plc; every candidate gets a complete
-        hierarchy vector and lowest exact proxy enters relief)
+        hierarchy vector, the vector is constrained component-by-component
+        relative to legalized initial.plc, and the lowest eligible exact proxy
+        enters relief)
   -> congestion-expanded hard/soft hierarchy regions
   -> exact-gated local micro-shift polish
   -> exact-gated cluster decompression with composite hierarchy quality
@@ -30,7 +32,14 @@ benchmark input
        - optional micro-shift replay after each swap round
   -> post-swap micro-shift replay
   -> post-swap hard propose-all relocation with spare-budget additive candidates
-  -> post-swap soft relocation with spare-budget additive candidates
+  -> telemetry scheduler skips the duplicate ordinary post-swap soft pass
+       - two clean attributable full suites produced 0 accepts in 34 runs
+       - its time remains as deadline and final-audit headroom
+  -> plateau-triggered compound related-soft relocation
+       - keep every member inside its individual hierarchy region
+       - preserve group-relative geometry while testing pair/quartet/full-group shifts
+       - enforce the six-component hierarchy contract before scoring
+       - exact-score and accept only the completed multi-soft state
   -> plateau- and component-aware strong soft repair when telemetry shows useful spare work
        - medium/large soft continuation runs only when structural shape and prior soft gain justify it
   -> coldspot tightening:
@@ -63,6 +72,8 @@ benchmark input
   -> gain-controlled passes: stop repeats when latest exact gain <= HIER_PLATEAU_PROXY_GAIN
   -> final scorer-compatible hard legality margin audit
   -> final hierarchy-quality audit against the selected hierarchy seed:
+       - enforce both the legacy hard-cluster budget and independent limits for
+         all six rich-vector components
        - roll back to the best saved audit-passing checkpoint when needed
   -> final legality and bounds checks
   -> return center coordinates for hard and soft macros
@@ -105,11 +116,12 @@ micro-shift replay, stronger opportunity gates, component-aware scheduling,
 post-coldspot small-design polish with subpass audit restore, no-release
 low-net soft/SS breadth, medium/large soft-continuation scheduling, prepared
 Numba routing/legalization kernels, exact batched hard-hard/hard-soft scoring,
-batched soft relocation/swap scoring, and the guarded constraint-graph seed:
+batched soft relocation/swap scoring, the guarded constraint-graph seed, and
+the per-component seed/final hierarchy contract:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1199  17/17 VALID  0 overlaps  575.28s
+AVG 1.1205  17/17 VALID  0 overlaps  541.67s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
@@ -118,8 +130,12 @@ several designs after late proxy-improving relief. A strict final-rollback-only
 audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
 reached `AVG 1.1664`; the pre-optimization BB-on verification was
 `AVG 1.1653` cold (`AVG 1.1652` with cache hits). The prior optimized
-normal-cache sweep was `AVG 1.1575`; the accepted constraint-graph/batched-swap
-sweep is `AVG 1.1199`. The prior best same-path sweep was
+normal-cache sweep was `AVG 1.1575`; the constraint-graph/batched-swap sweep
+was `AVG 1.1199`, the component-contract sweep was `AVG 1.1205` in `540.33s`,
+and the compound-relocation sweep was `AVG 1.1205` in `544.94s`.
+The telemetry-scheduled production sweep preserves every compound-relocation
+score at `AVG 1.1205` in `541.67s`.
+The prior best same-path sweep was
 `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
 proxy-improving states need to be discarded at finalization. Earlier Stage-6
@@ -273,12 +289,15 @@ constraint-graph legalization of `initial.plc`: overlapping pairs become
 horizontal or vertical separation edges, both graphs stay acyclic under stable
 seed-coordinate order, and longest-path earliest/latest bounds project each
 movable macro toward its original coordinate. The ordinary initial candidate
-remains in the same portfolio, so this alternative advances only when its exact
-proxy is lower. All candidates are exact-scored; the lowest-proxy seed enters
-hierarchy relief. Each seed also records a richer
+remains in the same portfolio. All candidates are exact-scored and record a
+richer
 hierarchy vector covering mean and worst hard-cluster spread, nearest-neighbor
 cluster impurity, weighted inter-cluster edge stretch, owned-soft distance, and
-bridge-soft corridor distance. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
+bridge-soft corridor distance. Each vector component must remain within its
+independent absolute-or-relative slack from legalized `initial.plc`; the
+lowest-proxy eligible seed enters hierarchy relief. The selected seed becomes
+the reference for the same six-component contract at pass checkpoints and
+final rollback. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
 secondary choice inside the best hierarchy-quality band. That policy remains
 default-off: on the 2026-07-15 ibm10 experiment it improved seed composite
 `0.29168 -> 0.16328` but regressed final proxy `1.1778 -> 1.5281`.
@@ -456,6 +475,9 @@ HIER_GROUP_WEIGHT=8
 HIER_SEED_BLEND_ALPHAS=0.35,0.65   HIER_SEED_EXPANSION_FRAC=0.06
 HIER_SEED_CLEARANCE_FRAC=0.08      HIER_SEED_CLEARANCE_ITERS=3
 HIER_SEED_CLEARANCE_AREA_PCT=97
+HIER_VECTOR_CONTRACT_REL_SLACK=0.15
+HIER_VECTOR_CONTRACT_ABS_SLACK={compactness:0.005,worst_spread:0.015,
+  neighbor_impurity:0.05,edge_stretch:0.015,owned_soft:0.015,bridge_soft:0.015}
 ```
 
 **Regions and relocation**
@@ -468,7 +490,13 @@ HIER_PROPOSAL_CONGESTION_WEIGHT=2.5   HIER_PROPOSAL_DENSITY_WEIGHT=1.0
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08
 HIER_RELOC_PROPOSE_HOT_K=32           HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
 HIER_POST_RELOC_PROPOSE_ALL=auto      HIER_POST_RELOC_PROPOSE_TOP_M=16
-HIER_POST_SOFT_RELOC_TOP_K=256        HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005
+HIER_COMPOUND_SOFT_BUDGET_S=4         HIER_COMPOUND_SOFT_MIN_SPARE_S=5
+HIER_COMPOUND_SOFT_TOP_GROUPS=4       HIER_COMPOUND_SOFT_GROUP_SIZE=6
+HIER_COMPOUND_SOFT_COLD_PCT=35        HIER_COMPOUND_SOFT_ANCHORS=2
+HIER_COMPOUND_SOFT_SHIFT_FRACTIONS=0.25,0.5,1.0
+HIER_COMPOUND_SOFT_MIN_FIELD_DROP=0.02 HIER_COMPOUND_SOFT_MIN_GAIN=0.00005
+HIER_PLATEAU_ESCAPE_BUDGET_S=4        HIER_PLATEAU_ESCAPE_SOFT_TOP_K=384
+HIER_PLATEAU_ESCAPE_SOFT_TARGETS=10
 ```
 
 **Structural candidate ordering (BeyondPPA, opt-in)**

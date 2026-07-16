@@ -6,6 +6,95 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-15 — accepted telemetry-gated late-soft schedule):**
+> `VIVAPLACE_RUN_ID=20260715-step3-skip-dead-soft-final uv run evaluate
+> src/main.py --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all
+> hard and six-component hierarchy audits passed, in **541.67s**. It reproduced
+> every proxy from the preceding compound-relocation sweep while reducing
+> evaluator runtime by `3.27s`.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.8480/29.44s`, `ibm02=1.1221/16.20s`,
+> `ibm03=0.9991/23.30s`, `ibm04=1.0036/23.21s`,
+> `ibm06=1.1958/15.56s`, `ibm07=1.0542/27.54s`,
+> `ibm08=1.1459/30.03s`, `ibm09=0.8783/37.71s`,
+> `ibm10=1.0641/33.25s`, `ibm11=1.0085/24.99s`,
+> `ibm12=1.3106/58.64s`, `ibm13=1.0203/24.60s`,
+> `ibm14=1.2481/34.25s`, `ibm15=1.2217/44.93s`,
+> `ibm16=1.1637/32.88s`, `ibm17=1.3837/41.88s`, and
+> `ibm18=1.3806/43.27s`.
+>
+> Clean attributable telemetry showed ordinary post-swap soft relocation at
+> zero gain in 34/34 runs across the component-contract and compound full
+> suites. Production now emits an explicit budget-schedule skip and goes
+> directly to the hierarchy-gated compound pool and the productive plateau
+> escape. The removed time remains as deadline/final-audit headroom. A direct
+> reinvestment that broadened plateau escape from 384/10/4s to 512/12/6.5s was
+> also swept: it remained 17/17 VALID with all audits passing, but changed later
+> search basins and regressed to `AVG 1.1213` in `546.13s`, including
+> `ibm15=1.2338`. That breadth change was rejected. All **37** tests, touched
+> Python formatting, bytecode compilation, and `git diff --check` passed.
+
+> **Status (2026-07-15 — accepted compound related-soft relocation):**
+> `VIVAPLACE_RUN_ID=20260715-step2-compound-full uv run evaluate src/main.py
+> --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all hard and
+> six-component hierarchy audits passed, in **544.94s**. Versus the preceding
+> component-contract checkpoint (`AVG 1.1205`, `540.33s`), the rounded average
+> was unchanged and runtime increased by `4.61s`.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.8480/30.20s`, `ibm02=1.1221/15.94s`,
+> `ibm03=0.9991/23.73s`, `ibm04=1.0036/24.28s`,
+> `ibm06=1.1958/15.99s`, `ibm07=1.0542/26.83s`,
+> `ibm08=1.1459/30.05s`, `ibm09=0.8783/38.21s`,
+> `ibm10=1.0641/34.56s`, `ibm11=1.0085/24.38s`,
+> `ibm12=1.3106/59.48s`, `ibm13=1.0203/23.47s`,
+> `ibm14=1.2481/35.47s`, `ibm15=1.2217/43.42s`,
+> `ibm16=1.1637/33.59s`, `ibm17=1.3837/42.92s`, and
+> `ibm18=1.3806/42.40s`.
+>
+> The new plateau-triggered operator groups owned soft macros by hierarchy
+> owner and bridge soft macros by corridor signature. It preserves each
+> candidate group's relative geometry while trying pair, quartet, and full
+> translations toward cold connected components. Every member remains in its
+> own soft hierarchy region; the complete state must pass the six-component
+> contract before one exact incremental multi-soft score is evaluated. Across
+> the suite it generated 650 candidates, rejected 50 by the cheap field or
+> hierarchy gates, exact-scored 600 in 9.20s, and accepted one ibm11 move for a
+> `0.000213` exact gain. The scorer's group trial and commit matched a full
+> evaluator recomputation on ibm10 to `7.53e-10`; all **37** project tests
+> passed.
+
+> **Status (2026-07-15 — accepted per-component hierarchy contract):**
+> `VIVAPLACE_RUN_ID=20260715-step1-vector-contract uv run evaluate src/main.py
+> --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all legacy hard
+> and six-component hierarchy audits passed, in **540.33s** with normal BB and
+> DREAMPlace cache behavior. Versus the prior accepted sweep (`AVG 1.1199`,
+> `575.28s`), proxy changed by `+0.0006` and evaluator runtime fell by `34.95s`.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.8480/29.41s`, `ibm02=1.1221/17.33s`,
+> `ibm03=0.9991/22.75s`, `ibm04=1.0036/23.62s`,
+> `ibm06=1.1958/17.03s`, `ibm07=1.0542/28.65s`,
+> `ibm08=1.1459/31.64s`, `ibm09=0.8783/37.23s`,
+> `ibm10=1.0641/31.93s`, `ibm11=1.0087/25.11s`,
+> `ibm12=1.3106/58.41s`, `ibm13=1.0203/24.60s`,
+> `ibm14=1.2481/34.16s`, `ibm15=1.2217/42.70s`,
+> `ibm16=1.1637/33.60s`, `ibm17=1.3837/41.53s`, and
+> `ibm18=1.3806/40.61s`.
+>
+> Seed candidates are now feasible only when hard-cluster compactness, worst
+> cluster spread, nearest-neighbor impurity, hierarchy-edge stretch,
+> owned-soft distance, and bridge-soft corridor distance each stay within an
+> independent absolute-or-relative slack from legalized `initial.plc`.
+> Production still chooses the lowest exact-proxy candidate inside that set.
+> The selected seed anchors the same six-component contract at pass boundaries,
+> inside small-design polish, and at final rollback; the older hard-cluster
+> audit remains additive. This changed the selected basin on several designs,
+> including the `ibm01` improvement, while rejecting proxy-favorable seeds or
+> post-search states that worsened an individual component (most often
+> nearest-neighbor impurity). All **35** project tests passed.
+
 > **Status (2026-07-15 — accepted constraint-graph seed and exact hard-swap batching):**
 > `uv run evaluate src/main.py --all` completed at **AVG 1.1199**, 17/17
 > VALID, 0 overlaps, all final hierarchy audits passed, in **575.28s** with

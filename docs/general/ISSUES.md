@@ -13,7 +13,7 @@ pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1199  17/17 VALID  0 overlaps  575.28s
+AVG 1.1205  17/17 VALID  0 overlaps  541.67s
 ```
 
 All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
@@ -26,23 +26,23 @@ authoritative.
 
 ## Open Work
 
-### 1. Calibrate hierarchy-aware seed selection
+### 1. Calibrate the production hierarchy contract
 
 Every seed now records hard-cluster compactness and worst spread, cluster
-impurity, hierarchy-edge stretch, and owned/bridge soft distances. The
-hierarchy-first selector is not ready for production: on `ibm10` it improved
-the seed composite from `0.29168` to `0.16328` but regressed final proxy from
-`1.1778` to `1.5281`.
+impurity, hierarchy-edge stretch, and owned/bridge soft distances. Production
+uses these as independent feasibility limits relative to legalized
+`initial.plc`, selects the lowest-proxy eligible seed, and reapplies the same
+contract relative to the selected seed at relief checkpoints and final
+rollback. The first full sweep passed all component audits at `AVG 1.1205`.
 
-Next step: treat the hierarchy vector as a feasibility or Pareto constraint
-rather than a single weighted score. Any candidate policy needs multi-benchmark
-validation and must preserve the final audit.
+Next step: calibrate the component-specific absolute/relative limits on more
+commercial and synthetic designs. The scalar hierarchy-first selector remains
+default-off because its focused proxy regression was too large.
 
 The exact-prescored seed portfolio now also contains a deterministic
-constraint-graph legalization of `initial.plc`. This is a safe additive
-baseline because the ordinary initial seed remains available and the graph
-candidate advances only when its exact proxy is lower. It was selected on seven
-benchmarks in the accepted sweep.
+constraint-graph legalization of `initial.plc`. The ordinary initial seed
+remains available and the graph candidate advances only when it passes every
+component limit and its exact proxy is lower.
 
 ### 2. Use attributable telemetry for scheduling
 
@@ -52,9 +52,25 @@ benchmarks produced no proxy gain and consumed 132.68 seconds. Some post-swap
 passes also look low-yield in short runs, but historical traces contain real
 gains, so there is not enough attributable full-suite evidence to remove them.
 
-Next step: collect clean full-suite telemetry per revision and use
+The ordinary post-swap soft pass is now skipped after two attributable full
+suites produced zero gain in 34 runs. Its budget is reassigned to the
+remaining deadline/final-audit reserve, with the skip recorded in schedule
+telemetry. The direct plateau-breadth reinvestment was legal but regressed the
+full suite and was rejected. Continue using
 `scripts/analyze_plateau_telemetry.py` before changing another production
 schedule.
+
+The accepted skip-only sweep reproduced every prior benchmark proxy at
+`AVG 1.1205` and reduced runtime from 544.94s to 541.67s. A direct
+plateau-escape breadth reinvestment (`512` hot softs, `12` targets, `6.5s`)
+was legal but regressed to `AVG 1.1213` in 546.13s and is not production.
+
+The first compound related-soft sweep exact-scored 600 complete group states
+in 9.20 seconds. One ibm11 move committed for a 0.000213 gain and survived the
+final component audit; six candidates were rejected by that audit before exact
+scoring. Ordinary post-swap soft relocation produced zero gain in the same run,
+matching the preceding component-contract sweep and providing the clean
+two-revision evidence needed for the next schedule change.
 
 ### 3. Learned ranking has not cleared the production gate
 

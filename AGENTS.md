@@ -19,10 +19,19 @@ hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
 Current verified result with normal BB/cache behavior:
-`uv run evaluate src/main.py --all` = **AVG 1.1199**, 17/17 VALID, 0
-overlaps, all final hierarchy audits passed, **575.28s**. The exact-scored seed
-portfolio includes a default-on constraint-graph legalization alternative for
+`uv run evaluate src/main.py --all` = **AVG 1.1205**, 17/17 VALID, 0
+overlaps, all final hierarchy audits passed, **541.67s**. The exact-scored seed
+portfolio filters candidates through an independent six-component hierarchy
+contract relative to legalized `initial.plc`, and the same contract is enforced
+against the selected seed throughout relief and final rollback. The portfolio
+includes a default-on constraint-graph legalization alternative for
 `initial.plc`, and hard-hard / hard-soft swap sets use exact batched scoring.
+Plateaued late soft cleanup also tests a bounded compound related-soft move:
+every member stays in-region, the complete state must pass the rich hierarchy
+contract, and exact incremental scoring occurs only after the group is formed.
+The ordinary post-swap soft relocation pass is skipped after two attributable
+full suites produced zero gain in 34 runs; its time remains as deadline and
+final-audit headroom.
 Passes advance on
 gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
 than fixed repeat counts, and a final hierarchy-quality audit rolls back to
