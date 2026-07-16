@@ -6,6 +6,149 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-16 — accepted learned-GNN removal):**
+> `VIVAPLACE_RUN_ID=20260716-remove-gnn-full uv run evaluate src/main.py --all`
+> completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all hard and
+> six-component hierarchy audits passed, in **542.58s**. Every benchmark proxy
+> exactly reproduced the preceding accepted production result.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.8480/28.59s`, `ibm02=1.1221/15.80s`,
+> `ibm03=0.9991/23.70s`, `ibm04=1.0036/23.63s`,
+> `ibm06=1.1958/15.35s`, `ibm07=1.0542/28.30s`,
+> `ibm08=1.1459/30.48s`, `ibm09=0.8783/37.39s`,
+> `ibm10=1.0641/33.96s`, `ibm11=1.0085/26.40s`,
+> `ibm12=1.3106/60.99s`, `ibm13=1.0203/23.72s`,
+> `ibm14=1.2481/34.11s`, `ibm15=1.2217/43.19s`,
+> `ibm16=1.1637/33.29s`, `ibm17=1.3837/42.02s`, and
+> `ibm18=1.3806/41.67s`.
+>
+> Removed the learned ranker/model loader, relocation/swap/coldspot inference
+> hooks, candidate-level trace logger, offline GNN trainers and diagnostics,
+> dedicated verification scripts, and active GNN schemas. The productive
+> schema-v2 pass-level telemetry remains as an ML-independent scheduler signal
+> under `src/placer/local_search/plateau_telemetry.py`, with the neutral default
+> path `ml_data/plateau_telemetry/plateau_telemetry.jsonl`. `ibm10` first
+> reproduced `1.0641` VALID with both audits passing. All **38** project tests,
+> full source bytecode compilation, formatting, and repository checks passed.
+
+> **Status (2026-07-15 — accepted telemetry-gated late-soft schedule):**
+> `VIVAPLACE_RUN_ID=20260715-step3-skip-dead-soft-final uv run evaluate
+> src/main.py --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all
+> hard and six-component hierarchy audits passed, in **541.67s**. It reproduced
+> every proxy from the preceding compound-relocation sweep while reducing
+> evaluator runtime by `3.27s`.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.8480/29.44s`, `ibm02=1.1221/16.20s`,
+> `ibm03=0.9991/23.30s`, `ibm04=1.0036/23.21s`,
+> `ibm06=1.1958/15.56s`, `ibm07=1.0542/27.54s`,
+> `ibm08=1.1459/30.03s`, `ibm09=0.8783/37.71s`,
+> `ibm10=1.0641/33.25s`, `ibm11=1.0085/24.99s`,
+> `ibm12=1.3106/58.64s`, `ibm13=1.0203/24.60s`,
+> `ibm14=1.2481/34.25s`, `ibm15=1.2217/44.93s`,
+> `ibm16=1.1637/32.88s`, `ibm17=1.3837/41.88s`, and
+> `ibm18=1.3806/43.27s`.
+>
+> Clean attributable telemetry showed ordinary post-swap soft relocation at
+> zero gain in 34/34 runs across the component-contract and compound full
+> suites. Production now emits an explicit budget-schedule skip and goes
+> directly to the hierarchy-gated compound pool and the productive plateau
+> escape. The removed time remains as deadline/final-audit headroom. A direct
+> reinvestment that broadened plateau escape from 384/10/4s to 512/12/6.5s was
+> also swept: it remained 17/17 VALID with all audits passing, but changed later
+> search basins and regressed to `AVG 1.1213` in `546.13s`, including
+> `ibm15=1.2338`. That breadth change was rejected. All **37** tests, touched
+> Python formatting, bytecode compilation, and `git diff --check` passed.
+
+> **Status (2026-07-15 — Step 4 current-revision relocation ranker rejected
+> offline):** collected a schema-v1 candidate trace from a complete
+> `HIER_GNN_TRACE=1 HIER_GNN_TRACE_MAX_CANDIDATES=64 uv run evaluate
+> src/main.py --all` sweep. Placement reproduced the accepted **AVG 1.1205**,
+> 17/17 VALID, 0 overlaps, and all hierarchy audits passing. Offline trace I/O
+> raised evaluator runtime to **594.48s**, confirming that candidate logging
+> must remain default-off.
+>
+> Added streaming `--operator` filtering to the dataset builder and matching
+> operator-specific training. The resulting current-flow relocation dataset
+> covers all 17 IBM designs with **1,586** proposal examples and **68** accepted
+> moves. Audit of an initially perfect result exposed post-score leakage:
+> accepted rows included `candidate_proxy`/`proxy_delta` availability in their
+> input vector. The builder now freezes relocation features before joining
+> result labels, so training and online inference see the same proposal-time
+> fields. The invalid perfect artifact was overwritten.
+>
+> On the leakage-free held-out ibm02/08/15/18 split, G4 achieved top-4 recall
+> **0.7857** and MRR **0.6858**. It lost to trace order (`0.8214` / `0.7226`),
+> the same-split MLP on top-4 (`0.8571`), and the existing proposal score
+> (`1.0000` / `0.9643`). The trainer records `rejected_offline`; no GNN
+> closed-loop sweep or production integration was justified. The corrected
+> dataset and rejected artifact remain under
+> `ml_data/beyondppa_gnn/datasets/20260715_current_full_relocation_v1/` and
+> `ml_data/beyondppa_gnn/models/20260715_g4_current_relocation_v1/`. All **37**
+> project tests, both dedicated GNN verifiers, touched Python formatting,
+> bytecode compilation, and `git diff --check` passed.
+
+> **Status (2026-07-15 — accepted compound related-soft relocation):**
+> `VIVAPLACE_RUN_ID=20260715-step2-compound-full uv run evaluate src/main.py
+> --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all hard and
+> six-component hierarchy audits passed, in **544.94s**. Versus the preceding
+> component-contract checkpoint (`AVG 1.1205`, `540.33s`), the rounded average
+> was unchanged and runtime increased by `4.61s`.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.8480/30.20s`, `ibm02=1.1221/15.94s`,
+> `ibm03=0.9991/23.73s`, `ibm04=1.0036/24.28s`,
+> `ibm06=1.1958/15.99s`, `ibm07=1.0542/26.83s`,
+> `ibm08=1.1459/30.05s`, `ibm09=0.8783/38.21s`,
+> `ibm10=1.0641/34.56s`, `ibm11=1.0085/24.38s`,
+> `ibm12=1.3106/59.48s`, `ibm13=1.0203/23.47s`,
+> `ibm14=1.2481/35.47s`, `ibm15=1.2217/43.42s`,
+> `ibm16=1.1637/33.59s`, `ibm17=1.3837/42.92s`, and
+> `ibm18=1.3806/42.40s`.
+>
+> The new plateau-triggered operator groups owned soft macros by hierarchy
+> owner and bridge soft macros by corridor signature. It preserves each
+> candidate group's relative geometry while trying pair, quartet, and full
+> translations toward cold connected components. Every member remains in its
+> own soft hierarchy region; the complete state must pass the six-component
+> contract before one exact incremental multi-soft score is evaluated. Across
+> the suite it generated 650 candidates, rejected 50 by the cheap field or
+> hierarchy gates, exact-scored 600 in 9.20s, and accepted one ibm11 move for a
+> `0.000213` exact gain. The scorer's group trial and commit matched a full
+> evaluator recomputation on ibm10 to `7.53e-10`; all **37** project tests
+> passed.
+
+> **Status (2026-07-15 — accepted per-component hierarchy contract):**
+> `VIVAPLACE_RUN_ID=20260715-step1-vector-contract uv run evaluate src/main.py
+> --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all legacy hard
+> and six-component hierarchy audits passed, in **540.33s** with normal BB and
+> DREAMPlace cache behavior. Versus the prior accepted sweep (`AVG 1.1199`,
+> `575.28s`), proxy changed by `+0.0006` and evaluator runtime fell by `34.95s`.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.8480/29.41s`, `ibm02=1.1221/17.33s`,
+> `ibm03=0.9991/22.75s`, `ibm04=1.0036/23.62s`,
+> `ibm06=1.1958/17.03s`, `ibm07=1.0542/28.65s`,
+> `ibm08=1.1459/31.64s`, `ibm09=0.8783/37.23s`,
+> `ibm10=1.0641/31.93s`, `ibm11=1.0087/25.11s`,
+> `ibm12=1.3106/58.41s`, `ibm13=1.0203/24.60s`,
+> `ibm14=1.2481/34.16s`, `ibm15=1.2217/42.70s`,
+> `ibm16=1.1637/33.60s`, `ibm17=1.3837/41.53s`, and
+> `ibm18=1.3806/40.61s`.
+>
+> Seed candidates are now feasible only when hard-cluster compactness, worst
+> cluster spread, nearest-neighbor impurity, hierarchy-edge stretch,
+> owned-soft distance, and bridge-soft corridor distance each stay within an
+> independent absolute-or-relative slack from legalized `initial.plc`.
+> Production still chooses the lowest exact-proxy candidate inside that set.
+> The selected seed anchors the same six-component contract at pass boundaries,
+> inside small-design polish, and at final rollback; the older hard-cluster
+> audit remains additive. This changed the selected basin on several designs,
+> including the `ibm01` improvement, while rejecting proxy-favorable seeds or
+> post-search states that worsened an individual component (most often
+> nearest-neighbor impurity). All **35** project tests passed.
+
 > **Status (2026-07-15 — accepted constraint-graph seed and exact hard-swap batching):**
 > `uv run evaluate src/main.py --all` completed at **AVG 1.1199**, 17/17
 > VALID, 0 overlaps, all final hierarchy audits passed, in **575.28s** with
@@ -201,6 +344,30 @@ Target: beat RePlAce avg of 1.4578.
 > (`1.8080/0.15792`) while BB-off favored raw proxy (`1.6146/0.24219`); both
 > lost to `initial.plc`. This focused A/B supports retaining production
 > `use_bb=1`; it is not a replacement for the accepted full-suite result.
+
+> **Ablation (2026-07-15 — Zhang-Hager line search rejected and removed):** A
+> cache-separated active trial paired the production short-BB initial step with
+> the Zhang-Hager non-monotone Armijo condition. It used the paper's
+> `eta=0.85` and `delta=1e-4`, half-step backtracking, and a five-backtrack
+> bound. A bounded-search restart bug found during optimizer testing was fixed
+> before placement comparison: the corrected restart retained a smaller next
+> trial rather than repeatedly retrying the same oversized fallback. On the
+> two ibm10 DREAMPlace stages, this reduced the trace from 1,942 objective/
+> gradient trials, 1,342 backtracks, and 264 failures to 681 trials, 81
+> backtracks, and 5 failures across 600 optimizer updates.
+>
+> The corrected placement quality still failed decisively. On `ibm04`, the
+> production short-BB cache control produced seed proxy/hierarchy
+> `1.0925/0.21082`, selected DREAMPlace, and finished at **1.0036 VALID**;
+> Zhang-Hager produced `2.0536/0.27866`, lost seed selection, and finished at
+> **1.0314 VALID**. On `ibm10`, the short-BB seed was `1.8080/0.15792` versus
+> Zhang-Hager's `2.3199/0.28609`; the constraint-graph seed masked the
+> regression, so both final placements were **1.0641 VALID**. Fresh
+> Zhang-Hager global-placement times were `10.4s` on ibm04 and `13.7s` on
+> ibm10, versus the earlier cache-bypassed short-BB controls of `7.7s` and
+> `12.1s`. The line-search implementation, cache revision, bootstrap patch,
+> preflight assertions, and dedicated tests were therefore deleted. Production
+> remains the pinned one-step short-BB Nesterov path.
 
 > **Status (2026-07-15 — reproducible runtime, attributable scheduling, and
 > repository cleanup):** Added a clean-checkout DREAMPlace bootstrap pinned

@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Mapping
 from typing import Any, Callable
 
 import numpy as np
 import torch
 
-from placer.local_search.hierarchy_quality import hierarchy_quality_vector
+from placer.local_search.hierarchy_quality import (
+    hierarchy_quality_vector,
+    hierarchy_vector_contract,
+    hierarchy_vector_limits,
+)
 from utils.config import HAS_NUMBA, _numba_njit
 
 if HAS_NUMBA:
@@ -57,16 +62,49 @@ def select_seed_candidate(
     hierarchy_first: bool,
     absolute_slack: float,
     relative_slack: float,
+    component_absolute_slack: Mapping[str, float] | None = None,
+    component_relative_slack: float = 0.0,
+    component_reference_name: str = "initial",
 ) -> dict[str, object]:
-    """Select a seed using hierarchy feasibility first and proxy second."""
+    """Select the lowest proxy seed inside the active hierarchy contract."""
     if not rows:
         raise ValueError("seed portfolio is empty")
+    eligible = rows
+    if component_absolute_slack is not None:
+        reference = next(
+            (row for row in rows if str(row["name"]) == str(component_reference_name)),
+            min(rows, key=lambda row: (float(row["score"]), str(row["name"]))),
+        )
+        reference_vector = reference.get("hierarchy_vector")
+        if not isinstance(reference_vector, Mapping):
+            raise ValueError("component hierarchy contract requires complete seed vectors")
+        limits = hierarchy_vector_limits(
+            reference_vector,
+            component_absolute_slack,
+            component_relative_slack,
+        )
+        eligible = []
+        for row in rows:
+            vector = row.get("hierarchy_vector")
+            if not isinstance(vector, Mapping):
+                raise ValueError("component hierarchy contract requires complete seed vectors")
+            passed, violations = hierarchy_vector_contract(vector, limits)
+            row["hierarchy_contract_eligible"] = bool(passed)
+            row["hierarchy_contract_violations"] = violations
+            row["hierarchy_contract_reference"] = str(reference["name"])
+            row["hierarchy_contract_limits"] = limits
+            if passed:
+                eligible.append(row)
+        if not eligible:
+            eligible = [reference]
     if not hierarchy_first:
-        return min(rows, key=lambda row: (float(row["score"]), str(row["name"])))
-    best_quality = min(float(row["hierarchy_composite"]) for row in rows)
+        return min(eligible, key=lambda row: (float(row["score"]), str(row["name"])))
+    best_quality = min(float(row["hierarchy_composite"]) for row in eligible)
     slack = max(float(absolute_slack), abs(best_quality) * float(relative_slack))
-    eligible = [row for row in rows if float(row["hierarchy_composite"]) <= best_quality + slack]
-    return min(eligible, key=lambda row: (float(row["score"]), str(row["name"])))
+    hierarchy_band = [
+        row for row in eligible if float(row["hierarchy_composite"]) <= best_quality + slack
+    ]
+    return min(hierarchy_band, key=lambda row: (float(row["score"]), str(row["name"])))
 
 
 def run_seed_portfolio(
@@ -476,6 +514,8 @@ def run_seed_portfolio(
             hierarchy_first=hierarchy_first,
             absolute_slack=float(const.HIER_SEED_HIERARCHY_ABS_SLACK),
             relative_slack=float(const.HIER_SEED_HIERARCHY_REL_SLACK),
+            component_absolute_slack=const.HIER_VECTOR_CONTRACT_ABS_SLACK,
+            component_relative_slack=float(const.HIER_VECTOR_CONTRACT_REL_SLACK),
         )
         rows.sort(
             key=lambda row: (
@@ -488,11 +528,13 @@ def run_seed_portfolio(
             row["selected"] = row is selected
         summary = ", ".join(
             f"{r['name']}={float(r['score']):.4f}/hq={float(r['hierarchy_composite']):.5f}"
+            f"/contract={int(bool(r.get('hierarchy_contract_eligible', True)))}"
             for r in rows
         )
+        reference_name = str(selected.get("hierarchy_contract_reference", "initial"))
         logger(
             f"  [hier] seed portfolio prescore: {summary}; selected={selected['name']}; "
-            f"hierarchy_first={int(hierarchy_first)}"
+            f"hierarchy_first={int(hierarchy_first)}; contract_reference={reference_name}"
         )
         return selected["hard"], selected["soft"], float(selected["score"]), rows
 

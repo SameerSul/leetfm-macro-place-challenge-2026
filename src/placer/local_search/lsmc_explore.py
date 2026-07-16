@@ -7,7 +7,6 @@ import os
 import numpy as np
 
 from placer.legalize.spiral import _will_legalize
-from placer.local_search.gnn_trace import log_gnn_event
 from placer.scoring.wirelength import _build_wl_cache
 from utils import constants as const
 
@@ -559,29 +558,6 @@ def _selected_subgraph_connected(
     return len(seen) == len(selected_set)
 
 
-def _log_partial_reject(
-    benchmark_name,
-    cid: int,
-    reason: str,
-    *,
-    trace: dict | None = None,
-) -> None:
-    """Emit a low-cost trace row for a generated-but-rejected partial split."""
-    payload = {
-        "benchmark": benchmark_name,
-        "operator": "coldspot_tightening",
-        "kind": "partial_frontier_reject",
-        "cluster": int(cid),
-        "partial_frontier": True,
-        "accepted": False,
-        "committed": False,
-        "rejection_reason": str(reason),
-    }
-    if trace:
-        payload.update(trace)
-    log_gnn_event("hier_coldspot_partial_reject", **payload)
-
-
 def _select_partial_frontier(
     members: np.ndarray,
     sizes: np.ndarray,
@@ -856,17 +832,6 @@ def _partial_frontier_candidate(
         members, sizes, hard_xy, ax, ay, capacity, hard_edges
     )
     if selected.size == 0:
-        _log_partial_reject(
-            benchmark_name,
-            int(cid),
-            str(stats.get("partial_reject_reason", "selector")),
-            trace={
-                "partial_capacity": float(capacity),
-                "partial_cold_cells": int(cold_cells),
-                "member_count": int(members.size),
-                **stats,
-            },
-        )
         return None
     moved_area = float(np.sum(sizes[selected, 0] * sizes[selected, 1]))
     win_microns = float(np.sqrt(max(moved_area, 1.0) / max(target_density, 1e-3)))
@@ -886,19 +851,6 @@ def _partial_frontier_candidate(
         rng,
     )
     if not bool(np.any(kicked[selected] != hard_xy[selected])):
-        _log_partial_reject(
-            benchmark_name,
-            int(cid),
-            "no_movement",
-            trace={
-                "partial_moved_hard": int(selected.size),
-                "partial_selected_area": float(moved_area),
-                "partial_capacity": float(capacity),
-                "partial_cold_cells": int(cold_cells),
-                "member_count": int(members.size),
-                **stats,
-            },
-        )
         return None
     legal_hard = _will_legalize(
         kicked,
@@ -918,20 +870,6 @@ def _partial_frontier_candidate(
         selected,
     )
     if not split_ok:
-        _log_partial_reject(
-            benchmark_name,
-            int(cid),
-            str(split_stats.get("partial_pred_reject_reason", "split_quality")),
-            trace={
-                "partial_moved_hard": int(selected.size),
-                "partial_selected_area": float(moved_area),
-                "partial_capacity": float(capacity),
-                "partial_cold_cells": int(cold_cells),
-                "member_count": int(members.size),
-                **stats,
-                **split_stats,
-            },
-        )
         return None
 
     soft_new = None

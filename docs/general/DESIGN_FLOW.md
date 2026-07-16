@@ -26,11 +26,12 @@ breadth, medium/large soft-continuation scheduling, and strict final hierarchy
 audit rollback with audit-aware local relief plus large-design graph-tension
 opportunity ordering, prepared Numba routing/legalization kernels, and batched
 soft relocation/swap scoring, exact batched hard-hard/hard-soft scoring, and a
-guarded constraint-graph legalization candidate for `initial.plc`:
+guarded constraint-graph legalization candidate for `initial.plc`, plus the
+per-component seed/final hierarchy contract:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1199  17/17 VALID  0 overlaps  575.28s
+AVG 1.1205  17/17 VALID  0 overlaps  542.58s
 ```
 
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7252`,
@@ -72,10 +73,9 @@ HIER_SWAP_GRAPH_FALLBACK_BUDGET_S (default 2.5)
 Graph swap guidance is off in score terms unless you set
 `HIER_GRAPH_TENSION_SWAP_WEIGHT > 0` and/or `HIER_SWAP_GRAPH_DELTA_WEIGHT >
 0.0`, so current runs remain equivalent when those are unset.
-`scripts/gnn/analyze_graph_tension.py` summarizes trace rows for this signal.
-Candidate traces now include graph-edge deltas for coldspot and decompression:
+Coldspot and decompression compute graph-edge deltas for deterministic ranking:
 edge stretch, corridor congestion, weighted edge length, and combined graph
-delta. These are used for analysis only, not commit gates.
+delta. These do not change commit gates.
 The default-off `HIER_COLDSPOT_GRAPH_DELTA_RANK` hook can add a
 proxy-equivalent penalty for graph-worsening coldspot candidates before the
 normal exact-proxy rank. It remains opt-in because focused `ibm10`/`ibm12`
@@ -132,7 +132,7 @@ flowchart TD
     C --> D[Classify soft macros as owned or bridge]
     D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
     E --> F[Cluster-consecutive hard legalization]
-    F --> E1[Exact-prescore seed portfolio + hierarchy vector]
+    F --> E1[Exact-prescore seed portfolio + per-component hierarchy contract]
     F --> F1[Constraint-graph legalized initial.plc alternative]
     F1 --> E1
     E1 --> G[Default-order safety legalization]
@@ -147,9 +147,12 @@ flowchart TD
     Y --> P{HIER_POST_RELOC_PROPOSE_ALL enabled?}
     P -->|Yes| Q[Post-swap hard propose-all polish]
     P -->|No| W
-    Q --> X[Post-swap soft relocation polish]
+    Q --> X[Telemetry scheduler skips duplicate ordinary post-swap soft pass]
     W --> X
-    X --> X1{Strong soft repair scheduled?}
+    X --> C1{Post-soft plateau and spare budget?}
+    C1 -->|Yes| C2[Compound related-soft relocation with final-state exact acceptance]
+    C1 -->|No| X1
+    C2 --> X1{Strong soft repair scheduled?}
     X1 -->|Yes| X2[Plateau/component-aware strong soft repair]
     X1 -->|No| L
     X2 --> L[Coldspot cluster tightening with optional ego-net candidates]
@@ -157,31 +160,49 @@ flowchart TD
     Z --> Z2{Small-design polish gated?}
     Z2 -->|Yes| Z3[Low-confidence hierarchy release + exact polish]
     Z2 -->|No| M
-    Z3 --> M[Final hierarchy audit + rollback checkpoint]
+    Z3 --> M[Final hard + rich-vector hierarchy audit + rollback checkpoint]
     M --> N[Return macro centers]
 ```
 
 Every return path passes through a final in-bounds clamp for movable macros.
 `PlacementState` carries hard/soft coordinates and exact proxy through the
-pipeline; each pass returns a `PassResult` summary, optionally written to the
-GNN trace logger (`HIER_GNN_TRACE=1`, default off).
+pipeline; each pass returns a `PassResult` summary used by the deterministic
+scheduler and buffered plateau telemetry.
 
 The seed portfolio records a complete hierarchy vector for every candidate:
 hard-cluster compactness and worst spread, nearest-neighbor cluster impurity,
 weighted hierarchy-edge stretch, owned-soft distance, and bridge-soft corridor
-distance. Production still advances the lowest exact-proxy seed. The
+distance. Each component is independently constrained relative to legalized
+`initial.plc`, and production advances the lowest exact-proxy eligible seed.
+The selected seed then anchors the same component limits during relief and the
+final rollback audit. The
 `HIER_SEED_HIERARCHY_SELECT=1` experiment instead uses proxy only within the
 best hierarchy-quality band; it is default-off after the ibm10 hierarchy win
 caused a large proxy regression.
+
+The compound soft pass is a bounded plateau escape between ordinary post-swap
+hard cleanup and later soft cleanup. It forms related owned-soft or
+same-corridor bridge groups, preserves their relative geometry, and tests
+pair, quartet, and full-group translations toward cold connected components.
+Every member stays inside its own hierarchy region. A candidate reaches exact
+incremental scoring only after the complete group state passes the rich-vector
+contract, and only the best complete state can commit.
+
+The ordinary post-swap soft relocation pass is no longer executed. Two clean
+attributable full suites at the current hierarchy contract produced zero gain
+in 34 runs, while the broader plateau escape immediately after it remained
+productive. The scheduler records the skip reason and retains the saved time as
+deadline and final-audit headroom. A broader 512-hot/12-target reinvestment was
+legal but changed later search basins and regressed the full-suite average, so
+the accepted plateau pool remains 384 hot softs and 10 targets under a
+4-second cap.
 
 Production adds one guarded alternative derived from `initial.plc`.
 `constraint_graph.py` assigns each overlap to a horizontal or vertical
 separation DAG, projects centers inside longest-path earliest/latest bounds,
 and then runs the ordinary default-order spiral safety pass. The ordinary
 initial seed remains in the portfolio, so the graph alternative can only change
-the flow when its exact proxy wins. It was selected on ibm10, ibm12, and
-ibm14-18 in the accepted full sweep; every other benchmark followed its prior
-seed and reproduced its prior proxy.
+the flow when it satisfies the component contract and its exact proxy wins.
 
 Region swaps exact-score hard-hard and hard-soft sets in batches when at least
 two candidates share the first hard endpoint. Candidate routing, hard blockage,
@@ -264,55 +285,23 @@ HIER_MEDIUM_SOFT_TOP_K=768
 HIER_MEDIUM_SOFT_TARGETS=14
 ```
 
-A default-off coldspot GNN selector can be enabled with runtime environment
-variables, not constants:
+## Structural Ordering And Telemetry
 
-```text
-HIER_GNN_COLDSPOT_SELECT=1
-HIER_GNN_COLDSPOT_MODEL=path/to/model.pt
-HIER_GNN_COLDSPOT_POLICY=0
-HIER_GNN_COLDSPOT_POLICY_MODEL=path/to/model.pt
-HIER_GNN_CLUSTER_MODE=0
-HIER_GNN_COLDSPOT_KICKS=8
-HIER_GNN_COLDSPOT_TOP_K=1
-HIER_GNN_COLDSPOT_CLUSTER_TOP_K=1
-HIER_GNN_COLDSPOT_POLICY_TOP_K=1
-HIER_GNN_COLDSPOT_ORACLE=0
-HIER_COLDSPOT_GNN_MAX_CLUSTERS=1
-```
+Candidate ordering is deterministic. The default-off local structural term can
+reorder existing relocation candidates without creating a separate placement
+or acceptance path. Coldspot generates its bounded whole-cluster variants,
+refines them, then exact-ranks the completed outcomes with deterministic graph
+tie-breaks.
 
-When enabled, the same heuristic coldspot round still selects the hot cluster
-and cold window. The placer then generates a no-op candidate plus several kicked
-outcomes for that selected cluster/window and asks a ranker to reorder them.
+The learned candidate ranker, coldspot selectors, candidate-level trace logger,
+offline training tools, and model/dataset artifacts were removed after
+repeatedly regressing quality or runtime. The remaining pass-level plateau
+telemetry is independent of ML and is written by default to
+`ml_data/plateau_telemetry/plateau_telemetry.jsonl`. It can be redirected with
+`HIER_PLATEAU_TRACE_PATH` and analyzed with
+`scripts/analyze_plateau_telemetry.py`.
 
-`HIER_GNN_CLUSTER_MODE=1` shifts GNN usage from macro-level ranking to
-cluster-level coldspot ranking. In this mode, `HIER_GNN_RANK=1` is interpreted
-through `coldspot_cluster` policy only; relocation and swap re-ordering remain off.
-`HIER_GNN_COLDSPOT_CLUSTER_TOP_K` (default `1`) controls how many re-ordered coldspot
-cluster candidates are promoted into the top selector slice before exact scoring.
-
-With `HIER_GNN_COLDSPOT_SELECT=1`, exact scoring stays on the refined candidates,
-while `HIER_GNN_COLDSPOT_POLICY=1` can rank raw proposals first and send only
-the top policy proposals into the expensive local-refine path. The normal hard
-legality, hierarchy-quality, total-budget, and exact-proxy gates remain
-mandatory. When either selector is active, post-coldspot micro-shift replay is
-always skipped so the selector replaces that local refinement step during
-diagnostics. Move
-`HIER_COLDSPOT_GNN_MAX_CLUSTERS` above `1` to allow multi-source
-candidate expansion.
-`HIER_GNN_COLDSPOT_ORACLE=1` is for trace collection: it exact-scores all
-generated candidates in the pool, but with selector disabled it still commits
-only the legacy first generated kick, preserving default placement behavior.
-
-## BeyondPPA And GNN Hooks
-
-The current BeyondPPA integration is hierarchy-integrated: a local structural
-term can reorder existing relocation candidates, and production keeps that
-ranking disabled by default. It does not create a separate placement path.
-
-The current production GNN behavior is still non-mutating. Trace logging is
-controlled by runtime environment variables, not `src/utils/constants.py`.
-Enable it with:
+Useful commands remain:
 
 ```bash
 uv run evaluate src/main.py -b ibm10                          # single benchmark
@@ -363,5 +352,5 @@ and density contributions, and scores the union bbox. The operation restores
 the placement cache per row and leaves all committed grids unchanged.
 
 See [OBJECTIVES.md](OBJECTIVES.md) for the structural objectives behind these
-passes, and [`../ml_nn/beyondppa_results/`](../ml_nn/beyondppa_results/) for
-the active GNN trace and dataset schemas.
+passes and [PROGRESS.md](PROGRESS.md) for the historical learned-ranking
+experiments and their rejection results.

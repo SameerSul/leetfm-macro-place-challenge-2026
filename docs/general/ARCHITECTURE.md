@@ -19,7 +19,9 @@ benchmark input
        (grouped DREAMPlace, legalized initial.plc, DP/initial blends,
         radial expansion, synthetic-clearance push-apart, and a
         constraint-graph-legalized initial.plc; every candidate gets a complete
-        hierarchy vector and lowest exact proxy enters relief)
+        hierarchy vector, the vector is constrained component-by-component
+        relative to legalized initial.plc, and the lowest eligible exact proxy
+        enters relief)
   -> congestion-expanded hard/soft hierarchy regions
   -> exact-gated local micro-shift polish
   -> exact-gated cluster decompression with composite hierarchy quality
@@ -30,7 +32,14 @@ benchmark input
        - optional micro-shift replay after each swap round
   -> post-swap micro-shift replay
   -> post-swap hard propose-all relocation with spare-budget additive candidates
-  -> post-swap soft relocation with spare-budget additive candidates
+  -> telemetry scheduler skips the duplicate ordinary post-swap soft pass
+       - two clean attributable full suites produced 0 accepts in 34 runs
+       - its time remains as deadline and final-audit headroom
+  -> plateau-triggered compound related-soft relocation
+       - keep every member inside its individual hierarchy region
+       - preserve group-relative geometry while testing pair/quartet/full-group shifts
+       - enforce the six-component hierarchy contract before scoring
+       - exact-score and accept only the completed multi-soft state
   -> plateau- and component-aware strong soft repair when telemetry shows useful spare work
        - medium/large soft continuation runs only when structural shape and prior soft gain justify it
   -> coldspot tightening:
@@ -42,7 +51,7 @@ benchmark input
        - expand local graph border through adjacent open cold cells
        - apply hard-core padding
        - run graph-bordered local swaps and hard/soft relocations
-       - graph-rank generated outcomes when the GNN selector is off
+       - exact-rank refined outcomes with deterministic graph tie-breaks
        - exact proxy + hierarchy-quality gate before commit
        - large designs can rank hot clusters by hierarchy graph tension
   -> graph-local fallback when no coldspot kick commits:
@@ -63,6 +72,8 @@ benchmark input
   -> gain-controlled passes: stop repeats when latest exact gain <= HIER_PLATEAU_PROXY_GAIN
   -> final scorer-compatible hard legality margin audit
   -> final hierarchy-quality audit against the selected hierarchy seed:
+       - enforce both the legacy hard-cluster budget and independent limits for
+         all six rich-vector components
        - roll back to the best saved audit-passing checkpoint when needed
   -> final legality and bounds checks
   -> return center coordinates for hard and soft macros
@@ -94,9 +105,10 @@ even when a flatter, more-spread placement would score lower proxy. The
 structural reasoning behind this is in [OBJECTIVES.md](OBJECTIVES.md).
 
 The structural objectives that drive the hierarchy flow are documented in
-[OBJECTIVES.md](OBJECTIVES.md). BeyondPPA-style deterministic structural
-ranking and GNN trace logging are documented in
-[../ml_nn/beyondppa_results/](../ml_nn/beyondppa_results/).
+[OBJECTIVES.md](OBJECTIVES.md). The retired learned-GNN stack is preserved only
+as historical experiment results in [PROGRESS.md](PROGRESS.md); its inference,
+candidate tracing, offline training, artifacts, and dedicated documentation
+are no longer part of the system.
 
 Current verified full sweep with strict hierarchy-audit rollback,
 audit-aware hard swap gating, component-aware region expansion/decompression,
@@ -105,11 +117,12 @@ micro-shift replay, stronger opportunity gates, component-aware scheduling,
 post-coldspot small-design polish with subpass audit restore, no-release
 low-net soft/SS breadth, medium/large soft-continuation scheduling, prepared
 Numba routing/legalization kernels, exact batched hard-hard/hard-soft scoring,
-batched soft relocation/swap scoring, and the guarded constraint-graph seed:
+batched soft relocation/swap scoring, the guarded constraint-graph seed, and
+the per-component seed/final hierarchy contract:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1199  17/17 VALID  0 overlaps  575.28s
+AVG 1.1205  17/17 VALID  0 overlaps  542.58s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
@@ -118,8 +131,13 @@ several designs after late proxy-improving relief. A strict final-rollback-only
 audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
 reached `AVG 1.1664`; the pre-optimization BB-on verification was
 `AVG 1.1653` cold (`AVG 1.1652` with cache hits). The prior optimized
-normal-cache sweep was `AVG 1.1575`; the accepted constraint-graph/batched-swap
-sweep is `AVG 1.1199`. The prior best same-path sweep was
+normal-cache sweep was `AVG 1.1575`; the constraint-graph/batched-swap sweep
+was `AVG 1.1199`, the component-contract sweep was `AVG 1.1205` in `540.33s`,
+and the compound-relocation sweep was `AVG 1.1205` in `544.94s`.
+The learned-GNN removal sweep preserves every telemetry-scheduled production
+score at `AVG 1.1205` in `542.58s`; its candidate rankers, selectors, tracing,
+offline tooling, tests, and active schemas are gone.
+The prior best same-path sweep was
 `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
 proxy-improving states need to be discarded at finalization. Earlier Stage-6
@@ -145,10 +163,9 @@ HIER_SWAP_GRAPH_FALLBACK_BUDGET_S=2.5
 These controls are diagnostic/ranking only in default mode; no candidate is
 rejected for violating the mask, and final commit still requires hard legality,
 hierarchy quality, exact proxy gain, and the active audit checks.
-Trace analysis for this signal lives in `scripts/gnn/analyze_graph_tension.py`.
-Coldspot and decompression candidates also log graph-edge candidate deltas:
-weighted edge stretch, corridor congestion change, weighted edge-length change,
-and a combined graph delta. These are diagnostic/ranking features only; they do
+Coldspot and decompression use graph-edge candidate deltas internally: weighted
+edge stretch, corridor congestion change, weighted edge-length change, and a
+combined graph delta. These are deterministic ranking features only; they do
 not alter acceptance.
 The default-off `HIER_COLDSPOT_GRAPH_DELTA_RANK` hook can use that combined
 graph delta during exact coldspot candidate ordering by adding a small
@@ -219,7 +236,7 @@ not comparable to current numbers.
 | `src/placer/local_search/region_expand.py` | Expands hot cluster regions toward colder congestion bands. |
 | `src/placer/local_search/lsmc_explore.py` | Coldspot kick candidate generation. |
 | `src/placer/local_search/fields.py` | Congestion/coldspot fields used by relocation and coldspot tightening. |
-| `src/placer/local_search/gnn_trace.py` | JSONL trace + plateau telemetry writers (diagnostic only). |
+| `src/placer/local_search/plateau_telemetry.py` | Buffered schema-v2 pass-yield telemetry with run/revision provenance. |
 | `src/placer/scoring/exact.py` | Exact TILOS proxy wrapper. |
 | `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves, including Numba-JIT bbox re-smoothing. |
 | `src/placer/legalize/spiral.py` | Hard-macro legalization, with cluster-consecutive order support. |
@@ -260,7 +277,9 @@ Lipschitz step. A clean checkout can reproduce the local CUDA 12.1 build with
 `scripts/dreamplace/bootstrap.sh all`; `scripts/dreamplace/bootstrap.sh preflight`
 checks an existing install and now rejects builds without BB-Nesterov support.
 BB and cache reads are fixed production behavior rather than runtime-gated
-options.
+options. A bounded Zhang-Hager non-monotone Armijo trial was evaluated on
+ibm04 and ibm10, regressed DREAMPlace seed quality on both, and was removed;
+the focused numbers remain in `PROGRESS.md`.
 
 ### 3. Seed Portfolio Selection
 
@@ -271,12 +290,15 @@ constraint-graph legalization of `initial.plc`: overlapping pairs become
 horizontal or vertical separation edges, both graphs stay acyclic under stable
 seed-coordinate order, and longest-path earliest/latest bounds project each
 movable macro toward its original coordinate. The ordinary initial candidate
-remains in the same portfolio, so this alternative advances only when its exact
-proxy is lower. All candidates are exact-scored; the lowest-proxy seed enters
-hierarchy relief. Each seed also records a richer
+remains in the same portfolio. All candidates are exact-scored and record a
+richer
 hierarchy vector covering mean and worst hard-cluster spread, nearest-neighbor
 cluster impurity, weighted inter-cluster edge stretch, owned-soft distance, and
-bridge-soft corridor distance. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
+bridge-soft corridor distance. Each vector component must remain within its
+independent absolute-or-relative slack from legalized `initial.plc`; the
+lowest-proxy eligible seed enters hierarchy relief. The selected seed becomes
+the reference for the same six-component contract at pass checkpoints and
+final rollback. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
 secondary choice inside the best hierarchy-quality band. That policy remains
 default-off: on the 2026-07-15 ibm10 experiment it improved seed composite
 `0.29168 -> 0.16328` but regressed final proxy `1.1778 -> 1.5281`.
@@ -393,20 +415,17 @@ hierarchy-quality audit against the selected seed. It rolls back to the best
 saved audit-passing checkpoint if the final state fails. The former broad
 survivor pool was removed after 636 telemetry records showed no proxy gain.
 
-### 12. Trace Logging and Plateau Telemetry
+### 12. Plateau Telemetry
 
-No learned ranker is active in production. `HIER_GNN_TRACE=1` writes
-schema-v1 JSONL candidate traces (relocation, swaps, decompression, coldspot)
-for offline GNN experiments; it does not change placement output. Candidate
-schema v1 remains compatible with the existing dataset builder while adding
-`run_id`, `code_revision`, and `pid` provenance fields.
-The hierarchy flow always buffers schema-v2 pass-level telemetry (proxy
-before/after, elapsed time, accept rate, plateau flag, and the same provenance).
-`HIER_PLATEAU_TRACE_PATH` can redirect it. `scripts/analyze_plateau_telemetry.py`
-filters by run, revision,
-or benchmark and reports aggregate yield and conservative skip candidates. See
-[`../ml_nn/beyondppa_results/`](../ml_nn/beyondppa_results/) for the current
-state of GNN-assisted candidate ranking experiments — all are default-off.
+The hierarchy flow always buffers schema-v2 pass-level telemetry: proxy
+before/after, elapsed time, accept rate, plateau flag, run id, code revision,
+and process id. The default output is
+`ml_data/plateau_telemetry/plateau_telemetry.jsonl`;
+`HIER_PLATEAU_TRACE_PATH` can redirect it. Candidate-level trace logging and
+learned ranking were removed because they added overhead and repeatedly failed
+to improve placement. `scripts/analyze_plateau_telemetry.py` filters the
+remaining scheduling telemetry by run, revision, or benchmark and reports
+aggregate yield and conservative skip candidates.
 
 ## Scoring and Legality
 
@@ -454,6 +473,9 @@ HIER_GROUP_WEIGHT=8
 HIER_SEED_BLEND_ALPHAS=0.35,0.65   HIER_SEED_EXPANSION_FRAC=0.06
 HIER_SEED_CLEARANCE_FRAC=0.08      HIER_SEED_CLEARANCE_ITERS=3
 HIER_SEED_CLEARANCE_AREA_PCT=97
+HIER_VECTOR_CONTRACT_REL_SLACK=0.15
+HIER_VECTOR_CONTRACT_ABS_SLACK={compactness:0.005,worst_spread:0.015,
+  neighbor_impurity:0.05,edge_stretch:0.015,owned_soft:0.015,bridge_soft:0.015}
 ```
 
 **Regions and relocation**
@@ -466,10 +488,16 @@ HIER_PROPOSAL_CONGESTION_WEIGHT=2.5   HIER_PROPOSAL_DENSITY_WEIGHT=1.0
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08
 HIER_RELOC_PROPOSE_HOT_K=32           HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
 HIER_POST_RELOC_PROPOSE_ALL=auto      HIER_POST_RELOC_PROPOSE_TOP_M=16
-HIER_POST_SOFT_RELOC_TOP_K=256        HIER_POST_SOFT_RELOC_MIN_GAIN=0.0005
+HIER_COMPOUND_SOFT_BUDGET_S=4         HIER_COMPOUND_SOFT_MIN_SPARE_S=5
+HIER_COMPOUND_SOFT_TOP_GROUPS=4       HIER_COMPOUND_SOFT_GROUP_SIZE=6
+HIER_COMPOUND_SOFT_COLD_PCT=35        HIER_COMPOUND_SOFT_ANCHORS=2
+HIER_COMPOUND_SOFT_SHIFT_FRACTIONS=0.25,0.5,1.0
+HIER_COMPOUND_SOFT_MIN_FIELD_DROP=0.02 HIER_COMPOUND_SOFT_MIN_GAIN=0.00005
+HIER_PLATEAU_ESCAPE_BUDGET_S=4        HIER_PLATEAU_ESCAPE_SOFT_TOP_K=384
+HIER_PLATEAU_ESCAPE_SOFT_TARGETS=10
 ```
 
-**Structural candidate ordering (BeyondPPA, opt-in)**
+**Deterministic structural candidate ordering (opt-in)**
 ```text
 HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0   HIER_KEEP_OUT_WEIGHT=0.2
 HIER_GRID_ALIGN_WEIGHT=0.2             HIER_NOTCH_WEIGHT=0.6
@@ -505,9 +533,6 @@ candidate, and expands the pre-margin local border through adjacent open cold
 cells before applying the hard-core pad. This lets finalized cluster locations
 use nearby coldspots for local relief while preserving swap and soft-locked
 relocation room.
-`HIER_GNN_COLDSPOT_POLICY=1` can rank raw candidate proposals before this
-refinement step and limit how many raw candidates are refined. `HIER_GNN_COLDSPOT_SELECT=1`
-adds a second opt-in exact-score stage over the refined candidates.
 The graph supplies coldspot-local relocation target pools and gates relocation
 targets by graph mask; default candidate commitment uses exact-proxy-ranked
 refined outcomes.
@@ -539,11 +564,9 @@ whose source cluster radius, bbox radius, or moved-vs-remaining separation
 would grow beyond the configured ratios. Additional cheap gates reject majority
 splits, splits that leave too few source macros behind, disconnected selected
 subsets when low-fanout local edges are available, and high selected-vs-remaining
-cut ratios. When `HIER_GNN_TRACE=1`, generated-but-rejected partial candidates
-emit `hier_coldspot_partial_reject` rows with the reject reason and shape/connectivity
-stats. Majority/remaining-macro limits are applied during subset construction,
-not only after selection, so the partial generator can try smaller frontier
-groups before rejecting. When no coldspot kick commits, the
+cut ratios. Majority/remaining-macro limits are applied during subset
+construction, not only after selection, so the partial generator can try
+smaller frontier groups before rejecting. When no coldspot kick commits, the
 graph-local fallback runs the same bordered swaps and relocations on the
 current placement for the hottest eligible clusters.
 Production then reruns `_micro_shift_polish()` once more after coldspot
@@ -582,11 +605,9 @@ HIER_COLDSPOT_WHOLE_VARIANTS=5      HIER_COLDSPOT_ANCHOR_VARIANTS=3
 HIER_COLDSPOT_SOFT_ONLY=0           HIER_COLDSPOT_PARTIAL_FRONTIER=0
 ```
 
-**Trace / telemetry (runtime env vars, not constants)**
+**Plateau telemetry (runtime env vars, not constants)**
 ```text
-HIER_GNN_TRACE=0                 HIER_GNN_TRACE_DIR=ml_data/beyondppa_gnn
-HIER_GNN_TRACE_MAX_CANDIDATES=512
-HIER_PLATEAU_TRACE_DIR=ml_data/beyondppa_gnn/plateau
+HIER_PLATEAU_TRACE_DIR=ml_data/plateau_telemetry
 HIER_PLATEAU_TRACE_PATH=<optional output override>
 VIVAPLACE_RUN_ID=<optional attributable run id>
 ```
@@ -594,6 +615,6 @@ VIVAPLACE_RUN_ID=<optional attributable run id>
 Experiments that were tried and not promoted (full recursive bisection,
 cluster-room/bridge-corridor modeling, broad weak-hot region reshape, early
 strong-soft repair, early swap-lite, deterministic hot-cluster coldspot
-selection, GNN candidate reordering at full-suite scale) are recorded in
+selection, learned candidate reordering at full-suite scale) are recorded in
 `ISSUES.md` and `PROGRESS.md`, not here — this document describes only the
 active system.

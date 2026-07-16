@@ -1,6 +1,6 @@
 # Current Issues
 
-Last revised: 2026-07-15.
+Last revised: 2026-07-16.
 
 This file tracks unresolved work in the hierarchy-only VivaPlace system. The
 complete experiment history, including rejected proxy-path work, lives in
@@ -13,36 +13,35 @@ pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1199  17/17 VALID  0 overlaps  575.28s
+AVG 1.1205  17/17 VALID  0 overlaps  542.58s
 ```
 
 All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
 4/4 VALID, zero overlaps, all audits passed, in 232.41s.
 
-No learned model is enabled in production. Structural candidate ordering and
-GNN inference hooks remain default-off; exact proxy, hard legality, bounds,
-fixed-macro immobility, hierarchy regions, and hierarchy-quality gates remain
-authoritative.
+The learned-ranking stack has been removed. Candidate ordering is deterministic;
+exact proxy, hard legality, bounds, fixed-macro immobility, hierarchy regions,
+and hierarchy-quality gates remain authoritative.
 
 ## Open Work
 
-### 1. Calibrate hierarchy-aware seed selection
+### 1. Calibrate the production hierarchy contract
 
 Every seed now records hard-cluster compactness and worst spread, cluster
-impurity, hierarchy-edge stretch, and owned/bridge soft distances. The
-hierarchy-first selector is not ready for production: on `ibm10` it improved
-the seed composite from `0.29168` to `0.16328` but regressed final proxy from
-`1.1778` to `1.5281`.
+impurity, hierarchy-edge stretch, and owned/bridge soft distances. Production
+uses these as independent feasibility limits relative to legalized
+`initial.plc`, selects the lowest-proxy eligible seed, and reapplies the same
+contract relative to the selected seed at relief checkpoints and final
+rollback. The first full sweep passed all component audits at `AVG 1.1205`.
 
-Next step: treat the hierarchy vector as a feasibility or Pareto constraint
-rather than a single weighted score. Any candidate policy needs multi-benchmark
-validation and must preserve the final audit.
+Next step: calibrate the component-specific absolute/relative limits on more
+commercial and synthetic designs. The scalar hierarchy-first selector remains
+default-off because its focused proxy regression was too large.
 
 The exact-prescored seed portfolio now also contains a deterministic
-constraint-graph legalization of `initial.plc`. This is a safe additive
-baseline because the ordinary initial seed remains available and the graph
-candidate advances only when its exact proxy is lower. It was selected on seven
-benchmarks in the accepted sweep.
+constraint-graph legalization of `initial.plc`. The ordinary initial seed
+remains available and the graph candidate advances only when it passes every
+component limit and its exact proxy is lower.
 
 ### 2. Use attributable telemetry for scheduling
 
@@ -52,21 +51,38 @@ benchmarks produced no proxy gain and consumed 132.68 seconds. Some post-swap
 passes also look low-yield in short runs, but historical traces contain real
 gains, so there is not enough attributable full-suite evidence to remove them.
 
-Next step: collect clean full-suite telemetry per revision and use
+The ordinary post-swap soft pass is now skipped after two attributable full
+suites produced zero gain in 34 runs. Its budget is reassigned to the
+remaining deadline/final-audit reserve, with the skip recorded in schedule
+telemetry. The direct plateau-breadth reinvestment was legal but regressed the
+full suite and was rejected. Continue using
 `scripts/analyze_plateau_telemetry.py` before changing another production
 schedule.
 
-### 3. Learned ranking has not cleared the production gate
+The accepted skip-only sweep reproduced every prior benchmark proxy at
+`AVG 1.1205` and reduced runtime from 544.94s to 541.67s. A direct
+plateau-escape breadth reinvestment (`512` hot softs, `12` targets, `6.5s`)
+was legal but regressed to `AVG 1.1213` in 546.13s and is not production.
 
-The accepted Stage-G3 baseline and Stage-G4 macro-net ranker artifacts remain
-available under `ml_data/beyondppa_gnn/models/`. Relocation-only inference is
-implemented behind `HIER_GNN_RANK=1`, but the Stage-G6 full sweep regressed both
-average proxy and runtime. Coldspot and regional-swap experiments also failed
-to justify promotion.
+The first compound related-soft sweep exact-scored 600 complete group states
+in 9.20 seconds. One ibm11 move committed for a 0.000213 gain and survived the
+final component audit; six candidates were rejected by that audit before exact
+scoring. Ordinary post-swap soft relocation produced zero gain in the same run,
+matching the preceding component-contract sweep and providing the clean
+two-revision evidence needed for the next schedule change.
 
-Next step: favor additive, budgeted candidates that preserve the deterministic
-prefix. Promote nothing without repeatable held-out ranking quality, closed-loop
-proxy gain, unchanged legality/audit behavior, and acceptable runtime.
+### 3. Keep retired learned ranking out of production
+
+The former relocation, regional-swap, and coldspot learned rankers failed to
+clear offline and closed-loop gates and repeatedly increased runtime. Their
+model loader, inference hooks, candidate logger, training scripts, diagnostics,
+tests, active schemas, historical datasets, and model artifacts were removed on
+2026-07-16.
+
+Next step: improve deterministic proposal generation and exact-score efficiency.
+Do not rebuild the learned-ranking stack without an explicit direction change
+and evidence that a new target provides information beyond the existing
+proposal score.
 
 ### 4. Exact scoring remains the runtime bottleneck
 
@@ -91,24 +107,11 @@ LEF/DEF/Verilog inputs by attaching their generated source directory, but broad
 real-design parser coverage remains a validation task rather than a claimed
 guarantee.
 
-### 6. Paper-faithful BB line search is not evaluated
-
-Production already enables DREAMPlace 4.1's short Barzilai-Borwein Nesterov
-step. The ICCAD 2023 paper pairs that curvature-scaled initial step with a
-Zhang-Hager non-monotone line search, while the pinned upstream `step_bb()`
-implementation takes one BB-scaled step and applies the boundary constraint
-without that explicit line-search loop.
-
-Next step: only as a default-off experiment, add a bounded non-monotone line
-search and compare convergence, seed hierarchy quality, exact proxy, and runtime
-on multiple benchmarks. Each trial objective/gradient evaluation has real cost,
-so the paper-faithful variant must beat the current BB seed within the existing
-placement budget before promotion.
-
 ## Maintenance Rules
 
 - Keep the production path hierarchy-only.
 - Do not restore deleted proxy-only operators or archived research scripts.
-- Keep GNN/structural signals inside existing hierarchy operators and gates.
+- Keep deterministic structural signals inside existing hierarchy operators
+  and gates. Do not restore learned ranking without explicit direction.
 - Record accepted full-suite numbers in `PROGRESS.md`.
 - Keep `ARCHITECTURE.md` and `DESIGN_FLOW.md` synchronized with active code.

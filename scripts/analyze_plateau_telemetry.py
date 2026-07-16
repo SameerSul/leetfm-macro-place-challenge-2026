@@ -8,7 +8,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-DEFAULT_PATH = Path("ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl")
+DEFAULT_PATH = Path("ml_data/plateau_telemetry/plateau_telemetry.jsonl")
 
 
 def _matches(row: dict, args) -> bool:

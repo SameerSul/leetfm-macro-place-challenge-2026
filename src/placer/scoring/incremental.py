@@ -1693,6 +1693,37 @@ class IncrementalScorer:
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
 
+    def score_move_soft_group(self, soft_indices, new_xy) -> float:
+        """Exact-score one completed multi-soft relocation without committing it."""
+        indices = np.asarray(soft_indices, dtype=np.int64).reshape(-1)
+        targets = np.asarray(new_xy, dtype=np.float64)
+        if indices.size == 0 or targets.shape != (indices.size, 2):
+            raise ValueError("soft group targets must have shape [group_size, 2]")
+        if np.unique(indices).size != indices.size:
+            raise ValueError("soft group indices must be unique")
+        modules = [int(self.soft_indices[int(k)]) for k in indices]
+        old_xy = self.committed_soft_pos[indices]
+        return self._score_multi_move(modules, old_xy, targets, [])
+
+    def commit_move_soft_group(self, soft_indices, new_xy) -> None:
+        """Commit one completed multi-soft relocation."""
+        indices = np.asarray(soft_indices, dtype=np.int64).reshape(-1)
+        targets = np.asarray(new_xy, dtype=np.float64)
+        if indices.size == 0 or targets.shape != (indices.size, 2):
+            raise ValueError("soft group targets must have shape [group_size, 2]")
+        if np.unique(indices).size != indices.size:
+            raise ValueError("soft group indices must be unique")
+        modules = [int(self.soft_indices[int(k)]) for k in indices]
+        old_xy = self.committed_soft_pos[indices]
+        self._commit_multi_move(
+            modules,
+            old_xy,
+            targets,
+            [],
+            {},
+            {int(k): tuple(xy) for k, xy in zip(indices, targets)},
+        )
+
     def _score_multi_move(self, modules, old_xy, new_xy, hard_slots) -> float:
         """Score a small multi-macro move, then restore committed state."""
         modules = [int(m) for m in modules]

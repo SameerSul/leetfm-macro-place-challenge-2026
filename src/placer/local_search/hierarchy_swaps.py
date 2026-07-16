@@ -12,7 +12,6 @@ from utils.config import HAS_NUMBA, _GPU_BACKEND, _GPU_DEVICE, _numba_njit
 from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
 from placer.local_search.graph_tension import candidate_graph_edge_delta
-from placer.local_search.gnn_trace import gnn_trace_limit, log_gnn_event
 from placer.local_search.region_rules import accepts_region_score
 
 
@@ -218,31 +217,6 @@ def _graph_candidate_delta(
     return max(0.0, delta) * max(0.0, float(weight))
 
 
-def _swap_rejection_reason(
-    *,
-    legal: bool,
-    in_bounds: bool = True,
-    outside_region: bool = False,
-    outside_mask: bool = False,
-    accepted_by_region_gate: bool = True,
-    accepted_by_quality_gate: bool = True,
-    scored: bool = True,
-) -> str:
-    if not in_bounds:
-        return "out_of_bounds"
-    if not legal:
-        return "illegal_overlap"
-    if not scored:
-        return "not_scored"
-    if outside_region and not accepted_by_region_gate:
-        if outside_mask:
-            return "out_of_hierarchy_region_mask"
-        return "out_of_hierarchy_region"
-    if not accepted_by_quality_gate:
-        return "hierarchy_quality_failed"
-    return "exact_proxy_failed"
-
-
 def _hard_quality_ok(
     hard_pos: np.ndarray,
     hierarchy_quality_fn,
@@ -251,80 +225,6 @@ def _hard_quality_ok(
     if hierarchy_quality_fn is None or hierarchy_quality_limit is None:
         return True
     return float(hierarchy_quality_fn(hard_pos)) <= float(hierarchy_quality_limit)
-
-
-def _log_swap_candidates(
-    benchmark_name: str,
-    kind: str,
-    field_name: str,
-    source: int,
-    initial_proxy: float,
-    rows: list[dict],
-    *,
-    region_mask_enabled: bool = False,
-    outside_bbox_count: int | None = None,
-    outside_mask_count: int | None = None,
-    inside_mask_count: int | None = None,
-) -> None:
-    limit = gnn_trace_limit()
-    if limit <= 0 or not rows:
-        return
-    if outside_bbox_count is None:
-        outside_bbox_count = sum(1 for row in rows if bool(row.get("outside_region_bbox", False)))
-    if outside_mask_count is None:
-        outside_mask_count = sum(1 for row in rows if bool(row.get("outside_region_mask", False)))
-    if inside_mask_count is None:
-        inside_mask_count = sum(
-            1 for row in rows if not bool(row.get("outside_region_mask", False))
-        )
-    log_gnn_event(
-        "hier_swap_candidates",
-        benchmark=benchmark_name,
-        operator="region_swaps",
-        kind=kind,
-        field=field_name,
-        source=int(source),
-        initial_proxy=float(rows[0].get("old_proxy", initial_proxy)),
-        candidate_count=int(len(rows)),
-        region_mask_enabled=bool(region_mask_enabled),
-        outside_region_bbox_count=int(outside_bbox_count),
-        outside_region_mask_count=int(outside_mask_count),
-        inside_region_mask_count=int(inside_mask_count),
-        candidates=rows[:limit],
-    )
-
-
-def _rank_swap_candidates(
-    rows: list[dict],
-    *,
-    benchmark_name: str,
-    kind: str,
-    field_name: str,
-    source: int,
-) -> list[dict]:
-    if not rows:
-        return rows
-    from placer.local_search.gnn_ranker import reorder_region_swap_candidates
-
-    return reorder_region_swap_candidates(
-        rows,
-        benchmark_name=benchmark_name,
-        kind=kind,
-        field=field_name,
-        source=int(source),
-    )
-
-
-def _swap_trace_or_rank_enabled() -> bool:
-    """Whether swaps need per-candidate dictionaries before exact scoring."""
-    if gnn_trace_limit() > 0:
-        from placer.local_search.gnn_trace import gnn_trace_enabled
-
-        if gnn_trace_enabled():
-            return True
-    from placer.local_search.gnn_ranker import gnn_rank_enabled
-
-    return gnn_rank_enabled("region_swaps")
 
 
 def _hierarchy_aware_swap_filter(cand, outside, source_field, target_field, span, *, enabled: bool):
@@ -658,8 +558,6 @@ def _try_hard_hard(
     )
     source_rank = local + max(0.0, float(priority_weight)) * span * priority
     hot = movable_idx[np.argsort(-source_rank[movable_idx])][: min(128, movable_idx.size)]
-    use_trace_or_rank = _swap_trace_or_rank_enabled()
-
     for i_raw in hot:
         if deadline is not None and time.monotonic() > deadline:
             break
@@ -725,7 +623,6 @@ def _try_hard_hard(
             max(0.0, float(graph_mask_penalty_weight)) * span * outside_mask.astype(np.float64)
         )
         graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
-        graph_delta_by_target: dict[int, float] = {}
         if (
             float(graph_delta_weight) > 0.0
             and graph_clusters is not None
@@ -755,7 +652,6 @@ def _try_hard_hard(
                     weight=raw_weight * span,
                     samples=graph_delta_samples,
                 )
-                graph_delta_by_target[j_int] = float(delta)
                 graph_delta_penalty[pos] = delta
         rank = (
             local[cand]
@@ -777,168 +673,29 @@ def _try_hard_hard(
         ranked = cand[ranked_idx]
         ranked_legal = legal_mask[ranked_idx]
         ranked_outside = outside[ranked_idx]
-        ranked_outside_bbox = outside_bbox[ranked_idx]
-        ranked_outside_mask = outside_mask[ranked_idx]
-        if not use_trace_or_rank:
-            scored = [
-                (int(j), bool(outside_move))
-                for j, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside)
-                if bool(is_legal)
-            ]
-            scores = (
-                scorer.score_swap_hard_hard_many(
-                    i, np.asarray([j for j, _ in scored], dtype=np.int64)
-                )
-                if scored
-                else np.empty(0, dtype=np.float64)
-            )
-            for (j, outside_move), score in zip(scored, scores):
-                stats["hh_scores"] += 1
-                if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
-                    cand_h = h_pos.copy()
-                    cand_h[[i, j]] = cand_h[[j, i]]
-                    if not _hard_quality_ok(cand_h, hierarchy_quality_fn, hierarchy_quality_limit):
-                        continue
-                    scorer.commit_swap_hard_hard(i, j)
-                    h_pos[[i, j]] = h_pos[[j, i]]
-                    _record_accept(stats, "hh", outside_move, best_score, score)
-                    best_score = float(score)
-                    accepts += 1
-                    break
-            continue
-        trace_rows = []
-        trace_by_target = {}
-        for candidate_rank, (
-            j_raw,
-            is_legal,
-            outside_move,
-            outside_bbox_move,
-            outside_mask_move,
-        ) in enumerate(
-            zip(
-                ranked,
-                ranked_legal,
-                ranked_outside,
-                ranked_outside_bbox,
-                ranked_outside_mask,
-            )
-        ):
-            j = int(j_raw)
-            in_bounds = _in_bounds(
-                float(h_pos[j, 0]), float(h_pos[j, 1]), hw[i], hh[i], cw, ch
-            ) and _in_bounds(float(h_pos[i, 0]), float(h_pos[i, 1]), hw[j], hh[j], cw, ch)
-            row = {
-                "candidate_rank": int(candidate_rank),
-                "target": j,
-                "source_field": float(local[i]),
-                "target_field": float(local[j]),
-                "graph_tension": float(priority[i]),
-                "source_graph_tension": float(priority[i]),
-                "target_graph_tension": float(priority[j]),
-                "graph_candidate_delta": float(graph_delta_by_target.get(j, 0.0)),
-                "graph_mask_penalty": (
-                    float(graph_mask_penalty[candidate_rank])
-                    if int(candidate_rank) < len(graph_mask_penalty)
-                    else 0.0
-                ),
-                "graph_delta_rank_penalty": (
-                    float(graph_delta_penalty[candidate_rank])
-                    if int(candidate_rank) < len(graph_delta_penalty)
-                    else 0.0
-                ),
-                "outside_region": bool(outside_move),
-                "outside_region_bbox": bool(outside_bbox_move),
-                "outside_region_mask": bool(outside_mask_move),
-                "legal": bool(is_legal),
-                "old_proxy": float(best_score),
-                "candidate_proxy": None,
-                "proxy_delta": None,
-                "accepted": False,
-                "rejection_reason": _swap_rejection_reason(
-                    legal=bool(is_legal),
-                    in_bounds=bool(in_bounds),
-                    outside_region=bool(outside_move),
-                    outside_mask=bool(outside_mask_move),
-                    scored=False,
-                ),
-            }
-            trace_by_target[j] = row
-            trace_rows.append(row)
-        trace_rows = _rank_swap_candidates(
-            trace_rows,
-            benchmark_name=benchmark_name,
-            kind="hard_hard",
-            field_name=field_name,
-            source=i,
+        scored = [
+            (int(j), bool(outside_move))
+            for j, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside)
+            if bool(is_legal)
+        ]
+        scores = (
+            scorer.score_swap_hard_hard_many(i, np.asarray([j for j, _ in scored], dtype=np.int64))
+            if scored
+            else np.empty(0, dtype=np.float64)
         )
-        scored = []
-        for row in trace_rows:
-            # ranked_legal is the legality mask in ranked candidate order.
-            if deadline is not None and time.monotonic() > deadline:
-                break
-            j = int(row["target"])
-            if not bool(row.get("legal", False)):
-                continue
-            scored.append((j, bool(row.get("outside_region", False))))
-        if scored:
-            scores = scorer.score_swap_hard_hard_many(
-                i, np.asarray([j for j, _ in scored], dtype=np.int64)
-            )
-            scored_iter = zip(scored, scores)
-        else:
-            scored_iter = ()
-        for (j, outside_move), score in scored_iter:
+        for (j, outside_move), score in zip(scored, scores):
             stats["hh_scores"] += 1
-            region_ok = accepts_region_score(
-                score, best_score, outside_move, max(escape_min, min_gain)
-            )
-            row = trace_by_target.get(int(j))
-            if row is not None:
-                row["candidate_proxy"] = float(score)
-                row["proxy_delta"] = float(score) - float(best_score)
-                row_outside_mask = bool(row.get("outside_region_mask", False))
-                row["rejection_reason"] = _swap_rejection_reason(
-                    legal=True,
-                    outside_region=bool(outside_move),
-                    outside_mask=row_outside_mask,
-                    accepted_by_region_gate=bool(region_ok),
-                )
             if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
                 cand_h = h_pos.copy()
                 cand_h[[i, j]] = cand_h[[j, i]]
-                quality_ok = _hard_quality_ok(
-                    cand_h,
-                    hierarchy_quality_fn,
-                    hierarchy_quality_limit,
-                )
-                if row is not None:
-                    row["rejection_reason"] = _swap_rejection_reason(
-                        legal=True,
-                        outside_region=bool(outside_move),
-                        outside_mask=row_outside_mask,
-                        accepted_by_region_gate=bool(region_ok),
-                        accepted_by_quality_gate=bool(quality_ok),
-                    )
-                if not quality_ok:
+                if not _hard_quality_ok(cand_h, hierarchy_quality_fn, hierarchy_quality_limit):
                     continue
-                if row is not None:
-                    row["accepted"] = True
-                    row["rejection_reason"] = None
                 scorer.commit_swap_hard_hard(i, j)
                 h_pos[[i, j]] = h_pos[[j, i]]
                 _record_accept(stats, "hh", outside_move, best_score, score)
                 best_score = float(score)
                 accepts += 1
                 break
-        _log_swap_candidates(
-            benchmark_name,
-            "hard_hard",
-            field_name,
-            i,
-            best_score,
-            trace_rows,
-            region_mask_enabled=bool(region_mask_enabled),
-        )
     return accepts, best_score
 
 
@@ -987,8 +744,6 @@ def _try_soft_soft(
         return 0, best_score
     span = max(float(field.max()), 1e-12)
     hot = movable_idx[np.argsort(-local[movable_idx])][: min(256, movable_idx.size)]
-    use_trace_or_rank = _swap_trace_or_rank_enabled()
-
     for a_raw in hot:
         if deadline is not None and time.monotonic() > deadline:
             break
@@ -1055,159 +810,31 @@ def _try_soft_soft(
         )[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_outside = outside[ranked_idx]
-        ranked_outside_bbox = outside_bbox[ranked_idx]
-        ranked_outside_mask = outside_mask[ranked_idx]
         scored: list[tuple[int, bool]] = []
-        if not use_trace_or_rank:
-            for b_raw, outside_move in zip(ranked, ranked_outside):
-                b = int(b_raw)
-                ax, ay = float(s_pos[b, 0]), float(s_pos[b, 1])
-                bx, by = float(s_pos[a, 0]), float(s_pos[a, 1])
-                if not _in_bounds(ax, ay, soft_hw[a], soft_hh[a], cw, ch):
-                    continue
-                if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
-                    continue
-                scored.append((b, bool(outside_move)))
-            scores = (
-                scorer.score_swap_soft_soft_many(
-                    a, np.asarray([b for b, _ in scored], dtype=np.int64)
-                )
-                if scored
-                else np.empty(0, dtype=np.float64)
-            )
-            for (b, outside_move), score in zip(scored, scores):
-                stats["ss_scores"] += 1
-                required_gain = max(min_gain, soft_barrier_gain)
-                if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
-                    scorer.commit_swap_soft_soft(a, b)
-                    s_pos[[a, b]] = s_pos[[b, a]]
-                    _record_accept(stats, "ss", outside_move, best_score, score)
-                    best_score = float(score)
-                    accepts += 1
-                    break
-            continue
-        trace_rows = []
-        trace_by_target = {}
-        for candidate_rank, (
-            b_raw,
-            outside_move,
-            outside_bbox_move,
-            outside_mask_move,
-        ) in enumerate(
-            zip(
-                ranked,
-                ranked_outside,
-                ranked_outside_bbox,
-                ranked_outside_mask,
-            )
-        ):
+        for b_raw, outside_move in zip(ranked, ranked_outside):
             b = int(b_raw)
-            ax, ay = float(s_pos[b, 0]), float(s_pos[b, 1])
-            bx, by = float(s_pos[a, 0]), float(s_pos[a, 1])
-            in_bounds = _in_bounds(ax, ay, soft_hw[a], soft_hh[a], cw, ch) and _in_bounds(
-                bx, by, soft_hw[b], soft_hh[b], cw, ch
-            )
-            row = {
-                "candidate_rank": int(candidate_rank),
-                "target": b,
-                "source_field": float(local[a]),
-                "target_field": float(local[b]),
-                "source_graph_tension": 0.0,
-                "target_graph_tension": 0.0,
-                "graph_tension": 0.0,
-                "graph_candidate_delta": 0.0,
-                "graph_mask_penalty": (
-                    float(graph_mask_penalty[candidate_rank])
-                    if int(candidate_rank) < len(graph_mask_penalty)
-                    else 0.0
-                ),
-                "graph_delta_rank_penalty": (
-                    float(graph_delta_penalty[candidate_rank])
-                    if int(candidate_rank) < len(graph_delta_penalty)
-                    else 0.0
-                ),
-                "outside_region_bbox": bool(outside_bbox_move),
-                "outside_region_mask": bool(outside_mask_move),
-                "outside_region": bool(outside_move),
-                "legal": bool(in_bounds),
-                "old_proxy": float(best_score),
-                "candidate_proxy": None,
-                "proxy_delta": None,
-                "accepted": False,
-                "rejection_reason": _swap_rejection_reason(
-                    legal=True,
-                    in_bounds=bool(in_bounds),
-                    outside_region=bool(outside_move),
-                    outside_mask=bool(outside_mask_move),
-                    scored=False,
-                ),
-            }
-            trace_by_target[b] = row
-            trace_rows.append(row)
-        trace_rows = _rank_swap_candidates(
-            trace_rows,
-            benchmark_name=benchmark_name,
-            kind="soft_soft",
-            field_name=field_name,
-            source=a,
-        )
-        for row in trace_rows:
-            if deadline is not None and time.monotonic() > deadline:
-                break
-            if not bool(row.get("legal", False)):
-                continue
-            b = int(row["target"])
             ax, ay = float(s_pos[b, 0]), float(s_pos[b, 1])
             bx, by = float(s_pos[a, 0]), float(s_pos[a, 1])
             if not _in_bounds(ax, ay, soft_hw[a], soft_hh[a], cw, ch):
                 continue
             if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
                 continue
-            scored.append((b, bool(row.get("outside_region", False))))
-        if scored:
-            scores = scorer.score_swap_soft_soft_many(
-                a, np.asarray([b for b, _ in scored], dtype=np.int64)
-            )
-            scored_iter = zip(scored, scores)
-        else:
-            scored_iter = ()
-        for (b, outside_move), score in scored_iter:
+            scored.append((b, bool(outside_move)))
+        scores = (
+            scorer.score_swap_soft_soft_many(a, np.asarray([b for b, _ in scored], dtype=np.int64))
+            if scored
+            else np.empty(0, dtype=np.float64)
+        )
+        for (b, outside_move), score in zip(scored, scores):
             stats["ss_scores"] += 1
             required_gain = max(min_gain, soft_barrier_gain)
-            region_ok = accepts_region_score(
-                score, best_score, outside_move, max(escape_min, required_gain)
-            )
-            row = trace_by_target.get(int(b))
-            if row is not None:
-                row["candidate_proxy"] = float(score)
-                row["proxy_delta"] = float(score) - float(best_score)
-                row["soft_barrier_gain"] = float(soft_barrier_gain)
-                row_outside_mask = bool(row.get("outside_region_mask", False))
-                row["rejection_reason"] = _swap_rejection_reason(
-                    legal=True,
-                    outside_region=bool(outside_move),
-                    outside_mask=row_outside_mask,
-                    accepted_by_region_gate=bool(region_ok),
-                )
             if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
-                if row is not None:
-                    row["accepted"] = True
-                    row["rejection_reason"] = None
                 scorer.commit_swap_soft_soft(a, b)
                 s_pos[[a, b]] = s_pos[[b, a]]
                 _record_accept(stats, "ss", outside_move, best_score, score)
                 best_score = float(score)
                 accepts += 1
                 break
-        _log_swap_candidates(
-            benchmark_name,
-            "soft_soft",
-            field_name,
-            a,
-            best_score,
-            trace_rows,
-            region_mask_enabled=bool(region_mask_enabled),
-        )
     return accepts, best_score
 
 
@@ -1274,8 +901,6 @@ def _try_hard_soft(
     )
     source_rank = hard_local + max(0.0, float(priority_weight)) * span * priority
     hot = hard_idx[np.argsort(-source_rank[hard_idx])][: min(128, hard_idx.size)]
-    use_trace_or_rank = _swap_trace_or_rank_enabled()
-
     for i_raw in hot:
         if deadline is not None and time.monotonic() > deadline:
             break
@@ -1327,7 +952,6 @@ def _try_hard_soft(
             max(0.0, float(graph_mask_penalty_weight)) * span * outside_mask.astype(np.float64)
         )
         graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
-        graph_delta_by_target: dict[int, float] = {}
         if (
             float(graph_delta_weight) > 0.0
             and graph_clusters is not None
@@ -1356,7 +980,6 @@ def _try_hard_soft(
                     weight=raw_weight * span,
                     samples=graph_delta_samples,
                 )
-                graph_delta_by_target[k_int] = float(delta)
                 graph_delta_penalty[pos] = delta
         rank = soft_local[cand] + region_bias * span * outside.astype(np.float64)
         rank = rank + graph_mask_penalty + graph_delta_penalty
@@ -1388,161 +1011,31 @@ def _try_hard_soft(
         ranked = cand[ranked_idx]
         ranked_outside = outside[ranked_idx]
         ranked_legal = legal_mask[ranked_idx]
-        ranked_outside_bbox = outside_bbox[ranked_idx]
-        ranked_outside_mask = outside_mask[ranked_idx]
-        if not use_trace_or_rank:
-            scored = []
-            for k_raw, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside):
-                if not bool(is_legal):
-                    continue
-                k = int(k_raw)
-                hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
-                sx, sy = float(h_pos[i, 0]), float(h_pos[i, 1])
-                if not _in_bounds(hx, hy, hw[i], hh[i], cw, ch):
-                    continue
-                if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
-                    continue
-                scored.append((k, hx, hy, sx, sy, bool(outside_move)))
-            scores = (
-                scorer.score_swap_hard_soft_many(
-                    i, np.asarray([k for k, *_ in scored], dtype=np.int64)
-                )
-                if scored
-                else np.empty(0, dtype=np.float64)
-            )
-            for (k, hx, hy, sx, sy, outside_move), score in zip(scored, scores):
-                stats["hs_scores"] += 1
-                required_gain = max(min_gain, soft_barrier_gain)
-                if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
-                    cand_h = h_pos.copy()
-                    cand_h[i, 0], cand_h[i, 1] = hx, hy
-                    if not _hard_quality_ok(cand_h, hierarchy_quality_fn, hierarchy_quality_limit):
-                        continue
-                    scorer.commit_swap_hard_soft(i, k)
-                    h_pos[i, 0], h_pos[i, 1] = hx, hy
-                    s_pos[k, 0], s_pos[k, 1] = sx, sy
-                    _record_accept(stats, "hs", outside_move, best_score, score)
-                    best_score = float(score)
-                    accepts += 1
-                    break
-            continue
-        trace_rows = []
-        trace_by_target = {}
-        for candidate_rank, (k_raw, is_legal, outside_bbox_move, outside_mask_move) in enumerate(
-            zip(ranked, ranked_legal, ranked_outside_bbox, ranked_outside_mask)
-        ):
-            k = int(k_raw)
-            hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
-            sx, sy = float(h_pos[i, 0]), float(h_pos[i, 1])
-            in_bounds = _in_bounds(hx, hy, hw[i], hh[i], cw, ch) and _in_bounds(
-                sx, sy, soft_hw[k], soft_hh[k], cw, ch
-            )
-            outside_move = bool(ranked_outside[candidate_rank])
-            row = {
-                "candidate_rank": int(candidate_rank),
-                "target": k,
-                "source_field": float(hard_local[i]),
-                "target_field": float(soft_local[k]),
-                "graph_tension": float(priority[i]),
-                "source_graph_tension": float(priority[i]),
-                "target_graph_tension": 0.0,
-                "graph_candidate_delta": float(graph_delta_by_target.get(k, 0.0)),
-                "graph_mask_penalty": (
-                    float(graph_mask_penalty[candidate_rank])
-                    if int(candidate_rank) < len(graph_mask_penalty)
-                    else 0.0
-                ),
-                "graph_delta_rank_penalty": (
-                    float(graph_delta_penalty[candidate_rank])
-                    if int(candidate_rank) < len(graph_delta_penalty)
-                    else 0.0
-                ),
-                "outside_region_bbox": bool(outside_bbox_move),
-                "outside_region_mask": bool(outside_mask_move),
-                "outside_region": bool(outside_move),
-                "legal": bool(is_legal and in_bounds),
-                "old_proxy": float(best_score),
-                "candidate_proxy": None,
-                "proxy_delta": None,
-                "accepted": False,
-                "rejection_reason": _swap_rejection_reason(
-                    legal=bool(is_legal),
-                    in_bounds=bool(in_bounds),
-                    outside_region=bool(outside_move),
-                    outside_mask=bool(outside_mask_move),
-                    scored=False,
-                ),
-            }
-            trace_by_target[k] = row
-            trace_rows.append(row)
-        trace_rows = _rank_swap_candidates(
-            trace_rows,
-            benchmark_name=benchmark_name,
-            kind="hard_soft",
-            field_name=field_name,
-            source=i,
-        )
         scored = []
-        for row in trace_rows:
-            # legal_mask is aligned with `cand`; `ranked_idx` preserves ranking order.
-            if deadline is not None and time.monotonic() > deadline:
-                break
-            if not bool(row.get("legal", False)):
+        for k_raw, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside):
+            if not bool(is_legal):
                 continue
-            k = int(row["target"])
+            k = int(k_raw)
             hx, hy = float(s_pos[k, 0]), float(s_pos[k, 1])
             sx, sy = float(h_pos[i, 0]), float(h_pos[i, 1])
             if not _in_bounds(hx, hy, hw[i], hh[i], cw, ch):
                 continue
             if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
                 continue
-            scored.append((k, hx, hy, sx, sy, bool(row.get("outside_region", False))))
-        if scored:
-            scores = scorer.score_swap_hard_soft_many(
-                i, np.asarray([k for k, *_ in scored], dtype=np.int64)
-            )
-            scored_iter = zip(scored, scores)
-        else:
-            scored_iter = ()
-        for (k, hx, hy, sx, sy, outside_move), score in scored_iter:
+            scored.append((k, hx, hy, sx, sy, bool(outside_move)))
+        scores = (
+            scorer.score_swap_hard_soft_many(i, np.asarray([k for k, *_ in scored], dtype=np.int64))
+            if scored
+            else np.empty(0, dtype=np.float64)
+        )
+        for (k, hx, hy, sx, sy, outside_move), score in zip(scored, scores):
             stats["hs_scores"] += 1
             required_gain = max(min_gain, soft_barrier_gain)
-            region_ok = accepts_region_score(
-                score, best_score, outside_move, max(escape_min, required_gain)
-            )
-            row = trace_by_target.get(int(k))
-            if row is not None:
-                row["candidate_proxy"] = float(score)
-                row["proxy_delta"] = float(score) - float(best_score)
-                row["soft_barrier_gain"] = float(soft_barrier_gain)
-                row_outside_mask = bool(row.get("outside_region_mask", False))
-                row["rejection_reason"] = _swap_rejection_reason(
-                    legal=True,
-                    outside_region=bool(outside_move),
-                    outside_mask=row_outside_mask,
-                    accepted_by_region_gate=bool(region_ok),
-                )
             if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
                 cand_h = h_pos.copy()
                 cand_h[i, 0], cand_h[i, 1] = hx, hy
-                quality_ok = _hard_quality_ok(
-                    cand_h,
-                    hierarchy_quality_fn,
-                    hierarchy_quality_limit,
-                )
-                if row is not None:
-                    row["rejection_reason"] = _swap_rejection_reason(
-                        legal=True,
-                        outside_region=bool(outside_move),
-                        outside_mask=row_outside_mask,
-                        accepted_by_region_gate=bool(region_ok),
-                        accepted_by_quality_gate=bool(quality_ok),
-                    )
-                if not quality_ok:
+                if not _hard_quality_ok(cand_h, hierarchy_quality_fn, hierarchy_quality_limit):
                     continue
-                if row is not None:
-                    row["accepted"] = True
-                    row["rejection_reason"] = None
                 scorer.commit_swap_hard_soft(i, k)
                 h_pos[i, 0], h_pos[i, 1] = hx, hy
                 s_pos[k, 0], s_pos[k, 1] = sx, sy
@@ -1550,15 +1043,6 @@ def _try_hard_soft(
                 best_score = float(score)
                 accepts += 1
                 break
-        _log_swap_candidates(
-            benchmark_name,
-            "hard_soft",
-            field_name,
-            i,
-            best_score,
-            trace_rows,
-            region_mask_enabled=bool(region_mask_enabled),
-        )
     return accepts, best_score
 
 
