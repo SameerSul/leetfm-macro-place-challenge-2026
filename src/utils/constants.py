@@ -281,6 +281,12 @@ HIER_GRAPH_TENSION_TRACE_TOP = 6
 HIER_GRAPH_PREFILTER = False
 HIER_GRAPH_PREFILTER_LOW_TENSION = 0.05
 HIER_GRAPH_PREFILTER_MIN_RELIEF = 0.0
+# Constraint-graph alternative to greedy cluster-consecutive
+# legalization. It projects the initial seed's overlapping hard macros through
+# horizontal and vertical separation DAGs, then enters the normal exact-scored
+# portfolio; the ordinary initial seed and final legality pass remain available
+# so the alternative cannot force a proxy regression.
+HIER_CONSTRAINT_GRAPH_MAX_ROUNDS = 6
 # Region-bounded hard-hard, hard-soft, and soft-soft swap relief.
 # Number of region-bounded swap rounds to attempt.
 HIER_REGION_SWAP_ROUNDS = 2

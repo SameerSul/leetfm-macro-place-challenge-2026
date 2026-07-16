@@ -25,11 +25,12 @@ region expansion/decompression, small-design polish, no-release low-net soft/SS
 breadth, medium/large soft-continuation scheduling, and strict final hierarchy
 audit rollback with audit-aware local relief plus large-design graph-tension
 opportunity ordering, prepared Numba routing/legalization kernels, and batched
-soft relocation/swap scoring:
+soft relocation/swap scoring, exact batched hard-hard/hard-soft scoring, and a
+guarded constraint-graph legalization candidate for `initial.plc`:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1575  17/17 VALID  0 overlaps  621.63s
+AVG 1.1199  17/17 VALID  0 overlaps  575.28s
 ```
 
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7252`,
@@ -132,6 +133,8 @@ flowchart TD
     D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
     E --> F[Cluster-consecutive hard legalization]
     F --> E1[Exact-prescore seed portfolio + hierarchy vector]
+    F --> F1[Constraint-graph legalized initial.plc alternative]
+    F1 --> E1
     E1 --> G[Default-order safety legalization]
     G --> H[Soft relocation cleanup]
     H --> R[Congestion-expanded hard/soft regions]
@@ -170,6 +173,21 @@ distance. Production still advances the lowest exact-proxy seed. The
 `HIER_SEED_HIERARCHY_SELECT=1` experiment instead uses proxy only within the
 best hierarchy-quality band; it is default-off after the ibm10 hierarchy win
 caused a large proxy regression.
+
+Production adds one guarded alternative derived from `initial.plc`.
+`constraint_graph.py` assigns each overlap to a horizontal or vertical
+separation DAG, projects centers inside longest-path earliest/latest bounds,
+and then runs the ordinary default-order spiral safety pass. The ordinary
+initial seed remains in the portfolio, so the graph alternative can only change
+the flow when its exact proxy wins. It was selected on ibm10, ibm12, and
+ibm14-18 in the accepted full sweep; every other benchmark followed its prior
+seed and reproduced its prior proxy.
+
+Region swaps exact-score hard-hard and hard-soft sets in batches when at least
+two candidates share the first hard endpoint. Candidate routing, hard blockage,
+wirelength, and density states are built in compiled loops without mutating the
+committed scorer; the existing scalar commit path still applies the winner.
+Soft relocation and soft-soft swaps retain their existing batched paths.
 
 After post-coldspot cleanup, structurally eligible small designs run one extra
 exact-gated polish pass. Eligibility is based on a small hard-macro population,

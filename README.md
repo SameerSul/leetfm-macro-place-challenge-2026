@@ -37,7 +37,7 @@ Current full-suite result:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1575  17/17 VALID  0 overlaps  all hierarchy audits passed  (621.63s)
+AVG 1.1199  17/17 VALID  0 overlaps  all hierarchy audits passed  (575.28s)
 
 uv run evaluate src/main.py --ng45
 AVG 0.7252  4/4 VALID  0 overlaps  all hierarchy audits passed  (232.41s)
@@ -84,19 +84,21 @@ flowchart TD
     B --> C[Grouped DREAMPlace global placement<br/>synthetic clique nets per cluster]
     C --> D[Cluster-consecutive hard legalization]
 
-    D --> P[Seed portfolio: 6 candidates derived from initial.plc and DP basin]
+    D --> P[Seed portfolio: exact-scored candidates from initial.plc and DP basin]
     P --> S0[Legalized initial.plc]
     P --> S1[Grouped DREAMPlace basin]
     P --> S2[DP and initial blend, alpha = 0.35]
     P --> S3[DP and initial blend, alpha = 0.65]
     P --> S4[Radial expansion from DP basin]
     P --> S5[Synthetic-clearance push-apart from DP basin]
+    P --> S6[Constraint-graph legalization of initial.plc]
     S0 --> E[Exact-score every candidate<br/>pick the lowest-proxy seed]
     S1 --> E
     S2 --> E
     S3 --> E
     S4 --> E
     S5 --> E
+    S6 --> E
 
     E --> F[Congestion-expanded hierarchy regions]
     F --> G[Region-locked relocation + soft cleanup]
@@ -113,15 +115,16 @@ flowchart TD
     classDef search fill:#fff3e0,stroke:#ef6c00,color:#e65100
     classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     class A,B,C,D,P,E seed
-    class S0,S1,S2,S3,S4,S5 cand
+    class S0,S1,S2,S3,S4,S5,S6 cand
     class F,G,H,I,J search
     class L,M,N audit
 ```
 
 Blue nodes build the hierarchy-aware seed; the lighter blue row is the seed
-portfolio — grouped DREAMPlace is one of six candidates, sitting next to
+portfolio — grouped DREAMPlace sits next to
 the legalized `initial.plc`, two DP/initial blends, a radial expansion of
-the DP basin, and a synthetic-clearance push-apart of the DP basin. Every
+the DP basin, a synthetic-clearance push-apart of the DP basin, and a
+constraint-graph legalization of `initial.plc`. Every
 candidate is exact-scored and only the lowest-proxy one advances. A richer
 hard/soft/graph hierarchy vector is recorded for every seed; an experimental
 hierarchy-first selector is available through `HIER_SEED_HIERARCHY_SELECT=1`,
@@ -139,7 +142,8 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
           -> cluster-consecutive hard legalization
           -> seed portfolio: legalized initial.plc, DP basin,
              two DP/initial blends (alpha = 0.35, 0.65), radial
-             expansion of DP basin, synthetic-clearance push-apart
+             expansion of DP basin, synthetic-clearance push-apart,
+             constraint-graph legalized initial.plc
           -> exact-score all candidates, advance the lowest-proxy seed
           -> congestion-expanded hierarchy regions
           -> region-locked relocation + soft cleanup
