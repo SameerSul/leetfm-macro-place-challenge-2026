@@ -184,6 +184,7 @@ docs/ml_nn/                current GNN status plus trace and dataset schemas
 - [`docs/general/ARCHITECTURE.md`](docs/general/ARCHITECTURE.md) - current pipeline and module reference
 - [`docs/general/DESIGN_FLOW.md`](docs/general/DESIGN_FLOW.md) - flow diagram
 - [`docs/general/OBJECTIVES.md`](docs/general/OBJECTIVES.md) - the structural objectives that motivate the design
+- [`docs/general/REFERENCES.md`](docs/general/REFERENCES.md) - research papers, technical sources, and external dependency links
 - [`docs/general/ISSUES.md`](docs/general/ISSUES.md) - current unresolved work
 - [`docs/general/PROGRESS.md`](docs/general/PROGRESS.md) - chronological experiment ledger; only its first status entry describes current production
 - [`docs/ml_nn/`](docs/ml_nn/) - default-off learned-ranking status and active schemas
