@@ -220,8 +220,10 @@ scripts/                  Comparison + benchmark-conversion utilities.
 - **DREAMPlace is required for the current production path.** `_place_impl()` raises if `_hierarchy_floorplan()` cannot run; the old proxy fallback has been deleted.
 - **DREAMPlace curvature scaling is already enabled.** The grouped stage sets
   `macro_place_flag=1` and `use_bb=1`, selecting DREAMPlace 4.1's short
-  Barzilai-Borwein Nesterov update. Do not add a duplicate second-order path;
-  treat a paper-faithful non-monotone line search as a separate experiment.
+  Barzilai-Borwein Nesterov update. A paper-faithful Zhang-Hager Armijo trial
+  regressed DREAMPlace seed quality on ibm04 and ibm10 and was removed. Do not
+  restore it without a materially different integration hypothesis and a new
+  cache-separated A/B.
   BB and DREAMPlace cache reads are fixed production behavior; do not re-add
   runtime feature switches for them. Legacy `HIER_DREAMPLACE_BB` and
   `HIER_DREAMPLACE_CACHE` values have no effect.

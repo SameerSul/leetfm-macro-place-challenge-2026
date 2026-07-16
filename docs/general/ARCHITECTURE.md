@@ -260,7 +260,9 @@ Lipschitz step. A clean checkout can reproduce the local CUDA 12.1 build with
 `scripts/dreamplace/bootstrap.sh all`; `scripts/dreamplace/bootstrap.sh preflight`
 checks an existing install and now rejects builds without BB-Nesterov support.
 BB and cache reads are fixed production behavior rather than runtime-gated
-options.
+options. A bounded Zhang-Hager non-monotone Armijo trial was evaluated on
+ibm04 and ibm10, regressed DREAMPlace seed quality on both, and was removed;
+the focused numbers remain in `PROGRESS.md`.
 
 ### 3. Seed Portfolio Selection
 
