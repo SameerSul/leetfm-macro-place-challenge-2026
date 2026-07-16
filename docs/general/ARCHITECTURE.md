@@ -122,7 +122,7 @@ the per-component seed/final hierarchy contract:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  541.67s
+AVG 1.1205  17/17 VALID  0 overlaps  542.58s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
@@ -134,8 +134,9 @@ reached `AVG 1.1664`; the pre-optimization BB-on verification was
 normal-cache sweep was `AVG 1.1575`; the constraint-graph/batched-swap sweep
 was `AVG 1.1199`, the component-contract sweep was `AVG 1.1205` in `540.33s`,
 and the compound-relocation sweep was `AVG 1.1205` in `544.94s`.
-The telemetry-scheduled production sweep preserves every compound-relocation
-score at `AVG 1.1205` in `541.67s`.
+The learned-GNN removal sweep preserves every telemetry-scheduled production
+score at `AVG 1.1205` in `542.58s`; its candidate rankers, selectors, tracing,
+offline tooling, tests, and active schemas are gone.
 The prior best same-path sweep was
 `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer

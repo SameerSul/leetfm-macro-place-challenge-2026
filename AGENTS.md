@@ -11,7 +11,7 @@ The active submission now lives at the repository root: `src/`, `docs/`,
 absent after the root-layout migration; if present, treat it as frozen /
 read-only.
 
-**Current production mode (2026-07-15): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-07-16): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py` and raises if grouped DREAMPlace is not
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
@@ -20,7 +20,7 @@ ranker defaults, and their proxy-only verifiers are not active code.
 
 Current verified result with normal BB/cache behavior:
 `uv run evaluate src/main.py --all` = **AVG 1.1205**, 17/17 VALID, 0
-overlaps, all final hierarchy audits passed, **541.67s**. The exact-scored seed
+overlaps, all final hierarchy audits passed, **542.58s**. The exact-scored seed
 portfolio filters candidates through an independent six-component hierarchy
 contract relative to legalized `initial.plc`, and the same contract is enforced
 against the selected seed throughout relief and final rollback. The portfolio

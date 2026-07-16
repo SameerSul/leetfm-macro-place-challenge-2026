@@ -6,6 +6,32 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-16 — accepted learned-GNN removal):**
+> `VIVAPLACE_RUN_ID=20260716-remove-gnn-full uv run evaluate src/main.py --all`
+> completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all hard and
+> six-component hierarchy audits passed, in **542.58s**. Every benchmark proxy
+> exactly reproduced the preceding accepted production result.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.8480/28.59s`, `ibm02=1.1221/15.80s`,
+> `ibm03=0.9991/23.70s`, `ibm04=1.0036/23.63s`,
+> `ibm06=1.1958/15.35s`, `ibm07=1.0542/28.30s`,
+> `ibm08=1.1459/30.48s`, `ibm09=0.8783/37.39s`,
+> `ibm10=1.0641/33.96s`, `ibm11=1.0085/26.40s`,
+> `ibm12=1.3106/60.99s`, `ibm13=1.0203/23.72s`,
+> `ibm14=1.2481/34.11s`, `ibm15=1.2217/43.19s`,
+> `ibm16=1.1637/33.29s`, `ibm17=1.3837/42.02s`, and
+> `ibm18=1.3806/41.67s`.
+>
+> Removed the learned ranker/model loader, relocation/swap/coldspot inference
+> hooks, candidate-level trace logger, offline GNN trainers and diagnostics,
+> dedicated verification scripts, and active GNN schemas. The productive
+> schema-v2 pass-level telemetry remains as an ML-independent scheduler signal
+> under `src/placer/local_search/plateau_telemetry.py`, with the neutral default
+> path `ml_data/plateau_telemetry/plateau_telemetry.jsonl`. `ibm10` first
+> reproduced `1.0641` VALID with both audits passing. All **38** project tests,
+> full source bytecode compilation, formatting, and repository checks passed.
+
 > **Status (2026-07-15 — accepted telemetry-gated late-soft schedule):**
 > `VIVAPLACE_RUN_ID=20260715-step3-skip-dead-soft-final uv run evaluate
 > src/main.py --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all

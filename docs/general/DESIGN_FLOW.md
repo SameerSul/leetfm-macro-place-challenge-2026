@@ -31,7 +31,7 @@ per-component seed/final hierarchy contract:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  541.67s
+AVG 1.1205  17/17 VALID  0 overlaps  542.58s
 ```
 
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7252`,
