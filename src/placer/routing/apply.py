@@ -567,6 +567,7 @@ if HAS_NUMBA:
         weights2,
         starts3,
         weights3,
+        weight_mult,
         grid_col,
     ):
         """Apply 2/3-pin prepared route-struct nets without Python buckets."""
@@ -580,7 +581,7 @@ if HAS_NUMBA:
             src_col = src % grid_col
             snk_row = snk // grid_col
             snk_col = snk % grid_col
-            w = weights2[k]
+            w = weights2[k] * weight_mult
             c_lo = src_col if src_col < snk_col else snk_col
             c_hi = src_col if src_col > snk_col else snk_col
             base = src_row * grid_col
@@ -608,7 +609,7 @@ if HAS_NUMBA:
                 eq_count += 1
             if eq_count == 3:
                 continue
-            w = weights3[k]
+            w = weights3[k] * weight_mult
             if eq_count == 1:
                 src = g0
                 snk = g2 if eq01 else g1
@@ -746,6 +747,193 @@ if HAS_NUMBA:
                 V_flat[r * grid_col + x1t] += w
             for r in range(y2t, y3t):
                 V_flat[r * grid_col + x3t] += w
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _prepare_route_struct_pins_jit(
+        pin_gcell,
+        pos_cache,
+        pin_module,
+        pin_x_off,
+        pin_y_off,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
+    ):
+        """Gather prepared pin cells and their touched routing bbox."""
+        min_row = grid_row
+        max_row = -1
+        min_col = grid_col
+        max_col = -1
+        for k in range(pin_gcell.shape[0]):
+            module = pin_module[k]
+            col = int((pos_cache[module, 0] + pin_x_off[k]) / grid_w)
+            row = int((pos_cache[module, 1] + pin_y_off[k]) / grid_h)
+            if col < 0:
+                col = 0
+            elif col >= grid_col:
+                col = grid_col - 1
+            if row < 0:
+                row = 0
+            elif row >= grid_row:
+                row = grid_row - 1
+            pin_gcell[k] = row * grid_col + col
+            if row < min_row:
+                min_row = row
+            if row > max_row:
+                max_row = row
+            if col < min_col:
+                min_col = col
+            if col > max_col:
+                max_col = col
+        return min_row, max_row, min_col, max_col
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _collect_sorted_unique_sinks_jit(pin_gcell, start, length, unique_sinks):
+        """Collect non-source sink cells in the reference lexicographic order."""
+        source = pin_gcell[start]
+        count = 0
+        for pin_offset in range(1, length):
+            sink = pin_gcell[start + pin_offset]
+            if sink == source:
+                continue
+            insert_at = 0
+            while insert_at < count and unique_sinks[insert_at] < sink:
+                insert_at += 1
+            if insert_at < count and unique_sinks[insert_at] == sink:
+                continue
+            for j in range(count, insert_at, -1):
+                unique_sinks[j] = unique_sinks[j - 1]
+            unique_sinks[insert_at] = sink
+            count += 1
+        return count
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _apply_route_struct_l4_jit(
+        H_flat,
+        V_flat,
+        pin_gcell,
+        starts4,
+        lengths4,
+        weights4,
+        weight_mult,
+        unique_sinks,
+        three_g0,
+        three_g1,
+        three_g2,
+        three_weights,
+        grid_col,
+    ):
+        """Apply prepared high-fanout routes without Python sorting or buckets."""
+        n_three = 0
+        for k in range(starts4.shape[0]):
+            start = starts4[k]
+            n_unique = _collect_sorted_unique_sinks_jit(pin_gcell, start, lengths4[k], unique_sinks)
+            source = pin_gcell[start]
+            weight = weights4[k] * weight_mult
+            if n_unique == 2:
+                three_g0[n_three] = source
+                three_g1[n_three] = unique_sinks[0]
+                three_g2[n_three] = unique_sinks[1]
+                three_weights[n_three] = weight
+                n_three += 1
+                continue
+
+            # Reference behavior routes every distinct sink as a source-rooted
+            # two-pin star unless the collapsed net has exactly three cells.
+            src_row = source // grid_col
+            src_col = source % grid_col
+            for sink_idx in range(n_unique):
+                sink = unique_sinks[sink_idx]
+                sink_row = sink // grid_col
+                sink_col = sink % grid_col
+                c_lo = src_col if src_col < sink_col else sink_col
+                c_hi = src_col if src_col > sink_col else sink_col
+                base = src_row * grid_col
+                for col in range(c_lo, c_hi):
+                    H_flat[base + col] += weight
+                r_lo = src_row if src_row < sink_row else sink_row
+                r_hi = src_row if src_row > sink_row else sink_row
+                for row in range(r_lo, r_hi):
+                    V_flat[row * grid_col + sink_col] += weight
+
+        if n_three:
+            _apply_3pin_routing_vec_jit(
+                H_flat,
+                V_flat,
+                three_g0[:n_three],
+                three_g1[:n_three],
+                three_g2[:n_three],
+                three_weights[:n_three],
+                grid_col,
+            )
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _apply_route_struct_prepared_jit(
+        H_flat,
+        V_flat,
+        pos_cache,
+        pin_gcell,
+        pin_module,
+        pin_x_off,
+        pin_y_off,
+        starts2,
+        weights2,
+        starts3,
+        weights3,
+        starts4,
+        lengths4,
+        weights4,
+        weight_mult,
+        unique_sinks,
+        three_g0,
+        three_g1,
+        three_g2,
+        three_weights,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
+    ):
+        """Gather and apply a complete prepared routing structure."""
+        bbox = _prepare_route_struct_pins_jit(
+            pin_gcell,
+            pos_cache,
+            pin_module,
+            pin_x_off,
+            pin_y_off,
+            grid_w,
+            grid_h,
+            grid_row,
+            grid_col,
+        )
+        _apply_route_struct_l2_l3_jit(
+            H_flat,
+            V_flat,
+            pin_gcell,
+            starts2,
+            weights2,
+            starts3,
+            weights3,
+            weight_mult,
+            grid_col,
+        )
+        _apply_route_struct_l4_jit(
+            H_flat,
+            V_flat,
+            pin_gcell,
+            starts4,
+            lengths4,
+            weights4,
+            weight_mult,
+            unique_sinks,
+            three_g0,
+            three_g1,
+            three_g2,
+            three_weights,
+            grid_col,
+        )
+        return bbox
 
 
 def _smooth_routing_cong_vec(
@@ -1100,6 +1288,46 @@ def _build_net_routing_struct(plc, net_indices: np.ndarray):
                 "net_local_ids_local": net_local_ids_local,
                 "global_pin_idx_local": global_pin_idx_local,
             }
+
+    if HAS_NUMBA:
+        l2_indices = np.flatnonzero(struct["mask_l2"])
+        l3_indices = np.flatnonzero(struct["mask_l3"])
+        l4_indices = np.flatnonzero(mask_l4)
+        starts2 = cumsum_lens[l2_indices] if l2_indices.size else np.empty(0, dtype=np.int64)
+        starts3 = cumsum_lens[l3_indices] if l3_indices.size else np.empty(0, dtype=np.int64)
+        starts4 = cumsum_lens[l4_indices] if l4_indices.size else np.empty(0, dtype=np.int64)
+        lengths4 = lengths_s[l4_indices] if l4_indices.size else np.empty(0, dtype=np.int64)
+        n_l4 = int(l4_indices.size)
+        max_l4_sinks = int(lengths4.max() - 1) if n_l4 else 0
+        unique_ref = wl_cache["unique_ref"]
+        struct["jit"] = {
+            "pin_gcell": np.empty(total_pins, dtype=np.int64),
+            "pin_module": np.ascontiguousarray(unique_ref[struct["pin_ref_local"]], dtype=np.int64),
+            "pin_x_off": np.ascontiguousarray(
+                wl_cache["x_off"][sub_pin_idx_in_flat], dtype=np.float64
+            ),
+            "pin_y_off": np.ascontiguousarray(
+                wl_cache["y_off"][sub_pin_idx_in_flat], dtype=np.float64
+            ),
+            "starts2": np.ascontiguousarray(starts2, dtype=np.int64),
+            "weights2": np.ascontiguousarray(
+                struct["weights_unsigned"][l2_indices], dtype=np.float64
+            ),
+            "starts3": np.ascontiguousarray(starts3, dtype=np.int64),
+            "weights3": np.ascontiguousarray(
+                struct["weights_unsigned"][l3_indices], dtype=np.float64
+            ),
+            "starts4": np.ascontiguousarray(starts4, dtype=np.int64),
+            "lengths4": np.ascontiguousarray(lengths4, dtype=np.int64),
+            "weights4": np.ascontiguousarray(
+                struct["weights_unsigned"][l4_indices], dtype=np.float64
+            ),
+            "unique_sinks": np.empty(max_l4_sinks, dtype=np.int64),
+            "three_g0": np.empty(n_l4, dtype=np.int64),
+            "three_g1": np.empty(n_l4, dtype=np.int64),
+            "three_g2": np.empty(n_l4, dtype=np.int64),
+            "three_weights": np.empty(n_l4, dtype=np.float64),
+        }
     return struct
 
 
@@ -1114,6 +1342,36 @@ def _apply_net_routing_struct(
     grid_row = int(plc.grid_row)
     grid_w = float(plc.width / grid_col)
     grid_h = float(plc.height / grid_row)
+
+    if HAS_NUMBA:
+        jit = struct["jit"]
+        bbox = _apply_route_struct_prepared_jit(
+            H_flat,
+            V_flat,
+            np.ascontiguousarray(_ensure_pos_cache(plc), dtype=np.float64),
+            jit["pin_gcell"],
+            jit["pin_module"],
+            jit["pin_x_off"],
+            jit["pin_y_off"],
+            jit["starts2"],
+            jit["weights2"],
+            jit["starts3"],
+            jit["weights3"],
+            jit["starts4"],
+            jit["lengths4"],
+            jit["weights4"],
+            float(weight_mult),
+            jit["unique_sinks"],
+            jit["three_g0"],
+            jit["three_g1"],
+            jit["three_g2"],
+            jit["three_weights"],
+            grid_w,
+            grid_h,
+            grid_row,
+            grid_col,
+        )
+        return tuple(int(value) for value in bbox)
 
     sub_pin_idx_in_flat = struct["sub_pin_idx_in_flat"]
     pin_ref_local = struct["pin_ref_local"]
@@ -1137,30 +1395,6 @@ def _apply_net_routing_struct(
     bucket_3_g2: list = []
     bucket_3_w: list = []
     used_l2_l3_jit = False
-
-    if HAS_NUMBA:
-        starts2_jit = (
-            struct["local_starts_l2"]
-            if struct["local_starts_l2"] is not None
-            else np.empty(0, dtype=np.int64)
-        )
-        starts3_jit = (
-            struct["local_starts_l3"]
-            if struct["local_starts_l3"] is not None
-            else np.empty(0, dtype=np.int64)
-        )
-        if starts2_jit.size or starts3_jit.size:
-            _apply_route_struct_l2_l3_jit(
-                H_flat,
-                V_flat,
-                np.ascontiguousarray(pin_gcell, dtype=np.int64),
-                np.ascontiguousarray(starts2_jit, dtype=np.int64),
-                np.ascontiguousarray(weights_sub[struct["mask_l2"]], dtype=np.float64),
-                np.ascontiguousarray(starts3_jit, dtype=np.int64),
-                np.ascontiguousarray(weights_sub[struct["mask_l3"]], dtype=np.float64),
-                int(grid_col),
-            )
-            used_l2_l3_jit = True
 
     mask_l2 = struct["mask_l2"]
     local_starts_l2 = struct["local_starts_l2"]

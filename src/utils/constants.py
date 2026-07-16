@@ -118,7 +118,6 @@ HIER_STRONG_SOFT_REPAIR_WL_PREFILTER = 0.0005
 # Extra soft-only continuation for medium/large congestion cases where the
 # normal strong-soft pass is still producing exact proxy gain. This is
 # structural, not benchmark-name gated.
-HIER_MEDIUM_SOFT_CONTINUATION = True
 HIER_MEDIUM_SOFT_HARD_MIN = 520
 HIER_MEDIUM_SOFT_HARD_MAX = 760
 HIER_MEDIUM_SOFT_MACRO_MIN = 2200
@@ -161,7 +160,6 @@ HIER_REGION_EXPAND_FRAC = 0.08
 HIER_REGION_EXPAND_BAND = 3
 # Component-aware expansion grows hot hierarchy regions toward contiguous cold
 # congestion components rather than only comparing thin side bands.
-HIER_REGION_COMPONENT_EXPAND = True
 HIER_REGION_COMPONENT_COLD_PCT = 45.0
 HIER_REGION_COMPONENT_MIN_CELLS = 4
 HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS = 4
@@ -182,7 +180,6 @@ HIER_REGION_WEAK_HOT_SIDE_FLOOR = 0.45
 HIER_REGION_WEAK_HOT_HARD_MIN = 240
 HIER_REGION_WEAK_HOT_HARD_MAX = 420
 HIER_REGION_WEAK_HOT_MACRO_MAX = 1600
-HIER_REGION_WEAK_HOT_REQUIRE_RELEASE_CANDIDATE = True
 # Weight favoring candidates that stay inside hierarchy regions.
 REGION_BIAS = 1.0
 # Minimum proxy improvement required for moves that escape their hierarchy region.
@@ -240,14 +237,12 @@ HIER_DECOMPRESS_ANISO_BAND = 3
 HIER_DECOMPRESS_ANISO_SECONDARY = 0.25
 # Bias decompression toward a nearby contiguous cold component while preserving
 # the cluster as a local shape instead of splitting the hierarchy group.
-HIER_DECOMPRESS_LOCAL_COMPONENT = True
 HIER_DECOMPRESS_LOCAL_COLD_PCT = 45.0
 HIER_DECOMPRESS_LOCAL_MIN_CELLS = 4
 HIER_DECOMPRESS_LOCAL_MAX_DISTANCE_CELLS = 4
 HIER_DECOMPRESS_LOCAL_SHIFT_FRAC = 0.20
 # Cheap decompression feasibility screen. Before legalizing/scoring a candidate,
 # estimate whether the proposed cluster bbox has enough unblocked local area.
-HIER_DECOMPRESS_FEASIBILITY_FILTER = True
 HIER_DECOMPRESS_FEASIBILITY_MIN_FREE_RATIO = 0.70
 HIER_DECOMPRESS_FEASIBILITY_MAX_BLOCKAGE = 0.75
 # Graph-guided decompression rescue. When a candidate improves graph-edge
@@ -259,11 +254,10 @@ HIER_DECOMPRESS_GRAPH_RESCUE_MAX_DELTA = 0.0
 HIER_DECOMPRESS_GRAPH_RESCUE_SHRINKS = (0.75, 0.55, 0.35)
 HIER_DECOMPRESS_GRAPH_RESCUE_SHIFT_MULTS = (1.35, 0.70)
 HIER_DECOMPRESS_GRAPH_RESCUE_MAX_VARIANTS = 5
-# Default-on survivor for legal, hierarchy-safe decompression near misses with
+# Survivor for legal, hierarchy-safe decompression near misses with
 # strongly favorable graph-edge delta. It exact-scores a tiny local hard/soft
 # micro-shift pool around moved cluster members; final commit still requires a
 # normal exact-proxy gain and audit pass.
-HIER_DECOMPRESS_GRAPH_SURVIVOR = True
 HIER_DECOMPRESS_GRAPH_SURVIVOR_MAX_DELTA = -0.01
 HIER_DECOMPRESS_GRAPH_SURVIVOR_PROXY_MISS = 0.0015
 HIER_DECOMPRESS_GRAPH_SURVIVOR_TOP_HARD = 8
@@ -273,7 +267,6 @@ HIER_DECOMPRESS_GRAPH_SURVIVOR_MAX_TRIALS = 48
 # Advisory hierarchy-graph pressure ordering. These weights only reorder
 # existing candidates; exact proxy, hard legality, and hierarchy audit gates
 # still decide whether a candidate commits.
-HIER_GRAPH_TENSION_ORDER = True
 HIER_GRAPH_TENSION_WEIGHT = 0.10
 HIER_GRAPH_TENSION_DECOMP_WEIGHT = 0.10
 HIER_GRAPH_TENSION_COLDSPOT_WEIGHT = 0.10
@@ -288,6 +281,12 @@ HIER_GRAPH_TENSION_TRACE_TOP = 6
 HIER_GRAPH_PREFILTER = False
 HIER_GRAPH_PREFILTER_LOW_TENSION = 0.05
 HIER_GRAPH_PREFILTER_MIN_RELIEF = 0.0
+# Constraint-graph alternative to greedy cluster-consecutive
+# legalization. It projects the initial seed's overlapping hard macros through
+# horizontal and vertical separation DAGs, then enters the normal exact-scored
+# portfolio; the ordinary initial seed and final legality pass remain available
+# so the alternative cannot force a proxy regression.
+HIER_CONSTRAINT_GRAPH_MAX_ROUNDS = 6
 # Region-bounded hard-hard, hard-soft, and soft-soft swap relief.
 # Number of region-bounded swap rounds to attempt.
 HIER_REGION_SWAP_ROUNDS = 2
@@ -304,8 +303,7 @@ HIER_SWAP_MIN_GAIN = 0.00001
 HIER_SOFT_BARRIER_GAIN = 0.0
 # Minimum congestion-field relief required for a swap move.
 HIER_SWAP_MIN_FIELD_RELIEF = 0.0
-# Enable mask-aware swap region checks when a region mask is available.
-HIER_SWAP_GRAPH_MASK_AWARE = True
+# Mask-aware swap region checks apply whenever a region mask is available.
 # Draw graph-aware swap masks from the strongest graph relations only.
 HIER_SWAP_GRAPH_MASK_MAX_EDGES = 0
 HIER_SWAP_GRAPH_MASK_PAD_CELLS = 1
@@ -316,9 +314,7 @@ HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT = 0.30
 # Graph-edge ranking pressure for swap candidates (diagnostic/rank only).
 # Non-negative deltas indicate longer graph edges / worse corridor pressure.
 HIER_SWAP_GRAPH_DELTA_WEIGHT = 0.0
-# Optional single-shot fallback when a masked swap pass makes no accepts.
-HIER_SWAP_GRAPH_FALLBACK = True
-# Wall-clock budget reserved for the masked-pass fallback.
+# Wall-clock budget reserved for the single-shot masked-pass fallback.
 HIER_SWAP_GRAPH_FALLBACK_BUDGET_S = 2.5
 
 # Optional bias for source-anchored coldspot expansion around graph/components.
@@ -354,10 +350,9 @@ HIER_ADDITIVE_MIN_SPARE_S = 2.0
 # Final audit of hard-macro clearance using the same tolerance as local legality tests.
 HIER_LEGALITY_MARGIN_EPS = 0.05
 # Final audit of hierarchy-quality drift versus the selected hierarchy seed.
-# If rollback is enabled, the finalizer returns the tracked best valid state
-# when it satisfies this budget and the current state does not.
+# The finalizer returns the tracked best valid state when it satisfies this
+# budget and the current state does not.
 HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION = 0.05
-HIER_FINAL_HIER_AUDIT_ROLLBACK = True
 
 # Wall-clock budget for post-swap hard propose-all relocation.
 HIER_POST_RELOC_PROPOSE_BUDGET_S = 8.0
@@ -501,7 +496,6 @@ HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = 1.50
 # Extra exact-gated late polish for the SA-ratio primary struggle subset shape:
 # small hard-macro population, no fixed hard macros, and moderate total macro
 # count. This is structural, not benchmark-name gated.
-HIER_SMALL_DESIGN_POLISH = True
 HIER_SMALL_DESIGN_HARD_MIN = 240
 HIER_SMALL_DESIGN_HARD_MAX = 420
 HIER_SMALL_DESIGN_MACRO_MAX = 1600
@@ -544,7 +538,6 @@ HIER_SMALL_DESIGN_SWAP_MIN_GAIN = 0.00005
 # Cold connected-component pools for small-design relocation target selection.
 # The pool builder finds connected low-field grid components, prefers larger and
 # colder components, and passes a component penalty into relocation ranking.
-HIER_COLD_COMPONENT_TARGETS = True
 HIER_COLD_COMPONENT_PCT = 45.0
 HIER_COLD_COMPONENT_MAX_COMPONENTS = 8
 HIER_COLD_COMPONENT_MIN_CELLS = 4

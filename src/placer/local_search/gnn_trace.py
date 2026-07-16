@@ -60,15 +60,6 @@ def gnn_trace_enabled() -> bool:
     return os.environ.get("HIER_GNN_TRACE", "0").strip() not in _FALSE
 
 
-def plateau_trace_enabled() -> bool:
-    return os.environ.get("HIER_PLATEAU_TRACE", "1").strip() not in _FALSE
-
-
-def plateau_trace_buffered() -> bool:
-    raw = os.environ.get("HIER_PLATEAU_TRACE_BUFFERED", "1").strip()
-    return raw not in _FALSE
-
-
 def gnn_trace_limit(default: int = 512) -> int:
     return max(0, int(os.environ.get("HIER_GNN_TRACE_MAX_CANDIDATES", str(default))))
 
@@ -140,10 +131,8 @@ def log_gnn_event(event: str, **payload: Any) -> None:
 
 
 def log_plateau_event(event: str, **payload: Any) -> None:
-    """Append one lightweight plateau telemetry row unless disabled."""
+    """Buffer one lightweight plateau telemetry row."""
     global _PLATEAU_BUFFER_PATH
-    if not plateau_trace_enabled():
-        return
     path = _plateau_trace_path()
     row = {
         "schema_version": PLATEAU_SCHEMA_VERSION,
@@ -153,12 +142,7 @@ def log_plateau_event(event: str, **payload: Any) -> None:
         **payload,
     }
     line = json.dumps(_jsonable(row), sort_keys=True, separators=(",", ":")) + "\n"
-    if plateau_trace_buffered():
-        if _PLATEAU_BUFFER_PATH is not None and _PLATEAU_BUFFER_PATH != path:
-            flush_plateau_events()
-        _PLATEAU_BUFFER_PATH = path
-        _PLATEAU_BUFFER.append(line)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(line)
+    if _PLATEAU_BUFFER_PATH is not None and _PLATEAU_BUFFER_PATH != path:
+        flush_plateau_events()
+    _PLATEAU_BUFFER_PATH = path
+    _PLATEAU_BUFFER.append(line)

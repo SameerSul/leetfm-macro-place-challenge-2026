@@ -6,6 +6,202 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-15 — accepted constraint-graph seed and exact hard-swap batching):**
+> `uv run evaluate src/main.py --all` completed at **AVG 1.1199**, 17/17
+> VALID, 0 overlaps, all final hierarchy audits passed, in **575.28s** with
+> normal BB and DREAMPlace cache behavior. Versus the prior accepted sweep
+> (`AVG 1.1575`, `621.63s`), proxy improved by `0.0376` / **3.25%** and
+> evaluator runtime fell by `46.35s` / **7.45%**.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.9244/52.07s`, `ibm02=1.1172/25.32s`,
+> `ibm03=1.0023/24.11s`, `ibm04=1.0036/25.03s`,
+> `ibm06=1.1958/15.68s`, `ibm07=1.0454/27.76s`,
+> `ibm08=1.1309/30.64s`, `ibm09=0.8554/20.80s`,
+> `ibm10=1.0641/30.14s`, `ibm11=0.9869/38.93s`,
+> `ibm12=1.3085/57.31s`, `ibm13=1.0137/28.54s`,
+> `ibm14=1.2481/34.64s`, `ibm15=1.2230/50.05s`,
+> `ibm16=1.1637/33.10s`, `ibm17=1.3837/40.88s`, and
+> `ibm18=1.3724/40.28s`.
+>
+> Production now adds a deterministic constraint-graph legalization of
+> `initial.plc` to the exact-prescored seed portfolio. Horizontal/vertical
+> separation DAGs project macro centers inside fixed-macro and canvas bounds,
+> followed by the ordinary default-order spiral safety pass. The original seed
+> remains available, so this is a guarded additive candidate rather than an
+> unconditional replacement. It was selected on ibm10, ibm12, and ibm14-18;
+> the other ten designs reproduced their previous proxy. Hard-hard and
+> hard-soft regional swaps now use exact compiled batch scoring when candidate
+> pairs share the first hard endpoint, while the unchanged scalar path commits
+> the winner.
+>
+> The gain-per-second swap scheduler was removed after its focused ibm10 run
+> shortened the isolated swap stage but regressed both final proxy and total
+> placement time. Deterministic RUDY area inflation was also removed because
+> calibrated ibm10 pressure worsened the grouped seed from
+> proxy/hierarchy `1.8080/0.15792` to `1.9557/0.18576`; the planned dependent
+> star-pseudo-net experiment was skipped. Batch/scalar parity passed on
+> ibm01/ibm10/ibm12 to at most `2.22e-16`, all **33** project tests passed,
+> bytecode compilation and formatting passed, and the accepted full sweep
+> preserved every legality and hierarchy gate.
+
+> **Status (2026-07-15 — accepted Numba/vectorization full IBM sweep):**
+> `uv run evaluate src/main.py --all` completed at **AVG 1.1575**, 17/17
+> VALID, 0 overlaps, all final hierarchy audits passed, in **621.63s** with
+> normal BB and DREAMPlace cache behavior. Versus the prior normal-cache sweep
+> (`AVG 1.1652`, `1133.15s`), proxy improved by `0.0077` and runtime fell by
+> `511.52s` / **45.1%**.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.9244/38.50s`, `ibm02=1.1172/25.21s`,
+> `ibm03=1.0023/26.00s`, `ibm04=1.0036/30.97s`,
+> `ibm06=1.1958/20.36s`, `ibm07=1.0454/32.02s`,
+> `ibm08=1.1309/36.25s`, `ibm09=0.8554/26.88s`,
+> `ibm10=1.1544/35.39s`, `ibm11=0.9869/43.75s`,
+> `ibm12=1.6556/42.53s`, `ibm13=1.0137/30.99s`,
+> `ibm14=1.2596/40.06s`, `ibm15=1.3523/54.94s`,
+> `ibm16=1.2035/40.63s`, `ibm17=1.3861/47.82s`, and
+> `ibm18=1.3899/49.32s`.
+>
+> This accepts the staged runtime stack: exact-order Numba incremental
+> re-smoothing, prepared touched-net routing, spiral legalization, synthetic
+> clearance accumulation, batched soft relocation, and batched soft-soft swap
+> scoring. Direct parity verifiers were bit-exact; all **31** project tests,
+> bytecode compilation, formatting, and `git diff --check` passed before the
+> sweep. The direct-NumPy exact-proxy experiment remained rejected and reverted
+> because its focused ibm10 runtime did not improve.
+
+> **Status (2026-07-15 — cold-cache BB-on full IBM and NG45 validation):**
+> `uv run evaluate src/main.py --all` completed at **AVG 1.1653**, 17/17
+> VALID, 0 overlaps, all final
+> hierarchy audits passed, in **1248.00s**. This improves the prior accepted
+> `1.1666` sweep by `0.0013` and the prior best same-path `1.1657` sweep by
+> `0.0004`.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.9246/99.36s`, `ibm02=1.1167/57.44s`,
+> `ibm03=1.0101/57.90s`, `ibm04=1.0060/68.76s`,
+> `ibm06=1.2002/50.41s`, `ibm07=1.0487/65.79s`,
+> `ibm08=1.1342/76.88s`, `ibm09=0.8528/60.67s`,
+> `ibm10=1.1741/84.72s`, `ibm11=1.0089/70.91s`,
+> `ibm12=1.6778/98.26s`, `ibm13=1.0191/57.80s`,
+> `ibm14=1.2726/62.98s`, `ibm15=1.3601/97.60s`,
+> `ibm16=1.2090/82.13s`, `ibm17=1.4026/82.17s`, and
+> `ibm18=1.3924/74.21s`.
+>
+> The same BB-on code with normal cache reads completed at `AVG 1.1652` in
+> `1133.15s`. The cold run therefore did not perform better: proxy changed by
+> `+0.0001` and runtime by `+114.85s`. The cold result is the representative
+> clean-environment verification; the warm-cache number is diagnostic only.
+>
+> `uv run evaluate src/main.py --ng45` completed at **AVG 0.7252**, 4/4 VALID,
+> 0 overlaps, all final hierarchy audits passed, in **232.41s**. Per-design
+> proxy/runtime: `ariane133=0.6852/65.57s`, `ariane136=0.7314/60.83s`,
+> `mempool_tile=0.7556/41.41s`, and `nvdla=0.7286/64.60s`. This improves the
+> prior hierarchy-tag sweep average `0.7320` by `0.0068`.
+>
+> Production cleanup later the same day removed the remaining Boolean/runtime
+> gates whose selected value was already on: BB and cache reads,
+> component-aware region expansion/decompression, decompression feasibility and
+> graph-survivor handling, graph-tension opportunity ordering, graph-mask
+> fallback, adaptive gain control, cold-component targets, structurally
+> eligible small/medium soft polish, final audit rollback, and buffered plateau
+> telemetry. Their structural, data, budget, legality, hierarchy, and exact
+> proxy conditions remain intact; default-off experiments were not promoted.
+> This also covers runtime environment gates: production no longer reads
+> `HIER_DREAMPLACE_BB`, `HIER_DREAMPLACE_CACHE`, `HIER_ADAPTIVE_PASSES`,
+> `HIER_PLATEAU_TRACE`, or `HIER_PLATEAU_TRACE_BUFFERED`. The default-on
+> `HIER_GNN_COLDSPOT_SKIP_MICRO` sub-switch was also removed; an active GNN
+> coldspot selector now always replaces the post-coldspot micro-shift replay.
+> Verification: `compileall` passed across `src/`, `test/`, and `scripts/`; all
+> **28** project tests plus the dedicated GNN-ranker verifier passed; and
+> `uv run evaluate src/main.py -b ibm10`
+> completed at **1.1720 VALID**, zero overlaps, final hierarchy audit pass, in
+> **67.37s**.
+>
+> Runtime optimization Stage 1 replaced incremental routing-grid bbox
+> re-smoothing with cached Numba horizontal-column and vertical-row kernels
+> backed by reusable prefix buffers. The dedicated bit-exact reference test,
+> incremental region-swap verifier, bytecode compilation, and all **29** project
+> tests passed. The production ibm10 acceptance run improved to **1.1655
+> VALID** (`wl=0.079`, `den=0.591`, `cong=1.581`), zero overlaps and final
+> hierarchy audit pass, in **66.82s**. This focused smoke accepts the runtime
+> implementation but does not replace the full-suite headline above.
+>
+> Runtime optimization Stage 2 moved prepared incremental net routing into one
+> cached Numba call. Pin gathering, collapsed-net classification, high-fanout
+> sink deduplication, route application, and touched-bbox calculation now reuse
+> precomputed arrays and scratch space instead of per-trial Python/NumPy
+> buckets. A dedicated ibm10 verifier matched the NumPy reference grids and
+> bbox bit-exactly across moved/unmoved positions, full/sample net sets, and
+> both add/remove signs. The incremental swap oracle remained within
+> `4.44e-16`, all **29** tests passed, and the production ibm10 run improved
+> again to **1.1570 VALID** (`wl=0.081`, `den=0.589`, `cong=1.564`), zero
+> overlaps and final hierarchy audit pass, in **59.55s**. The lower runtime let
+> the budget-aware search score `33,556` soft-soft swaps versus Stage 1's
+> `22,494` before the same deadline.
+>
+> Runtime optimization Stage 3 JIT-compiled each hard macro's spiral candidate
+> and conflict scan while leaving the deadline check between macros in Python.
+> The same stage JIT-compiled synthetic-clearance pair pushes into a reusable
+> delta buffer. Randomized legalization and clearance tests were bit-exact
+> against their NumPy/scalar references, bytecode compilation passed, and all
+> **31** tests passed. The production ibm10 acceptance run improved to **1.1552
+> VALID** (`wl=0.080`, `den=0.587`, `cong=1.562`), zero overlaps and final
+> hierarchy audit pass, in **51.84s**. Region-swap trials increased to
+> `4,312` hard-hard, `6,668` hard-soft, and `34,232` soft-soft under the same
+> deadline-aware flow.
+>
+> Runtime optimization Stage 4 added true batched soft-relocation scoring for
+> target sets of size two or more. Compiled loops produce per-target raw routes,
+> touched bboxes, HPWL, and density occupancy without mutating committed scorer
+> state; tail-cost reductions operate across the batch. The ibm10 oracle
+> matched **256/256** scalar scores bit-exactly and verified all maintained
+> grids unchanged; compilation and all **31** tests passed. The production
+> acceptance run was **1.1557 VALID** (`wl=0.080`, `den=0.588`, `cong=1.563`),
+> zero overlaps and final hierarchy audit pass, in **45.11s**. This is `6.73s`
+> faster than Stage 3, with a small `+0.0005` proxy variation; it scored
+> `37,201` soft-soft swaps, `2,969` more than Stage 3, under the same deadline.
+>
+> Runtime optimization Stage 4b completed the batch-scoring scope by batching
+> soft-soft candidates that share one endpoint. The direct ibm10 oracle matched
+> another **128/128** scalar swap scores bit-exactly and verified routing,
+> smoothing, density, and placement caches unchanged. Compilation and all
+> **31** tests passed. The production acceptance run improved to **1.1544
+> VALID** (`wl=0.080`, `den=0.586`, `cong=1.562`), zero overlaps and final
+> hierarchy audit pass, in **40.13s**. It scored `46,230` soft-soft swaps and
+> accepted `182`; versus the original pre-optimization `67.37s` smoke, the
+> accepted Stage 1–4b stack is `27.24s` / **40.4% faster**.
+>
+> Runtime optimization Stage 5 tested direct NumPy inputs for internal exact
+> proxy calls to remove temporary Torch tensor construction and unwrapping.
+> NumPy and Torch inputs matched total proxy and all components exactly, and
+> all **31** tests passed, but the production ibm10 run took **46.25s** versus
+> Stage 4's **45.11s**. The change was therefore reverted; exact-proxy call
+> sites retain the established tensor interface.
+
+> **Ablation (2026-07-15 — DREAMPlace BB-Nesterov on versus off):** A temporary
+> cache-separated switch compared production
+> DREAMPlace 4.1 short-BB Nesterov against the original Lipschitz/line-search
+> Nesterov path. Both arms bypassed cache reads, so total runtime includes a
+> fresh grouped global-placement subprocess. The ablation switches were removed
+> after BB and cache reads were selected as fixed production behavior.
+>
+> Focused results, all VALID and hierarchy-audit passing:
+> `ibm04`: BB-on `1.0048/72.63s` with `7.7s` DREAMPlace versus BB-off
+> `1.0219/80.95s` with `16.1s` DREAMPlace; `ibm10`: BB-on `1.1700/73.83s`
+> with `12.1s` DREAMPlace versus BB-off `1.1724/90.50s` with `27.8s`
+> DREAMPlace. The two-design average was `1.0874/73.23s` on versus
+> `1.09715/85.73s` off, favoring BB by `0.00975` proxy and `12.50s` total
+> runtime. BB also cut average DREAMPlace time from `21.95s` to `9.90s`.
+>
+> Seed behavior explains the quality result. On `ibm04`, BB produced
+> `proxy=1.0925/hierarchy=0.21082` and won seed selection, while BB-off produced
+> `1.4295/0.22779` and lost to `initial.plc`. On `ibm10`, BB favored hierarchy
+> (`1.8080/0.15792`) while BB-off favored raw proxy (`1.6146/0.24219`); both
+> lost to `initial.plc`. This focused A/B supports retaining production
+> `use_bb=1`; it is not a replacement for the accepted full-suite result.
+
 > **Status (2026-07-15 — reproducible runtime, attributable scheduling, and
 > repository cleanup):** Added a clean-checkout DREAMPlace bootstrap pinned
 > to upstream commit `37214b40fe3837cc7d392c7d6092ccd6ff04a02c`, CUDA 12.1,

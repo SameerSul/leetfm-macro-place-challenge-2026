@@ -24,9 +24,9 @@ ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/
 
 ## Production Boundary
 
-Candidate logging is enabled with `HIER_GNN_TRACE=1`. Plateau telemetry is
-enabled by default and can be disabled with `HIER_PLATEAU_TRACE=0`. Both streams
-include run/revision/PID provenance.
+Candidate logging is enabled with `HIER_GNN_TRACE=1`. Plateau telemetry always
+records buffered pass-level rows. Both streams include run/revision/PID
+provenance; `HIER_PLATEAU_TRACE_PATH` redirects the plateau stream.
 
 `HIER_GNN_RANK=1` enables the experimental relocation ranker, but it is not a
 production setting: Stage-G6 was legal and audit-safe but regressed average

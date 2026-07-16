@@ -9,15 +9,15 @@ complete experiment history, including rejected proxy-path work, lives in
 ## Current State
 
 `MacroPlacer.place()` requires grouped DREAMPlace and always runs the hierarchy
-pipeline. The accepted full IBM sweep remains:
+pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1657  17/17 VALID  0 overlaps  1128.80s
+AVG 1.1199  17/17 VALID  0 overlaps  575.28s
 ```
 
-All final hierarchy audits passed. The NG45 hierarchy-tag result remains
-`AVG 0.7320`, 4/4 VALID, with zero overlaps.
+All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
+4/4 VALID, zero overlaps, all audits passed, in 232.41s.
 
 No learned model is enabled in production. Structural candidate ordering and
 GNN inference hooks remain default-off; exact proxy, hard legality, bounds,
@@ -37,6 +37,12 @@ the seed composite from `0.29168` to `0.16328` but regressed final proxy from
 Next step: treat the hierarchy vector as a feasibility or Pareto constraint
 rather than a single weighted score. Any candidate policy needs multi-benchmark
 validation and must preserve the final audit.
+
+The exact-prescored seed portfolio now also contains a deterministic
+constraint-graph legalization of `initial.plc`. This is a safe additive
+baseline because the ordinary initial seed remains available and the graph
+candidate advances only when its exact proxy is lower. It was selected on seven
+benchmarks in the accepted sweep.
 
 ### 2. Use attributable telemetry for scheduling
 
@@ -69,6 +75,13 @@ score time. The placement flow must keep a running maximum score estimate and
 reserve enough time for the final score and audits. New operators should first
 prove that their expected gain pays for their exact-score calls.
 
+Hard-hard and hard-soft swap trials now share exact compiled batch kernels,
+joining the existing batched soft relocation and soft-soft swap paths. Direct
+scalar parity checks pass to floating-point roundoff without changing committed
+scorer grids or caches. The remaining bottleneck is repeated full exact scoring,
+especially the evaluator's final large-grid report and operators that cannot
+share a fixed endpoint.
+
 ### 5. Portability coverage is still narrower than challenge coverage
 
 The pinned DREAMPlace bootstrap and native-op preflight make the supported
@@ -77,6 +90,20 @@ ABIs still need an explicit rebuild. The EDA I/O path supports converted
 LEF/DEF/Verilog inputs by attaching their generated source directory, but broad
 real-design parser coverage remains a validation task rather than a claimed
 guarantee.
+
+### 6. Paper-faithful BB line search is not evaluated
+
+Production already enables DREAMPlace 4.1's short Barzilai-Borwein Nesterov
+step. The ICCAD 2023 paper pairs that curvature-scaled initial step with a
+Zhang-Hager non-monotone line search, while the pinned upstream `step_bb()`
+implementation takes one BB-scaled step and applies the boundary constraint
+without that explicit line-search loop.
+
+Next step: only as a default-off experiment, add a bounded non-monotone line
+search and compare convergence, seed hierarchy quality, exact proxy, and runtime
+on multiple benchmarks. Each trial objective/gradient evaluation has real cost,
+so the paper-faithful variant must beat the current BB seed within the existing
+placement budget before promotion.
 
 ## Maintenance Rules
 
