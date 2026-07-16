@@ -12,6 +12,7 @@ benchmark input
        - infer hard-macro clusters from connectivity (or RTL instance-path
          prefixes when names provide useful coverage, e.g. NG45)
        - classify soft macros as owned (one dominant cluster) or bridge
+       - preserve explicit soft instance-path bundles when names expose them
        - record inter-cluster edge weights and confidence
   -> grouped DREAMPlace global placement (synthetic clique nets per cluster)
   -> cluster-consecutive hard legalization
@@ -122,7 +123,7 @@ the per-component seed/final hierarchy contract:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  542.58s
+AVG 1.1205  17/17 VALID  0 overlaps  547.05s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
@@ -137,6 +138,10 @@ and the compound-relocation sweep was `AVG 1.1205` in `544.94s`.
 The learned-GNN removal sweep preserves every telemetry-scheduled production
 score at `AVG 1.1205` in `542.58s`; its candidate rankers, selectors, tracing,
 offline tooling, tests, and active schemas are gone.
+The later conservative soft-bundle inference sweep again preserved every proxy
+at `AVG 1.1205` in `547.05s`: only explicit soft instance paths change
+compound-relocation groups, while flat-net connectivity and hard-affinity
+communities remain diagnostic evidence.
 The prior best same-path sweep was
 `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
@@ -228,6 +233,7 @@ not comparable to current numbers.
 | `src/placer/pipeline/hierarchy_floorplan.py` | The hierarchy pipeline itself: seed portfolio, region relief, swaps, and coldspot cleanup. |
 | `src/placer/pipeline/hierarchy_context.py` | Shared `PlacementState`, `PassContext`, `PassResult`, `PlateauTelemetry` used across pipeline stages. |
 | `src/placer/local_search/hierarchy_model.py` | Inferred hierarchy: hard clusters, soft roles, cluster graph, region builders. |
+| `src/placer/local_search/soft_hierarchy.py` | Confidence-calibrated soft bundles: explicit instance paths can be active; flat-netlist connectivity and affinity remain diagnostic evidence. |
 | `src/placer/local_search/hierarchy_quality.py` | Complete hierarchy vector: compactness, worst spread, neighbor impurity, graph stretch, and owned/bridge soft-role distances. |
 | `src/placer/local_search/clusters.py` | Hard-cluster derivation, oversized-cluster splitting, region-box primitives. |
 | `src/placer/local_search/relocation.py` | Hard and soft relocation used by region-locked relief and post-swap polish. |
@@ -256,7 +262,19 @@ low-fanout net connectivity. Oversized bridge-connected flat clusters are
 selectively split toward a target leaf size. Soft macros are classified as
 **owned** (one cluster dominates their connectivity, so they move with that
 cluster) or **bridge** (comparable affinity to multiple clusters, so they get
-a region spanning the clusters they connect).
+a region spanning the clusters they connect). When soft names themselves carry
+useful slash-separated RTL paths, the deepest useful shared prefix creates a
+high-confidence soft bundle. Explicit bundles take precedence over owner or
+bridge-signature grouping during compound soft relocation; flat `Grp_*`
+benchmarks retain the existing behavior. A second diagnostic layer builds a
+soft-only graph from repeated low-fanout shared nets and retains only mutually
+strong components of at most 16 soft macros. These connectivity communities are
+scored against common owned/bridge hard-cluster affinity. Combined evidence is
+assigned deterministic `high` (≥0.90), `medium` (≥0.75), or `low` confidence.
+Only explicit instance-path membership is high confidence and replaces the
+weaker owner/bridge group during compound relocation. Flat-netlist connectivity
+plus hard affinity is limited to medium confidence: it is useful evidence, but
+not proof that the soft macros are one IP.
 
 ### 2. Grouped DREAMPlace
 

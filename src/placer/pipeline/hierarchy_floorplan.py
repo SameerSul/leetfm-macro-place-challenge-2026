@@ -1712,6 +1712,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             r_score,
             cluster_softs=csofts,
             bridge_softs=bridge_softs,
+            soft_bundles=hierarchy.active_soft_bundles,
             soft_movable=soft_mov,
             region_bbox=soft_region,
             candidate_allowed=lambda trial_soft: _vector_contract(h_pos, trial_soft)[0],
