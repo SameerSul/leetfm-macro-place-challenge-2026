@@ -6,6 +6,45 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-15 — accepted constraint-graph seed and exact hard-swap batching):**
+> `uv run evaluate src/main.py --all` completed at **AVG 1.1199**, 17/17
+> VALID, 0 overlaps, all final hierarchy audits passed, in **575.28s** with
+> normal BB and DREAMPlace cache behavior. Versus the prior accepted sweep
+> (`AVG 1.1575`, `621.63s`), proxy improved by `0.0376` / **3.25%** and
+> evaluator runtime fell by `46.35s` / **7.45%**.
+>
+> Per-benchmark proxy/runtime:
+> `ibm01=0.9244/52.07s`, `ibm02=1.1172/25.32s`,
+> `ibm03=1.0023/24.11s`, `ibm04=1.0036/25.03s`,
+> `ibm06=1.1958/15.68s`, `ibm07=1.0454/27.76s`,
+> `ibm08=1.1309/30.64s`, `ibm09=0.8554/20.80s`,
+> `ibm10=1.0641/30.14s`, `ibm11=0.9869/38.93s`,
+> `ibm12=1.3085/57.31s`, `ibm13=1.0137/28.54s`,
+> `ibm14=1.2481/34.64s`, `ibm15=1.2230/50.05s`,
+> `ibm16=1.1637/33.10s`, `ibm17=1.3837/40.88s`, and
+> `ibm18=1.3724/40.28s`.
+>
+> Production now adds a deterministic constraint-graph legalization of
+> `initial.plc` to the exact-prescored seed portfolio. Horizontal/vertical
+> separation DAGs project macro centers inside fixed-macro and canvas bounds,
+> followed by the ordinary default-order spiral safety pass. The original seed
+> remains available, so this is a guarded additive candidate rather than an
+> unconditional replacement. It was selected on ibm10, ibm12, and ibm14-18;
+> the other ten designs reproduced their previous proxy. Hard-hard and
+> hard-soft regional swaps now use exact compiled batch scoring when candidate
+> pairs share the first hard endpoint, while the unchanged scalar path commits
+> the winner.
+>
+> The gain-per-second swap scheduler was removed after its focused ibm10 run
+> shortened the isolated swap stage but regressed both final proxy and total
+> placement time. Deterministic RUDY area inflation was also removed because
+> calibrated ibm10 pressure worsened the grouped seed from
+> proxy/hierarchy `1.8080/0.15792` to `1.9557/0.18576`; the planned dependent
+> star-pseudo-net experiment was skipped. Batch/scalar parity passed on
+> ibm01/ibm10/ibm12 to at most `2.22e-16`, all **33** project tests passed,
+> bytecode compilation and formatting passed, and the accepted full sweep
+> preserved every legality and hierarchy gate.
+
 > **Status (2026-07-15 — accepted Numba/vectorization full IBM sweep):**
 > `uv run evaluate src/main.py --all` completed at **AVG 1.1575**, 17/17
 > VALID, 0 overlaps, all final hierarchy audits passed, in **621.63s** with

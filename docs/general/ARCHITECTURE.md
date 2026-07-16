@@ -17,8 +17,9 @@ benchmark input
   -> cluster-consecutive hard legalization
   -> exact-proxy seed portfolio selection
        (grouped DREAMPlace, legalized initial.plc, DP/initial blends,
-        radial expansion, synthetic-clearance push-apart; every candidate gets
-        a complete hierarchy vector and lowest exact proxy enters relief)
+        radial expansion, synthetic-clearance push-apart, and a
+        constraint-graph-legalized initial.plc; every candidate gets a complete
+        hierarchy vector and lowest exact proxy enters relief)
   -> congestion-expanded hard/soft hierarchy regions
   -> exact-gated local micro-shift polish
   -> exact-gated cluster decompression with composite hierarchy quality
@@ -103,11 +104,12 @@ large-design hierarchy graph-tension opportunity ordering, swap-round
 micro-shift replay, stronger opportunity gates, component-aware scheduling,
 post-coldspot small-design polish with subpass audit restore, no-release
 low-net soft/SS breadth, medium/large soft-continuation scheduling, prepared
-Numba routing/legalization kernels, and batched soft relocation/swap scoring:
+Numba routing/legalization kernels, exact batched hard-hard/hard-soft scoring,
+batched soft relocation/swap scoring, and the guarded constraint-graph seed:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1575  17/17 VALID  0 overlaps  621.63s
+AVG 1.1199  17/17 VALID  0 overlaps  575.28s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
@@ -115,8 +117,9 @@ The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
 several designs after late proxy-improving relief. A strict final-rollback-only
 audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
 reached `AVG 1.1664`; the pre-optimization BB-on verification was
-`AVG 1.1653` cold (`AVG 1.1652` with cache hits). The accepted optimized
-normal-cache sweep is `AVG 1.1575`. The prior best same-path sweep was
+`AVG 1.1653` cold (`AVG 1.1652` with cache hits). The prior optimized
+normal-cache sweep was `AVG 1.1575`; the accepted constraint-graph/batched-swap
+sweep is `AVG 1.1199`. The prior best same-path sweep was
 `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
 proxy-improving states need to be discarded at finalization. Earlier Stage-6
@@ -175,7 +178,7 @@ while improving graph-edge geometry, it exact-scores a tiny hard/soft local
 polish pool around the moved cluster. It commits only if the final candidate
 clears the normal exact-proxy gain and audit gates. The pre-optimization
 cold-cache sweep was `AVG 1.1653`; the current optimized normal-cache sweep is
-`AVG 1.1575`.
+`AVG 1.1199`.
 The default-off `HIER_GRAPH_PREFILTER` hook can reject low-tension
 decompression/coldspot candidates before exact scoring when their cheap local
 congestion estimate does not improve. It is trace-visible, but not promoted by
@@ -220,6 +223,7 @@ not comparable to current numbers.
 | `src/placer/scoring/exact.py` | Exact TILOS proxy wrapper. |
 | `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves, including Numba-JIT bbox re-smoothing. |
 | `src/placer/legalize/spiral.py` | Hard-macro legalization, with cluster-consecutive order support. |
+| `src/placer/legalize/constraint_graph.py` | Deterministic horizontal/vertical separation-DAG projection for the guarded initial seed. |
 | `src/dreamplace_bridge/` | ICCAD04 pb/plc → Bookshelf, cluster grouping injection, DREAMPlace launcher, read-back. |
 | `scripts/dreamplace/` | Pinned source/toolchain bootstrap, CUDA-12 CUB patch, and native-extension preflight. |
 | `scripts/analyze_plateau_telemetry.py` | Provenance-filtered pass-yield aggregation and conservative skip-candidate report. |
@@ -262,8 +266,14 @@ options.
 
 Grouped DREAMPlace is one candidate seed among several: legalized
 `initial.plc`, two DP/initial blends, a radial expansion from the DP basin,
-and a synthetic-clearance push-apart from the DP basin. All are exact-scored;
-the lowest-proxy seed enters hierarchy relief. Each seed also records a richer
+and a synthetic-clearance push-apart from the DP basin. Production also adds a
+constraint-graph legalization of `initial.plc`: overlapping pairs become
+horizontal or vertical separation edges, both graphs stay acyclic under stable
+seed-coordinate order, and longest-path earliest/latest bounds project each
+movable macro toward its original coordinate. The ordinary initial candidate
+remains in the same portfolio, so this alternative advances only when its exact
+proxy is lower. All candidates are exact-scored; the lowest-proxy seed enters
+hierarchy relief. Each seed also records a richer
 hierarchy vector covering mean and worst hard-cluster spread, nearest-neighbor
 cluster impurity, weighted inter-cluster edge stretch, owned-soft distance, and
 bridge-soft corridor distance. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
@@ -285,6 +295,12 @@ Numba kernel with the original lexicographic candidate order, strict overlap
 tests, and minimum-displacement tie behavior. Python retains the between-macro
 deadline check, and the former vectorized conflict-matrix path remains the
 diagnostic reference.
+
+The constraint-graph candidate always runs the same default-order spiral safety
+pass after projection. A dense or infeasible constraint graph therefore cannot
+bypass legality, fixed-macro immobility, or bounds. On the accepted 17-design
+sweep it was selected on ibm10, ibm12, and ibm14-18; the unchanged candidates
+protected every other design from regression.
 
 ### 5. Soft Cleanup
 
@@ -343,6 +359,14 @@ route structures are flattened from the existing topology cache, and a JIT
 loop performs the exact remove/swap/add sequence for each second endpoint.
 The committed routing, smoothing, density, and position caches remain
 read-only until the existing scalar commit method accepts a winner.
+
+Hard-hard and hard-soft sets sharing one hard endpoint also use exact batched
+scoring. Candidate-specific hard-blockage grids reproduce the reference
+remove/swap/add order, including top-row and right-column correction terms,
+while prepared route, wirelength, and density kernels evaluate the full set.
+Scalar scoring remains the one-candidate/fallback oracle. Cross-design parity
+was exact to floating-point roundoff (maximum `2.22e-16`) and every committed
+scorer cache remained unchanged during batch trials.
 
 ### 9. Post-Swap Polish
 
@@ -534,6 +558,11 @@ The current swap breadth and optional GPU ranking controls are:
 HIER_HARD_SWAP_K=16          HIER_SOFT_SWAP_K=48
 HIER_SWAP_MIN_GAIN=0.00001   HIER_GPU_RANK_SWAP_CANDIDATES=auto
 HIER_GPU_RANK_MIN_CANDIDATES=512
+```
+
+**Seed alternatives**
+```text
+constraint-graph initial seed: always included; HIER_CONSTRAINT_GRAPH_MAX_ROUNDS=6
 ```
 
 **Post-swap / plateau scheduling**

@@ -13,7 +13,7 @@ pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1653  17/17 VALID  0 overlaps  1248.00s
+AVG 1.1199  17/17 VALID  0 overlaps  575.28s
 ```
 
 All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
@@ -37,6 +37,12 @@ the seed composite from `0.29168` to `0.16328` but regressed final proxy from
 Next step: treat the hierarchy vector as a feasibility or Pareto constraint
 rather than a single weighted score. Any candidate policy needs multi-benchmark
 validation and must preserve the final audit.
+
+The exact-prescored seed portfolio now also contains a deterministic
+constraint-graph legalization of `initial.plc`. This is a safe additive
+baseline because the ordinary initial seed remains available and the graph
+candidate advances only when its exact proxy is lower. It was selected on seven
+benchmarks in the accepted sweep.
 
 ### 2. Use attributable telemetry for scheduling
 
@@ -68,6 +74,13 @@ Large grids make exact validation expensive, and CPU contention can multiply
 score time. The placement flow must keep a running maximum score estimate and
 reserve enough time for the final score and audits. New operators should first
 prove that their expected gain pays for their exact-score calls.
+
+Hard-hard and hard-soft swap trials now share exact compiled batch kernels,
+joining the existing batched soft relocation and soft-soft swap paths. Direct
+scalar parity checks pass to floating-point roundoff without changing committed
+scorer grids or caches. The remaining bottleneck is repeated full exact scoring,
+especially the evaluator's final large-grid report and operators that cannot
+share a fixed endpoint.
 
 ### 5. Portability coverage is still narrower than challenge coverage
 

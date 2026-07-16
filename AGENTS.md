@@ -19,8 +19,11 @@ hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
 Current verified result with normal BB/cache behavior:
-`uv run evaluate src/main.py --all` = **AVG 1.1575**, 17/17 VALID, 0
-overlaps, all final hierarchy audits passed, **621.63s**. Passes advance on
+`uv run evaluate src/main.py --all` = **AVG 1.1199**, 17/17 VALID, 0
+overlaps, all final hierarchy audits passed, **575.28s**. The exact-scored seed
+portfolio includes a default-on constraint-graph legalization alternative for
+`initial.plc`, and hard-hard / hard-soft swap sets use exact batched scoring.
+Passes advance on
 gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
 than fixed repeat counts, and a final hierarchy-quality audit rolls back to
 the best saved audit-passing checkpoint if the post-search state drifts too

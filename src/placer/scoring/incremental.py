@@ -316,6 +316,225 @@ if HAS_NUMBA:
             bboxes[batch_idx, 3] = max(bbox_old[3], bbox_new[3])
 
     @_numba_njit(cache=True, fastmath=False)
+    def _apply_pair_macro_blockage_jit(
+        v_grid,
+        h_grid,
+        a_x,
+        a_y,
+        a_half_w,
+        a_half_h,
+        b_x,
+        b_y,
+        b_half_w,
+        b_half_h,
+        has_b,
+        weight,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
+        valloc,
+        halloc,
+    ):
+        """Apply one or two hard-macro blockage rectangles in reference order."""
+        tol = 1.0e-5
+
+        # Match routing.apply._apply_macro_routing_scatter_jit: all overlap
+        # contributions precede the top-row and right-column corrections.
+        for macro_idx in range(2):
+            if macro_idx == 1 and not has_b:
+                break
+            if macro_idx == 0:
+                cx = a_x
+                cy = a_y
+                half_w = a_half_w
+                half_h = a_half_h
+            else:
+                cx = b_x
+                cy = b_y
+                half_w = b_half_w
+                half_h = b_half_h
+            x_min = cx - half_w
+            x_max = cx + half_w
+            y_min = cy - half_h
+            y_max = cy + half_h
+            bl_col = int(np.floor(x_min / grid_w))
+            bl_row = int(np.floor(y_min / grid_h))
+            ur_col = int(np.floor(x_max / grid_w))
+            ur_row = int(np.floor(y_max / grid_h))
+            if ur_row < 0 or ur_col < 0 or bl_row >= grid_row or bl_col >= grid_col:
+                continue
+            bl_col = min(max(bl_col, 0), grid_col - 1)
+            bl_row = min(max(bl_row, 0), grid_row - 1)
+            ur_col = min(max(ur_col, 0), grid_col - 1)
+            ur_row = min(max(ur_row, 0), grid_row - 1)
+            for row in range(bl_row, ur_row + 1):
+                cell_y_min = grid_h * row
+                cell_y_max = grid_h * (row + 1)
+                y_dist = min(cell_y_max, y_max) - max(cell_y_min, y_min)
+                if y_dist < 0.0:
+                    y_dist = 0.0
+                base = row * grid_col
+                for col in range(bl_col, ur_col + 1):
+                    cell_x_min = grid_w * col
+                    cell_x_max = grid_w * (col + 1)
+                    x_dist = min(cell_x_max, x_max) - max(cell_x_min, x_min)
+                    if x_dist < 0.0:
+                        x_dist = 0.0
+                    cell = base + col
+                    v_grid[cell] += x_dist * valloc * weight
+                    h_grid[cell] += y_dist * halloc * weight
+
+        for macro_idx in range(2):
+            if macro_idx == 1 and not has_b:
+                break
+            if macro_idx == 0:
+                cx = a_x
+                cy = a_y
+                half_w = a_half_w
+                half_h = a_half_h
+            else:
+                cx = b_x
+                cy = b_y
+                half_w = b_half_w
+                half_h = b_half_h
+            x_min = cx - half_w
+            x_max = cx + half_w
+            y_min = cy - half_h
+            y_max = cy + half_h
+            bl_col = int(np.floor(x_min / grid_w))
+            bl_row = int(np.floor(y_min / grid_h))
+            ur_col = int(np.floor(x_max / grid_w))
+            ur_row = int(np.floor(y_max / grid_h))
+            if ur_row < 0 or ur_col < 0 or bl_row >= grid_row or bl_col >= grid_col:
+                continue
+            bl_col = min(max(bl_col, 0), grid_col - 1)
+            bl_row = min(max(bl_row, 0), grid_row - 1)
+            ur_col = min(max(ur_col, 0), grid_col - 1)
+            ur_row = min(max(ur_row, 0), grid_row - 1)
+            if ur_row == bl_row:
+                continue
+            bottom_partial = abs((grid_h * (bl_row + 1) - y_min) - grid_h) > tol
+            top_partial = abs((y_max - grid_h * ur_row) - grid_h) > tol
+            if not (bottom_partial or top_partial):
+                continue
+            base = ur_row * grid_col
+            for col in range(bl_col, ur_col + 1):
+                cell_x_min = grid_w * col
+                cell_x_max = grid_w * (col + 1)
+                x_dist = min(cell_x_max, x_max) - max(cell_x_min, x_min)
+                if x_dist < 0.0:
+                    x_dist = 0.0
+                v_grid[base + col] -= x_dist * valloc * weight
+
+        for macro_idx in range(2):
+            if macro_idx == 1 and not has_b:
+                break
+            if macro_idx == 0:
+                cx = a_x
+                cy = a_y
+                half_w = a_half_w
+                half_h = a_half_h
+            else:
+                cx = b_x
+                cy = b_y
+                half_w = b_half_w
+                half_h = b_half_h
+            x_min = cx - half_w
+            x_max = cx + half_w
+            y_min = cy - half_h
+            y_max = cy + half_h
+            bl_col = int(np.floor(x_min / grid_w))
+            bl_row = int(np.floor(y_min / grid_h))
+            ur_col = int(np.floor(x_max / grid_w))
+            ur_row = int(np.floor(y_max / grid_h))
+            if ur_row < 0 or ur_col < 0 or bl_row >= grid_row or bl_col >= grid_col:
+                continue
+            bl_col = min(max(bl_col, 0), grid_col - 1)
+            bl_row = min(max(bl_row, 0), grid_row - 1)
+            ur_col = min(max(ur_col, 0), grid_col - 1)
+            ur_row = min(max(ur_row, 0), grid_row - 1)
+            if ur_col == bl_col:
+                continue
+            left_partial = abs((grid_w * (bl_col + 1) - x_min) - grid_w) > tol
+            right_partial = abs((x_max - grid_w * ur_col) - grid_w) > tol
+            if not (left_partial or right_partial):
+                continue
+            for row in range(bl_row, ur_row + 1):
+                cell_y_min = grid_h * row
+                cell_y_max = grid_h * (row + 1)
+                y_dist = min(cell_y_max, y_max) - max(cell_y_min, y_min)
+                if y_dist < 0.0:
+                    y_dist = 0.0
+                h_grid[row * grid_col + ur_col] -= y_dist * halloc * weight
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _batch_hard_swap_macro_grids_jit(
+        a_xy,
+        b_xy,
+        a_half_w,
+        a_half_h,
+        b_half_w,
+        b_half_h,
+        b_is_hard,
+        base_v,
+        base_h,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
+        valloc,
+        halloc,
+        out_v,
+        out_h,
+    ):
+        """Build per-candidate hard blockage grids for HH or HS swaps."""
+        for batch_idx in range(b_xy.shape[0]):
+            for cell in range(base_v.shape[0]):
+                out_v[batch_idx, cell] = base_v[cell]
+                out_h[batch_idx, cell] = base_h[cell]
+            _apply_pair_macro_blockage_jit(
+                out_v[batch_idx],
+                out_h[batch_idx],
+                a_xy[0],
+                a_xy[1],
+                a_half_w,
+                a_half_h,
+                b_xy[batch_idx, 0],
+                b_xy[batch_idx, 1],
+                b_half_w[batch_idx],
+                b_half_h[batch_idx],
+                b_is_hard,
+                -1.0,
+                grid_w,
+                grid_h,
+                grid_row,
+                grid_col,
+                valloc,
+                halloc,
+            )
+            _apply_pair_macro_blockage_jit(
+                out_v[batch_idx],
+                out_h[batch_idx],
+                b_xy[batch_idx, 0],
+                b_xy[batch_idx, 1],
+                a_half_w,
+                a_half_h,
+                a_xy[0],
+                a_xy[1],
+                b_half_w[batch_idx],
+                b_half_h[batch_idx],
+                b_is_hard,
+                1.0,
+                grid_w,
+                grid_h,
+                grid_row,
+                grid_col,
+                valloc,
+                halloc,
+            )
+
+    @_numba_njit(cache=True, fastmath=False)
     def _batch_soft_congestion_values_jit(
         raw_h,
         raw_v,
@@ -385,6 +604,83 @@ if HAS_NUMBA:
                     cell = base + col
                     smoothed = prefix_v[v_window_hi[col] + 1] - prefix_v[v_window_lo[col]]
                     out[batch_idx, cell] = smoothed + v_macro[cell] / v_capacity
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _batch_hard_swap_congestion_values_jit(
+        raw_h,
+        raw_v,
+        bboxes,
+        base_h_smoothed,
+        base_v_smoothed,
+        h_macro,
+        v_macro,
+        h_capacity,
+        v_capacity,
+        h_window_lo,
+        h_window_hi,
+        h_window_count,
+        v_window_lo,
+        v_window_hi,
+        v_window_count,
+        smooth_range,
+        grid_row,
+        grid_col,
+        out,
+    ):
+        """Create exact congestion values with candidate-specific hard blockage."""
+        n_cells = grid_row * grid_col
+        prefix_h = np.empty(grid_row + 1, dtype=np.float64)
+        prefix_v = np.empty(grid_col + 1, dtype=np.float64)
+        for batch_idx in range(raw_h.shape[0]):
+            for cell in range(n_cells):
+                out[batch_idx, cell] = base_v_smoothed[cell] + v_macro[batch_idx, cell] / v_capacity
+                out[batch_idx, n_cells + cell] = (
+                    base_h_smoothed[cell] + h_macro[batch_idx, cell] / h_capacity
+                )
+
+            r_lo = bboxes[batch_idx, 0]
+            r_hi = bboxes[batch_idx, 1]
+            c_lo = bboxes[batch_idx, 2]
+            c_hi = bboxes[batch_idx, 3]
+            if smooth_range <= 0:
+                for col in range(c_lo, c_hi + 1):
+                    for row in range(grid_row):
+                        cell = row * grid_col + col
+                        out[batch_idx, n_cells + cell] = (
+                            raw_h[batch_idx, cell] + h_macro[batch_idx, cell]
+                        ) / h_capacity
+                for row in range(r_lo, r_hi + 1):
+                    base = row * grid_col
+                    for col in range(grid_col):
+                        cell = base + col
+                        out[batch_idx, cell] = (
+                            raw_v[batch_idx, cell] + v_macro[batch_idx, cell]
+                        ) / v_capacity
+                continue
+
+            for col in range(c_lo, c_hi + 1):
+                prefix_h[0] = 0.0
+                for row in range(grid_row):
+                    cell = row * grid_col + col
+                    value = raw_h[batch_idx, cell] / h_capacity
+                    prefix_h[row + 1] = prefix_h[row] + value / h_window_count[row]
+                for row in range(grid_row):
+                    cell = row * grid_col + col
+                    smoothed = prefix_h[h_window_hi[row] + 1] - prefix_h[h_window_lo[row]]
+                    out[batch_idx, n_cells + cell] = (
+                        smoothed + h_macro[batch_idx, cell] / h_capacity
+                    )
+
+            for row in range(r_lo, r_hi + 1):
+                base = row * grid_col
+                prefix_v[0] = 0.0
+                for col in range(grid_col):
+                    value = raw_v[batch_idx, base + col] / v_capacity
+                    prefix_v[col + 1] = prefix_v[col] + value / v_window_count[col]
+                for col in range(grid_col):
+                    cell = base + col
+                    smoothed = prefix_v[v_window_hi[col] + 1] - prefix_v[v_window_lo[col]]
+                    out[batch_idx, cell] = smoothed + v_macro[batch_idx, cell] / v_capacity
 
     @_numba_njit(cache=True, fastmath=False)
     def _batch_soft_wirelength_jit(
@@ -1549,6 +1845,11 @@ class IncrementalScorer:
     def score_swap_hard_hard_many(self, i_hard: int, candidates: np.ndarray) -> np.ndarray:
         """Score hard-hard swaps for one hard macro, preserving candidate order."""
         cand = np.asarray(candidates, dtype=np.int64).reshape(-1)
+        b_modules = np.asarray([self.hard_indices[int(j_hard)] for j_hard in cand], dtype=np.int64)
+        b_xy = self.committed_hard_pos[cand]
+        batch = self._score_hard_endpoint_swaps_many(int(i_hard), b_modules, b_xy, b_is_hard=True)
+        if batch is not None:
+            return batch
         out = np.empty(cand.size, dtype=np.float64)
         for k, j_hard in enumerate(cand):
             out[k] = self.score_swap_hard_hard(i_hard, int(j_hard))
@@ -1577,13 +1878,10 @@ class IncrementalScorer:
         b_xy = tuple(self.committed_soft_pos[soft_b])
         return self._score_multi_move([am, bm], [a_xy, b_xy], [b_xy, a_xy], [])
 
-    def _prepare_soft_swap_batch(self, soft_a: int, candidates: np.ndarray):
-        """Flatten cached pair topology for compiled soft-swap batch scoring."""
-        a_module = int(self.soft_indices[int(soft_a)])
-        b_modules = np.ascontiguousarray(
-            np.asarray([self.soft_indices[int(soft_b)] for soft_b in candidates]),
-            dtype=np.int64,
-        )
+    def _prepare_pair_swap_batch(self, a_module: int, b_modules: np.ndarray):
+        """Flatten cached pair topology for compiled swap batch scoring."""
+        a_module = int(a_module)
+        b_modules = np.ascontiguousarray(b_modules, dtype=np.int64)
         structs = [self._route_struct_many([a_module, int(b_module)]) for b_module in b_modules]
         if any(struct is None for struct in structs):
             return None
@@ -1644,6 +1942,197 @@ class IncrementalScorer:
             "touched": touched,
         }
 
+    def _score_hard_endpoint_swaps_many(
+        self,
+        i_hard: int,
+        b_modules: np.ndarray,
+        b_xy: np.ndarray,
+        *,
+        b_is_hard: bool,
+    ) -> "np.ndarray | None":
+        """Batch exact HH or HS swaps sharing one hard endpoint."""
+        b_modules = np.ascontiguousarray(b_modules, dtype=np.int64)
+        b_xy = np.ascontiguousarray(b_xy, dtype=np.float64)
+        if not HAS_NUMBA or b_modules.size < 2:
+            return None
+
+        a_module = int(self.hard_indices[int(i_hard)])
+        batch = self._prepare_pair_swap_batch(a_module, b_modules)
+        if batch is None:
+            return None
+
+        n_batch = int(b_modules.size)
+        n_cells = self.grid_row * self.grid_col
+        raw_h = np.empty((n_batch, n_cells), dtype=np.float64)
+        raw_v = np.empty((n_batch, n_cells), dtype=np.float64)
+        bboxes = np.empty((n_batch, 4), dtype=np.int64)
+        a_xy = np.ascontiguousarray(self.committed_hard_pos[int(i_hard)], dtype=np.float64)
+        pos_cache = np.ascontiguousarray(_ensure_pos_cache(self.plc), dtype=np.float64)
+        _batch_soft_swap_route_grids_jit(
+            batch["a_module"],
+            batch["b_modules"],
+            a_xy,
+            b_xy,
+            pos_cache,
+            self.H_flat,
+            self.V_flat,
+            raw_h,
+            raw_v,
+            bboxes,
+            batch["pin_offsets"],
+            batch["pin_gcell"],
+            batch["pin_module"],
+            batch["pin_x_off"],
+            batch["pin_y_off"],
+            batch["starts2_offsets"],
+            batch["starts2"],
+            batch["weights2"],
+            batch["starts3_offsets"],
+            batch["starts3"],
+            batch["weights3"],
+            batch["starts4_offsets"],
+            batch["starts4"],
+            batch["lengths4"],
+            batch["weights4"],
+            batch["unique_sinks"],
+            batch["three_g0"],
+            batch["three_g1"],
+            batch["three_g2"],
+            batch["three_weights"],
+            self.grid_w,
+            self.grid_h,
+            self.grid_row,
+            self.grid_col,
+        )
+
+        cong_cache = self.plc._cong_cache
+        a_slot = self._module_to_hard_slot.get(a_module)
+        if a_slot is None:
+            return None
+        if b_is_hard:
+            b_slots = np.asarray(
+                [self._module_to_hard_slot.get(int(module), -1) for module in b_modules],
+                dtype=np.int64,
+            )
+            if np.any(b_slots < 0):
+                return None
+            b_half_w = np.ascontiguousarray(cong_cache["hard_half_w"][b_slots], dtype=np.float64)
+            b_half_h = np.ascontiguousarray(cong_cache["hard_half_h"][b_slots], dtype=np.float64)
+        else:
+            b_half_w = np.zeros(n_batch, dtype=np.float64)
+            b_half_h = np.zeros(n_batch, dtype=np.float64)
+        h_macro = np.empty((n_batch, n_cells), dtype=np.float64)
+        v_macro = np.empty((n_batch, n_cells), dtype=np.float64)
+        _batch_hard_swap_macro_grids_jit(
+            a_xy,
+            b_xy,
+            float(cong_cache["hard_half_w"][a_slot]),
+            float(cong_cache["hard_half_h"][a_slot]),
+            b_half_w,
+            b_half_h,
+            bool(b_is_hard),
+            self.V_macro_flat,
+            self.H_macro_flat,
+            self.grid_w,
+            self.grid_h,
+            self.grid_row,
+            self.grid_col,
+            float(self.plc.vrouting_alloc),
+            float(self.plc.hrouting_alloc),
+            v_macro,
+            h_macro,
+        )
+
+        congestion_values = np.empty((n_batch, 2 * n_cells), dtype=np.float64)
+        _batch_hard_swap_congestion_values_jit(
+            raw_h,
+            raw_v,
+            bboxes,
+            np.ascontiguousarray(self.H_smoothed.ravel()),
+            np.ascontiguousarray(self.V_smoothed.ravel()),
+            h_macro,
+            v_macro,
+            self.grid_h_routes,
+            self.grid_v_routes,
+            self._sm_row_lp if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
+            self._sm_row_up if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
+            self._sm_row_cnt if self.smooth_range > 0 else np.empty(0, dtype=np.float64),
+            self._sm_col_lp if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
+            self._sm_col_up if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
+            self._sm_col_cnt if self.smooth_range > 0 else np.empty(0, dtype=np.float64),
+            self.smooth_range,
+            self.grid_row,
+            self.grid_col,
+            congestion_values,
+        )
+        congestion_count = int(congestion_values.shape[1] * 0.05)
+        if congestion_count == 0:
+            congestion = congestion_values.max(axis=1)
+        else:
+            top = np.partition(
+                congestion_values,
+                congestion_values.shape[1] - congestion_count,
+                axis=1,
+            )[:, -congestion_count:]
+            congestion = top.sum(axis=1) / congestion_count
+
+        wirelength = np.empty(n_batch, dtype=np.float64)
+        _batch_soft_swap_wirelength_jit(
+            batch["a_module"],
+            batch["b_modules"],
+            a_xy,
+            b_xy,
+            batch["touched_offsets"],
+            batch["touched"],
+            self.net_starts,
+            self.net_lengths,
+            self.ref_inv,
+            self.unique_ref,
+            self.x_off,
+            self.y_off,
+            pos_cache,
+            self.per_net_hpwl,
+            self.net_weights,
+            self.total_wl_raw,
+            self.wl_normalizer,
+            wirelength,
+        )
+
+        density_grids = np.empty((n_batch, self.dens_n_cells), dtype=np.float64)
+        a_half_w, a_half_h = self._dens_half[a_module]
+        b_half = np.asarray(
+            [self._dens_half[int(module)] for module in b_modules], dtype=np.float64
+        )
+        _batch_soft_swap_density_grids_jit(
+            a_xy,
+            b_xy,
+            a_half_w,
+            a_half_h,
+            np.ascontiguousarray(b_half[:, 0]),
+            np.ascontiguousarray(b_half[:, 1]),
+            self.grid_occupied,
+            self.dens_grid_w,
+            self.dens_grid_h,
+            self.dens_grid_row,
+            self.dens_grid_col,
+            density_grids,
+        )
+        density = np.empty(n_batch, dtype=np.float64)
+        for batch_idx in range(n_batch):
+            occupied = density_grids[batch_idx]
+            nonzero = occupied[occupied != 0.0]
+            if nonzero.size == 0:
+                density[batch_idx] = 0.0
+            elif self.dens_n_cells < 10:
+                density[batch_idx] = 0.5 * float(nonzero.mean() / self.dens_grid_area)
+            else:
+                count = min(self.dens_density_cnt, nonzero.size)
+                top = np.partition(nonzero, nonzero.size - count)[nonzero.size - count :]
+                density[batch_idx] = (
+                    0.5 * float(top.sum()) / self.dens_grid_area / self.dens_density_cnt
+                )
+        return wirelength + 0.5 * density + 0.5 * congestion
+
     def score_swap_soft_soft_many(self, soft_a: int, candidates: np.ndarray) -> np.ndarray:
         """Score soft-soft swaps for one soft macro, preserving candidate order."""
         cand = np.asarray(candidates, dtype=np.int64).reshape(-1)
@@ -1653,7 +2142,9 @@ class IncrementalScorer:
                 out[k] = self.score_swap_soft_soft(soft_a, int(soft_b))
             return out
 
-        batch = self._prepare_soft_swap_batch(int(soft_a), cand)
+        a_module = int(self.soft_indices[int(soft_a)])
+        b_modules = np.asarray([self.soft_indices[int(soft_b)] for soft_b in cand], dtype=np.int64)
+        batch = self._prepare_pair_swap_batch(a_module, b_modules)
         if batch is None:
             out = np.empty(cand.size, dtype=np.float64)
             for k, soft_b in enumerate(cand):
@@ -1825,6 +2316,11 @@ class IncrementalScorer:
     def score_swap_hard_soft_many(self, i_hard: int, candidates: np.ndarray) -> np.ndarray:
         """Score hard-soft swaps for one hard macro, preserving candidate order."""
         cand = np.asarray(candidates, dtype=np.int64).reshape(-1)
+        b_modules = np.asarray([self.soft_indices[int(soft_k)] for soft_k in cand], dtype=np.int64)
+        b_xy = self.committed_soft_pos[cand]
+        batch = self._score_hard_endpoint_swaps_many(int(i_hard), b_modules, b_xy, b_is_hard=False)
+        if batch is not None:
+            return batch
         out = np.empty(cand.size, dtype=np.float64)
         for k, soft_k in enumerate(cand):
             out[k] = self.score_swap_hard_soft(i_hard, int(soft_k))

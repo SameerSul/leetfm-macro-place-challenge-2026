@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import time
 from typing import Any, Callable
 
 import numpy as np
-import os
 import torch
-import time
 
 from placer.local_search.hierarchy_quality import hierarchy_quality_vector
 from utils.config import HAS_NUMBA, _numba_njit
@@ -108,6 +108,50 @@ def run_seed_portfolio(
     survivability before downstream region cleanup.
     """
 
+    def _first_legalize(
+        hard_xy: np.ndarray,
+        seed_deadline: float,
+        name: str,
+        *,
+        constraint_graph: bool = False,
+    ) -> np.ndarray:
+        if not constraint_graph:
+            return will_legalize(
+                hard_xy,
+                movable[:n],
+                sizes[:n],
+                hw,
+                hh,
+                cw,
+                ch,
+                n,
+                deadline=seed_deadline,
+                order=order,
+            )
+        from placer.legalize.constraint_graph import _will_legalize_constraint_graph
+
+        projected, stats = _will_legalize_constraint_graph(
+            hard_xy,
+            movable[:n],
+            sizes[:n],
+            hw,
+            hh,
+            cw,
+            ch,
+            n,
+            deadline=seed_deadline,
+            max_rounds=max(1, int(getattr(const, "HIER_CONSTRAINT_GRAPH_MAX_ROUNDS", 6))),
+        )
+        logger(
+            "  [hier] constraint-graph legalize "
+            f"{name}: overlaps {int(stats['initial_overlaps'])}->"
+            f"{int(stats['final_overlaps'])}, constraints="
+            f"{int(stats['x_constraints'])}+{int(stats['y_constraints'])}, "
+            f"rounds={int(stats['rounds'])}, infeasible={int(bool(stats['infeasible']))}, "
+            f"elapsed={float(stats['elapsed_s']):.3f}s"
+        )
+        return projected
+
     def _prepare_dreamplace_candidate(
         *,
         group_weight: int,
@@ -126,17 +170,10 @@ def run_seed_portfolio(
             group_weight=group_weight,
             return_full=True,
         )
-        legal_hard = will_legalize(
+        legal_hard = _first_legalize(
             raw_hard.copy(),
-            movable[:n],
-            sizes[:n],
-            hw,
-            hh,
-            cw,
-            ch,
-            n,
-            deadline=time.monotonic() + 120,
-            order=order,
+            time.monotonic() + 120,
+            "dreamplace",
         )
         legal_hard = will_legalize(
             legal_hard,
@@ -198,20 +235,21 @@ def run_seed_portfolio(
             )
         return hard_xy, soft_xy
 
-    def _legalize_seed(name: str, hard_xy, soft_xy, *, budget_s: float = 60.0):
+    def _legalize_seed(
+        name: str,
+        hard_xy,
+        soft_xy,
+        *,
+        budget_s: float = 60.0,
+        constraint_graph: bool = False,
+    ):
         hard_xy, soft_xy = _clip_seed(hard_xy, soft_xy)
         seed_deadline = time.monotonic() + float(budget_s)
-        legal_hard = will_legalize(
+        legal_hard = _first_legalize(
             hard_xy,
-            movable[:n],
-            sizes[:n],
-            hw,
-            hh,
-            cw,
-            ch,
-            n,
-            deadline=seed_deadline,
-            order=order,
+            seed_deadline,
+            name,
+            constraint_graph=constraint_graph,
         )
         legal_hard = will_legalize(
             legal_hard,
@@ -401,6 +439,21 @@ def run_seed_portfolio(
                 rows.append(_legalize_seed(name, cand_h, cand_s, budget_s=45.0))
             except Exception as exc:
                 logger(f"  [hier] seed {name} failed prescore: {type(exc).__name__}: {exc}")
+        try:
+            rows.append(
+                _legalize_seed(
+                    "constraint_graph_initial",
+                    init_hard,
+                    init_soft,
+                    budget_s=45.0,
+                    constraint_graph=True,
+                )
+            )
+        except Exception as exc:
+            logger(
+                "  [hier] seed constraint_graph_initial failed prescore: "
+                f"{type(exc).__name__}: {exc}"
+            )
         for row in rows:
             vector = hierarchy_quality_vector(
                 np.asarray(row["hard"], dtype=np.float64),
