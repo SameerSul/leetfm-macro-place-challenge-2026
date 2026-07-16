@@ -202,6 +202,30 @@ Target: beat RePlAce avg of 1.4578.
 > lost to `initial.plc`. This focused A/B supports retaining production
 > `use_bb=1`; it is not a replacement for the accepted full-suite result.
 
+> **Ablation (2026-07-15 — Zhang-Hager line search rejected and removed):** A
+> cache-separated active trial paired the production short-BB initial step with
+> the Zhang-Hager non-monotone Armijo condition. It used the paper's
+> `eta=0.85` and `delta=1e-4`, half-step backtracking, and a five-backtrack
+> bound. A bounded-search restart bug found during optimizer testing was fixed
+> before placement comparison: the corrected restart retained a smaller next
+> trial rather than repeatedly retrying the same oversized fallback. On the
+> two ibm10 DREAMPlace stages, this reduced the trace from 1,942 objective/
+> gradient trials, 1,342 backtracks, and 264 failures to 681 trials, 81
+> backtracks, and 5 failures across 600 optimizer updates.
+>
+> The corrected placement quality still failed decisively. On `ibm04`, the
+> production short-BB cache control produced seed proxy/hierarchy
+> `1.0925/0.21082`, selected DREAMPlace, and finished at **1.0036 VALID**;
+> Zhang-Hager produced `2.0536/0.27866`, lost seed selection, and finished at
+> **1.0314 VALID**. On `ibm10`, the short-BB seed was `1.8080/0.15792` versus
+> Zhang-Hager's `2.3199/0.28609`; the constraint-graph seed masked the
+> regression, so both final placements were **1.0641 VALID**. Fresh
+> Zhang-Hager global-placement times were `10.4s` on ibm04 and `13.7s` on
+> ibm10, versus the earlier cache-bypassed short-BB controls of `7.7s` and
+> `12.1s`. The line-search implementation, cache revision, bootstrap patch,
+> preflight assertions, and dedicated tests were therefore deleted. Production
+> remains the pinned one-step short-BB Nesterov path.
+
 > **Status (2026-07-15 — reproducible runtime, attributable scheduling, and
 > repository cleanup):** Added a clean-checkout DREAMPlace bootstrap pinned
 > to upstream commit `37214b40fe3837cc7d392c7d6092ccd6ff04a02c`, CUDA 12.1,
