@@ -18,9 +18,13 @@ available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
-Current accepted result: `uv run evaluate src/main.py --all` =
-**AVG 1.1657**, 17/17 VALID, 0 overlaps, all final hierarchy audits passed,
-1128.80s. Passes advance on gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
+Current verified result with normal BB/cache behavior:
+`uv run evaluate src/main.py --all` = **AVG 1.1199**, 17/17 VALID, 0
+overlaps, all final hierarchy audits passed, **575.28s**. The exact-scored seed
+portfolio includes a default-on constraint-graph legalization alternative for
+`initial.plc`, and hard-hard / hard-soft swap sets use exact batched scoring.
+Passes advance on
+gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
 than fixed repeat counts, and a final hierarchy-quality audit rolls back to
 the best saved audit-passing checkpoint if the post-search state drifts too
 far from the selected hierarchy seed. See `docs/general/ARCHITECTURE.md` for
@@ -28,7 +32,8 @@ the full pipeline, `docs/general/ISSUES.md` for current gaps, and
 `docs/general/PROGRESS.md` for rejected or superseded experiments.
 
 NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
-**AVG 0.7320**, 4/4 VALID, 0 overlaps; `uv run python
+**AVG 0.7252**, 4/4 VALID, 0 overlaps, all hierarchy audits passed, 232.41s;
+`uv run python
 test/verification/_verify_ng45_hierarchy_tags.py` passes. The hierarchy model
 uses slash-separated instance-path prefixes when macro names provide useful
 coverage, then falls back to inferred connectivity on flat-name benchmarks.
@@ -37,10 +42,10 @@ BeyondPPA-style work is integrated into the hierarchy path, not as a separate
 placer. The current shipped piece is default-off hierarchy relocation candidate ordering
 (`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant). The trace logger is
 default-off through the `HIER_GNN_TRACE=0` runtime environment variable.
-Pass-level plateau telemetry is default-on for future ML/DL scheduling work and
-writes attributable schema-v2 rows to
+Pass-level plateau telemetry always records buffered, attributable schema-v2
+rows for future ML/DL scheduling work. It writes to
 `ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` unless
-`HIER_PLATEAU_TRACE=0` or `HIER_PLATEAU_TRACE_PATH` is supplied.
+`HIER_PLATEAU_TRACE_PATH` is supplied.
 Stage-G3 offline baseline tooling lives in `scripts/gnn/train_gnn_baseline.py`, and
 the accepted default-off baseline artifact is
 `ml_data/beyondppa_gnn/models/20260619_g3_candidate_baseline_min4/`. Stage-G4
@@ -213,6 +218,13 @@ scripts/                  Comparison + benchmark-conversion utilities.
 
 - **Hierarchy and proxy are opposed.** The exact proxy usually rewards spreading connected macros apart; the current system intentionally keeps subsystems together and accepts the proxy cost.
 - **DREAMPlace is required for the current production path.** `_place_impl()` raises if `_hierarchy_floorplan()` cannot run; the old proxy fallback has been deleted.
+- **DREAMPlace curvature scaling is already enabled.** The grouped stage sets
+  `macro_place_flag=1` and `use_bb=1`, selecting DREAMPlace 4.1's short
+  Barzilai-Borwein Nesterov update. Do not add a duplicate second-order path;
+  treat a paper-faithful non-monotone line search as a separate experiment.
+  BB and DREAMPlace cache reads are fixed production behavior; do not re-add
+  runtime feature switches for them. Legacy `HIER_DREAMPLACE_BB` and
+  `HIER_DREAMPLACE_CACHE` values have no effect.
 - **Exact scoring is slow on large grids.** ibm15 (n=393, grid=2166) takes ~160s; ibm18 (grid=2145) takes ~220s. Always factor scoring time into a per-benchmark time budget. The harness has a 200s/benchmark soft limit and post-scoring budget guard.
 - **CPU contention slows scoring 3–5×.** ibm08 scores in 31s clean but 95–131s under load; ibm11 scored 263s under heat. Use a running-max `t_one_score` for budget estimation, not the baseline-only measurement.
 - **`initial.plc` is already a good seed.** It comes from a prior EDA flow with hand-tuned spread. The job of legalization is to resolve overlaps without destroying that spread. Restart from random or grid layouts has consistently lost to restarting from `initial.plc + small perturbation`.

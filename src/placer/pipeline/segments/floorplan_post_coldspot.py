@@ -103,9 +103,7 @@ def run_post_coldspot_finalize(
             "min_margin": min(pair_margin, bounds_margin),
         }
 
-    def _small_design_polish_enabled() -> bool:
-        if not bool(getattr(const, "HIER_SMALL_DESIGN_POLISH", False)):
-            return False
+    def _small_design_polish_eligible() -> bool:
         total = int(n) + int(n_soft)
         if int(n) < int(const.HIER_SMALL_DESIGN_HARD_MIN):
             return False
@@ -207,8 +205,6 @@ def run_post_coldspot_finalize(
         return hard_out, soft_out, released
 
     def _small_design_target_pool(scorer: IncrementalScorer) -> dict[str, np.ndarray] | None:
-        if not bool(getattr(const, "HIER_COLD_COMPONENT_TARGETS", False)):
-            return None
         field = weighted_congestion_field(
             scorer,
             int(benchmark.grid_rows),
@@ -268,7 +264,7 @@ def run_post_coldspot_finalize(
             return True, float(quality)
         return False, float(quality)
 
-    if _small_design_polish_enabled():
+    if _small_design_polish_eligible():
         small_t0 = time.monotonic()
         small_deadline = _deadline(float(const.HIER_SMALL_DESIGN_BUDGET_S), None)
         small_before = float(cur_proxy)
@@ -652,11 +648,7 @@ def run_post_coldspot_finalize(
     audit_rollback = False
     rollback_quality = None
     rollback_proxy = None
-    if (
-        not audit_passed
-        and bool(getattr(const, "HIER_FINAL_HIER_AUDIT_ROLLBACK", False))
-        and _is_hard_valid(audit_checkpoint_h)
-    ):
+    if not audit_passed and _is_hard_valid(audit_checkpoint_h):
         if audit_checkpoint_quality <= audit_limit:
             rollback_quality = float(audit_checkpoint_quality)
             rollback_proxy = float(

@@ -6,6 +6,82 @@ import time
 import numpy as np
 
 from placer.shared.geometry import separation_matrices
+from utils.config import HAS_NUMBA, _numba_njit
+
+if HAS_NUMBA:
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _legalize_one_jit(pos, legal, placed, sizes, hw, hh, cw, ch, idx):
+        """Find one macro's lex-first minimum-displacement legal position."""
+        eps = 0.05
+        placed_any = False
+        in_bounds = (
+            legal[idx, 0] - hw[idx] >= 0.0
+            and legal[idx, 0] + hw[idx] <= cw
+            and legal[idx, 1] - hh[idx] >= 0.0
+            and legal[idx, 1] + hh[idx] <= ch
+        )
+        if in_bounds:
+            conflict = False
+            for other in range(placed.shape[0]):
+                if not placed[other]:
+                    continue
+                placed_any = True
+                sep_x = (sizes[idx, 0] + sizes[other, 0]) / 2.0
+                sep_y = (sizes[idx, 1] + sizes[other, 1]) / 2.0
+                if (
+                    abs(legal[idx, 0] - legal[other, 0]) < sep_x + eps
+                    and abs(legal[idx, 1] - legal[other, 1]) < sep_y + eps
+                ):
+                    conflict = True
+                    break
+            if placed_any and not conflict:
+                return legal[idx, 0], legal[idx, 1]
+
+        step = max(sizes[idx, 0], sizes[idx, 1]) * 0.25
+        px = pos[idx, 0]
+        py = pos[idx, 1]
+        hw_idx = hw[idx]
+        hh_idx = hh[idx]
+        best_x = min(max(legal[idx, 0], hw_idx), cw - hw_idx)
+        best_y = min(max(legal[idx, 1], hh_idx), ch - hh_idx)
+
+        for radius in range(1, 200):
+            found = False
+            best_d2 = np.inf
+            ring_x = best_x
+            ring_y = best_y
+            for ddx in range(-radius, radius + 1):
+                for ddy in range(-radius, radius + 1):
+                    if abs(ddx) != radius and abs(ddy) != radius:
+                        continue
+                    cand_x = min(max(px + ddx * step, hw_idx), cw - hw_idx)
+                    cand_y = min(max(py + ddy * step, hh_idx), ch - hh_idx)
+                    conflict = False
+                    for other in range(placed.shape[0]):
+                        if not placed[other]:
+                            continue
+                        sep_x = (sizes[idx, 0] + sizes[other, 0]) / 2.0
+                        sep_y = (sizes[idx, 1] + sizes[other, 1]) / 2.0
+                        if (
+                            abs(cand_x - legal[other, 0]) < sep_x + eps
+                            and abs(cand_y - legal[other, 1]) < sep_y + eps
+                        ):
+                            conflict = True
+                            break
+                    if conflict:
+                        continue
+                    diff_x = cand_x - pos[idx, 0]
+                    diff_y = cand_y - pos[idx, 1]
+                    d2 = diff_x * diff_x + diff_y * diff_y
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        ring_x = cand_x
+                        ring_y = cand_y
+                        found = True
+            if found:
+                return ring_x, ring_y
+        return best_x, best_y
 
 
 @lru_cache(maxsize=256)
@@ -68,11 +144,23 @@ def _will_legalize(
     explore different legal arrangements.
     deadline: optional time.monotonic() cutoff; remaining macros keep pos[].
     """
-    sep_x_mat, sep_y_mat = separation_matrices(sizes)
     if order is None:
         order = sorted(range(n), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
     placed = np.zeros(n, dtype=bool)
     legal = pos.copy()
+
+    if HAS_NUMBA:
+        for idx in order:
+            if deadline is not None and time.monotonic() > deadline:
+                break
+            if not movable[idx]:
+                placed[idx] = True
+                continue
+            legal[idx] = _legalize_one_jit(pos, legal, placed, sizes, hw, hh, cw, ch, idx)
+            placed[idx] = True
+        return legal
+
+    sep_x_mat, sep_y_mat = separation_matrices(sizes)
     MAX_R = 200
     EPS = 0.05  # separation tolerance, mirrors the original `+ 0.05` constant
 
@@ -93,8 +181,10 @@ def _will_legalize(
         # seed macros uncorrected. Forcing OOB macros into the spiral pulls them
         # inside; in-bounds macros are unaffected, so the normal output is unchanged.
         in_bounds = (
-            legal[idx, 0] - hw[idx] >= 0.0 and legal[idx, 0] + hw[idx] <= cw and
-            legal[idx, 1] - hh[idx] >= 0.0 and legal[idx, 1] + hh[idx] <= ch
+            legal[idx, 0] - hw[idx] >= 0.0
+            and legal[idx, 0] + hw[idx] <= cw
+            and legal[idx, 1] - hh[idx] >= 0.0
+            and legal[idx, 1] + hh[idx] <= ch
         )
         # Current-position conflict check (only over actually-placed macros).
         # When no macros are placed yet, fall through to spiral search to match
@@ -102,9 +192,7 @@ def _will_legalize(
         if in_bounds and placed.any():
             cdx = np.abs(legal[idx, 0] - legal[placed, 0])
             cdy = np.abs(legal[idx, 1] - legal[placed, 1])
-            if not (
-                (cdx < sep_x_idx[placed] + EPS) & (cdy < sep_y_idx[placed] + EPS)
-            ).any():
+            if not ((cdx < sep_x_idx[placed] + EPS) & (cdy < sep_y_idx[placed] + EPS)).any():
                 placed[idx] = True
                 continue
 
@@ -132,10 +220,9 @@ def _will_legalize(
                 # [K, P] overlap test in one numpy op
                 dx_mat = np.abs(cand_x[:, None] - placed_x[None, :])
                 dy_mat = np.abs(cand_y[:, None] - placed_y[None, :])
-                bad = (
-                    (dx_mat < sep_xp[None, :] + EPS)
-                    & (dy_mat < sep_yp[None, :] + EPS)
-                ).any(axis=1)
+                bad = ((dx_mat < sep_xp[None, :] + EPS) & (dy_mat < sep_yp[None, :] + EPS)).any(
+                    axis=1
+                )
                 valid = ~bad
             else:
                 valid = np.ones(len(cand_x), dtype=bool)

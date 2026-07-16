@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import os
-from typing import Any, Callable
-
 import time
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -15,15 +13,19 @@ from placer.scoring.incremental import IncrementalScorer
 from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
 from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
 
-LocalRegionsFn = Callable[[np.ndarray, np.ndarray, int], tuple[
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    dict,
-    np.ndarray,
-    np.ndarray,
-] | None]
+LocalRegionsFn = Callable[
+    [np.ndarray, np.ndarray, int],
+    tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        dict,
+        np.ndarray,
+        np.ndarray,
+    ]
+    | None,
+]
 AdditiveFn = Callable[[float | None], bool]
 
 
@@ -57,14 +59,9 @@ def refine_coldspot_candidate(
             plc,
         )
     )
-    adaptive_passes = (
-        os.environ.get("HIER_ADAPTIVE_PASSES", "1").strip().lower()
-        not in {"0", "false", "no", "off", "disable"}
-    )
     adaptive_min_gain = float(const.HIER_PLATEAU_PROXY_GAIN)
+
     def _adaptive_gain(before: float, after: float) -> bool:
-        if not adaptive_passes:
-            return True
         return float(before) - float(after) > adaptive_min_gain
 
     if deadline is not None and time.monotonic() >= deadline:
@@ -101,13 +98,9 @@ def refine_coldspot_candidate(
         "hard_reloc_accepts": 0,
         "soft_reloc_accepts": 0,
     }
-    local_swap_min_gain = float(const.HIER_SWAP_MIN_GAIN)
-    local_reloc_min_gain = float(const.HIER_RELOC_PROPOSE_MIN_GAIN)
-    local_soft_min_gain = float(hier_soft_barrier_gain)
-    if adaptive_passes:
-        local_swap_min_gain = max(local_swap_min_gain, adaptive_min_gain)
-        local_reloc_min_gain = max(local_reloc_min_gain, adaptive_min_gain)
-        local_soft_min_gain = max(local_soft_min_gain, adaptive_min_gain)
+    local_swap_min_gain = max(float(const.HIER_SWAP_MIN_GAIN), adaptive_min_gain)
+    local_reloc_min_gain = max(float(const.HIER_RELOC_PROPOSE_MIN_GAIN), adaptive_min_gain)
+    local_soft_min_gain = max(float(hier_soft_barrier_gain), adaptive_min_gain)
 
     local_hard_swap_k = max(1, int(const.HIER_COLDSPOT_LOCAL_HARD_SWAP_K))
     local_soft_swap_k = max(1, int(const.HIER_COLDSPOT_LOCAL_SOFT_SWAP_K))
