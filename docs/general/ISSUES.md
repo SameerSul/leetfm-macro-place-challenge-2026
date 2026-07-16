@@ -13,7 +13,7 @@ pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  541.67s
+AVG 1.1205  17/17 VALID  0 overlaps  542.58s
 ```
 
 All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
@@ -75,8 +75,9 @@ two-revision evidence needed for the next schedule change.
 
 The former relocation, regional-swap, and coldspot learned rankers failed to
 clear offline and closed-loop gates and repeatedly increased runtime. Their
-model loader, inference hooks, candidate logger, training scripts, datasets,
-models, diagnostics, tests, and active schemas were removed on 2026-07-16.
+model loader, inference hooks, candidate logger, training scripts, diagnostics,
+tests, active schemas, historical datasets, and model artifacts were removed on
+2026-07-16.
 
 Next step: improve deterministic proposal generation and exact-score efficiency.
 Do not rebuild the learned-ranking stack without an explicit direction change
