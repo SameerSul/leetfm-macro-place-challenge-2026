@@ -37,7 +37,7 @@ Current full-suite result:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1199  17/17 VALID  0 overlaps  all hierarchy audits passed  (575.28s)
+AVG 1.1205  17/17 VALID  0 overlaps  all hierarchy audits passed  (541.67s)
 
 uv run evaluate src/main.py --ng45
 AVG 0.7252  4/4 VALID  0 overlaps  all hierarchy audits passed  (232.41s)
@@ -92,7 +92,7 @@ flowchart TD
     P --> S4[Radial expansion from DP basin]
     P --> S5[Synthetic-clearance push-apart from DP basin]
     P --> S6[Constraint-graph legalization of initial.plc]
-    S0 --> E[Exact-score every candidate<br/>pick the lowest-proxy seed]
+    S0 --> E[Enforce the per-component<br/>hierarchy contract, then pick<br/>the lowest-proxy eligible seed]
     S1 --> E
     S2 --> E
     S3 --> E
@@ -104,7 +104,8 @@ flowchart TD
     F --> G[Region-locked relocation + soft cleanup]
     G --> H[Exact-gated cluster decompression]
     H --> I[Region-bounded hard/soft swaps]
-    I --> J[Coldspot tightening<br/>congestion-driven local relief]
+    I --> I2[Compound related-soft relocation<br/>final-state exact acceptance]
+    I2 --> J[Coldspot tightening<br/>congestion-driven local relief]
     J --> L{Final legality,<br/>bounds, and<br/>hierarchy audit}
     L -->|pass| M[Macro center coordinates]
     L -->|drift| N[Roll back to best<br/>audit-passing checkpoint]
@@ -116,7 +117,7 @@ flowchart TD
     classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     class A,B,C,D,P,E seed
     class S0,S1,S2,S3,S4,S5,S6 cand
-    class F,G,H,I,J search
+    class F,G,H,I,I2,J search
     class L,M,N audit
 ```
 
@@ -125,14 +126,18 @@ portfolio — grouped DREAMPlace sits next to
 the legalized `initial.plc`, two DP/initial blends, a radial expansion of
 the DP basin, a synthetic-clearance push-apart of the DP basin, and a
 constraint-graph legalization of `initial.plc`. Every
-candidate is exact-scored and only the lowest-proxy one advances. A richer
-hard/soft/graph hierarchy vector is recorded for every seed; an experimental
+candidate is exact-scored, checked component-by-component against legalized
+`initial.plc`, and only the lowest-proxy eligible one advances. The six-part
+hard/soft/graph hierarchy vector covers cluster compactness, worst spread,
+nearest-neighbor impurity, hierarchy-edge stretch, owned-soft distance, and
+bridge-soft corridor distance. An experimental
 hierarchy-first selector is available through `HIER_SEED_HIERARCHY_SELECT=1`,
 but remains default-off because focused validation materially regressed proxy.
 Orange
 nodes are the exact-proxy-gated local search passes; green nodes are the
-final audit and the rollback to the best audit-passing checkpoint if the
-post-search state drifts too far from the selected seed.
+final audit and the rollback to the best audit-passing checkpoint if either
+the legacy hard-cluster quality or any hierarchy-vector component drifts too
+far from the selected seed.
 
 The same flow, written as a linear pipeline:
 
@@ -144,13 +149,18 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
              two DP/initial blends (alpha = 0.35, 0.65), radial
              expansion of DP basin, synthetic-clearance push-apart,
              constraint-graph legalized initial.plc
-          -> exact-score all candidates, advance the lowest-proxy seed
+          -> exact-score all candidates, apply the per-component hierarchy
+             contract relative to legalized initial.plc, and advance the
+             lowest-proxy eligible seed
           -> congestion-expanded hierarchy regions
           -> region-locked relocation + soft cleanup
           -> exact-gated cluster decompression
           -> region-bounded hard/soft swaps
+          -> hierarchy-bounded compound related-soft relocation; exact-score
+             only after the complete group move is formed
           -> coldspot tightening (congestion-driven local relief)
-          -> final legality, bounds, and hierarchy audit
+          -> final legality, bounds, hard-cluster audit, and per-component
+             hierarchy-vector audit
           -> macro center coordinates
 ```
 

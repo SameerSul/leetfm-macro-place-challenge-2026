@@ -26,11 +26,12 @@ breadth, medium/large soft-continuation scheduling, and strict final hierarchy
 audit rollback with audit-aware local relief plus large-design graph-tension
 opportunity ordering, prepared Numba routing/legalization kernels, and batched
 soft relocation/swap scoring, exact batched hard-hard/hard-soft scoring, and a
-guarded constraint-graph legalization candidate for `initial.plc`:
+guarded constraint-graph legalization candidate for `initial.plc`, plus the
+per-component seed/final hierarchy contract:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1199  17/17 VALID  0 overlaps  575.28s
+AVG 1.1205  17/17 VALID  0 overlaps  541.67s
 ```
 
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7252`,
@@ -132,7 +133,7 @@ flowchart TD
     C --> D[Classify soft macros as owned or bridge]
     D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
     E --> F[Cluster-consecutive hard legalization]
-    F --> E1[Exact-prescore seed portfolio + hierarchy vector]
+    F --> E1[Exact-prescore seed portfolio + per-component hierarchy contract]
     F --> F1[Constraint-graph legalized initial.plc alternative]
     F1 --> E1
     E1 --> G[Default-order safety legalization]
@@ -147,9 +148,12 @@ flowchart TD
     Y --> P{HIER_POST_RELOC_PROPOSE_ALL enabled?}
     P -->|Yes| Q[Post-swap hard propose-all polish]
     P -->|No| W
-    Q --> X[Post-swap soft relocation polish]
+    Q --> X[Telemetry scheduler skips duplicate ordinary post-swap soft pass]
     W --> X
-    X --> X1{Strong soft repair scheduled?}
+    X --> C1{Post-soft plateau and spare budget?}
+    C1 -->|Yes| C2[Compound related-soft relocation with final-state exact acceptance]
+    C1 -->|No| X1
+    C2 --> X1{Strong soft repair scheduled?}
     X1 -->|Yes| X2[Plateau/component-aware strong soft repair]
     X1 -->|No| L
     X2 --> L[Coldspot cluster tightening with optional ego-net candidates]
@@ -157,7 +161,7 @@ flowchart TD
     Z --> Z2{Small-design polish gated?}
     Z2 -->|Yes| Z3[Low-confidence hierarchy release + exact polish]
     Z2 -->|No| M
-    Z3 --> M[Final hierarchy audit + rollback checkpoint]
+    Z3 --> M[Final hard + rich-vector hierarchy audit + rollback checkpoint]
     M --> N[Return macro centers]
 ```
 
@@ -169,19 +173,37 @@ GNN trace logger (`HIER_GNN_TRACE=1`, default off).
 The seed portfolio records a complete hierarchy vector for every candidate:
 hard-cluster compactness and worst spread, nearest-neighbor cluster impurity,
 weighted hierarchy-edge stretch, owned-soft distance, and bridge-soft corridor
-distance. Production still advances the lowest exact-proxy seed. The
+distance. Each component is independently constrained relative to legalized
+`initial.plc`, and production advances the lowest exact-proxy eligible seed.
+The selected seed then anchors the same component limits during relief and the
+final rollback audit. The
 `HIER_SEED_HIERARCHY_SELECT=1` experiment instead uses proxy only within the
 best hierarchy-quality band; it is default-off after the ibm10 hierarchy win
 caused a large proxy regression.
+
+The compound soft pass is a bounded plateau escape between ordinary post-swap
+hard cleanup and later soft cleanup. It forms related owned-soft or
+same-corridor bridge groups, preserves their relative geometry, and tests
+pair, quartet, and full-group translations toward cold connected components.
+Every member stays inside its own hierarchy region. A candidate reaches exact
+incremental scoring only after the complete group state passes the rich-vector
+contract, and only the best complete state can commit.
+
+The ordinary post-swap soft relocation pass is no longer executed. Two clean
+attributable full suites at the current hierarchy contract produced zero gain
+in 34 runs, while the broader plateau escape immediately after it remained
+productive. The scheduler records the skip reason and retains the saved time as
+deadline and final-audit headroom. A broader 512-hot/12-target reinvestment was
+legal but changed later search basins and regressed the full-suite average, so
+the accepted plateau pool remains 384 hot softs and 10 targets under a
+4-second cap.
 
 Production adds one guarded alternative derived from `initial.plc`.
 `constraint_graph.py` assigns each overlap to a horizontal or vertical
 separation DAG, projects centers inside longest-path earliest/latest bounds,
 and then runs the ordinary default-order spiral safety pass. The ordinary
 initial seed remains in the portfolio, so the graph alternative can only change
-the flow when its exact proxy wins. It was selected on ibm10, ibm12, and
-ibm14-18 in the accepted full sweep; every other benchmark followed its prior
-seed and reproduced its prior proxy.
+the flow when it satisfies the component contract and its exact proxy wins.
 
 Region swaps exact-score hard-hard and hard-soft sets in batches when at least
 two candidates share the first hard endpoint. Candidate routing, hard blockage,

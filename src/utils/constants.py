@@ -60,6 +60,18 @@ HIER_VECTOR_IMPURITY_WEIGHT = 0.20
 HIER_VECTOR_EDGE_STRETCH_WEIGHT = 0.15
 HIER_VECTOR_OWNED_SOFT_WEIGHT = 0.15
 HIER_VECTOR_BRIDGE_SOFT_WEIGHT = 0.10
+# Production seed/final hierarchy contract. Seed candidates are compared with
+# legalized initial.plc; final states are compared with the selected seed.
+# Distance terms are canvas-normalized, and impurity is a [0, 1] fraction.
+HIER_VECTOR_CONTRACT_REL_SLACK = 0.15
+HIER_VECTOR_CONTRACT_ABS_SLACK = {
+    "cluster_compactness": 0.005,
+    "worst_cluster_spread": 0.015,
+    "neighbor_impurity": 0.05,
+    "edge_stretch": 0.015,
+    "owned_soft_distance": 0.015,
+    "bridge_soft_distance": 0.015,
+}
 # Congestion-heavy proposal ranking. Exact proxy remains the accept gate.
 HIER_PROPOSAL_CONGESTION_WEIGHT = 2.5
 HIER_PROPOSAL_DENSITY_WEIGHT = 1.0
@@ -74,12 +86,23 @@ HIER_POST_RELOC_PROPOSE_ALL = "auto"
 HIER_POST_RELOC_PROPOSE_TOP_M = 16
 # Number of hottest hard macros considered for post-swap propose-all relocation.
 HIER_RELOC_PROPOSE_HOT_K = 32
-# Number of hottest soft macros considered by post-swap soft relocation.
-HIER_POST_SOFT_RELOC_TOP_K = 256
-# Minimum exact-proxy gain required to accept a post-swap soft relocation.
-HIER_POST_SOFT_RELOC_MIN_GAIN = 0.0005
 # Minimum exact-proxy gain required to accept hard propose-all relocation.
 HIER_RELOC_PROPOSE_MIN_GAIN = 0.0005
+
+# Final-only exact scoring for compound moves of related soft macros. Candidate
+# members preserve their relative layout and must remain inside their individual
+# hierarchy regions; the rich-vector contract is checked before exact scoring.
+HIER_COMPOUND_SOFT_BUDGET_S = 4.0
+HIER_COMPOUND_SOFT_MIN_SPARE_S = 5.0
+HIER_COMPOUND_SOFT_TOP_GROUPS = 4
+HIER_COMPOUND_SOFT_GROUP_SIZE = 6
+HIER_COMPOUND_SOFT_COLD_PCT = 35.0
+HIER_COMPOUND_SOFT_MAX_COMPONENTS = 4
+HIER_COMPOUND_SOFT_MIN_COMPONENT_CELLS = 4
+HIER_COMPOUND_SOFT_ANCHORS = 2
+HIER_COMPOUND_SOFT_SHIFT_FRACTIONS = (0.25, 0.5, 1.0)
+HIER_COMPOUND_SOFT_MIN_FIELD_DROP = 0.02
+HIER_COMPOUND_SOFT_MIN_GAIN = 0.00005
 
 # Pass-level candidate/accept/gain/time telemetry is emitted for plateau analysis.
 # Rows are buffered and flushed once per benchmark / process exit.
@@ -356,9 +379,6 @@ HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION = 0.05
 
 # Wall-clock budget for post-swap hard propose-all relocation.
 HIER_POST_RELOC_PROPOSE_BUDGET_S = 8.0
-# Wall-clock budget for post-swap soft relocation.
-HIER_POST_SOFT_RELOC_BUDGET_S = 8.0
-
 # Proxy-aware coldspot tightening for hot clusters.
 # Per-move proxy slack allowed during coldspot tightening.
 HIER_COLDSPOT_BUDGET = 0.0

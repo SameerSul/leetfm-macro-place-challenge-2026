@@ -16,9 +16,14 @@ These are the structural objectives we use to guide macro placement.
   accept gates.
 - Hierarchy preservation comes from grouped DREAMPlace, hard/soft cluster
   roles, hierarchy regions, and hierarchy-quality budgets in decompression and
-  coldspot tightening.
+  coldspot tightening. Seed selection independently bounds six hard/soft/graph
+  hierarchy components relative to legalized `initial.plc`; relief checkpoints
+  and final rollback enforce the same component contract relative to the
+  selected seed.
 - Congestion pressure comes from the density/congestion fields used by
-  relocation, swaps, decompression, micro-shift polish, and coldspot tightening.
+  relocation, swaps, decompression, micro-shift polish, compound related-soft
+  relocation, and coldspot tightening. The compound pass preserves each
+  member's hierarchy region and accepts only its completed multi-soft state.
 - I/O keepout, grid alignment, and notch avoidance contribute to the local
   structural ordering term inside hierarchy relocation.
 - That term is disabled by default and can opt into candidate ordering with
