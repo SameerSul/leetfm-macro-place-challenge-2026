@@ -13,7 +13,7 @@ pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  542.58s
+AVG 1.1205  17/17 VALID  0 overlaps  547.05s
 ```
 
 All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
@@ -84,7 +84,18 @@ Do not rebuild the learned-ranking stack without an explicit direction change
 and evidence that a new target provides information beyond the existing
 proposal score.
 
-### 4. Exact scoring remains the runtime bottleneck
+### 4. Expand soft hierarchy coverage conservatively
+
+Explicit slash-separated soft instance paths now form high-confidence bundles
+and take precedence in compound relocation. Flat IBM `Grp_*` names expose no
+such paths, so production behavior is unchanged there. Conservative mutual-edge
+soft connectivity communities are now derived diagnostically and scored against
+common owned/bridge affinity. Only explicit high-confidence path evidence is
+eligible to move as a compound bundle; flat-netlist inferred communities remain
+medium or low confidence and unbundled. The first attempt to promote inferred
+communities changed `ibm11` from 1.0085 to 1.0087, so it was rejected.
+
+### 5. Exact scoring remains the runtime bottleneck
 
 Large grids make exact validation expensive, and CPU contention can multiply
 score time. The placement flow must keep a running maximum score estimate and

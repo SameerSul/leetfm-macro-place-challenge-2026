@@ -27,11 +27,12 @@ audit rollback with audit-aware local relief plus large-design graph-tension
 opportunity ordering, prepared Numba routing/legalization kernels, and batched
 soft relocation/swap scoring, exact batched hard-hard/hard-soft scoring, and a
 guarded constraint-graph legalization candidate for `initial.plc`, plus the
-per-component seed/final hierarchy contract:
+per-component seed/final hierarchy contract and conservative explicit
+soft-bundle inference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  542.58s
+AVG 1.1205  17/17 VALID  0 overlaps  547.05s
 ```
 
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7252`,
@@ -184,6 +185,14 @@ The compound soft pass is a bounded plateau escape between ordinary post-swap
 hard cleanup and later soft cleanup. It forms related owned-soft or
 same-corridor bridge groups, preserves their relative geometry, and tests
 pair, quartet, and full-group translations toward cold connected components.
+Explicit shared soft instance-path prefixes are treated as higher-confidence
+groups and take precedence when the input names expose them.
+The hierarchy model also derives soft-only connectivity communities from
+repeated low-fanout shared nets. The communities are scored against common
+owned/bridge hard-cluster affinity. Only explicit instance-path bundles reach
+`high` confidence (score ≥0.90) and are consumed. Connectivity-only and
+connectivity-plus-hard-affinity evidence remains `medium` at most, so those
+soft macros keep the ordinary independent search behavior.
 Every member stays inside its own hierarchy region. A candidate reaches exact
 incremental scoring only after the complete group state passes the rich-vector
 contract, and only the best complete state can commit.

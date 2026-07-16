@@ -20,7 +20,7 @@ ranker defaults, and their proxy-only verifiers are not active code.
 
 Current verified result with normal BB/cache behavior:
 `uv run evaluate src/main.py --all` = **AVG 1.1205**, 17/17 VALID, 0
-overlaps, all final hierarchy audits passed, **542.58s**. The exact-scored seed
+overlaps, all final hierarchy audits passed, **547.05s**. The exact-scored seed
 portfolio filters candidates through an independent six-component hierarchy
 contract relative to legalized `initial.plc`, and the same contract is enforced
 against the selected seed throughout relief and final rollback. The portfolio
@@ -39,6 +39,12 @@ the best saved audit-passing checkpoint if the post-search state drifts too
 far from the selected hierarchy seed. See `docs/general/ARCHITECTURE.md` for
 the full pipeline, `docs/general/ISSUES.md` for current gaps, and
 `docs/general/PROGRESS.md` for rejected or superseded experiments.
+
+Soft hierarchy inference is deliberately confidence-calibrated. Useful shared
+slash-separated soft instance paths are high-confidence bundles and can move as
+a compound; repeated flat-net connectivity and shared hard-cluster affinity are
+recorded as medium/low-confidence evidence only. Do not treat a flat-netlist
+community as a confirmed IP without an explicit structural tag.
 
 NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
 **AVG 0.7252**, 4/4 VALID, 0 overlaps, all hierarchy audits passed, 232.41s;

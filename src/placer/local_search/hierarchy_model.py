@@ -20,6 +20,14 @@ from placer.local_search.clusters import (
     hier_region_margin,
     hier_region_singleton,
 )
+from placer.local_search.soft_hierarchy import (
+    SoftBundle,
+    combine_soft_bundle_evidence,
+    derive_connectivity_soft_bundles,
+    derive_path_soft_bundles,
+    label_soft_bundles,
+    select_high_confidence_soft_bundles,
+)
 from placer.scoring.wirelength import _build_wl_cache
 
 
@@ -45,6 +53,10 @@ class HierarchyModel:
     clusters: dict[int, np.ndarray]
     cluster_softs: dict[int, np.ndarray]
     bridge_softs: dict[int, np.ndarray]
+    soft_bundles: tuple[SoftBundle, ...]
+    soft_connectivity_bundles: tuple[SoftBundle, ...]
+    soft_bundle_evidence: tuple[SoftBundle, ...]
+    active_soft_bundles: tuple[SoftBundle, ...]
     edges: list[HierarchyEdge]
     cluster_confidence: dict[int, float]
     split_parents: dict[int, list[int]]
@@ -83,12 +95,47 @@ class HierarchyModel:
             max_fanout=max_fanout,
             bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
         )
+        soft_bundles = derive_path_soft_bundles(
+            plc,
+            n_soft,
+            max_depth=int(const.HIER_SOFT_TAG_PREFIX_MAX_DEPTH),
+            min_group=int(const.HIER_SOFT_TAG_PREFIX_MIN_GROUP),
+            min_coverage=float(const.HIER_SOFT_TAG_PREFIX_MIN_COVERAGE),
+        )
+        soft_connectivity_bundles = derive_connectivity_soft_bundles(
+            plc,
+            n_soft,
+            max_fanout=int(const.HIER_SOFT_BUNDLE_MAX_FANOUT),
+            min_shared_nets=int(const.HIER_SOFT_BUNDLE_MIN_SHARED_NETS),
+            edge_ratio=float(const.HIER_SOFT_BUNDLE_EDGE_RATIO),
+            max_size=int(const.HIER_SOFT_BUNDLE_MAX_SIZE),
+        )
+        soft_bundle_evidence = label_soft_bundles(
+            combine_soft_bundle_evidence(
+                soft_bundles,
+                soft_connectivity_bundles,
+                cluster_softs,
+                bridge_softs,
+                n_hard=n,
+            ),
+            high_threshold=float(const.HIER_SOFT_BUNDLE_HIGH_CONFIDENCE),
+            medium_threshold=float(const.HIER_SOFT_BUNDLE_MEDIUM_CONFIDENCE),
+        )
+        active_soft_bundles = select_high_confidence_soft_bundles(
+            soft_bundle_evidence,
+            high_threshold=float(const.HIER_SOFT_BUNDLE_HIGH_CONFIDENCE),
+            medium_threshold=float(const.HIER_SOFT_BUNDLE_MEDIUM_CONFIDENCE),
+        )
         edges, confidence = _cluster_graph(plc, labels, clusters, max_fanout)
         return cls(
             labels=labels,
             clusters=clusters,
             cluster_softs=cluster_softs,
             bridge_softs=bridge_softs,
+            soft_bundles=soft_bundles,
+            soft_connectivity_bundles=soft_connectivity_bundles,
+            soft_bundle_evidence=soft_bundle_evidence,
+            active_soft_bundles=active_soft_bundles,
             edges=edges,
             cluster_confidence=confidence,
             split_parents=split_parents,
@@ -217,10 +264,7 @@ def _cluster_graph(plc, labels: np.ndarray, clusters: dict[int, np.ndarray], max
                 key = (a, b)
                 pair_weight[key] = pair_weight.get(key, 0.0) + weight
 
-    edges = [
-        HierarchyEdge(src=a, dst=b, weight=w)
-        for (a, b), w in sorted(pair_weight.items())
-    ]
+    edges = [HierarchyEdge(src=a, dst=b, weight=w) for (a, b), w in sorted(pair_weight.items())]
     confidence = {}
     for cid in clusters:
         inside = internal.get(int(cid), 0.0)

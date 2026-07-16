@@ -6,6 +6,30 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-16 — accepted conservative soft-bundle inference):**
+> `VIVAPLACE_RUN_ID=20260716-soft-inference-final uv run evaluate src/main.py
+> --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, and all hard and
+> six-component hierarchy audits passing, in **547.05s**. Every IBM proxy
+> exactly reproduced the preceding accepted production result:
+> `ibm01=0.8480`, `ibm02=1.1221`, `ibm03=0.9991`, `ibm04=1.0036`,
+> `ibm06=1.1958`, `ibm07=1.0542`, `ibm08=1.1459`, `ibm09=0.8783`,
+> `ibm10=1.0641`, `ibm11=1.0085`, `ibm12=1.3106`, `ibm13=1.0203`,
+> `ibm14=1.2481`, `ibm15=1.2217`, `ibm16=1.1637`, `ibm17=1.3837`, and
+> `ibm18=1.3806`.
+>
+> `soft_hierarchy.py` now derives high-confidence soft bundles from useful
+> shared slash-separated instance paths. These explicit bundles take precedence
+> in compound relocation. Repeated low-fanout soft-only net connectivity and
+> common owned/bridge hard-cluster affinity are also recorded, but their score
+> is capped below high confidence: flat-netlist communities are evidence, not
+> proof of one IP, and retain ordinary independent search behavior. The first
+> preliminary promotion of inferred communities changed `ibm11` from `1.0085`
+> to `1.0087`; it was rejected before this checkpoint.
+>
+> `uv run pytest test/` passed all **44** project tests; full source bytecode
+> compilation and `git diff --check` also passed. `ibm10` and the recalibrated
+> `ibm11` smoke runs reproduced their accepted proxies with both audits passing.
+
 > **Status (2026-07-16 — accepted learned-GNN removal):**
 > `VIVAPLACE_RUN_ID=20260716-remove-gnn-full uv run evaluate src/main.py --all`
 > completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all hard and
