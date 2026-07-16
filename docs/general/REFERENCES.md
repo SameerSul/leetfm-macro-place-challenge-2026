@@ -11,8 +11,8 @@ Status terms used below:
   the cited implementation or technique.
 - **Basis**: the work defines a benchmark, baseline, objective, or upstream
   algorithm on which the program depends.
-- **Research-only**: code, data, or documentation remains in the repository but
-  the technique is default-off or offline-only.
+- **Research-only**: a deterministic technique remains default-off or
+  offline-only.
 - **Historical**: the technique was evaluated and rejected or its code was
   removed; it remains cited because the experiment is recorded in
   `PROGRESS.md`.
@@ -75,8 +75,6 @@ Status terms used below:
    of horizontal/vertical constraint-graph overlap legalization; its Poisson
    floorplanner is not implemented here.
 
-## Evaluator, Objective, Baseline, and Benchmark Papers
-
 8. **Circuit Training objective lineage — basis.** Azalia Mirhoseini, Anna
    Goldie, Mustafa Yazgan, Joe Jiang, Ebrahim Songhori, Shen Wang, Young-Joon
    Lee, Eric Johnson, Omkar Pathak, Azade Nazi, Jiwoo Pak, Andy Tong, Kavya
@@ -134,8 +132,6 @@ Status terms used below:
     “Rent-style” only as a qualitative locality pattern; it does not fit or
     enforce Rent parameters.
 
-## Present Research-Only References
-
 15. **BeyondPPA — research-only structural features.** Ishraq Tashdid,
     Valentina Terry, Jordan Merkel, Tasnuva Farheen, and Sazadur Rahman,
     “BeyondPPA: Human-Inspired Reinforcement Learning for Post-Route
@@ -146,16 +142,16 @@ Status terms used below:
     for I/O keepout, alignment, and notch avoidance. It does not run the
     paper's reinforcement-learning policy.
 
-16. **MacroDiff+ — research-only data-schema inspiration.** Jongho Yoon,
+16. **MacroDiff+ — historical data-schema inspiration.** Jongho Yoon,
     Jinsung Jeon, and Seokhyeong Kang, “Physics-Guided Geometric Diffusion for
     Macro Placement Generation,” arXiv:2605.16451, 2026.
     [arXiv](https://arxiv.org/abs/2605.16451). Only the heterogeneous macro-net
-    graph view inspired the offline Stage-G4 dataset schema; no diffusion model
-    or physics-guided sampler is used in placement. The repository URL stated
-    by the paper returned `404` during this reference audit, so it is not
-    presented as a working source link here.
-
-## Historical, Rejected, and Future References
+    graph view inspired the removed Stage-G4 dataset schema; no diffusion model
+    or physics-guided sampler was used in placement. The schema, trainer, and
+    artifacts were deleted after learned ranking repeatedly failed its quality
+    and runtime gates. The repository URL stated by the paper returned `404`
+    during this reference audit, so it is not presented as a working source
+    link here.
 
 17. **WireMask-BBO — historical / removed.** Yunqi Shi, Ke Xue, Lei Song, and
     Chao Qian, “Macro Placement by Wire-Mask-Guided Black-Box Optimization,”
@@ -171,13 +167,13 @@ Status terms used below:
     Deterministic RUDY-based area inflation was evaluated, rejected, and
     deleted; the exact TILOS congestion model remains active.
 
-19. **Zhang-Hager non-monotone line search — future reference only.** Hongchao
+19. **Zhang-Hager non-monotone line search — historical / removed.** Hongchao
     Zhang and William W. Hager, “A Nonmonotone Line Search Technique and Its
     Application to Unconstrained Optimization,” *SIAM Journal on Optimization*
     14(4), 2004, pp. 1043–1056.
-    [DOI](https://doi.org/10.1137/S1052623403428208). `ISSUES.md` records a
-    possible paper-faithful DREAMPlace 4.1 experiment; the line-search loop is
-    not implemented.
+    [DOI](https://doi.org/10.1137/S1052623403428208). A paper-faithful bounded
+    non-monotone Armijo trial was evaluated on ibm04 and ibm10, regressed
+    DREAMPlace seed quality, and was removed; results remain in `PROGRESS.md`.
 
 20. **ArchGen challenge write-up — historical technical source, not a paper.**
     ArchGen AI, “How We Ranked First in the HRT (Hudson River Trading) and
@@ -190,7 +186,7 @@ Status terms used below:
 ## Project, Evaluator, Data, and Tool Links
 
 | Resource | Link | Use in this repository |
-|---|---|---|
+| --- | --- | --- |
 | Partcl/HRT Macro Placement Challenge | [challenge repository](https://github.com/partcleda/macro-place-challenge-2026) | Rules, harness, packaging, and leaderboard context |
 | Partcl MacroPlacement fork | [submodule source](https://github.com/partcleda/MacroPlacement) | The checked-out `external/MacroPlacement` evaluator fork |
 | TILOS MacroPlacement | [upstream repository](https://github.com/TILOS-AI-Institute/MacroPlacement) | Exact evaluator, testcases, enablements, and reproducibility material |
@@ -211,7 +207,7 @@ hashes are authoritative in `pyproject.toml`, `uv.lock`,
 `scripts/dreamplace/environment.yml`.
 
 | Category | Projects |
-|---|---|
+| --- | --- |
 | Runtime | [Python](https://www.python.org/), [PyTorch](https://pytorch.org/), [NumPy](https://numpy.org/), [Numba](https://numba.pydata.org/), [Matplotlib](https://matplotlib.org/), [tqdm](https://tqdm.github.io/), [Abseil Python](https://github.com/abseil/abseil-py) |
 | Optional ML and baselines | [XGBoost](https://xgboost.readthedocs.io/), [scikit-learn](https://scikit-learn.org/), [PyTorch Geometric](https://pytorch-geometric.readthedocs.io/), [SciPy](https://scipy.org/) |
 | Test and style | [pytest](https://pytest.org/), [pytest-cov](https://pytest-cov.readthedocs.io/), [Black](https://black.readthedocs.io/), [Flake8](https://flake8.pycqa.org/) |

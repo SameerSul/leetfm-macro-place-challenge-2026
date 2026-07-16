@@ -7,6 +7,7 @@ placement, with no drift over sequential commits.
 
     uv run python test/verification/_verify_score_move_soft.py
 """
+
 import sys
 from pathlib import Path
 
@@ -17,8 +18,11 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from placer import (  # noqa: E402
-    _exact_proxy, _fast_set_placement,
-    _patch_plc_congestion, _patch_plc_density, _patch_plc_wirelength,
+    _exact_proxy,
+    _fast_set_placement,
+    _patch_plc_congestion,
+    _patch_plc_density,
+    _patch_plc_wirelength,
     IncrementalScorer,
 )
 from macro_place.loader import load_benchmark_from_dir  # noqa: E402
@@ -26,8 +30,7 @@ from macro_place.loader import load_benchmark_from_dir  # noqa: E402
 
 def run_one(bench_name, n_trials=12, n_commits=5):
     print(f"\n=== {bench_name} ===")
-    bench, plc = load_benchmark_from_dir(
-        f"external/MacroPlacement/Testcases/ICCAD04/{bench_name}")
+    bench, plc = load_benchmark_from_dir(f"external/MacroPlacement/Testcases/ICCAD04/{bench_name}")
     _patch_plc_wirelength(plc)
     _patch_plc_congestion(plc, bench)
     _patch_plc_density(plc, bench)
@@ -79,11 +82,45 @@ def run_one(bench_name, n_trials=12, n_commits=5):
         print(f"    commit {c+1}: pred={pred:.6f} ref={r:.6f} Δ={d:.2e} {mark}")
         if d >= 1e-4:
             ok = False
+
+    if nsoft >= 3:
+        group = np.asarray(rng.choice(nsoft, size=3, replace=False), dtype=np.int64)
+        targets = np.column_stack(
+            [rng.uniform(0.0, cw, size=group.size), rng.uniform(0.0, ch, size=group.size)]
+        )
+        pred = scorer.score_move_soft_group(group, targets)
+        ref = cur.copy()
+        ref[n + group] = targets
+        actual = _exact_proxy(torch.from_numpy(ref.astype(np.float32)), bench, plc)
+        _fast_set_placement(plc, cur, bench)
+        plc.FLAG_UPDATE_DENSITY = True
+        plc.FLAG_UPDATE_CONGESTION = True
+        delta = abs(pred - actual)
+        mark = "ok" if delta < 1e-4 else "FAIL"
+        print(
+            f"  Test 3: group trial scorer={pred:.6f} ref={actual:.6f} " f"delta={delta:.2e} {mark}"
+        )
+        ok = ok and delta < 1e-4
+
+        scorer.commit_move_soft_group(group, targets)
+        cur[n + group] = targets
+        actual = _exact_proxy(torch.from_numpy(cur.astype(np.float32)), bench, plc)
+        _fast_set_placement(plc, cur, bench)
+        plc.FLAG_UPDATE_DENSITY = True
+        plc.FLAG_UPDATE_CONGESTION = True
+        delta = abs(pred - actual)
+        mark = "ok" if delta < 1e-4 else "FAIL"
+        print(
+            f"  Test 4: group commit scorer={pred:.6f} ref={actual:.6f} "
+            f"delta={delta:.2e} {mark}"
+        )
+        ok = ok and delta < 1e-4
     return ok
 
 
 def main():
-    res = {b: run_one(b) for b in ("ibm01", "ibm04", "ibm10")}
+    benches = sys.argv[1:] or ("ibm01", "ibm04", "ibm10")
+    res = {b: run_one(b) for b in benches}
     print("\n=== Summary ===")
     for b, ok in res.items():
         print(f"  {b}: {'PASS' if ok else 'FAIL'}")

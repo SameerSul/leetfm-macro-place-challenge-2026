@@ -9,6 +9,45 @@ import numpy as np
 from utils import constants as const
 from placer.local_search.cluster_decompress import hierarchy_quality_breakdown
 
+HIERARCHY_VECTOR_METRICS = (
+    "cluster_compactness",
+    "worst_cluster_spread",
+    "neighbor_impurity",
+    "edge_stretch",
+    "owned_soft_distance",
+    "bridge_soft_distance",
+)
+
+
+def hierarchy_vector_limits(
+    reference: Mapping[str, float],
+    absolute_slack: Mapping[str, float],
+    relative_slack: float,
+) -> dict[str, float]:
+    """Build per-component upper limits from a reference hierarchy vector."""
+    rel = max(0.0, float(relative_slack))
+    limits = {}
+    for key in HIERARCHY_VECTOR_METRICS:
+        value = float(reference.get(key, 0.0))
+        slack = max(0.0, float(absolute_slack.get(key, 0.0)), abs(value) * rel)
+        limits[key] = value + slack
+    return limits
+
+
+def hierarchy_vector_contract(
+    candidate: Mapping[str, float],
+    limits: Mapping[str, float],
+    *,
+    tolerance: float = 1.0e-12,
+) -> tuple[bool, dict[str, float]]:
+    """Check every hierarchy component against its independent upper limit."""
+    violations = {}
+    for key in HIERARCHY_VECTOR_METRICS:
+        excess = float(candidate.get(key, 0.0)) - float(limits[key])
+        if excess > float(tolerance):
+            violations[key] = excess
+    return not violations, violations
+
 
 def _edge_values(edge) -> tuple[int, int, float]:
     if isinstance(edge, Mapping):

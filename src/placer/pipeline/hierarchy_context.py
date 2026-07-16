@@ -32,38 +32,9 @@ class PassContext:
     diagnostic_no_deadlines: bool = False
 
 
-@dataclass(frozen=True)
-class PassResult:
-    """Structured pass-result trace payload."""
-
-    name: str
-    proxy_before: float
-    proxy_after: float
-    accepts: int
-    quality: float | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def proxy_delta(self) -> float:
-        return float(self.proxy_after) - float(self.proxy_before)
-
-    def to_trace_kwargs(self) -> dict[str, Any]:
-        out = {
-            "hierarchy_pass": self.name,
-            "proxy_before": float(self.proxy_before),
-            "proxy_after": float(self.proxy_after),
-            "proxy_delta": self.proxy_delta,
-            "accepts": int(self.accepts),
-        }
-        if self.quality is not None:
-            out["quality"] = float(self.quality)
-        out.update(self.extra)
-        return out
-
-
 @dataclass
 class PlateauTelemetry:
-    """Pass-level candidate yield record for scheduling and ML traces."""
+    """Pass-level candidate yield record for deterministic scheduling."""
 
     name: str
     proxy_before: float
