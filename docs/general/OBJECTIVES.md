@@ -29,9 +29,9 @@ These are the structural objectives we use to guide macro placement.
 - That term is disabled by default and can opt into candidate ordering with
   `HIER_OBJECTIVE_STRUCTURAL_WEIGHT>0`. They do not bypass legality,
   region, hierarchy-quality, or exact-proxy gates.
-- GNN support is currently logging only. The `HIER_GNN_TRACE*` runtime
-  environment variables record JSONL traces for future hierarchy-aware
-  candidate rankers without changing placement output.
+- Learned candidate ranking has been removed. Candidate ordering is
+  deterministic and all committed moves remain controlled by legality,
+  hierarchy, and exact-proxy gates.
 
 ## Why This Works
 

@@ -47,24 +47,17 @@ test/verification/_verify_ng45_hierarchy_tags.py` passes. The hierarchy model
 uses slash-separated instance-path prefixes when macro names provide useful
 coverage, then falls back to inferred connectivity on flat-name benchmarks.
 
-BeyondPPA-style work is integrated into the hierarchy path, not as a separate
-placer. The current shipped piece is default-off hierarchy relocation candidate ordering
-(`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` constant). The trace logger is
-default-off through the `HIER_GNN_TRACE=0` runtime environment variable.
-Pass-level plateau telemetry always records buffered, attributable schema-v2
-rows for future ML/DL scheduling work. It writes to
-`ml_data/beyondppa_gnn/plateau/plateau_telemetry.jsonl` unless
+The learned-GNN stack was removed on 2026-07-16 after repeated offline and
+closed-loop regressions. Production has no model loader, learned candidate
+reordering, candidate-trace logger, GNN training scripts, or GNN verification
+surface. Do not restore that stack unless the user explicitly changes
+direction. The deterministic structural ordering term remains default-off at
+`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0` and is not a learned model.
+Pass-level plateau telemetry remains because it drove a productive schedule
+change and does not affect candidate ordering. It writes buffered,
+attributable schema-v2 rows to
+`ml_data/plateau_telemetry/plateau_telemetry.jsonl` unless
 `HIER_PLATEAU_TRACE_PATH` is supplied.
-Stage-G3 offline baseline tooling lives in `scripts/gnn/train_gnn_baseline.py`, and
-the accepted default-off baseline artifact is
-`ml_data/beyondppa_gnn/models/20260619_g3_candidate_baseline_min4/`. Stage-G4
-offline macro-net ranker tooling lives in `scripts/gnn/train_gnn_ranker.py`, and
-the accepted default-off graph-ranker artifact is
-`ml_data/beyondppa_gnn/models/20260619_g4_macro_net_ranker_v1/`. A default-off
-Stage-G5 relocation-only candidate reordering hook exists behind
-`HIER_GNN_RANK=1`; Stage G6 full-suite validation was legal but not promoted
-because average proxy and runtime regressed. No inference ranker is default-on,
-and no DQN policy is active in placement.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
 
@@ -212,7 +205,6 @@ src/dreamplace_bridge/  pb.txt <-> Bookshelf converters + DREAMPlace launcher.
 src/eda_io/        Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR-report out.
 src/place_design.py CLI tying eda_io together - see src/eda_io/README.md.
 docs/general/      Current architecture/flow/issues plus the PROGRESS experiment ledger.
-docs/ml_nn/        Current BeyondPPA/GNN schemas and status.
 test/benchmarks/   Synthetic anti-overfitting suite: generator, runner, impact analyzer.
 test/diagnostic/   Maintained smoke tests plus current profiling/recall probes.
 test/eda_io/       eda_io pytest suite + LEF/DEF/Verilog/SDC/Liberty fixture design.
@@ -240,12 +232,12 @@ scripts/                  Comparison + benchmark-conversion utilities.
 - **CPU contention slows scoring 3–5×.** ibm08 scores in 31s clean but 95–131s under load; ibm11 scored 263s under heat. Use a running-max `t_one_score` for budget estimation, not the baseline-only measurement.
 - **`initial.plc` is already a good seed.** It comes from a prior EDA flow with hand-tuned spread. The job of legalization is to resolve overlaps without destroying that spread. Restart from random or grid layouts has consistently lost to restarting from `initial.plc + small perturbation`.
 - **Soft macros must move with hierarchy.** The current path classifies soft macros as owned or bridge, gives them region boxes, lets grouped DREAMPlace place them, and uses soft relocation plus soft-heavy region swaps after hard legalization/relief. The accepted `HIER_SOFT_SWAP_K=48` default is intentional; `24` was worse on ibm12/15/17, while `64` regressed ibm17.
-- **BeyondPPA/GNN must stay inside hierarchy.** Structural metrics and future
-  learned rankers may reorder candidates inside existing hierarchy operators,
-  but accepted moves still need hard legality, fixed macro immobility, bounds,
-  hierarchy-region constraints, hierarchy-quality gates, and exact-proxy gates.
-  Do not add a separate structural polish or acceptance path unless the user
-  explicitly changes that direction.
+- **The learned-GNN stack is retired.** It repeatedly regressed proxy and
+  runtime and was removed from runtime, tooling, tests, data, and active docs.
+  Do not restore learned ranking unless the user explicitly changes direction.
+  Deterministic structural signals remain advisory and cannot bypass legality,
+  bounds, fixed macros, hierarchy regions, hierarchy-quality gates, or exact
+  proxy acceptance.
 
 ## Code style
 
@@ -261,7 +253,7 @@ scripts/                  Comparison + benchmark-conversion utilities.
 - Iterate on one benchmark (`-b ibm10` is the current hierarchy smoke) until the change is sound; run `--all` only when you need a full benchmark sweep.
 - When a change alters hierarchy quality or proxy cost, verify it on more than one benchmark before treating it as a system improvement.
 - Record concrete numbers in `docs/general/PROGRESS.md` when a change becomes a new accepted system result - that file is the source of truth for "what works", not commit messages.
-- Documentation updates are part of every system modification. If a change alters placement flow, operator order, acceptance gates, constants, default behavior, diagnostics, graph/GNN hooks, verification status, or user-facing commands, update `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and all other relevant docs in the same turn. Relevant docs may include `README.md`, `docs/general/ISSUES.md`, `docs/general/PROGRESS.md`, `docs/ml_nn/**`, or test/diagnostic READMEs. If no documentation needs an update, explicitly note why in the final response.
+- Documentation updates are part of every system modification. If a change alters placement flow, operator order, acceptance gates, constants, default behavior, diagnostics, structural hooks, verification status, or user-facing commands, update `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and all other relevant docs in the same turn. Relevant docs may include `README.md`, `docs/general/ISSUES.md`, `docs/general/PROGRESS.md`, or test/diagnostic READMEs. If no documentation needs an update, explicitly note why in the final response.
 - Once a change has been accepted and verified as a new system result, record concrete numbers in `docs/general/PROGRESS.md` and make sure `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and any related subsystem docs describe the accepted behavior instead of stale experiment behavior.
 - **All v2-specific tests, diagnostics, and probes live under `test/`** (current subdirs: `benchmarks/`, `diagnostic/`, `eda_io/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks an agent to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `test/` under the matching subdirectory - and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.
 - Never commit unless asked.
@@ -270,5 +262,6 @@ scripts/                  Comparison + benchmark-conversion utilities.
 ## When in doubt
 
 - For current work, start with `docs/general/DESIGN_FLOW.md` and `docs/general/ARCHITECTURE.md`; they describe the hierarchy system.
-- `docs/ml_nn/beyondppa_results/` contains the active hierarchy-integrated GNN schemas. Deleted proxy-path research must not be reintroduced unless the user explicitly changes direction.
+- The deleted learned-GNN and proxy-path research must not be reintroduced
+  unless the user explicitly changes direction.
 - Do not reintroduce deleted proxy-only code unless the user explicitly asks to restore the proxy path.

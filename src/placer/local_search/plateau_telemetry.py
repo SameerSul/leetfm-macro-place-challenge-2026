@@ -1,21 +1,19 @@
-"""Opt-in JSONL traces for future hierarchy-aware GNN training."""
+"""Buffered pass-level telemetry for deterministic schedule decisions."""
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import subprocess
 import time
-import atexit
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-TRACE_SCHEMA_VERSION = 1
 PLATEAU_SCHEMA_VERSION = 2
 
-_FALSE = {"0", "false", "False", "no", "NO", "off", ""}
 _PLATEAU_BUFFER: list[str] = []
 _PLATEAU_BUFFER_PATH: Path | None = None
 _PROCESS_RUN_ID = os.environ.get("VIVAPLACE_RUN_ID", "").strip() or (
@@ -47,8 +45,8 @@ def _code_revision() -> str:
     return _CODE_REVISION
 
 
-def _provenance(trace_kind: str) -> dict[str, Any]:
-    specific = os.environ.get(f"HIER_{trace_kind}_TRACE_RUN", "").strip()
+def _provenance() -> dict[str, Any]:
+    specific = os.environ.get("HIER_PLATEAU_TRACE_RUN", "").strip()
     return {
         "run_id": specific or _PROCESS_RUN_ID,
         "code_revision": _code_revision(),
@@ -56,29 +54,11 @@ def _provenance(trace_kind: str) -> dict[str, Any]:
     }
 
 
-def gnn_trace_enabled() -> bool:
-    return os.environ.get("HIER_GNN_TRACE", "0").strip() not in _FALSE
-
-
-def gnn_trace_limit(default: int = 512) -> int:
-    return max(0, int(os.environ.get("HIER_GNN_TRACE_MAX_CANDIDATES", str(default))))
-
-
-def _trace_path() -> Path:
-    raw = os.environ.get("HIER_GNN_TRACE_PATH", "").strip()
-    if raw:
-        return Path(raw)
-    root = Path(os.environ.get("HIER_GNN_TRACE_DIR", "ml_data/beyondppa_gnn"))
-    run_id = os.environ.get("HIER_GNN_TRACE_RUN", "").strip()
-    name = f"{run_id}.jsonl" if run_id else "trace.jsonl"
-    return root / name
-
-
 def _plateau_trace_path() -> Path:
     raw = os.environ.get("HIER_PLATEAU_TRACE_PATH", "").strip()
     if raw:
         return Path(raw)
-    root = Path(os.environ.get("HIER_PLATEAU_TRACE_DIR", "ml_data/beyondppa_gnn/plateau"))
+    root = Path(os.environ.get("HIER_PLATEAU_TRACE_DIR", "ml_data/plateau_telemetry"))
     run_id = os.environ.get("HIER_PLATEAU_TRACE_RUN", "").strip()
     name = f"{run_id}.jsonl" if run_id else "plateau_telemetry.jsonl"
     return root / name
@@ -113,23 +93,6 @@ def flush_plateau_events() -> None:
 atexit.register(flush_plateau_events)
 
 
-def log_gnn_event(event: str, **payload: Any) -> None:
-    """Append one trace event when `HIER_GNN_TRACE=1`."""
-    if not gnn_trace_enabled():
-        return
-    path = _trace_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    row = {
-        "schema_version": TRACE_SCHEMA_VERSION,
-        "time_s": time.time(),
-        "event": event,
-        **_provenance("GNN"),
-        **payload,
-    }
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(_jsonable(row), sort_keys=True, separators=(",", ":")) + "\n")
-
-
 def log_plateau_event(event: str, **payload: Any) -> None:
     """Buffer one lightweight plateau telemetry row."""
     global _PLATEAU_BUFFER_PATH
@@ -138,7 +101,7 @@ def log_plateau_event(event: str, **payload: Any) -> None:
         "schema_version": PLATEAU_SCHEMA_VERSION,
         "time_s": time.time(),
         "event": event,
-        **_provenance("PLATEAU"),
+        **_provenance(),
         **payload,
     }
     line = json.dumps(_jsonable(row), sort_keys=True, separators=(",", ":")) + "\n"

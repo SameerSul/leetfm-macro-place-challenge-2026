@@ -35,6 +35,34 @@ Target: beat RePlAce avg of 1.4578.
 > `ibm15=1.2338`. That breadth change was rejected. All **37** tests, touched
 > Python formatting, bytecode compilation, and `git diff --check` passed.
 
+> **Status (2026-07-15 — Step 4 current-revision relocation ranker rejected
+> offline):** collected a schema-v1 candidate trace from a complete
+> `HIER_GNN_TRACE=1 HIER_GNN_TRACE_MAX_CANDIDATES=64 uv run evaluate
+> src/main.py --all` sweep. Placement reproduced the accepted **AVG 1.1205**,
+> 17/17 VALID, 0 overlaps, and all hierarchy audits passing. Offline trace I/O
+> raised evaluator runtime to **594.48s**, confirming that candidate logging
+> must remain default-off.
+>
+> Added streaming `--operator` filtering to the dataset builder and matching
+> operator-specific training. The resulting current-flow relocation dataset
+> covers all 17 IBM designs with **1,586** proposal examples and **68** accepted
+> moves. Audit of an initially perfect result exposed post-score leakage:
+> accepted rows included `candidate_proxy`/`proxy_delta` availability in their
+> input vector. The builder now freezes relocation features before joining
+> result labels, so training and online inference see the same proposal-time
+> fields. The invalid perfect artifact was overwritten.
+>
+> On the leakage-free held-out ibm02/08/15/18 split, G4 achieved top-4 recall
+> **0.7857** and MRR **0.6858**. It lost to trace order (`0.8214` / `0.7226`),
+> the same-split MLP on top-4 (`0.8571`), and the existing proposal score
+> (`1.0000` / `0.9643`). The trainer records `rejected_offline`; no GNN
+> closed-loop sweep or production integration was justified. The corrected
+> dataset and rejected artifact remain under
+> `ml_data/beyondppa_gnn/datasets/20260715_current_full_relocation_v1/` and
+> `ml_data/beyondppa_gnn/models/20260715_g4_current_relocation_v1/`. All **37**
+> project tests, both dedicated GNN verifiers, touched Python formatting,
+> bytecode compilation, and `git diff --check` passed.
+
 > **Status (2026-07-15 — accepted compound related-soft relocation):**
 > `VIVAPLACE_RUN_ID=20260715-step2-compound-full uv run evaluate src/main.py
 > --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, all hard and

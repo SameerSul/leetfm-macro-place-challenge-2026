@@ -11,7 +11,6 @@ from placer.local_search.fields import (
     cold_connected_component_target_pool,
     weighted_congestion_field,
 )
-from placer.local_search.gnn_trace import log_gnn_event
 
 
 def _related_soft_groups(
@@ -153,7 +152,6 @@ def _compound_soft_relocation(
     best_score = float(initial_score)
     best_indices = None
     best_targets = None
-    trace_candidates = []
     canvas2 = max(float(cw) ** 2 + float(ch) ** 2, 1.0)
     fractions = sorted({float(value) for value in shift_fractions if 0.0 < float(value) <= 1.0})
 
@@ -232,17 +230,6 @@ def _compound_soft_relocation(
                         float(stats["best_candidate_gain"]),
                         float(initial_score) - float(score),
                     )
-                    trace_candidates.append(
-                        {
-                            "role": str(group["role"]),
-                            "group_size": int(indices.size),
-                            "source_heat": float(source_heat),
-                            "target_heat": float(new_heat),
-                            "shift_fraction": float(fraction),
-                            "proxy": float(score),
-                            "proxy_delta": float(score) - float(initial_score),
-                        }
-                    )
                     if score < best_score - max(1e-9, float(min_gain)):
                         best_score = float(score)
                         best_indices = indices.copy()
@@ -253,15 +240,6 @@ def _compound_soft_relocation(
         soft_pos[best_indices] = best_targets
         stats["accepts"] = 1
 
-    log_gnn_event(
-        "hier_compound_soft_result",
-        benchmark=getattr(benchmark, "name", ""),
-        initial_proxy=float(initial_score),
-        final_proxy=float(best_score),
-        accepted=bool(stats["accepts"]),
-        stats=dict(stats),
-        candidates=trace_candidates,
-    )
     _compound_soft_relocation.last_stats = stats
     return soft_pos, int(stats["accepts"]), float(best_score)
 
