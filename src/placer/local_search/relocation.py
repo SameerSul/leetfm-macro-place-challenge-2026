@@ -8,6 +8,7 @@ import numpy as np
 
 from utils import constants as const
 from utils.config import HAS_NUMBA, _numba_njit
+
 from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
 from placer.local_search.region_rules import accepts_region_score, point_in_region
@@ -790,11 +791,7 @@ def _relocation_moves_propose_all(
     )
     if propose_top_m is not None and propose_top_m > 0:
         top_m = int(propose_top_m)
-        additive_extra = 0
-        if deadline is None or time.monotonic() + float(const.HIER_ADDITIVE_MIN_SPARE_S) < float(
-            deadline
-        ):
-            additive_extra = max(0, int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K))
+        additive_extra = max(0, int(const.HIER_ADDITIVE_RELOC_EXTRA_TOP_K))
         proposals = proposals[: top_m + additive_extra]
 
     moved = set()

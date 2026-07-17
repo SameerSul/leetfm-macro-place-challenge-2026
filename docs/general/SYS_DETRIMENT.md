@@ -28,11 +28,11 @@ Status meanings:
 
 ### 1. Pass telemetry is recorded before audit rollback
 
-**Status: Optimize immediately.**
+**Status: Resolve.**
 
-The pipeline now records proposal metrics and then applies
-`_enforce_audit_checkpoint()` before writing pass telemetry. Retained metrics
-now represent the checkpoint-surviving state.
+The historical issue has been addressed: telemetry now preserves proposal and
+checkpoint-retained metrics in the same record, and rollback context is written
+with the row.
 
 In a focused `ibm10` review run, the two hard-relocation rounds reported a
 combined `0.023976` gain, but the console showed an audit restore after both
@@ -55,20 +55,20 @@ Action:
 
 ### 2. Wall-clock budgets change placement behavior
 
-**Status: Optimize.**
+**Status: Resolve.**
 
-The same deterministic proposal code can reach different candidate counts when
-host load changes. The CUDA-reduction removal check recorded `ibm18=1.3845` in
-the full suite and `1.3806` immediately in isolation because small-design polish
-completed 90 versus 108 accepts. The current review-time `ibm10` result was
-`1.0651`, while the accepted result is `1.0641`.
+`wall-clock-only` gating could push the same deterministic proposal path to
+different candidate counts under contention. This behavior was visible as
+deterministic-order drift (`ibm18=1.3845` full-suite, `ibm18=1.3806`
+isolated, `ibm10=1.0651` review-time versus `1.0641` accepted).
 
-Impact: runtime improvements or regressions change the search trajectory, so
-quality attribution is difficult and full-suite reproducibility is weaker than
-the deterministic code suggests.
+Impact: exact-gain trajectory changed without any algorithmic intent, so quality
+attribution was contaminated by environment noise and late-pass ordering shifted
+between identical operator sets.
 
-Action: deterministic work quotas with the deadline retained only as a hard
-safety cap. Do not restore the rejected elapsed-time gain scheduler.
+Action: apply wall-lock behavior unconditionally so additive and late-pass
+eligibility prioritize deterministic quotas by default. Deadlines remain as hard
+safety caps for overrun protection only.
 
 ### 3. Audit-discarded local-search work
 
