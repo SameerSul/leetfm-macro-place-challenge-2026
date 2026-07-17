@@ -65,7 +65,6 @@ def run_post_coldspot_finalize(
     soft_region,
     const: Any,
     group_weight: int,
-    region_deadline: float | None,
     log_fn: Callable[[str], None],
     record_plateau_fn: Callable[..., None],
     hard_valid_fn: Callable[[np.ndarray], bool],
@@ -245,18 +244,15 @@ def run_post_coldspot_finalize(
             ch,
         )
 
-    def _vector_contract(hard_xy: np.ndarray, soft_xy: np.ndarray):
+    def _vector_contract(hard_xy: np.ndarray, soft_xy: np.ndarray) -> bool:
         vector = _placement_hierarchy_vector(hard_xy, soft_xy)
-        passed, violations = hierarchy_vector_contract(vector, hierarchy_contract_limits)
-        return passed, vector, violations
+        return bool(hierarchy_vector_contract(vector, hierarchy_contract_limits)[0])
 
     audit_checkpoint_h = np.array(audit_h, dtype=np.float64, copy=True)
     audit_checkpoint_s = np.array(audit_s, dtype=np.float64, copy=True)
     audit_checkpoint_score = float(audit_score)
     audit_checkpoint_quality = hierarchy_quality_metric_fn(audit_checkpoint_h, clusters)
-    audit_checkpoint_vector_passed, audit_checkpoint_vector, _checkpoint_violations = (
-        _vector_contract(audit_checkpoint_h, audit_checkpoint_s)
-    )
+    audit_checkpoint_vector_passed = _vector_contract(audit_checkpoint_h, audit_checkpoint_s)
 
     if (
         not _is_hard_valid(audit_checkpoint_h)
@@ -268,13 +264,12 @@ def run_post_coldspot_finalize(
             (best_h, best_s, best_score),
         ):
             cand_quality = hierarchy_quality_metric_fn(cand_h, clusters)
-            cand_vector_passed, cand_vector, _violations = _vector_contract(cand_h, cand_s)
+            cand_vector_passed = _vector_contract(cand_h, cand_s)
             if _is_hard_valid(cand_h) and cand_quality <= audit_limit and cand_vector_passed:
                 audit_checkpoint_h = np.array(cand_h, dtype=np.float64, copy=True)
                 audit_checkpoint_s = np.array(cand_s, dtype=np.float64, copy=True)
                 audit_checkpoint_score = float(cand_score)
                 audit_checkpoint_quality = float(cand_quality)
-                audit_checkpoint_vector = dict(cand_vector)
                 audit_checkpoint_vector_passed = True
                 break
 
@@ -284,13 +279,13 @@ def run_post_coldspot_finalize(
         score: float,
     ) -> tuple[bool, float]:
         nonlocal audit_checkpoint_h, audit_checkpoint_s
-        nonlocal audit_checkpoint_score, audit_checkpoint_quality, audit_checkpoint_vector
+        nonlocal audit_checkpoint_score, audit_checkpoint_quality
         if not _is_hard_valid(hard_xy):
             return False, float("inf")
         quality = hierarchy_quality_metric_fn(hard_xy, clusters)
         if quality > audit_limit:
             return False, float(quality)
-        vector_passed, vector, _violations = _vector_contract(hard_xy, soft_xy)
+        vector_passed = _vector_contract(hard_xy, soft_xy)
         if not vector_passed:
             return False, float(quality)
         if float(score) < audit_checkpoint_score - 1e-9 or audit_checkpoint_quality > audit_limit:
@@ -298,7 +293,6 @@ def run_post_coldspot_finalize(
             audit_checkpoint_s = np.array(soft_xy, dtype=np.float64, copy=True)
             audit_checkpoint_score = float(score)
             audit_checkpoint_quality = float(quality)
-            audit_checkpoint_vector = dict(vector)
             return True, float(quality)
         return False, float(quality)
 
@@ -334,7 +328,7 @@ def run_post_coldspot_finalize(
             cur_quality_local = hierarchy_quality_metric_fn(legal, clusters)
             if cur_quality_local > audit_limit:
                 return False
-            vector_passed, _vector, _violations = _vector_contract(legal, s_pos)
+            vector_passed = _vector_contract(legal, s_pos)
             if not vector_passed:
                 return False
             if float(cur_proxy) < best_small_score - 1e-9 or best_small_quality > audit_limit:
@@ -348,7 +342,7 @@ def run_post_coldspot_finalize(
         def _restore_small_if_needed() -> bool:
             nonlocal legal, s_pos, cur_proxy, small_scorer, small_audit_rollback
             cur_quality_local = hierarchy_quality_metric_fn(legal, clusters)
-            vector_passed, _vector, _violations = _vector_contract(legal, s_pos)
+            vector_passed = _vector_contract(legal, s_pos)
             if cur_quality_local <= audit_limit and vector_passed:
                 _remember_small_state()
                 return False
@@ -474,7 +468,6 @@ def run_post_coldspot_finalize(
                         accept_min_gain=min_gain,
                         target_pool=component_target_pool,
                         wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
-                        gpu_batch_rank=True,
                     )
                     small_acc += int(got)
                     for key in small_stats:
@@ -615,7 +608,7 @@ def run_post_coldspot_finalize(
             if float(round_before) - float(cur_proxy) <= min_gain:
                 break
         cur_quality = hierarchy_quality_metric_fn(legal, clusters)
-        cur_vector_passed, _cur_vector, _violations = _vector_contract(legal, s_pos)
+        cur_vector_passed = _vector_contract(legal, s_pos)
         if float(cur_proxy) < best_small_score and cur_quality <= audit_limit and cur_vector_passed:
             best_small_score = float(cur_proxy)
             best_small_legal = np.array(legal, dtype=np.float64, copy=True)
@@ -685,15 +678,12 @@ def run_post_coldspot_finalize(
     full = np.vstack([legal, s_pos]).astype(np.float32)
     full_proxy = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
     final_quality = hierarchy_quality_metric_fn(legal, clusters)
-    vector_audit_passed, hq_vector, vector_violations = _vector_contract(legal, s_pos)
+    vector_audit_passed = _vector_contract(legal, s_pos)
     audit_passed = final_quality <= audit_limit and vector_audit_passed
     audit_rollback = False
-    rollback_quality = None
-    rollback_proxy = None
     if not audit_passed and _is_hard_valid(audit_checkpoint_h):
         if audit_checkpoint_quality <= audit_limit and audit_checkpoint_vector_passed:
-            rollback_quality = float(audit_checkpoint_quality)
-            rollback_proxy = float(
+            full_proxy = float(
                 _exact_proxy(
                     torch.tensor(
                         np.vstack([audit_checkpoint_h, audit_checkpoint_s]).astype(np.float32),
@@ -706,11 +696,8 @@ def run_post_coldspot_finalize(
             legal = audit_checkpoint_h.copy()
             s_pos = audit_checkpoint_s.copy()
             full = np.vstack([legal, s_pos]).astype(np.float32)
-            full_proxy = float(rollback_proxy)
             final_quality = float(audit_checkpoint_quality)
-            hq_vector = dict(audit_checkpoint_vector)
             vector_audit_passed = True
-            vector_violations = {}
             audit_passed = True
             audit_rollback = True
     state = PlacementState(

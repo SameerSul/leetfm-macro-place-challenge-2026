@@ -8,7 +8,7 @@ import torch
 from macro_place.benchmark import Benchmark
 
 from utils import constants as const
-from utils.config import _GPU_BACKEND, _log
+from utils.config import _log
 from placer.scoring.exact import _exact_proxy
 
 
@@ -69,11 +69,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     if benchmark_dir is None:
         return None
 
-    def _auto_cuda_flag(value) -> bool:
-        if isinstance(value, str) and value.lower() == "auto":
-            return _GPU_BACKEND == "cuda"
-        return bool(value)
-
     diagnostic_no_deadlines = os.environ.get("HIER_DIAGNOSTIC_NO_DEADLINES", "0").strip() in {
         "1",
         "true",
@@ -119,10 +114,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             "congestion": congestion,
         }
 
-    hier_post_reloc_top_m = const.HIER_POST_RELOC_PROPOSE_TOP_M
-    hier_reloc_propose_hot_k = max(1, int(const.HIER_RELOC_PROPOSE_HOT_K))
-    hier_post_reloc_propose = _auto_cuda_flag(const.HIER_POST_RELOC_PROPOSE_ALL)
-    hier_reloc_propose_min_gain = float(const.HIER_RELOC_PROPOSE_MIN_GAIN)
     hier_soft_barrier_gain = max(
         0.0,
         float(os.environ.get("HIER_SOFT_BARRIER_GAIN", const.HIER_SOFT_BARRIER_GAIN)),
@@ -144,10 +135,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     gw = max(1, int(const.HIER_GROUP_WEIGHT))
     pass_context = PassContext(
         benchmark_name=str(benchmark.name),
-        canvas_width=cw,
-        canvas_height=ch,
-        num_hard=n,
-        num_soft=n_soft,
         diagnostic_no_deadlines=bool(diagnostic_no_deadlines),
     )
 
@@ -1542,7 +1529,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         float(plateau_escape_min_gain),
                         hier_soft_barrier_gain,
                     ),
-                    gpu_batch_rank=True,
                 )
                 escape_acc += got
                 _accum_pass_stats(
@@ -1560,7 +1546,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 f"  [hier] plateau escape soft relocation: {escape_acc} accepts, "
                 f"proxy {pre_escape_score:.4f}->{r_score:.4f}"
             )
-            escape_record = _record_plateau(
+            _record_plateau(
                 "plateau_escape_soft_relocation",
                 pre_escape_score,
                 r_score,
@@ -1625,62 +1611,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         time.monotonic() - post_micro_t0,
         quality=hierarchy_quality_metric(h_pos, clusters),
     )
-    if hier_post_reloc_propose:
-        post_reloc_propose_min_gain = max(
-            float(hier_reloc_propose_min_gain),
-            adaptive_floor_proxy_gain,
-        )
-        post_deadline = _deadline(float(const.HIER_POST_RELOC_PROPOSE_BUDGET_S), rdeadline)
-        pre_post_score = r_score
-        post_t0 = time.monotonic()
-        h_pos, post_acc, r_score = _relocation_moves(
-            h_pos,
-            sizes[:n],
-            hw,
-            hh,
-            cw,
-            ch,
-            movable[:n],
-            n,
-            plc,
-            benchmark,
-            rscorer,
-            r_score,
-            deadline=post_deadline,
-            top_hot=hier_reloc_propose_hot_k,
-            n_targets=16,
-            use_density=False,
-            propose_all=True,
-            propose_top_m=hier_post_reloc_top_m,
-            region_bbox=region,
-            region_bias=bias,
-            region_escape_min=escape_min,
-            propose_accept_min_gain=post_reloc_propose_min_gain,
-        )
-        if not _hard_valid(h_pos):
-            h_pos, s_pos, r_score = best_h.copy(), best_s.copy(), best_score
-            full = np.vstack([h_pos, s_pos]).astype(np.float64)
-            rscorer = IncrementalScorer(plc, benchmark, full.copy())
-            post_acc = 0
-        if _hard_valid(h_pos) and r_score < best_score - 1e-9:
-            best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-        _enforce_audit_checkpoint("post_swap_hard_propose_all")
-        _log(
-            f"  [hier] post-swap hard propose-all: {post_acc} accepts, "
-            f"proxy {pre_post_score:.4f}->{r_score:.4f}"
-        )
-        post_stats = getattr(_relocation_moves, "last_stats", {})
-        post_hard_record = _record_plateau(
-            "post_swap_hard_propose_all",
-            pre_post_score,
-            r_score,
-            post_acc,
-            time.monotonic() - post_t0,
-            candidates=int(post_stats.get("candidates", 0)),
-            legal=int(post_stats.get("legal", 0)),
-            scored=int(post_stats.get("scored", 0)),
-            quality=hierarchy_quality_metric(h_pos, clusters),
-        )
     superseded_soft_schedule = {
         "benchmark": pass_context.benchmark_name,
         "diagnostic_no_deadlines": pass_context.diagnostic_no_deadlines,
@@ -1807,7 +1737,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         float(plateau_escape_min_gain),
                         hier_soft_barrier_gain,
                     ),
-                    gpu_batch_rank=True,
                 )
                 escape_acc += got
                 _accum_pass_stats(
@@ -1825,7 +1754,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 f"  [hier] plateau escape post-soft relocation: {escape_acc} accepts, "
                 f"proxy {pre_escape_score:.4f}->{r_score:.4f}"
             )
-            escape_record = _record_plateau(
+            _record_plateau(
                 "plateau_escape_post_soft_relocation",
                 pre_escape_score,
                 r_score,
@@ -1965,7 +1894,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 f"  [hier] strong soft repair: {strong_acc} accepts, "
                 f"proxy {pre_strong_score:.4f}->{r_score:.4f}"
             )
-            strong_record = _record_plateau(
+            _record_plateau(
                 "strong_soft_repair",
                 pre_strong_score,
                 r_score,
@@ -2063,7 +1992,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     f"  [hier] medium soft continuation: {medium_acc} accepts, "
                     f"proxy {pre_medium_score:.4f}->{r_score:.4f}"
                 )
-                medium_record = _record_plateau(
+                _record_plateau(
                     "medium_soft_continuation",
                     pre_medium_score,
                     r_score,
@@ -2185,7 +2114,6 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         soft_region=soft_region,
         const=const,
         group_weight=int(gw),
-        region_deadline=rdeadline,
         log_fn=_log,
         record_plateau_fn=_record_plateau,
         hard_valid_fn=_hard_valid,

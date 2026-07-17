@@ -6,10 +6,20 @@ import torch
 
 _TRUE_ENV = {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
 _CUDA_DEVICE_REQUESTED = os.environ.get("CUDA_DEVICE", "cuda:0").strip() or "cuda:0"
-
-
 def _env_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip() in _TRUE_ENV
+
+
+def gpu_experiment_selected(feature: str) -> bool:
+    """Return whether the named diagnostic CUDA experiment was explicitly selected."""
+    selected = os.environ.get("HIER_GPU_EXPERIMENT", "").strip().lower()
+    return bool(selected) and selected == str(feature).strip().lower()
+
+
+def gpu_experiment_allows(feature: str) -> bool:
+    """Allow a CUDA route unless a different diagnostic experiment was selected."""
+    selected = os.environ.get("HIER_GPU_EXPERIMENT", "").strip().lower()
+    return not selected or selected == str(feature).strip().lower()
 
 
 if torch.cuda.is_available():

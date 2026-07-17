@@ -6,6 +6,181 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 
+> **Status (2026-07-16 — unused placer code removed):**
+> Removed the unused CUDA relocation-delta scorer, CUDA candidate-ranking and
+> swap pre-score paths, their runtime constants, the disabled post-swap
+> propose-all pass, and their CUDA-only verifiers. The active small-design
+> propose-all polish remains as an explicit CPU incremental-scoring path. The
+> retained diagnostic `overlap_prefilter`, graph-tension control, DREAMPlace
+> integration, and CPU/Numba production flow are unchanged.
+>
+> `VIVAPLACE_RUN_ID=20260716-final-unused-code-cleanup-all uv run evaluate
+> src/main.py --all` produced **AVG 1.1204**, **17/17 VALID**, zero overlaps,
+> and all hierarchy audits passing in **492.98s**. `uv run pytest test/` passed
+> **52 tests**; source bytecode compilation, Ruff unused-import/variable checks,
+> Vulture (high-confidence), and `git diff --check` also passed.
+>
+> **Prior cleanup context:**
+> The controlled full-suite sweep rejected and removed the CUDA exact-score
+> reductions, widened 16-target relocation-delta activation, and experimental
+> proposal-filter selector. Their isolated results were respectively **1.1226 /
+> 1010.91s**, **1.1641 / 899.29s**, and **1.1209 / 551.59s** (all 17/17 VALID).
+> The retained diagnostic selector supports only `overlap_prefilter` and
+> `graph_tension_batches`; both are isolation controls and neither is a
+> production promotion. Their runs reached 1.1204 in 537.27s and 502.04s.
+> The CUDA routes disabled by those controls (candidate ranking/pre-scoring,
+> bounded relocation-delta scoring, and post-swap propose-all activation) have
+> now been deleted from production, leaving only DREAMPlace CUDA execution and
+> the diagnostic overlap/bounds prefilter.
+>
+> The default-on-nothing regression
+> `VIVAPLACE_RUN_ID=20260716-restored-hypotheses-default-all uv run evaluate
+> src/main.py --all` reproduced every accepted IBM proxy at **AVG 1.1205**,
+> **17/17 VALID**, zero overlaps, and all hierarchy audits passing in
+> **558.68s**. Focused isolation, overlap-mask, and batch-density parity tests
+> pass. The remaining gates are diagnostic-only and default-off.
+>
+> After removing the rejected hooks,
+> `VIVAPLACE_RUN_ID=20260716-accepted-together-all uv run evaluate src/main.py
+> --all` again produced **AVG 1.1205**, **17/17 VALID**, zero overlaps, and all
+> hierarchy audits passing in **561.33s**. This confirms the accepted production
+> path is unchanged; wall time remains host-load-sensitive.
+>
+> With the CUDA candidate-ranking/pre-scoring, bounded relocation-delta, and
+> post-swap propose-all routes disabled in the production constants,
+> `VIVAPLACE_RUN_ID=20260716-cpu-routes-disabled-all uv run evaluate src/main.py
+> --all` produced **AVG 1.1204**, **17/17 VALID**, zero overlaps, and all
+> hierarchy audits passing in **497.07s**. This is the selected production
+> configuration.
+
+> **Status (2026-07-16 — accepted batched density and hierarchy-audit JIT):**
+> `VIVAPLACE_RUN_ID=20260716-density-jit-all uv run evaluate src/main.py --all`
+> first validated the density-tail kernel at **AVG 1.1205**, 17/17 VALID, zero
+> overlaps, and all hierarchy audits passing, in `567.56s`. The completed
+> revision, `VIVAPLACE_RUN_ID=20260716-neighbor-jit-all uv run evaluate
+> src/main.py --all`, again reproduced every IBM proxy at **AVG 1.1205**, 17/17
+> VALID, zero overlaps, and all hard and six-component hierarchy audits
+> passing, in **554.54s**. This loaded-host wall time is a verification result,
+> not an end-to-end speedup claim.
+>
+> Batched soft relocation, soft-soft swap, and hard-endpoint swap scoring now
+> share a cached Numba density-cost reducer with the prior scalar semantics:
+> nonzero filtering, tiny-grid mean, and top-tail partitioning. It matched the
+> scalar reference to `1e-14` and ran `1.85x` faster (`0.0798s` vs `0.1478s`)
+> over 100 reductions of an ibm10-sized `48 x 2255` density batch. The complete
+> hierarchy-vector audit now uses a cached Numba stable nearest-four selection
+> instead of an N-by-N distance matrix plus full per-row stable sorts. It
+> preserves equal-distance row ordering; reference-parity and explicit-tie
+> tests pass. On 786 hard macros, 30 audit reductions took `0.0637s` versus
+> `1.3824s` for the reference (`21.69x`).
+>
+> `uv run evaluate src/main.py -b ibm10` reproduced `1.0641` VALID with both
+> audits passing. Batch soft-scoring state/delta verification on ibm10 passed
+> (maximum delta `4.44e-16`); focused hierarchy/density verification tests,
+> all **48** project tests, formatting, bytecode compilation, and
+> `git diff --check` passed.
+>
+> After retaining the rejected CUDA overlap/bounds legality prefilter as an
+> explicit diagnostic-default-off path, the production-default validation
+> `VIVAPLACE_RUN_ID=20260716-retained-overlap-default-off-all uv run evaluate
+> src/main.py --all` exactly reproduced every accepted proxy at **AVG 1.1205**,
+> 17/17 VALID, zero overlaps, and all hierarchy audits passing in `569.36s`.
+> This loaded-host result verifies that the retained gate is inert unless
+> `HIER_GPU_EXPERIMENT=overlap_prefilter` is supplied; it is not a performance
+> promotion.
+
+> **[REJECTED] (2026-07-16 — CUDA batch exact-score reductions):**
+> The experiment retained CPU/Numba construction of exact region-swap routing
+> and density trial states, then copied each batch to CUDA float64 for full
+> congestion smoothing/top-tail and density-tail reductions. Focused scalar
+> checks passed (maximum delta `4.44e-16`), and an isolated 48-candidate
+> soft-soft batch ran `1.44x` faster. It is not search-equivalent, however:
+> floating-point reduction order changed near-tie accept decisions in the
+> iterative soft-swap loop (ibm10: `257` to `251` accepts and `1.0641` to
+> `1.0649`; ibm12: `226` to `209` and `1.3106` to `1.3122`).
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/vivaplace-gpu-swap-all.jsonl
+> VIVAPLACE_RUN_ID=20260716-gpu-swap-all uv run evaluate src/main.py --all`
+> completed 17/17 VALID with zero overlaps and all hierarchy audits passing,
+> but regressed to **AVG 1.1210** in **656.16s**, versus the selected CPU/Numba
+> revision's 1.1205 / 554.54s. The CUDA dispatch and settings were removed.
+> A future GPU scorer must keep sufficiently large candidate state on device
+> across proposal construction and decision aggregation, while preserving the
+> exact CPU acceptance order (or use a formally validated tie rule); per-source
+> host/device transfers are not an acceptable path.
+>
+> The post-removal `--all` revalidation was 17/17 VALID, all audits passing,
+> at AVG `1.1207` in `563.02s`: ibm01–17 reproduced their accepted proxies,
+> while ibm18 reported `1.3845`. An immediate isolated ibm18 run returned
+> `1.3806`; its pre-release state was identical, but the deadline-controlled
+> released-polish pass completed 90 accepts in the full run versus 108 alone.
+> This host-load/time-budget sensitivity is unrelated to the removed CUDA code;
+> the standalone confirmation preserves the selected ibm18 result.
+
+> **[REJECTED] (2026-07-16 — GPU compound/coldspot batch scoring):**
+> Added the diagnostic-only `HIER_GPU_EXPERIMENT=<feature>` selector. When set,
+> it forces every unselected CUDA path onto its existing CPU fallback; unset is
+> production-compatible. The selector's tests pass. Under
+> `HIER_GPU_EXPERIMENT=compound_coldspot`, the full suite was 17/17 VALID with
+> all hierarchy audits passing at AVG `1.1202` in `476.65s`. This is an
+> isolation baseline, not a production comparison, because it intentionally
+> disables the existing CUDA relocation/ranking paths as well.
+>
+> The hypothesis failed its workload gate before a new kernel was justified:
+> compound relocation generated only `584` candidates (`531` exact-scored) in
+> `1.4922s` across all 17 designs, maximum `66` candidates on ibm16, and
+> accepted one move. Coldspot attempts are bounded by 5 whole variants for at
+> most 2 priority clusters per round and did not form a persistent batched
+> score workload. A GPU launch and copies cannot amortize at that scale, while
+> a full multi-macro CUDA scorer would duplicate complex route/density update
+> logic. No compound/coldspot CUDA kernel was added.
+
+> **[REJECTED] (2026-07-16 — broadened CUDA-delta relocation):**
+> The existing CUDA delta scorer passes its focused relocation parity verifier
+> (maximum error `1.54e-7`), but its per-target setup/copy cost is not viable
+> for ordinary local batches. A gated `16`-target threshold under
+> `HIER_GPU_EXPERIMENT=relocation_delta` caused ibm10 to spend its local budget
+> before scoring any region swaps (`1.1380`), and similarly removed productive
+> region swaps on ibm12 (`1.4258`), ibm16 (`1.3539`), and ibm17 (`1.4658`).
+> The full isolated sweep was 17/17 VALID with all audits passing but regressed
+> to **AVG 1.1569** in **876.08s**. The temporary threshold override was
+> removed; the established 64-target cutoff remains unchanged.
+
+> **[REJECTED] (2026-07-16 — CUDA proposal-filter ranking):**
+> With only `HIER_GPU_EXPERIMENT=proposal_filter` enabled, ibm10 reproduced
+> `1.0641` and the same `257` region-swap accepts. The full isolated sweep was
+> 17/17 VALID with all hierarchy audits passing at **AVG 1.1205** in
+> **537.18s**. That preserves quality, but is slower than the all-CPU isolated
+> reference (`1.1202` / `476.65s`), so GPU candidate ordering is not promoted
+> or broadened. The pre-existing conservative auto path remains unchanged.
+
+> **[REJECTED] (2026-07-16 — CUDA overlap/bounds swap prefilter):**
+> A fp64 CUDA legality mask was tested only through
+> `HIER_GPU_EXPERIMENT=overlap_prefilter`; focused hard-hard and hard-soft
+> mask parity tests passed. It reached meaningful volume (ibm10: `1,024`
+> batches / `960,150` candidates; ibm12: `1,024` / `770,795`; ibm17: `1,024`
+> / `762,386`) but paid a device launch/copy and synchronization cost per
+> source. The complete suite was 17/17 VALID with all audits passing at AVG
+> `1.1202` in **519.75s**, roughly 9% slower than the CPU-isolated reference,
+> while deadline-bounded move trajectories changed. The temporary kernel,
+> telemetry fields, and tests were initially removed. It is now retained at
+> explicit user request behind the diagnostic-only
+> `HIER_GPU_EXPERIMENT=overlap_prefilter` gate, with production default-off;
+> this record remains a rejection from production promotion.
+
+> **[REJECTED] (2026-07-16 — graph-tension CUDA batches):**
+> The active hierarchy graphs are too small for a CUDA batch: the only
+> graph-tension-enabled designs have `75` (ibm10), `19` (ibm12), `19` (ibm14),
+> and `14` (ibm17) edges, each sampled at nine corridor points. Trace-visible
+> cluster-decompression work had no batch candidate payload. No graph-tension
+> CUDA kernel was added. The former isolation selector treated
+> `HIER_GPU_EXPERIMENT=graph_tension_batches` as a request to disable every
+> *other* optional CUDA route and use its CPU fallback; it did not enable a
+> graph-tension batch implementation. That isolated CPU configuration was 17/17
+> VALID with all audits passing at **AVG 1.1202** in **481.15s**. It is not a
+> graph-tension speed or quality result, and it confirms only the workload-gate
+> conclusion.
+
 > **Status (2026-07-16 — accepted conservative soft-bundle inference):**
 > `VIVAPLACE_RUN_ID=20260716-soft-inference-final uv run evaluate src/main.py
 > --all` completed at **AVG 1.1205**, 17/17 VALID, 0 overlaps, and all hard and
