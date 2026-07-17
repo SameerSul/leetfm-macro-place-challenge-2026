@@ -85,9 +85,9 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         return min(outer, now_deadline) if outer is not None else now_deadline
 
     def _additive_spare(deadline: "float | None") -> bool:
-        return deadline is None or time.monotonic() + float(
-            const.HIER_ADDITIVE_MIN_SPARE_S
-        ) < float(deadline)
+        # Deterministic operator quotas are always applied by default; deadlines
+        # remain hard safety caps for overrun protection.
+        return True
 
     def _proxy_components(hard_xy, soft_xy) -> dict[str, float]:
         full = torch.tensor(
@@ -239,7 +239,9 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         return float(before) - float(after) > adaptive_floor_proxy_gain
 
     def _has_spare(deadline: "float | None", reserve_s: float) -> bool:
-        return deadline is None or time.monotonic() + float(reserve_s) < float(deadline)
+        # Deterministic operator quotas are always applied by default; deadlines
+        # remain hard safety caps for overrun protection.
+        return True
 
     def _env_float(name: str, default: float) -> float:
         raw = os.environ.get(name)
