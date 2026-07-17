@@ -5,7 +5,7 @@ Target: beat RePlAce avg of 1.4578.
 
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
-
+>
 > **Status (2026-07-16 — unused placer code removed):**
 > Removed the unused CUDA relocation-delta scorer, CUDA candidate-ranking and
 > swap pre-score paths, their runtime constants, the disabled post-swap

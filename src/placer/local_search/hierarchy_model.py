@@ -60,6 +60,7 @@ class HierarchyModel:
     edges: list[HierarchyEdge]
     cluster_confidence: dict[int, float]
     split_parents: dict[int, list[int]]
+    cluster_source: str
     max_fanout: int
     min_edge: int
 
@@ -70,6 +71,7 @@ class HierarchyModel:
         tagged = derive_path_tag_hard_clusters(plc, n)
         if tagged is not None:
             labels, clusters = tagged
+            cluster_source = "hierarchy_path_tags"
         else:
             labels, clusters = derive_oversized_hard_clusters(
                 plc,
@@ -79,6 +81,7 @@ class HierarchyModel:
                 min_edge=min_edge,
                 hard_sizes=hard_sizes,
             )
+            cluster_source = "hierarchy_oversized_connectivity"
         split_parents = _derive_split_parents(
             plc,
             n,
@@ -126,7 +129,13 @@ class HierarchyModel:
             high_threshold=float(const.HIER_SOFT_BUNDLE_HIGH_CONFIDENCE),
             medium_threshold=float(const.HIER_SOFT_BUNDLE_MEDIUM_CONFIDENCE),
         )
-        edges, confidence = _cluster_graph(plc, labels, clusters, max_fanout)
+        edges, confidence = _cluster_graph(
+            plc,
+            labels,
+            clusters,
+            max_fanout,
+            hard_sizes=hard_sizes,
+        )
         return cls(
             labels=labels,
             clusters=clusters,
@@ -139,6 +148,7 @@ class HierarchyModel:
             edges=edges,
             cluster_confidence=confidence,
             split_parents=split_parents,
+            cluster_source=cluster_source,
             max_fanout=max_fanout,
             min_edge=min_edge,
         )
@@ -232,8 +242,14 @@ class HierarchyModel:
         )
 
 
-def _cluster_graph(plc, labels: np.ndarray, clusters: dict[int, np.ndarray], max_fanout: int):
-    """Build weighted inter-cluster graph and simple per-cluster confidence."""
+def _cluster_graph(
+    plc,
+    labels: np.ndarray,
+    clusters: dict[int, np.ndarray],
+    max_fanout: int,
+    hard_sizes=None,
+):
+    """Build weighted inter-cluster graph and calibrated per-cluster confidence."""
     cache = _build_wl_cache(plc)
     ref_idx = cache["ref_idx"]
     net_starts = cache["net_starts"]
@@ -244,6 +260,25 @@ def _cluster_graph(plc, labels: np.ndarray, clusters: dict[int, np.ndarray], max
     internal = {int(cid): 0.0 for cid in clusters}
     external = {int(cid): 0.0 for cid in clusters}
     pair_weight: dict[tuple[int, int], float] = {}
+    cluster_sizes = {int(cid): int(np.asarray(members).size) for cid, members in clusters.items()}
+    hard_area = None
+    if hard_sizes is not None:
+        hard_area = np.asarray(hard_sizes[: int(len(labels))], dtype=np.float64)
+        if hard_area.ndim == 2 and hard_area.shape[1] >= 2:
+            hard_area = hard_area[:, 0] * hard_area[:, 1]
+        else:
+            hard_area = np.ones(int(len(labels)), dtype=np.float64)
+    else:
+        hard_area = np.ones(int(len(labels)), dtype=np.float64)
+    hard_area = np.asarray(hard_area, dtype=np.float64)
+    hard_area[np.asarray(hard_area) <= 0.0] = 1.0
+    cluster_area = {
+        int(cid): float(np.sum(hard_area[np.asarray(members, dtype=np.int64)]))
+        for cid, members in clusters.items()
+        if len(np.asarray(members)) > 0
+    }
+    n = max(int(len(labels)), 1)
+    total_area = float(np.sum(hard_area[:n])) if n > 0 else 1.0
 
     for net_i in range(len(net_starts)):
         length = int(net_lengths[net_i])
@@ -269,7 +304,37 @@ def _cluster_graph(plc, labels: np.ndarray, clusters: dict[int, np.ndarray], max
     for cid in clusters:
         inside = internal.get(int(cid), 0.0)
         outside = external.get(int(cid), 0.0)
-        confidence[int(cid)] = float(inside / max(inside + outside, 1e-12))
+        total = float(inside + outside)
+        if total <= 0.0:
+            confidence[int(cid)] = 0.0
+            continue
+        base_conf = float(inside / total)
+        cut_ratio = float(outside / total)
+        conductance = float(outside / total)
+        base_term = max(0.0, min(1.0, base_conf))
+
+        size = float(cluster_sizes.get(int(cid), 0))
+        size_ratio = float(size / n)
+        size_term = 1.0 / (1.0 + max(size_ratio - 0.5, 0.0))
+        size_term = np.clip(size_term, 0.0, 1.0)
+
+        area = float(cluster_area.get(int(cid), 0.0))
+        area_ratio = float(area / max(total_area, 1.0))
+        area_term = 1.0 / (1.0 + max(area_ratio - 0.5, 0.0))
+        area_term = np.clip(area_term, 0.0, 1.0)
+
+        conductance_term = 1.0 / (1.0 + 3.0 * conductance)
+        cut_term = 1.0 / (1.0 + 4.0 * cut_ratio)
+        expected_internal = float(max(size_ratio, 1.0e-12) ** 2)
+        synthetic_truth = (base_term - expected_internal) / max(1.0 - expected_internal, 1.0e-12)
+        synthetic_term = float(np.clip(synthetic_truth, 0.0, 1.0))
+
+        expected = float(max(1, int(size)) * max(1, int(max_fanout)))
+        evidence_term = min(1.0, float(total) / expected)
+        evidence_term = 0.6 + 0.4 * evidence_term
+
+        calibrated = base_term * evidence_term * size_term * area_term * conductance_term * cut_term * synthetic_term
+        confidence[int(cid)] = float(np.clip(calibrated, 0.0, 1.0))
     return edges, confidence
 
 
