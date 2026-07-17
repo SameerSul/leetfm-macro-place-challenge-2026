@@ -156,18 +156,56 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         candidates: int = 0,
         legal: int = 0,
         scored: int = 0,
+        proposed_after: float | None = None,
+        rollback_report: dict | None = None,
         **extra,
     ) -> PlateauTelemetry:
+        rolled_back = bool(rollback_report and rollback_report.get("restored"))
+        proposed_after = float(proposed_after if proposed_after is not None else after)
+        proposed_accepts = int(accepts)
+        retained_accepts = 0 if rolled_back else proposed_accepts
+        retained_after = float(after)
+        retained_gain = max(float(before) - retained_after, 0.0)
+        proposed_gain = max(float(before) - proposed_after, 0.0)
+        if rollback_report is None:
+            rollback_report = {
+                "restored": False,
+                "reason": "no_enforce",
+                "violations": (),
+                "rebuild_elapsed_s": 0.0,
+                "quality_before": float("nan"),
+                "quality_after": float("nan"),
+                "proxy_before": float("nan"),
+                "proxy_after": float("nan"),
+            }
         record = PlateauTelemetry(
             name=pass_name,
             proxy_before=float(before),
-            proxy_after=float(after),
+            proxy_after=retained_after,
             elapsed_s=float(elapsed_s),
             candidates=int(candidates),
             legal=int(legal),
             scored=int(scored),
-            accepts=int(accepts),
-            extra=extra,
+            accepts=int(retained_accepts),
+            extra={
+                "proposed_proxy_before": float(before),
+                "proposed_proxy_after": float(proposed_after),
+                "retained_proxy_after": retained_after,
+                "proposed_proxy_gain": proposed_gain,
+                "retained_proxy_gain": retained_gain,
+                "discarded_proxy_gain": max(proposed_gain - retained_gain, 0.0),
+                "proposed_accepts": proposed_accepts,
+                "retained_accepts": int(retained_accepts),
+                "audit_rollback": rolled_back,
+                "audit_rollback_reason": str(rollback_report.get("reason", "")),
+                "audit_rollback_violations": list(rollback_report.get("violations", ())),
+                "audit_rebuild_s": float(rollback_report.get("rebuild_elapsed_s", 0.0)),
+                "audit_quality_before": float(rollback_report.get("quality_before", float("nan"))),
+                "audit_quality_after": float(rollback_report.get("quality_after", float("nan"))),
+                "audit_proxy_before": float(rollback_report.get("proxy_before", float("nan"))),
+                "audit_proxy_after": float(rollback_report.get("proxy_after", float("nan"))),
+                **extra,
+            },
         )
         plateau_records.append(record)
         plateaued = record.plateaued(
@@ -856,14 +894,37 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             return True
         return False
 
-    def _restore_audit_checkpoint(label: str) -> bool:
+    def _restore_audit_checkpoint(label: str) -> dict:
         nonlocal h_pos, s_pos, r_score, rscorer
+        start = time.perf_counter()
         if audit_quality > audit_limit or not _hard_valid(audit_h):
-            return False
+            return {
+                "restored": False,
+                "reason": "checkpoint_unavailable",
+                "violations": (),
+                "rebuild_elapsed_s": 0.0,
+                "quality_before": float("nan"),
+                "quality_after": float("nan"),
+                "proxy_before": float(r_score),
+                "proxy_after": float(r_score),
+            }
         old_quality = hierarchy_quality_metric(h_pos, clusters)
         vector_passed, _old_vector, violations = _vector_contract(h_pos, s_pos)
         if old_quality <= audit_limit and vector_passed:
-            return False
+            return {
+                "restored": False,
+                "reason": "ok",
+                "violations": (),
+                "rebuild_elapsed_s": 0.0,
+                "quality_before": float("nan"),
+                "quality_after": float(old_quality),
+                "proxy_before": float(r_score),
+                "proxy_after": float(r_score),
+            }
+        reason = "hierarchy_vector"
+        if old_quality > audit_limit:
+            reason = "quality"
+        proxy_before = float(r_score)
         h_pos = audit_h.copy()
         s_pos = audit_s.copy()
         r_score = float(audit_score)
@@ -872,16 +933,41 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             benchmark,
             np.vstack([h_pos, s_pos]).astype(np.float64),
         )
+        rebuild_elapsed_s = time.perf_counter() - start
         _log(
             f"  [hier] audit checkpoint restore after {label}: "
             f"hard_quality={old_quality:.5f}/{audit_limit:.5f}, "
             f"vector_violations={','.join(sorted(violations)) or 'none'}"
         )
-        return True
+        return {
+            "restored": True,
+            "reason": reason,
+            "violations": sorted(violations),
+            "rebuild_elapsed_s": float(rebuild_elapsed_s),
+            "quality_before": float(old_quality),
+            "quality_after": float(audit_quality),
+            "proxy_before": float(proxy_before),
+            "proxy_after": float(audit_score),
+        }
 
-    def _enforce_audit_checkpoint(label: str) -> bool:
+    def _enforce_audit_checkpoint(label: str, *, return_report: bool = False):
         _maybe_update_audit_checkpoint(h_pos, s_pos, r_score)
-        return _restore_audit_checkpoint(label)
+        report = _restore_audit_checkpoint(label)
+        if return_report:
+            return report
+        return bool(report.get("restored", False))
+
+    def _empty_audit_report() -> dict:
+        return {
+            "restored": False,
+            "reason": "not_run",
+            "violations": (),
+            "rebuild_elapsed_s": 0.0,
+            "quality_before": float("nan"),
+            "quality_after": float("nan"),
+            "proxy_before": float("nan"),
+            "proxy_after": float("nan"),
+        }
 
     for round_idx in range(rounds):
         if rdeadline is not None and time.monotonic() >= rdeadline:
@@ -890,6 +976,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         before_micro = r_score
         micro_acc = 0
         micro_t0 = time.monotonic()
+        micro_enforce = _empty_audit_report()
         for use_density in (False, True):
             micro_before = float(r_score)
             h_pos, s_pos, got, r_score = _micro_shift_polish(
@@ -920,24 +1007,30 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             micro_acc += got
             if not _adaptive_pass_gain(micro_before, r_score):
                 break
+            micro_enforce = _enforce_audit_checkpoint("micro_shift", return_report=True)
+            if micro_enforce.get("restored"):
+                break
         if micro_acc:
             _log(
                 f"  [hier] micro-shift polish: {micro_acc} accepts, "
                 f"proxy {before_micro:.4f}->{r_score:.4f}"
             )
+        micro_proposed_after = float(r_score)
         _record_plateau(
             "micro_shift",
             before_micro,
             r_score,
             micro_acc,
             time.monotonic() - micro_t0,
+            proposed_after=micro_proposed_after,
+            rollback_report=micro_enforce,
             round=int(round_idx),
         )
-        _enforce_audit_checkpoint("micro_shift")
         reloc_acc = 0
         reloc_stats = _empty_pass_stats()
         before_reloc = r_score
         reloc_t0 = time.monotonic()
+        reloc_enforce = _empty_audit_report()
         for use_density in (False, True):
             reloc_before = float(r_score)
             h_pos, got, r_score = _relocation_moves(
@@ -970,6 +1063,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             )
             if not _adaptive_pass_gain(reloc_before, r_score):
                 break
+            reloc_enforce = _enforce_audit_checkpoint(
+                "region_hard_relocation",
+                return_report=True,
+            )
+            if reloc_enforce.get("restored"):
+                break
+        reloc_proposed_after = float(r_score)
         _record_plateau(
             "region_hard_relocation",
             before_reloc,
@@ -979,13 +1079,15 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             candidates=reloc_stats["candidates"],
             legal=reloc_stats["legal"],
             scored=reloc_stats["scored"],
+            proposed_after=reloc_proposed_after,
+            rollback_report=reloc_enforce,
             round=int(round_idx),
         )
-        _enforce_audit_checkpoint("region_hard_relocation")
         soft_reloc_acc = 0
         soft_reloc_stats = _empty_pass_stats()
         before_soft_reloc = r_score
         soft_reloc_t0 = time.monotonic()
+        soft_reloc_enforce = _empty_audit_report()
         for use_density in (False, True):
             soft_before = float(r_score)
             s_pos, got, r_score = _soft_relocation_moves(
@@ -1016,6 +1118,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             )
             if not _adaptive_pass_gain(soft_before, r_score):
                 break
+            soft_reloc_enforce = _enforce_audit_checkpoint(
+                "region_soft_relocation",
+                return_report=True,
+            )
+            if soft_reloc_enforce.get("restored"):
+                break
+        soft_reloc_proposed_after = float(r_score)
         _record_plateau(
             "region_soft_relocation",
             before_soft_reloc,
@@ -1025,9 +1134,10 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             candidates=soft_reloc_stats["candidates"],
             legal=soft_reloc_stats["legal"],
             scored=soft_reloc_stats["scored"],
+            proposed_after=soft_reloc_proposed_after,
+            rollback_report=soft_reloc_enforce,
             round=int(round_idx),
         )
-        _enforce_audit_checkpoint("region_soft_relocation")
         round_accepts = int(micro_acc + reloc_acc + soft_reloc_acc)
         if not _adaptive_pass_gain(round_start, r_score):
             _log(
@@ -1154,7 +1264,11 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             rscorer = IncrementalScorer(plc, benchmark, full.copy())
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-            _enforce_audit_checkpoint("cluster_decompression")
+            decomp_proposed_after = float(r_score)
+            decomp_enforce = _enforce_audit_checkpoint(
+                "cluster_decompression",
+                return_report=True,
+            )
             _log(
                 f"  [hier] cluster decompression: {d_acc} accepts, "
                 f"quality={decomp_hq:.4f}, proxy={r_score:.4f}"
@@ -1166,7 +1280,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 d_acc,
                 time.monotonic() - decomp_t0,
                 quality=float(decomp_hq),
-                rolled_back=False,
+                proposed_after=decomp_proposed_after,
+                rollback_report=decomp_enforce,
             )
     if (
         n_soft
@@ -1184,6 +1299,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         inter_soft_acc = 0
         inter_soft_stats = _empty_pass_stats()
         inter_soft_t0 = time.monotonic()
+        inter_repair_enforce = _empty_audit_report()
         for use_density in (False, True):
             inter_before = float(r_score)
             s_pos, got, r_score = _soft_relocation_moves(
@@ -1218,11 +1334,22 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             )
             if not _adaptive_pass_gain(inter_before, r_score):
                 break
+            inter_repair_enforce = _enforce_audit_checkpoint(
+                "interleaved_soft_repair",
+                return_report=True,
+            )
+            if inter_repair_enforce.get("restored"):
+                break
             if inter_soft_deadline is not None and time.monotonic() >= inter_soft_deadline:
                 break
         if _hard_valid(h_pos) and r_score < best_score - 1e-9:
             best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-        _enforce_audit_checkpoint("interleaved_soft_repair")
+        inter_repair_proposed_after = float(r_score)
+        if inter_repair_enforce.get("reason", "not_run") == "not_run":
+            inter_repair_enforce = _enforce_audit_checkpoint(
+                "interleaved_soft_repair",
+                return_report=True,
+            )
         _log(
             f"  [hier] interleaved soft repair: {inter_soft_acc} accepts, "
             f"proxy {pre_inter_soft_score:.4f}->{r_score:.4f}"
@@ -1236,6 +1363,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             candidates=inter_soft_stats["candidates"],
             legal=inter_soft_stats["legal"],
             scored=inter_soft_stats["scored"],
+            proposed_after=inter_repair_proposed_after,
+            rollback_report=inter_repair_enforce,
             quality=hierarchy_quality_metric(h_pos, clusters),
         )
     swap_record: PlateauTelemetry | None = None
@@ -1278,6 +1407,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         swap_round_start = float(r_score)
         swap_round_start_acc = int(swap_acc)
         swap_round_masked_accepts = 0
+        swap_round_enforce = _empty_audit_report()
         for use_density in fields:
             swap_before = float(r_score)
             swap_field = (
@@ -1336,9 +1466,18 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             swap_round_masked_accepts += int(got)
             for k, v in stats.items():
                 swap_stats[k] += v
-            _enforce_audit_checkpoint("region_swaps")
             if not _adaptive_pass_gain(swap_before, r_score):
                 break
+            swap_round_enforce = _enforce_audit_checkpoint(
+                "region_swaps",
+                return_report=True,
+            )
+            if swap_round_enforce.get("restored"):
+                break
+            if not _adaptive_pass_gain(swap_before, r_score):
+                break
+        if swap_round_enforce.get("restored"):
+            continue
         if (
             swap_round_masked_accepts <= 0
             and swap_mask is not None
@@ -1405,7 +1544,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     " budget="
                     f"{float(graph_swap_fallback_budget_s):.2f}s"
                 )
-                _enforce_audit_checkpoint("region_swaps_graph_fallback")
+                swap_round_enforce = _enforce_audit_checkpoint(
+                    "region_swaps_graph_fallback",
+                    return_report=True,
+                )
+                if swap_round_enforce.get("restored"):
+                    continue
         for micro_density in (False, True):
             swap_micro_before = float(r_score)
             h_pos, s_pos, got, r_score = _micro_shift_polish(
@@ -1434,7 +1578,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 use_density=micro_density,
             )
             swap_round_micro_acc += got
-            _enforce_audit_checkpoint("swap_round_micro_shift")
+            swap_round_enforce = _enforce_audit_checkpoint(
+                "swap_round_micro_shift",
+                return_report=True,
+            )
+            if swap_round_enforce.get("restored"):
+                break
             if not _adaptive_pass_gain(swap_micro_before, r_score):
                 break
         if not _adaptive_pass_gain(swap_round_start, r_score):
@@ -1450,7 +1599,11 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         rscorer = IncrementalScorer(plc, benchmark, full.copy())
     if _hard_valid(h_pos) and r_score < best_score - 1e-9:
         best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-    _enforce_audit_checkpoint("region_swaps")
+    swap_proposed_after = float(r_score)
+    if swap_round_enforce.get("reason", "not_run") == "not_run":
+        swap_enforce = _enforce_audit_checkpoint("region_swaps", return_report=True)
+    else:
+        swap_enforce = swap_round_enforce
     escape_accepts = (
         swap_stats["hh_escape_accepts"]
         + swap_stats["hs_escape_accepts"]
@@ -1477,6 +1630,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         scored=swap_scored,
         quality=hierarchy_quality_metric(h_pos, clusters),
         stats=swap_stats,
+        proposed_after=swap_proposed_after,
+        rollback_report=swap_enforce,
     )
     plateau_escape_min_gain = max(
         float(const.HIER_PLATEAU_ESCAPE_MIN_GAIN),
@@ -1504,6 +1659,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             escape_acc = 0
             escape_stats = _empty_pass_stats()
             escape_t0 = time.monotonic()
+            escape_enforce = _empty_audit_report()
             for use_density in (False, True):
                 pre_escape = float(r_score)
                 s_pos, got, r_score = _soft_relocation_moves(
@@ -1537,11 +1693,22 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 )
                 if not _adaptive_pass_gain(pre_escape, r_score):
                     break
+                escape_enforce = _enforce_audit_checkpoint(
+                    "plateau_escape_soft_relocation",
+                    return_report=True,
+                )
+                if escape_enforce.get("restored"):
+                    break
                 if escape_deadline is not None and time.monotonic() >= escape_deadline:
                     break
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-            _enforce_audit_checkpoint("plateau_escape_soft_relocation")
+            escape_proposed_after = float(r_score)
+            if escape_enforce.get("reason", "not_run") == "not_run":
+                escape_enforce = _enforce_audit_checkpoint(
+                    "plateau_escape_soft_relocation",
+                    return_report=True,
+                )
             _log(
                 f"  [hier] plateau escape soft relocation: {escape_acc} accepts, "
                 f"proxy {pre_escape_score:.4f}->{r_score:.4f}"
@@ -1555,12 +1722,15 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 candidates=escape_stats["candidates"],
                 legal=escape_stats["legal"],
                 scored=escape_stats["scored"],
+                proposed_after=escape_proposed_after,
+                rollback_report=escape_enforce,
                 quality=hierarchy_quality_metric(h_pos, clusters),
             )
     post_micro_deadline = _deadline(float(const.HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S), rdeadline)
     pre_post_micro_score = r_score
     post_micro_acc = 0
     post_micro_t0 = time.monotonic()
+    post_micro_enforce = _empty_audit_report()
     for use_density in (False, True):
         post_micro_before = float(r_score)
         h_pos, s_pos, got, r_score = _micro_shift_polish(
@@ -1589,6 +1759,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             use_density=use_density,
         )
         post_micro_acc += got
+        post_micro_enforce = _enforce_audit_checkpoint(
+            "post_swap_micro_shift",
+            return_report=True,
+        )
+        if post_micro_enforce.get("restored"):
+            break
         if not _adaptive_pass_gain(post_micro_before, r_score):
             break
     if not _hard_valid(h_pos):
@@ -1598,7 +1774,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         post_micro_acc = 0
     if _hard_valid(h_pos) and r_score < best_score - 1e-9:
         best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-    _enforce_audit_checkpoint("post_swap_micro_shift")
+    post_micro_proposed_after = float(r_score)
+    if post_micro_enforce.get("reason", "not_run") == "not_run":
+        post_micro_enforce = _enforce_audit_checkpoint(
+            "post_swap_micro_shift",
+            return_report=True,
+        )
     _log(
         f"  [hier] post-swap micro-shift replay: {post_micro_acc} accepts, "
         f"proxy {pre_post_micro_score:.4f}->{r_score:.4f}"
@@ -1610,6 +1791,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         post_micro_acc,
         time.monotonic() - post_micro_t0,
         quality=hierarchy_quality_metric(h_pos, clusters),
+        proposed_after=post_micro_proposed_after,
+        rollback_report=post_micro_enforce,
     )
     superseded_soft_schedule = {
         "benchmark": pass_context.benchmark_name,
@@ -1659,7 +1842,11 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         )
         if _hard_valid(h_pos) and r_score < best_score - 1e-9:
             best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-        _enforce_audit_checkpoint("compound_soft_relocation")
+        compound_proposed_after = float(r_score)
+        compound_enforce = _enforce_audit_checkpoint(
+            "compound_soft_relocation",
+            return_report=True,
+        )
         compound_stats = getattr(_compound_soft_relocation, "last_stats", {})
         _log(
             f"  [hier] compound soft relocation: {compound_acc} accepts, "
@@ -1683,6 +1870,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             field_rejects=int(compound_stats.get("field_rejects", 0)),
             groups=int(compound_stats.get("groups", 0)),
             best_candidate_gain=float(compound_stats.get("best_candidate_gain", 0.0)),
+            proposed_after=compound_proposed_after,
+            rollback_report=compound_enforce,
         )
     post_escape_trigger = "post_swap_soft_relocation_superseded"
     if (
@@ -1712,6 +1901,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             escape_acc = 0
             escape_stats = _empty_pass_stats()
             escape_t0 = time.monotonic()
+            escape_post_enforce = _empty_audit_report()
             for use_density in (False, True):
                 pre_escape = float(r_score)
                 s_pos, got, r_score = _soft_relocation_moves(
@@ -1745,11 +1935,22 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 )
                 if not _adaptive_pass_gain(pre_escape, r_score):
                     break
+                escape_post_enforce = _enforce_audit_checkpoint(
+                    "plateau_escape_post_soft_relocation",
+                    return_report=True,
+                )
+                if escape_post_enforce.get("restored"):
+                    break
                 if escape_deadline is not None and time.monotonic() >= escape_deadline:
                     break
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-            _enforce_audit_checkpoint("plateau_escape_post_soft_relocation")
+            escape_post_proposed_after = float(r_score)
+            if escape_post_enforce.get("reason", "not_run") == "not_run":
+                escape_post_enforce = _enforce_audit_checkpoint(
+                    "plateau_escape_post_soft_relocation",
+                    return_report=True,
+                )
             _log(
                 f"  [hier] plateau escape post-soft relocation: {escape_acc} accepts, "
                 f"proxy {pre_escape_score:.4f}->{r_score:.4f}"
@@ -1764,6 +1965,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 legal=escape_stats["legal"],
                 scored=escape_stats["scored"],
                 quality=hierarchy_quality_metric(h_pos, clusters),
+                proposed_after=escape_post_proposed_after,
+                rollback_report=escape_post_enforce,
             )
     if n_soft and bool(np.any(soft_mov)):
         component_bias = _component_cleanup_bias(h_pos, s_pos)
@@ -1847,6 +2050,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             )
             for _strong_round in range(scheduled_strong_rounds):
                 strong_round_before = float(r_score)
+                strong_enforce = _empty_audit_report()
                 for use_density in (False, True):
                     strong_before = float(r_score)
                     s_pos, got, r_score = _soft_relocation_moves(
@@ -1881,6 +2085,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     )
                     if not _adaptive_pass_gain(strong_before, r_score):
                         break
+                    strong_enforce = _enforce_audit_checkpoint(
+                        "strong_soft_repair",
+                        return_report=True,
+                    )
+                    if strong_enforce.get("restored"):
+                        break
                     if strong_deadline is not None and time.monotonic() >= strong_deadline:
                         break
                 if not _adaptive_pass_gain(strong_round_before, r_score):
@@ -1889,7 +2099,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     break
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-            _enforce_audit_checkpoint("strong_soft_repair")
+            strong_proposed_after = float(r_score)
+            if strong_enforce.get("reason", "not_run") == "not_run":
+                strong_enforce = _enforce_audit_checkpoint(
+                    "strong_soft_repair",
+                    return_report=True,
+                )
             _log(
                 f"  [hier] strong soft repair: {strong_acc} accepts, "
                 f"proxy {pre_strong_score:.4f}->{r_score:.4f}"
@@ -1904,6 +2119,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 legal=strong_stats["legal"],
                 scored=strong_stats["scored"],
                 quality=hierarchy_quality_metric(h_pos, clusters),
+                proposed_after=strong_proposed_after,
+                rollback_report=strong_enforce,
             )
             strong_gain = max(0.0, float(pre_strong_score) - float(r_score))
             medium_has_spare = _has_spare(
@@ -1939,12 +2156,14 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 medium_acc = 0
                 medium_stats = _empty_pass_stats()
                 medium_t0 = time.monotonic()
+                medium_enforce = _empty_audit_report()
                 medium_min_gain = max(
                     float(const.HIER_MEDIUM_SOFT_MIN_GAIN),
                     adaptive_floor_proxy_gain,
                 )
                 for _medium_round in range(max(1, int(const.HIER_MEDIUM_SOFT_ROUNDS))):
                     medium_round_before = float(r_score)
+                    medium_enforce = _empty_audit_report()
                     for use_density in (False, True):
                         medium_before = float(r_score)
                         s_pos, got, r_score = _soft_relocation_moves(
@@ -1979,6 +2198,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         )
                         if not _adaptive_pass_gain(medium_before, r_score):
                             break
+                        medium_enforce = _enforce_audit_checkpoint(
+                            "medium_soft_continuation",
+                            return_report=True,
+                        )
+                        if medium_enforce.get("restored"):
+                            break
                         if medium_deadline is not None and time.monotonic() >= medium_deadline:
                             break
                     if not _adaptive_pass_gain(medium_round_before, r_score):
@@ -1987,7 +2212,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         break
                 if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                     best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
-                _enforce_audit_checkpoint("medium_soft_continuation")
+                medium_proposed_after = float(r_score)
+                if medium_enforce.get("reason", "not_run") == "not_run":
+                    medium_enforce = _enforce_audit_checkpoint(
+                        "medium_soft_continuation",
+                        return_report=True,
+                    )
                 _log(
                     f"  [hier] medium soft continuation: {medium_acc} accepts, "
                     f"proxy {pre_medium_score:.4f}->{r_score:.4f}"
@@ -2004,6 +2234,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                     quality=hierarchy_quality_metric(h_pos, clusters),
                     strong_soft_gain=float(strong_gain),
                     nets_per_macro=float(nets_per_macro),
+                    proposed_after=medium_proposed_after,
+                    rollback_report=medium_enforce,
                 )
         else:
             reason = "insufficient_spare" if not has_spare else "no_trigger"

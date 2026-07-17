@@ -45,43 +45,92 @@ def aggregate(rows: list[dict], min_runs: int) -> list[dict]:
         if runs < min_runs:
             continue
         elapsed = sum(float(item.get("elapsed_s", 0.0)) for item in items)
-        gain = sum(float(item.get("proxy_gain", 0.0)) for item in items)
-        accepts = sum(int(item.get("accepts", 0)) for item in items)
+        proposed_gain = sum(
+            float(item.get("proposed_proxy_gain", item.get("proxy_gain", 0.0))) for item in items
+        )
+        retained_gain = sum(
+            float(item.get("retained_proxy_gain", item.get("proxy_gain", 0.0))) for item in items
+        )
+        proposed_accepts = sum(
+            int(item.get("proposed_accepts", item.get("accepts", 0))) for item in items
+        )
+        retained_accepts = sum(
+            int(item.get("retained_accepts", item.get("accepts", 0))) for item in items
+        )
         candidates = sum(int(item.get("candidates", 0)) for item in items)
-        zero_gain = sum(float(item.get("proxy_gain", 0.0)) < 0.00005 for item in items)
+        scored = sum(int(item.get("scored", 0)) for item in items)
+        rollback_count = sum(1 for item in items if bool(item.get("audit_rollback", False)))
+        audit_rebuild_s = sum(float(item.get("audit_rebuild_s", 0.0)) for item in items)
+        discarded_gain = max(0.0, proposed_gain - retained_gain)
+        zero_retained_gain = sum(
+            float(item.get("retained_proxy_gain", item.get("proxy_gain", 0.0))) < 0.00005
+            for item in items
+        )
+        zero_proposed_gain = sum(
+            float(item.get("proposed_proxy_gain", item.get("proxy_gain", 0.0))) < 0.00005
+            for item in items
+        )
         zero_accept = sum(int(item.get("accepts", 0)) == 0 for item in items)
-        gain_per_s = gain / max(elapsed, 1.0e-12)
-        skip_candidate = elapsed >= 0.5 and zero_gain / runs >= 0.8 and gain_per_s < 0.00001
+        retained_gain_per_s = retained_gain / max(elapsed, 1.0e-12)
+        retained_gain_per_scored = retained_gain / max(int(scored), 1)
+        rollback_fraction = rollback_count / runs
+        audit_rebuild_ratio = audit_rebuild_s / max(elapsed, 1.0e-12)
+        retained_to_proposed_gain = (
+            retained_gain / max(proposed_gain, 1.0e-12) if proposed_gain > 0 else 1.0
+        )
+        skip_candidate = (
+            elapsed >= 0.5 and zero_retained_gain / runs >= 0.8 and retained_gain_per_s < 0.00001
+        )
         output.append(
             {
                 "pass": name,
                 "runs": runs,
                 "benchmarks": len({str(item.get("benchmark", "")) for item in items}),
                 "candidates": candidates,
-                "accepts": accepts,
-                "proxy_gain": gain,
+                "accepts": retained_accepts,
+                "proposed_accepts": proposed_accepts,
+                "proxy_gain": retained_gain,
+                "proposed_proxy_gain": proposed_gain,
+                "rollback_count": rollback_count,
+                "rollback_fraction": rollback_fraction,
+                "audit_rebuild_s": audit_rebuild_s,
+                "audit_rebuild_ratio": audit_rebuild_ratio,
+                "discarded_proxy_gain": discarded_gain,
+                "retained_to_proposed_gain": retained_to_proposed_gain,
+                "retained_gain_per_scored": retained_gain_per_scored,
                 "elapsed_s": elapsed,
-                "gain_per_s": gain_per_s,
-                "zero_gain_fraction": zero_gain / runs,
+                "gain_per_s": retained_gain_per_s,
+                "zero_gain_fraction": zero_retained_gain / runs,
+                "zero_proposed_gain_fraction": zero_proposed_gain / runs,
                 "zero_accept_fraction": zero_accept / runs,
                 "recommendation": "skip_candidate" if skip_candidate else "retain_or_measure",
             }
         )
-    return output
+    return sorted(
+        output,
+        key=lambda row: (
+            row["retained_gain_per_scored"],
+            row["gain_per_s"],
+            row["proxy_gain"],
+        ),
+        reverse=True,
+    )
 
 
 def print_table(rows: list[dict]) -> None:
     header = (
-        f"{'pass':34} {'runs':>4} {'benches':>7} {'gain':>10} {'seconds':>9} "
-        f"{'gain/s':>10} {'zero%':>7} recommendation"
+        f"{'pass':26} {'runs':>4} {'benches':>7} {'gain':>10} {'seconds':>8} "
+        f"{'g/s':>10} {'g/sc':>10} {'rollback%':>9} {'rebuild/s':>9} {'zero%':>7} recommendation"
     )
     print(header)
     print("-" * len(header))
     for row in rows:
         print(
-            f"{row['pass'][:34]:34} {row['runs']:4d} {row['benchmarks']:7d} "
-            f"{row['proxy_gain']:10.6f} {row['elapsed_s']:9.2f} {row['gain_per_s']:10.7f} "
-            f"{100.0 * row['zero_gain_fraction']:6.1f}% {row['recommendation']}"
+            f"{row['pass'][:26]:26} {row['runs']:4d} {row['benchmarks']:7d} "
+            f"{row['proxy_gain']:10.6f} {row['elapsed_s']:8.2f} {row['gain_per_s']:10.7f} "
+            f"{row['retained_gain_per_scored']:10.7f} {100.0 * row['rollback_fraction']:8.1f}% "
+            f"{row['audit_rebuild_ratio']:9.7f} {100.0 * row['zero_gain_fraction']:6.1f}% "
+            f"{row['recommendation']}"
         )
 
 
