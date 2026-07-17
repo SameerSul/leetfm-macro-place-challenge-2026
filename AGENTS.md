@@ -20,12 +20,15 @@ ranker defaults, and their proxy-only verifiers are not active code.
 
 Current verified result with normal BB/cache behavior:
 `uv run evaluate src/main.py --all` = **AVG 1.1205**, 17/17 VALID, 0
-overlaps, all final hierarchy audits passed, **547.05s**. The exact-scored seed
+overlaps, all final hierarchy audits passed, **554.54s**. The exact-scored seed
 portfolio filters candidates through an independent six-component hierarchy
 contract relative to legalized `initial.plc`, and the same contract is enforced
 against the selected seed throughout relief and final rollback. The portfolio
 includes a default-on constraint-graph legalization alternative for
 `initial.plc`, and hard-hard / hard-soft swap sets use exact batched scoring.
+Batch density-tail reductions and nearest-neighbor hierarchy-audit selection
+also use cached Numba kernels while preserving the scalar and stable-sort
+reference semantics.
 Plateaued late soft cleanup also tests a bounded compound related-soft move:
 every member stays in-region, the complete state must pass the rich hierarchy
 contract, and exact incremental scoring occurs only after the group is formed.

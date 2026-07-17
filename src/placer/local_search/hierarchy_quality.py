@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 
 from utils import constants as const
+from utils.config import HAS_NUMBA, _numba_njit
 from placer.local_search.cluster_decompress import hierarchy_quality_breakdown
 
 HIERARCHY_VECTOR_METRICS = (
@@ -67,6 +68,91 @@ def _point_segment_distance(point: np.ndarray, start: np.ndarray, end: np.ndarra
     return float(np.linalg.norm(point - (start + t * delta)))
 
 
+def _neighbor_impurity_reference(
+    hard: np.ndarray,
+    clustered: np.ndarray,
+    labels: np.ndarray,
+    own_sizes: np.ndarray,
+) -> float:
+    """Return the original stable-sort neighbor impurity calculation."""
+    if clustered.size <= 1:
+        return 0.0
+    points = hard[clustered]
+    distances = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
+    np.fill_diagonal(distances, np.inf)
+    impurity_total = 0.0
+    for row, macro in enumerate(clustered):
+        k = min(4, max(1, int(own_sizes[macro]) - 1), clustered.size - 1)
+        nearest = np.argsort(distances[row], kind="stable")[:k]
+        impurity_total += float(np.mean(labels[clustered[nearest]] != labels[macro]))
+    return impurity_total / clustered.size
+
+
+if HAS_NUMBA:
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _neighbor_impurity_jit(hard, clustered, labels, own_sizes):
+        """Compute stable nearest-four impurity without an N-by-N sort."""
+        n_clustered = clustered.size
+        if n_clustered <= 1:
+            return 0.0
+
+        best_distances = np.empty(4, dtype=np.float64)
+        best_rows = np.empty(4, dtype=np.int64)
+        impurity_total = 0.0
+        for row in range(n_clustered):
+            macro = clustered[row]
+            own_size = own_sizes[macro]
+            k = min(4, max(1, own_size - 1), n_clustered - 1)
+            for rank in range(k):
+                best_distances[rank] = np.inf
+                best_rows[rank] = n_clustered
+
+            x = hard[macro, 0]
+            y = hard[macro, 1]
+            for candidate_row in range(n_clustered):
+                if candidate_row == row:
+                    continue
+                candidate = clustered[candidate_row]
+                dx = x - hard[candidate, 0]
+                dy = y - hard[candidate, 1]
+                # Squared distance has the same ordering as the prior Euclidean norm.
+                distance_squared = dx * dx + dy * dy
+                for rank in range(k):
+                    if distance_squared < best_distances[rank] or (
+                        distance_squared == best_distances[rank] and candidate_row < best_rows[rank]
+                    ):
+                        for shift in range(k - 1, rank, -1):
+                            best_distances[shift] = best_distances[shift - 1]
+                            best_rows[shift] = best_rows[shift - 1]
+                        best_distances[rank] = distance_squared
+                        best_rows[rank] = candidate_row
+                        break
+
+            mismatch_count = 0
+            for rank in range(k):
+                if labels[clustered[best_rows[rank]]] != labels[macro]:
+                    mismatch_count += 1
+            impurity_total += mismatch_count / k
+        return impurity_total / n_clustered
+
+
+def _neighbor_impurity(
+    hard: np.ndarray,
+    clustered: np.ndarray,
+    labels: np.ndarray,
+    own_sizes: np.ndarray,
+) -> float:
+    """Return stable nearest-four cluster impurity with a cached JIT kernel."""
+    hard = np.ascontiguousarray(hard, dtype=np.float64)
+    clustered = np.ascontiguousarray(clustered, dtype=np.int64)
+    labels = np.ascontiguousarray(labels, dtype=np.int64)
+    own_sizes = np.ascontiguousarray(own_sizes, dtype=np.int64)
+    if HAS_NUMBA:
+        return float(_neighbor_impurity_jit(hard, clustered, labels, own_sizes))
+    return _neighbor_impurity_reference(hard, clustered, labels, own_sizes)
+
+
 def hierarchy_quality_vector(
     hard_xy: np.ndarray,
     soft_xy: np.ndarray,
@@ -91,6 +177,7 @@ def hierarchy_quality_vector(
     centroids: dict[int, np.ndarray] = {}
     spreads: list[float] = []
     labels = np.full(hard.shape[0], -1, dtype=np.int64)
+    own_sizes = np.zeros(hard.shape[0], dtype=np.int64)
     for cid_raw, members_raw in clusters.items():
         cid = int(cid_raw)
         members = np.asarray(members_raw, dtype=np.int64)
@@ -99,6 +186,7 @@ def hierarchy_quality_vector(
             continue
         valid[cid] = members
         labels[members] = cid
+        own_sizes[members] = members.size
         center = np.mean(hard[members], axis=0)
         centroids[cid] = center
         spreads.append(float(np.mean(np.linalg.norm(hard[members] - center, axis=1))) / diag)
@@ -107,17 +195,7 @@ def hierarchy_quality_vector(
     worst_spread = float(np.max(spreads)) if spreads else 0.0
 
     clustered = np.flatnonzero(labels >= 0)
-    impurity_terms: list[float] = []
-    if clustered.size > 1:
-        points = hard[clustered]
-        distances = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
-        np.fill_diagonal(distances, np.inf)
-        for row, macro in enumerate(clustered):
-            own_size = int(valid[int(labels[macro])].size)
-            k = min(4, max(1, own_size - 1), clustered.size - 1)
-            nearest = np.argsort(distances[row], kind="stable")[:k]
-            impurity_terms.append(float(np.mean(labels[clustered[nearest]] != labels[macro])))
-    neighbor_impurity = float(np.mean(impurity_terms)) if impurity_terms else 0.0
+    neighbor_impurity = _neighbor_impurity(hard, clustered, labels, own_sizes)
 
     edge_total = 0.0
     edge_weight = 0.0

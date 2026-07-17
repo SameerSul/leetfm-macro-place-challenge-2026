@@ -13,7 +13,7 @@ pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  547.05s
+AVG 1.1205  17/17 VALID  0 overlaps  554.54s
 ```
 
 All final hierarchy audits passed. The latest NG45 result is `AVG 0.7252`,
@@ -108,6 +108,11 @@ scalar parity checks pass to floating-point roundoff without changing committed
 scorer grids or caches. The remaining bottleneck is repeated full exact scoring,
 especially the evaluator's final large-grid report and operators that cannot
 share a fixed endpoint.
+
+The per-batch density tail reduction and hierarchy vector's nearest-four
+impurity selection now also use cached CPU Numba kernels. They preserve the
+scalar and stable-sort references exactly, remove avoidable local Python and
+N-by-N sort work, and do not replace the required final exact scorer.
 
 ### 5. Portability coverage is still narrower than challenge coverage
 

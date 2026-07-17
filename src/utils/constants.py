@@ -89,12 +89,6 @@ HIER_PROPOSAL_DENSITY_WEIGHT = 1.0
 # in-region relief by this fraction of the active proposal-field span.
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN = 0.08
 
-# Enables post-swap hard propose-all relocation automatically on CUDA backends.
-HIER_POST_RELOC_PROPOSE_ALL = "auto"
-# Caps hard propose-all candidates per hot macro after region swaps.
-HIER_POST_RELOC_PROPOSE_TOP_M = 16
-# Number of hottest hard macros considered for post-swap propose-all relocation.
-HIER_RELOC_PROPOSE_HOT_K = 32
 # Minimum exact-proxy gain required to accept hard propose-all relocation.
 HIER_RELOC_PROPOSE_MIN_GAIN = 0.0005
 
@@ -354,23 +348,11 @@ HIER_COLDSPOT_SOURCE_POINT_WEIGHT = 0.20
 # Region-bounded swap relief uses hard-hard, hard-soft, soft-soft,
 # congestion-field, density-field, and batched exact scoring paths.
 
-# Uses CUDA top-k/order kernels for large candidate-ranking arrays when available.
-HIER_GPU_RANK_SWAP_CANDIDATES = "auto"
-HIER_GPU_RANK_RELOCATION_TARGETS = "auto"
-HIER_GPU_RANK_SOFT_RELOCATION_TARGETS = "auto"
-HIER_GPU_RANK_MIN_CANDIDATES = 512
-HIER_GPU_RANK_SOFT_MIN_CANDIDATES = 1024
-HIER_GPU_SWAP_PRESCORE_SS = "auto"
-HIER_GPU_SWAP_PRESCORE_HS = "auto"
-HIER_GPU_SWAP_PRESCORE_HH = "auto"
-HIER_GPU_SWAP_PRESCORE_MIN_CANDIDATES = 512
-HIER_GPU_SWAP_PRESCORE_DISTANCE_WEIGHT = 0.02
+# Diagnostic-only CUDA hard-swap legality prefilter. It runs only with
+# HIER_GPU_EXPERIMENT=overlap_prefilter and is otherwise inactive.
+HIER_GPU_OVERLAP_PREFILTER_MIN_CANDIDATES = 256
 
 # Adds supplemental candidates after the deterministic prefix when local budget remains.
-# Rank only additive relocation tails with the lightweight torch/GPU heuristic.
-# Default-off on IBM: the Stage 5 sweep saw no hard propose-all accepts and a
-# small aggregate regression, so keep this as infrastructure for opt-in runs.
-HIER_GPU_RANK_ADDITIVE_TAILS = False
 # Extra hard propose-all relocation candidates exact-checked after the deterministic prefix.
 HIER_ADDITIVE_RELOC_EXTRA_TOP_K = 8
 # Extra swap candidates per source exact-checked after the deterministic neighbor prefix.
@@ -385,8 +367,6 @@ HIER_LEGALITY_MARGIN_EPS = 0.05
 # budget and the current state does not.
 HIER_FINAL_HIER_AUDIT_MAX_DEGRADATION = 0.05
 
-# Wall-clock budget for post-swap hard propose-all relocation.
-HIER_POST_RELOC_PROPOSE_BUDGET_S = 8.0
 # Proxy-aware coldspot tightening for hot clusters.
 # Per-move proxy slack allowed during coldspot tightening.
 HIER_COLDSPOT_BUDGET = 0.0
@@ -576,19 +556,6 @@ HIER_KEEP_OUT_WEIGHT = 0.2
 HIER_GRID_ALIGN_WEIGHT = 0.2
 # Relative weight for notch-avoidance structural penalty.
 HIER_NOTCH_WEIGHT = 0.6
-# Scorer implementation used for propose-all relocation candidates.
-RELOC_PROPOSE_SCORER = "cuda_delta"
-# Default CUDA chunk size for relocation proposal scoring.
-RELOC_PROPOSE_DEFAULT_CUDA_CHUNK_SIZE = 128
-# Safety multiplier for estimated relocation proposal memory usage.
-RELOC_PROPOSE_MEM_SAFETY = 1.0
-# Default CUDA memory fraction used for automatic proposal scoring chunk sizing.
-RELOC_PROPOSE_AUTO_MEM_FRAC = 0.75
-# Reuse the exact CUDA delta scorer for bounded/local sequential relocation
-# target batches when CUDA is available. Falls back to the serial scorer.
-HIER_LOCAL_RELOC_CUDA_DELTA = "auto"
-HIER_LOCAL_RELOC_CUDA_DELTA_MIN_TARGETS = 64
-
 # Enables aggregate profiling of exact proxy scoring calls.
 PROFILE_EXACT = False
 # Routing congestion uses numba strip application when available. Incremental
