@@ -208,6 +208,7 @@ def hierarchy_quality_vector(
     edge_stretch = edge_total / edge_weight if edge_weight > 0.0 else 0.0
 
     owned_terms: list[float] = []
+    owned_soft_indices: list[int] = []
     n_hard = hard.shape[0]
     for cid_raw, full_indices in (cluster_softs or {}).items():
         cid = int(cid_raw)
@@ -217,9 +218,12 @@ def hierarchy_quality_vector(
             soft_index = int(full_index) - n_hard
             if 0 <= soft_index < soft.shape[0]:
                 owned_terms.append(float(np.linalg.norm(soft[soft_index] - centroids[cid])) / diag)
+                owned_soft_indices.append(soft_index)
     owned_soft_distance = float(np.mean(owned_terms)) if owned_terms else 0.0
+    owned_soft_unique = int(len(np.unique(np.asarray(owned_soft_indices, dtype=np.int64))))
 
     bridge_terms: list[float] = []
+    bridge_soft_indices: list[int] = []
     for soft_index_raw, cids_raw in (bridge_softs or {}).items():
         soft_index = int(soft_index_raw)
         if not (0 <= soft_index < soft.shape[0]):
@@ -236,7 +240,15 @@ def hierarchy_quality_vector(
         else:
             continue
         bridge_terms.append(distance / diag)
+        bridge_soft_indices.append(soft_index)
     bridge_soft_distance = float(np.mean(bridge_terms)) if bridge_terms else 0.0
+    bridge_soft_unique = int(len(np.unique(np.asarray(bridge_soft_indices, dtype=np.int64))))
+    soft_count = max(int(soft.shape[0]), 1)
+    soft_union = np.union1d(
+        np.asarray(owned_soft_indices, dtype=np.int64),
+        np.asarray(bridge_soft_indices, dtype=np.int64),
+    )
+    soft_assigned = int(soft_union.size) if soft.size else 0
 
     hard_quality = float(hierarchy_quality_breakdown(hard, valid)["quality"])
     values = {
@@ -246,6 +258,17 @@ def hierarchy_quality_vector(
         "edge_stretch": float(edge_stretch),
         "owned_soft_distance": owned_soft_distance,
         "bridge_soft_distance": bridge_soft_distance,
+        "clustered_hard_fraction": float(clustered.size / max(hard.shape[0], 1)),
+        "clustered_hard_count": float(clustered.size),
+        "unclustered_hard_count": float(hard.shape[0] - clustered.size),
+        "owned_soft_count": float(owned_soft_unique),
+        "owned_soft_coverage": float(owned_soft_unique / soft_count),
+        "bridge_soft_count": float(bridge_soft_unique),
+        "bridge_soft_coverage": float(bridge_soft_unique / soft_count),
+        "covered_soft_count": float(soft_assigned),
+        "soft_coverage": float(soft_assigned / soft_count),
+        "soft_total": float(soft_count),
+        "edge_count": float(sum(1 for edge in edges or ())),
     }
     weights = {
         "cluster_compactness": float(const.HIER_VECTOR_COMPACTNESS_WEIGHT),
@@ -256,13 +279,11 @@ def hierarchy_quality_vector(
         "bridge_soft_distance": float(const.HIER_VECTOR_BRIDGE_SOFT_WEIGHT),
     }
     weight_sum = max(sum(max(value, 0.0) for value in weights.values()), 1.0e-12)
-    composite = sum(max(weights[key], 0.0) * values[key] for key in values) / weight_sum
+    composite = sum(
+        max(weights[key], 0.0) * values[key] for key in weights
+    ) / weight_sum
     return {
         "composite": float(composite),
         "hard_containment": hard_quality,
         **values,
-        "clustered_hard_fraction": float(clustered.size / max(hard.shape[0], 1)),
-        "owned_soft_count": float(len(owned_terms)),
-        "bridge_soft_count": float(len(bridge_terms)),
-        "edge_count": float(sum(1 for edge in edges or ())),
     }

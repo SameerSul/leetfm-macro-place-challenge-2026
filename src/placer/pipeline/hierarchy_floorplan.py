@@ -344,6 +344,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             n=n,
             n_soft=n_soft,
             clusters=clusters,
+            cluster_source=hierarchy.cluster_source,
             order=order,
             sizes=sizes,
             hw=hw,
@@ -979,6 +980,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         micro_acc = 0
         micro_t0 = time.monotonic()
         micro_enforce = _empty_audit_report()
+        micro_aborted = False
         for use_density in (False, True):
             micro_before = float(r_score)
             h_pos, s_pos, got, r_score = _micro_shift_polish(
@@ -1011,12 +1013,15 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 break
             micro_enforce = _enforce_audit_checkpoint("micro_shift", return_report=True)
             if micro_enforce.get("restored"):
+                micro_aborted = True
                 break
         if micro_acc:
             _log(
                 f"  [hier] micro-shift polish: {micro_acc} accepts, "
                 f"proxy {before_micro:.4f}->{r_score:.4f}"
             )
+        if micro_aborted:
+            round_aborted = True
         micro_proposed_after = float(r_score)
         _record_plateau(
             "micro_shift",
@@ -1028,49 +1033,52 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             rollback_report=micro_enforce,
             round=int(round_idx),
         )
+        round_aborted = False
         reloc_acc = 0
         reloc_stats = _empty_pass_stats()
         before_reloc = r_score
         reloc_t0 = time.monotonic()
         reloc_enforce = _empty_audit_report()
-        for use_density in (False, True):
-            reloc_before = float(r_score)
-            h_pos, got, r_score = _relocation_moves(
-                h_pos,
-                sizes[:n],
-                hw,
-                hh,
-                cw,
-                ch,
-                movable[:n],
-                n,
-                plc,
-                benchmark,
-                rscorer,
-                r_score,
-                deadline=rdeadline,
-                top_hot=128,
-                n_targets=16,
-                use_density=use_density,
-                propose_all=False,
-                propose_top_m=None,
-                region_bbox=region,
-                region_bias=bias,
-                region_escape_min=escape_min,
-            )
-            reloc_acc += got
-            _accum_pass_stats(
-                reloc_stats,
-                getattr(_relocation_moves, "last_stats", {}),
-            )
-            if not _adaptive_pass_gain(reloc_before, r_score):
-                break
-            reloc_enforce = _enforce_audit_checkpoint(
-                "region_hard_relocation",
-                return_report=True,
-            )
-            if reloc_enforce.get("restored"):
-                break
+        if not round_aborted:
+            for use_density in (False, True):
+                reloc_before = float(r_score)
+                h_pos, got, r_score = _relocation_moves(
+                    h_pos,
+                    sizes[:n],
+                    hw,
+                    hh,
+                    cw,
+                    ch,
+                    movable[:n],
+                    n,
+                    plc,
+                    benchmark,
+                    rscorer,
+                    r_score,
+                    deadline=rdeadline,
+                    top_hot=128,
+                    n_targets=16,
+                    use_density=use_density,
+                    propose_all=False,
+                    propose_top_m=None,
+                    region_bbox=region,
+                    region_bias=bias,
+                    region_escape_min=escape_min,
+                )
+                reloc_acc += got
+                _accum_pass_stats(
+                    reloc_stats,
+                    getattr(_relocation_moves, "last_stats", {}),
+                )
+                if not _adaptive_pass_gain(reloc_before, r_score):
+                    break
+                reloc_enforce = _enforce_audit_checkpoint(
+                    "region_hard_relocation",
+                    return_report=True,
+                )
+                if reloc_enforce.get("restored"):
+                    round_aborted = True
+                    break
         reloc_proposed_after = float(r_score)
         _record_plateau(
             "region_hard_relocation",
@@ -1090,42 +1098,44 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         before_soft_reloc = r_score
         soft_reloc_t0 = time.monotonic()
         soft_reloc_enforce = _empty_audit_report()
-        for use_density in (False, True):
-            soft_before = float(r_score)
-            s_pos, got, r_score = _soft_relocation_moves(
-                s_pos,
-                soft_hw,
-                soft_hh,
-                cw,
-                ch,
-                n,
-                plc,
-                benchmark,
-                rscorer,
-                r_score,
-                deadline=rdeadline,
-                top_hot=1024,
-                n_targets=6,
-                soft_movable=soft_mov,
-                use_density=use_density,
-                region_bbox=soft_region,
-                region_bias=bias,
-                region_escape_min=escape_min,
-                accept_min_gain=hier_soft_barrier_gain,
-            )
-            soft_reloc_acc += got
-            _accum_pass_stats(
-                soft_reloc_stats,
-                getattr(_soft_relocation_moves, "last_stats", {}),
-            )
-            if not _adaptive_pass_gain(soft_before, r_score):
-                break
-            soft_reloc_enforce = _enforce_audit_checkpoint(
-                "region_soft_relocation",
-                return_report=True,
-            )
-            if soft_reloc_enforce.get("restored"):
-                break
+        if not round_aborted:
+            for use_density in (False, True):
+                soft_before = float(r_score)
+                s_pos, got, r_score = _soft_relocation_moves(
+                    s_pos,
+                    soft_hw,
+                    soft_hh,
+                    cw,
+                    ch,
+                    n,
+                    plc,
+                    benchmark,
+                    rscorer,
+                    r_score,
+                    deadline=rdeadline,
+                    top_hot=1024,
+                    n_targets=6,
+                    soft_movable=soft_mov,
+                    use_density=use_density,
+                    region_bbox=soft_region,
+                    region_bias=bias,
+                    region_escape_min=escape_min,
+                    accept_min_gain=hier_soft_barrier_gain,
+                )
+                soft_reloc_acc += got
+                _accum_pass_stats(
+                    soft_reloc_stats,
+                    getattr(_soft_relocation_moves, "last_stats", {}),
+                )
+                if not _adaptive_pass_gain(soft_before, r_score):
+                    break
+                soft_reloc_enforce = _enforce_audit_checkpoint(
+                    "region_soft_relocation",
+                    return_report=True,
+                )
+                if soft_reloc_enforce.get("restored"):
+                    round_aborted = True
+                    break
         soft_reloc_proposed_after = float(r_score)
         _record_plateau(
             "region_soft_relocation",
@@ -1141,7 +1151,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             round=int(round_idx),
         )
         round_accepts = int(micro_acc + reloc_acc + soft_reloc_acc)
-        if not _adaptive_pass_gain(round_start, r_score):
+        if round_aborted or not _adaptive_pass_gain(round_start, r_score):
             _log(
                 f"  [hier] region-round adaptation: early exit after round {round_idx}, "
                 f"gain={round_start - float(r_score):.4f}, accepts={round_accepts}"
