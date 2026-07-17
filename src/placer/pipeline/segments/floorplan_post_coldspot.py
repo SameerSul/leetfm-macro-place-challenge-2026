@@ -244,9 +244,16 @@ def run_post_coldspot_finalize(
             ch,
         )
 
-    def _vector_contract(hard_xy: np.ndarray, soft_xy: np.ndarray) -> bool:
+    def _vector_contract_with_violations(
+        hard_xy: np.ndarray,
+        soft_xy: np.ndarray,
+    ) -> tuple[bool, tuple[str, ...]]:
         vector = _placement_hierarchy_vector(hard_xy, soft_xy)
-        return bool(hierarchy_vector_contract(vector, hierarchy_contract_limits)[0])
+        passed, violations = hierarchy_vector_contract(vector, hierarchy_contract_limits)
+        return bool(passed), tuple(str(v) for v in violations)
+
+    def _vector_contract(hard_xy: np.ndarray, soft_xy: np.ndarray) -> bool:
+        return bool(_vector_contract_with_violations(hard_xy, soft_xy)[0])
 
     audit_checkpoint_h = np.array(audit_h, dtype=np.float64, copy=True)
     audit_checkpoint_s = np.array(audit_s, dtype=np.float64, copy=True)
@@ -321,6 +328,16 @@ def run_post_coldspot_finalize(
         best_small_s_pos = np.array(s_pos, dtype=np.float64, copy=True)
         best_small_quality = hierarchy_quality_metric_fn(legal, clusters)
         small_audit_rollback = False
+        small_last_report: dict[str, object] = {
+            "restored": False,
+            "reason": "checkpoint_unavailable",
+            "violations": (),
+            "rebuild_elapsed_s": 0.0,
+            "quality_before": float("nan"),
+            "quality_after": float("nan"),
+            "proxy_before": float("nan"),
+            "proxy_after": float("nan"),
+        }
 
         def _remember_small_state() -> bool:
             nonlocal best_small_score, best_small_legal, best_small_s_pos
@@ -339,13 +356,44 @@ def run_post_coldspot_finalize(
                 return True
             return False
 
-        def _restore_small_if_needed() -> bool:
+        def _restore_small_if_needed() -> dict[str, object]:
             nonlocal legal, s_pos, cur_proxy, small_scorer, small_audit_rollback
+            start = time.perf_counter()
             cur_quality_local = hierarchy_quality_metric_fn(legal, clusters)
-            vector_passed = _vector_contract(legal, s_pos)
+            vector_passed, violations = _vector_contract_with_violations(legal, s_pos)
             if cur_quality_local <= audit_limit and vector_passed:
                 _remember_small_state()
-                return False
+                small_audit_rollback = False
+                return {
+                    "restored": False,
+                    "reason": "ok",
+                    "violations": (),
+                    "rebuild_elapsed_s": 0.0,
+                    "quality_before": float(cur_quality_local),
+                    "quality_after": float(cur_quality_local),
+                    "proxy_before": float(cur_proxy),
+                    "proxy_after": float(cur_proxy),
+                }
+            if (
+                not _is_hard_valid(best_small_legal)
+                or best_small_quality > audit_limit
+                or not _vector_contract(best_small_legal, best_small_s_pos)
+            ):
+                small_audit_rollback = bool(small_audit_rollback)
+                return {
+                    "restored": False,
+                    "reason": "checkpoint_unavailable",
+                    "violations": (),
+                    "rebuild_elapsed_s": 0.0,
+                    "quality_before": float(cur_quality_local),
+                    "quality_after": float("nan"),
+                    "proxy_before": float(cur_proxy),
+                    "proxy_after": float(cur_proxy),
+                }
+            reason = "hierarchy_vector"
+            if cur_quality_local > audit_limit:
+                reason = "quality"
+            proxy_before = float(cur_proxy)
             legal = best_small_legal.copy()
             s_pos = best_small_s_pos.copy()
             cur_proxy = float(best_small_score)
@@ -355,7 +403,16 @@ def run_post_coldspot_finalize(
                 np.vstack([legal, s_pos]).astype(np.float64),
             )
             small_audit_rollback = True
-            return True
+            return {
+                "restored": True,
+                "reason": reason,
+                "violations": list(violations),
+                "rebuild_elapsed_s": float(time.perf_counter() - start),
+                "quality_before": float(cur_quality_local),
+                "quality_after": float(best_small_quality),
+                "proxy_before": float(proxy_before),
+                "proxy_after": float(best_small_score),
+            }
 
         released_region, released_soft_region, released_cids = _small_design_released_regions(
             small_scorer,
@@ -405,6 +462,7 @@ def run_post_coldspot_finalize(
             round_before = float(cur_proxy)
             component_target_pool = _small_design_target_pool(small_scorer)
             hard_reloc_before = float(cur_proxy)
+            round_abort = False
             for use_density in (False, True):
                 legal, got, cur_proxy = _relocation_moves(
                     legal,
@@ -438,12 +496,16 @@ def run_post_coldspot_finalize(
                     )
                 if small_deadline is not None and time.monotonic() >= small_deadline:
                     break
-            _restore_small_if_needed()
+            small_last_report = _restore_small_if_needed()
+            if small_last_report.get("restored"):
+                round_abort = True
+                continue
             hard_reloc_gain = max(0.0, float(hard_reloc_before) - float(cur_proxy))
             if (
                 int(n_soft) > 0
                 and bool(np.any(soft_mov))
                 and (small_deadline is None or time.monotonic() < small_deadline)
+                and not round_abort
             ):
                 for use_density in (False, True):
                     s_pos, got, cur_proxy = _soft_relocation_moves(
@@ -476,10 +538,15 @@ def run_post_coldspot_finalize(
                         )
                     if small_deadline is not None and time.monotonic() >= small_deadline:
                         break
-                _restore_small_if_needed()
+                small_last_report = _restore_small_if_needed()
+                if small_last_report.get("restored"):
+                    round_abort = True
+                    continue
             if small_deadline is not None and time.monotonic() >= small_deadline:
                 break
             if released_cids and hard_reloc_gain >= min_gain:
+                if round_abort:
+                    continue
                 for use_density in (False, True):
                     hard_swap_before = float(cur_proxy)
                     legal, s_pos, got, cur_proxy, stats = _region_bounded_swap_relief(
@@ -522,11 +589,16 @@ def run_post_coldspot_finalize(
                     for key, value in stats.items():
                         if key in swap_stats:
                             swap_stats[key] += value
-                    _restore_small_if_needed()
+                    small_last_report = _restore_small_if_needed()
+                    if small_last_report.get("restored"):
+                        round_abort = True
+                        break
                     if float(hard_swap_before) - float(cur_proxy) <= min_gain:
                         break
                     if small_deadline is not None and time.monotonic() >= small_deadline:
                         break
+                if round_abort:
+                    continue
             if small_deadline is not None and time.monotonic() >= small_deadline:
                 break
             for use_density in (False, True):
@@ -571,13 +643,19 @@ def run_post_coldspot_finalize(
                 for key, value in stats.items():
                     if key in swap_stats:
                         swap_stats[key] += value
-                _restore_small_if_needed()
+                small_last_report = _restore_small_if_needed()
+                if small_last_report.get("restored"):
+                    round_abort = True
+                    break
                 if float(swap_before) - float(cur_proxy) <= min_gain:
                     break
                 if small_deadline is not None and time.monotonic() >= small_deadline:
                     break
+
             if small_deadline is not None and time.monotonic() >= small_deadline:
                 break
+            if round_abort:
+                continue
             legal, s_pos, got, cur_proxy = _micro_shift_polish(
                 legal,
                 s_pos,
@@ -604,7 +682,10 @@ def run_post_coldspot_finalize(
                 use_density=bool(high_net_lane),
             )
             small_acc += int(got)
-            _restore_small_if_needed()
+            small_last_report = _restore_small_if_needed()
+            if small_last_report.get("restored"):
+                round_abort = True
+                continue
             if float(round_before) - float(cur_proxy) <= min_gain:
                 break
         cur_quality = hierarchy_quality_metric_fn(legal, clusters)
@@ -628,9 +709,23 @@ def run_post_coldspot_finalize(
                 benchmark,
                 np.vstack([legal, s_pos]).astype(np.float64),
             )
+        small_last_proposed_after = float(cur_proxy)
+        small_last_report = _restore_small_if_needed()
+        small_audit_rollback = bool(small_last_report.get("restored", bool(small_audit_rollback)))
         if not _is_hard_valid(legal):
             legal, s_pos, cur_proxy = best_h.copy(), best_s.copy(), float(best_score)
             small_acc = 0
+            small_last_report = {
+                "restored": False,
+                "reason": "checkpoint_unavailable",
+                "violations": (),
+                "rebuild_elapsed_s": 0.0,
+                "quality_before": float("nan"),
+                "quality_after": float("nan"),
+                "proxy_before": float(cur_proxy),
+                "proxy_after": float(cur_proxy),
+            }
+            small_audit_rollback = True
         elif float(cur_proxy) < float(best_score) - 1e-9:
             best_h, best_s, best_score = legal.copy(), s_pos.copy(), float(cur_proxy)
         _update_audit_checkpoint(legal, s_pos, float(cur_proxy))
@@ -652,6 +747,13 @@ def run_post_coldspot_finalize(
             "released_clusters": [int(cid) for cid in released_cids],
             "released_cluster_count": int(len(released_cids)),
             "swap_stats": swap_stats,
+            "audit_rollback_reason": str(small_last_report.get("reason", "")),
+            "audit_rollback_violations": list(small_last_report.get("violations", ())),
+            "audit_rebuild_s": float(small_last_report.get("rebuild_elapsed_s", 0.0)),
+            "audit_quality_before": float(small_last_report.get("quality_before", float("nan"))),
+            "audit_quality_after": float(small_last_report.get("quality_after", float("nan"))),
+            "audit_proxy_before": float(small_last_report.get("proxy_before", float("nan"))),
+            "audit_proxy_after": float(small_last_report.get("proxy_after", float("nan"))),
         }
         _record_plateau(
             "small_design_released_polish",
@@ -662,6 +764,8 @@ def run_post_coldspot_finalize(
             candidates=int(small_stats["candidates"]),
             legal=int(small_stats["legal"]),
             scored=int(small_stats["scored"]),
+            proposed_after=small_last_proposed_after,
+            rollback_report=small_last_report,
             **trace_extra,
         )
     else:
