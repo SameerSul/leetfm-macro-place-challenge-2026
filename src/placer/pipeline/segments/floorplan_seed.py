@@ -126,6 +126,7 @@ def run_seed_portfolio(
     csofts,
     bridge_softs,
     hierarchy_edges,
+    cluster_source: str = "hierarchy",
     cw: float,
     ch: float,
     const: Any,
@@ -226,32 +227,7 @@ def run_seed_portfolio(
             order=None,
         )
 
-        cand_pos = np.vstack([legal_hard, raw_soft]).astype(np.float64)
-        cand_soft = raw_soft.copy()
-        cand_score = float(
-            exact_proxy_fn(torch.tensor(cand_pos, dtype=torch.float32), benchmark, plc)
-        )
-        cand_scorer = incremental_scorer_cls(plc, benchmark, cand_pos.copy())
-        soft_mov_local = movable[n : n + n_soft]
-        for use_density in (False, True):
-            cand_soft, _, cand_score = soft_relocation_fn(
-                cand_soft,
-                soft_hw,
-                soft_hh,
-                cw,
-                ch,
-                n,
-                plc,
-                benchmark,
-                cand_scorer,
-                cand_score,
-                deadline=time.monotonic() + 30,
-                top_hot=1024,
-                n_targets=6,
-                soft_movable=soft_mov_local,
-                use_density=use_density,
-            )
-        return legal_hard, cand_soft, cand_score
+        return legal_hard, raw_soft
 
     def _clip_seed(hard_xy: np.ndarray, soft_xy: np.ndarray):
         hard_xy = hard_xy.copy()
@@ -301,13 +277,59 @@ def run_seed_portfolio(
             deadline=seed_deadline,
             order=None,
         )
-        full = np.vstack([legal_hard, soft_xy]).astype(np.float64)
+        return legal_hard, soft_xy
+
+    def _score_seed(
+        name: str,
+        hard_xy,
+        soft_xy,
+        *,
+        do_soft_cleanup: bool = False,
+        cleanup_budget_s: float = 30.0,
+    ):
+        hard_xy = np.asarray(hard_xy, dtype=np.float64).copy()
+        soft_xy = np.asarray(soft_xy, dtype=np.float64).copy()
+        soft_mov_local = movable[n : n + n_soft]
+        full = np.vstack([hard_xy, soft_xy]).astype(np.float64)
         score = float(exact_proxy_fn(torch.tensor(full, dtype=torch.float32), benchmark, plc))
+        if do_soft_cleanup and n_soft:
+            cand_scorer = incremental_scorer_cls(plc, benchmark, full.copy())
+            for use_density in (False, True):
+                soft_xy, _, score = soft_relocation_fn(
+                    soft_xy,
+                    soft_hw,
+                    soft_hh,
+                    cw,
+                    ch,
+                    n,
+                    plc,
+                    benchmark,
+                    cand_scorer,
+                    score,
+                    deadline=time.monotonic() + float(cleanup_budget_s),
+                    top_hot=1024,
+                    n_targets=6,
+                    soft_movable=soft_mov_local,
+                    use_density=use_density,
+                )
         return {
             "name": name,
-            "hard": legal_hard,
+            "hard": hard_xy,
             "soft": soft_xy,
-            "score": score,
+            "score": float(score),
+        }
+
+    def _hierarchy_coverage(row_vector: Mapping[str, float]) -> dict[str, float]:
+        return {
+            "clustered_hard_count": float(row_vector.get("clustered_hard_count", 0.0)),
+            "clustered_hard_fraction": float(row_vector.get("clustered_hard_fraction", 0.0)),
+            "unclustered_hard_count": float(row_vector.get("unclustered_hard_count", 0.0)),
+            "owned_soft_count": float(row_vector.get("owned_soft_count", 0.0)),
+            "owned_soft_coverage": float(row_vector.get("owned_soft_coverage", 0.0)),
+            "bridge_soft_count": float(row_vector.get("bridge_soft_count", 0.0)),
+            "bridge_soft_coverage": float(row_vector.get("bridge_soft_coverage", 0.0)),
+            "soft_coverage": float(row_vector.get("soft_coverage", 0.0)),
+            "soft_total": float(row_vector.get("soft_total", 0.0)),
         }
 
     def _expanded_seed(base_hard, base_soft):
@@ -450,18 +472,69 @@ def run_seed_portfolio(
                     )
         return _clip_seed(hard, soft)
 
-    def _select_seed_portfolio(dp_hard, dp_soft, dp_score):
+    def _select_seed_portfolio(dp_hard, dp_soft):
         initial = benchmark.macro_positions.detach().cpu().numpy().astype(np.float64)
         init_hard = initial[:n].copy()
         init_soft = initial[n : n + n_soft].copy()
-        rows = [
-            {
-                "name": "dreamplace",
-                "hard": dp_hard,
-                "soft": dp_soft,
-                "score": float(dp_score),
-            }
-        ]
+        immutable_contract_keys = (
+            "cluster_compactness",
+            "worst_cluster_spread",
+            "neighbor_impurity",
+            "edge_stretch",
+        )
+        contract_absolute_slack = const.HIER_VECTOR_CONTRACT_ABS_SLACK
+        contract_relative_slack = float(const.HIER_VECTOR_CONTRACT_REL_SLACK)
+        seed_reference_vector = hierarchy_quality_vector(
+            init_hard,
+            init_soft,
+            clusters,
+            csofts,
+            bridge_softs,
+            hierarchy_edges,
+            cw,
+            ch,
+        )
+        reference_contract_limits = hierarchy_vector_limits(
+            seed_reference_vector,
+            contract_absolute_slack,
+            contract_relative_slack,
+        )
+        immutable_contract_limits = {
+            key: float(reference_contract_limits[key])
+            for key in immutable_contract_keys
+            if key in reference_contract_limits
+        }
+        mandatory = {"dreamplace", "constraint_graph_initial"}
+
+        def _immutable_contract_pass(hard_xy, soft_xy):
+            vector = hierarchy_quality_vector(
+                np.asarray(hard_xy, dtype=np.float64),
+                np.asarray(soft_xy, dtype=np.float64),
+                clusters,
+                csofts,
+                bridge_softs,
+                hierarchy_edges,
+                cw,
+                ch,
+            )
+            if not immutable_contract_limits:
+                return True, vector
+            for key, limit in immutable_contract_limits.items():
+                if float(vector.get(key, 0.0)) > float(limit) + 1.0e-12:
+                    return False, vector
+            return True, vector
+
+        rows: list[dict[str, object]] = []
+        try:
+            dp_passed, _ = _immutable_contract_pass(dp_hard, dp_soft)
+            if not dp_passed:
+                logger("  [hier] seed dreamplace failed immutable-contract prefilter; keeping for stability")
+            rows.append(_score_seed("dreamplace", dp_hard, dp_soft, do_soft_cleanup=True))
+        except Exception as exc:
+            logger(
+                "  [hier] seed dreamplace scoring failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
         raw_candidates = []
         raw_candidates.append(("initial", init_hard, init_soft))
         for alpha in tuple(float(a) for a in const.HIER_SEED_BLEND_ALPHAS):
@@ -474,19 +547,33 @@ def run_seed_portfolio(
             raw_candidates.append(("route_channel", *_route_channel_seed(dp_hard, dp_soft)))
         for name, cand_h, cand_s in raw_candidates:
             try:
-                rows.append(_legalize_seed(name, cand_h, cand_s, budget_s=45.0))
+                legal_hard, legal_soft = _legalize_seed(name, cand_h, cand_s, budget_s=45.0)
             except Exception as exc:
                 logger(f"  [hier] seed {name} failed prescore: {type(exc).__name__}: {exc}")
+                continue
+            passed, _ = _immutable_contract_pass(legal_hard, legal_soft)
+            if not passed and name not in mandatory:
+                logger(f"  [hier] seed {name} failed immutable contract prefilter")
+                continue
+            try:
+                rows.append(_score_seed(name, legal_hard, legal_soft))
+            except Exception as exc:
+                logger(f"  [hier] seed {name} failed scoring: {type(exc).__name__}: {exc}")
         try:
-            rows.append(
-                _legalize_seed(
-                    "constraint_graph_initial",
-                    init_hard,
-                    init_soft,
-                    budget_s=45.0,
-                    constraint_graph=True,
-                )
+            cg_hard, cg_soft = _legalize_seed(
+                "constraint_graph_initial",
+                init_hard,
+                init_soft,
+                budget_s=45.0,
+                constraint_graph=True,
             )
+            cg_passed, _ = _immutable_contract_pass(cg_hard, cg_soft)
+            if not cg_passed:
+                logger(
+                    "  [hier] seed constraint_graph_initial failed immutable contract prefilter "
+                    "(kept due mandatory candidate path)"
+                )
+            rows.append(_score_seed("constraint_graph_initial", cg_hard, cg_soft))
         except Exception as exc:
             logger(
                 "  [hier] seed constraint_graph_initial failed prescore: "
@@ -505,6 +592,14 @@ def run_seed_portfolio(
             )
             row["hierarchy_vector"] = vector
             row["hierarchy_composite"] = float(vector["composite"])
+            row["hierarchy_coverage"] = _hierarchy_coverage(vector)
+            row["hierarchy_provenance"] = {
+                "source": str(cluster_source),
+                "immutable_contract_limits": dict(
+                    (str(k), float(v))
+                    for k, v in immutable_contract_limits.items()
+                ),
+            }
         hierarchy_first = os.environ.get(
             "HIER_SEED_HIERARCHY_SELECT",
             "1" if bool(const.HIER_SEED_HIERARCHY_SELECT) else "0",
@@ -529,6 +624,9 @@ def run_seed_portfolio(
         summary = ", ".join(
             f"{r['name']}={float(r['score']):.4f}/hq={float(r['hierarchy_composite']):.5f}"
             f"/contract={int(bool(r.get('hierarchy_contract_eligible', True)))}"
+            f"/cov_h={float((r.get('hierarchy_coverage') or {}).get('clustered_hard_fraction', 0.0)):.3f}"
+            f"/cov_s={float((r.get('hierarchy_coverage') or {}).get('soft_coverage', 0.0)):.3f}"
+            f"/src={str(r.get('hierarchy_provenance', {}).get('source', cluster_source))}"
             for r in rows
         )
         reference_name = str(selected.get("hierarchy_contract_reference", "initial"))
@@ -538,9 +636,9 @@ def run_seed_portfolio(
         )
         return selected["hard"], selected["soft"], float(selected["score"]), rows
 
-    hard, soft, s_score = _prepare_dreamplace_candidate(
+    hard, soft = _prepare_dreamplace_candidate(
         group_weight=group_weight,
         random_seed=random_seed,
         scratch_root=scratch_root,
     )
-    return _select_seed_portfolio(hard, soft, s_score)
+    return _select_seed_portfolio(hard, soft)

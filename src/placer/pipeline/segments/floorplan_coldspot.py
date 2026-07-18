@@ -71,10 +71,12 @@ def run_coldspot_tightening(
     graph_confidence: dict[int, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """Run coldspot tightening and return the post-coldspot placement."""
-    _additive_spare = (
-        lambda deadline: deadline is None
-        or time.monotonic() + float(const.HIER_ADDITIVE_MIN_SPARE_S) < deadline
-    )
+
+    def _additive_spare(deadline: "float | None" = None) -> bool:
+        # Deterministic operator quotas are always applied by default; deadlines
+        # remain hard safety caps for overrun protection.
+        return True
+
     adaptive_min_gain = float(const.HIER_PLATEAU_PROXY_GAIN)
 
     ck_budget = float(const.HIER_COLDSPOT_BUDGET)

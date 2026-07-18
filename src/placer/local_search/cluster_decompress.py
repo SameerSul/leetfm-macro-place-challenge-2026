@@ -306,21 +306,15 @@ def _decompression_feasibility(
     sizes: np.ndarray,
     hw: np.ndarray,
     hh: np.ndarray,
-    movable_h: np.ndarray,
     *,
     target_density: float,
     min_free_ratio: float,
     max_blockage: float,
-) -> tuple[bool, dict[str, float]]:
+) -> bool:
     """Estimate whether a decompression bbox has enough local unblocked area."""
     members = np.asarray(members, dtype=np.int64)
     if members.size == 0:
-        return True, {
-            "feasible_free_ratio": 1.0,
-            "feasible_blockage_ratio": 0.0,
-            "feasible_required_area": 0.0,
-            "feasible_available_area": 0.0,
-        }
+        return True
     bbox = (
         float(np.min(cand_h[members, 0] - hw[members])),
         float(np.min(cand_h[members, 1] - hh[members])),
@@ -348,13 +342,7 @@ def _decompression_feasibility(
     available = max(0.0, bbox_area - blocked)
     free_ratio = float(available / max(required_area, 1e-9))
     blockage_ratio = float(blocked / bbox_area)
-    feasible = bool(free_ratio >= float(min_free_ratio) and blockage_ratio <= float(max_blockage))
-    return feasible, {
-        "feasible_free_ratio": float(free_ratio),
-        "feasible_blockage_ratio": float(blockage_ratio),
-        "feasible_required_area": float(required_area),
-        "feasible_available_area": float(available),
-    }
+    return bool(free_ratio >= float(min_free_ratio) and blockage_ratio <= float(max_blockage))
 
 
 def _cluster_decompression_relief(
@@ -561,7 +549,6 @@ def _cluster_decompression_relief(
                 reason = "exact_proxy_failed"
                 accepted = False
                 old_score = float(best_score)
-                old_quality = float(cur_quality)
                 vec = cur_h[mem] - center
 
                 def _build_candidate(
@@ -622,20 +609,13 @@ def _cluster_decompression_relief(
                         )
                     return trial_h, trial_s, touched, trial_scale
 
-                def _candidate_feasibility(trial_h: np.ndarray) -> tuple[bool, dict[str, float]]:
-                    default_stats = {
-                        "feasible_free_ratio": 1.0,
-                        "feasible_blockage_ratio": 0.0,
-                        "feasible_required_area": 0.0,
-                        "feasible_available_area": 0.0,
-                    }
+                def _candidate_feasibility(trial_h: np.ndarray) -> bool:
                     return _decompression_feasibility(
                         trial_h,
                         mem,
                         sizes,
                         hw,
                         hh,
-                        movable_h,
                         target_density=float(getattr(const, "HIER_REGION_DENSITY", 0.65)),
                         min_free_ratio=feasibility_min_free,
                         max_blockage=feasibility_max_blockage,
@@ -837,7 +817,7 @@ def _cluster_decompression_relief(
                     return trial_h, trial_s, None, attempts
 
                 cand_h, cand_s, soft_touched, scale = _build_candidate(float(factor), 1.0)
-                feasible, feasible_stats = _candidate_feasibility(cand_h)
+                feasible = _candidate_feasibility(cand_h)
                 cand_h, cand_s, changed_h, changed_s, reason, scale = _finalize_candidate(
                     cand_h, cand_s, soft_touched, scale, feasible
                 )
@@ -869,10 +849,6 @@ def _cluster_decompression_relief(
                     affected_clusters=[int(cid)],
                     samples=max(2, int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9))),
                 )
-                graph_rescue_attempted = False
-                graph_rescue_used = False
-                graph_rescue_attempts = 0
-                graph_rescue_trigger = str(reason or "")
                 trigger_delta = float(graph_delta_stats.get("graph_candidate_delta", 0.0))
                 can_rescue = (
                     graph_rescue_enabled
@@ -881,7 +857,6 @@ def _cluster_decompression_relief(
                     and reason in {"feasibility_blocked", "illegal_overlap"}
                 )
                 if can_rescue:
-                    graph_rescue_attempted = True
                     rescue_specs: list[tuple[float, float]] = []
                     for shrink in graph_rescue_shrinks:
                         if len(rescue_specs) >= graph_rescue_max_variants:
@@ -897,11 +872,10 @@ def _cluster_decompression_relief(
                     for rescue_factor, rescue_shift_mult in rescue_specs:
                         if deadline is not None and time.monotonic() > deadline:
                             break
-                        graph_rescue_attempts += 1
                         trial_h, trial_s, trial_softs, trial_scale = _build_candidate(
                             rescue_factor, rescue_shift_mult
                         )
-                        trial_feasible, trial_feasible_stats = _candidate_feasibility(trial_h)
+                        trial_feasible = _candidate_feasibility(trial_h)
                         (
                             trial_h,
                             trial_s,
@@ -926,7 +900,6 @@ def _cluster_decompression_relief(
                         changed_s = trial_changed_s
                         reason = None
                         feasibility_rejected = False
-                        feasible_stats = trial_feasible_stats
                         scale = trial_scale
                         target_field = (
                             float(_cell_values(cand_h[mem], field, cw, ch).mean())
@@ -950,13 +923,7 @@ def _cluster_decompression_relief(
                                 int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9)),
                             ),
                         )
-                        graph_rescue_used = True
                         break
-                graph_survivor_attempted = False
-                graph_survivor_used = False
-                graph_survivor_trials = 0
-                graph_survivor_pre_score = None
-                prefiltered = False
                 q = None if feasibility_rejected else hierarchy_quality_metric(cand_h, clusters)
                 if reason is None and q > cur_quality + quality_budget:
                     reason = "hierarchy_quality_failed"
@@ -967,7 +934,6 @@ def _cluster_decompression_relief(
                     and local_relief <= prefilter_min_relief
                 ):
                     reason = "prefilter_no_local_relief"
-                    prefiltered = True
                 if reason is None:
                     score = float(_exact_proxy(_full_tensor(cand_h, cand_s), benchmark, plc))
                     if score < old_score - min_proxy_gain:
@@ -990,19 +956,16 @@ def _cluster_decompression_relief(
                             and deadline is not None
                             and time.monotonic() < deadline
                         ):
-                            graph_survivor_attempted = True
-                            graph_survivor_pre_score = float(score)
                             (
                                 survivor_h,
                                 survivor_s,
                                 survivor_score,
-                                survivor_trials,
+                                _,
                             ) = _try_graph_survivor(
                                 cand_h,
                                 cand_s,
                                 float(score),
                             )
-                            graph_survivor_trials = int(survivor_trials)
                             if survivor_score is not None:
                                 cand_h = survivor_h
                                 cand_s = survivor_s
@@ -1044,7 +1007,6 @@ def _cluster_decompression_relief(
                                     accepted_round = True
                                     accepted = True
                                     reason = "accepted"
-                                    graph_survivor_used = True
                                 else:
                                     reason = "hierarchy_quality_failed"
                             else:

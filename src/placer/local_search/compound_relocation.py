@@ -21,11 +21,24 @@ def _related_soft_groups(
     soft_movable: np.ndarray,
     n: int,
     group_size: int,
+    soft_bundles: Sequence[object] | None = None,
 ) -> list[dict[str, object]]:
     """Build one compact hot soft group per owner or bridge signature."""
     raw_groups: list[tuple[str, object, np.ndarray]] = []
+    explicit_members: set[int] = set()
+    for bundle in soft_bundles or ():
+        members = np.asarray(getattr(bundle, "members", ()), dtype=np.int64)
+        if members.size < 2:
+            continue
+        source = str(getattr(bundle, "source", "bundle"))
+        key = str(getattr(bundle, "key", ""))
+        raw_groups.append((source, key, members))
+        explicit_members.update(int(member) for member in members)
+
     for cid, members in sorted(cluster_softs.items()):
         indices = np.asarray(members, dtype=np.int64) - int(n)
+        if explicit_members:
+            indices = indices[~np.isin(indices, np.fromiter(explicit_members, dtype=np.int64))]
         raw_groups.append(("owned", int(cid), indices))
 
     bridge_by_signature: dict[tuple[int, ...], list[int]] = {}
@@ -34,7 +47,10 @@ def _related_soft_groups(
         if signature:
             bridge_by_signature.setdefault(signature, []).append(int(soft_k))
     for signature, members in sorted(bridge_by_signature.items()):
-        raw_groups.append(("bridge", signature, np.asarray(members, dtype=np.int64)))
+        indices = np.asarray(members, dtype=np.int64)
+        if explicit_members:
+            indices = indices[~np.isin(indices, np.fromiter(explicit_members, dtype=np.int64))]
+        raw_groups.append(("bridge", signature, indices))
 
     groups = []
     max_group = max(2, int(group_size))
@@ -75,6 +91,7 @@ def _compound_soft_relocation(
     *,
     cluster_softs: Mapping[int, np.ndarray],
     bridge_softs: Mapping[int, np.ndarray] | None = None,
+    soft_bundles: Sequence[object] | None = None,
     soft_movable: np.ndarray | None = None,
     region_bbox: np.ndarray | None = None,
     candidate_allowed: Callable[[np.ndarray], bool] | None = None,
@@ -130,6 +147,7 @@ def _compound_soft_relocation(
         movable,
         n,
         group_size,
+        soft_bundles=soft_bundles,
     )[: max(1, int(top_groups))]
     stats["groups"] = int(len(groups))
     if not groups:
