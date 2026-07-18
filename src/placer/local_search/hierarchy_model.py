@@ -311,7 +311,8 @@ def _cluster_graph(
         base_conf = float(inside / total)
         cut_ratio = float(outside / total)
         conductance = float(outside / total)
-        base_term = max(0.0, min(1.0, base_conf))
+        base_term = base_conf
+        base_term = max(0.0, min(1.0, base_term))
 
         size = float(cluster_sizes.get(int(cid), 0))
         size_ratio = float(size / n)

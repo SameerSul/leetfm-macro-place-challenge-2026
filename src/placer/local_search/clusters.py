@@ -262,10 +262,14 @@ def derive_oversized_hard_clusters(
             max_fanout=max_fanout,
             bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
         )
-        comp_bridge_soft_counts: dict[int, int] = {}
+        comp_bridge_soft_members: dict[int, set[int]] = {}
         for soft_idx, comp_ids in bridge_flat.items():
             for comp_id in np.asarray(comp_ids, dtype=np.int64).reshape(-1):
-                comp_bridge_soft_counts[int(comp_id)] = comp_bridge_soft_counts.get(int(comp_id), 0) + 1
+                comp_bridge_soft_members.setdefault(int(comp_id), set()).add(int(soft_idx))
+        comp_bridge_soft_counts = {
+            int(comp_id): len(members)
+            for comp_id, members in comp_bridge_soft_members.items()
+        }
     else:
         comp_bridge_soft_counts = {}
 
