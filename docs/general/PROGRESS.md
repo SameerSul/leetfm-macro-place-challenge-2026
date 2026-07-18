@@ -19,6 +19,17 @@ Target: beat RePlAce avg of 1.4578.
 > and all hierarchy audits passing in **492.98s**. `uv run pytest test/` passed
 > **52 tests**; source bytecode compilation, Ruff unused-import/variable checks,
 > Vulture (high-confidence), and `git diff --check` also passed.
+
+> **[REJECTED] (2026-07-17 - SYS_DETRIMENT checkpoint A/B):** A rollback-aware
+> local-search candidate kept vector-valid intermediate states while deferring
+> scalar hard-quality rollback to finalization, and moved the swap gate to the
+> completed sub-round boundary. The full sweep remained **17/17 VALID** with
+> zero overlaps, but produced **AVG 1.1564** in **514.27s**, versus the accepted
+> `AVG 1.1205 / 554.54s`. A broader vector-deferred variant reached
+> `AVG 1.1609 / 493.93s`; both variants are rejected for production because
+> the proxy regression exceeds the runtime saving. The retained telemetry
+> fields and analyzer correction are still useful independently of this search
+> schedule.
 >
 > **Prior cleanup context:**
 > The controlled full-suite sweep rejected and removed the CUDA exact-score

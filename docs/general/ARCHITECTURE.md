@@ -147,6 +147,9 @@ The current batch-density/nearest-four-audit JIT validation again preserved
 every proxy at `AVG 1.1205` in `554.54s`. That full-suite wall time is a
 loaded-host observation, not a claimed end-to-end speedup; isolated kernels
 are measured in [PROGRESS.md](PROGRESS.md).
+The 2026-07-17 SYS_DETRIMENT checkpoint experiment is not part of this
+reference: its vector-safe full sweep reached `AVG 1.1564 / 514.27s` and was
+rejected for proxy regression despite the lower runtime.
 The prior best same-path sweep was
 `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
@@ -280,6 +283,8 @@ Only explicit instance-path membership is high confidence and replaces the
 weaker owner/bridge group during compound relocation. Flat-netlist connectivity
 plus hard affinity is limited to medium confidence: it is useful evidence, but
 not proof that the soft macros are one IP.
+Oversized split eligibility counts unique bridge softs per flat hard component;
+evidence from another component cannot authorize a split.
 
 ### 2. Grouped DREAMPlace
 
@@ -325,6 +330,13 @@ final rollback. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
 secondary choice inside the best hierarchy-quality band. That policy remains
 default-off: on the 2026-07-15 ibm10 experiment it improved seed composite
 `0.29168 -> 0.16328` but regressed final proxy `1.1778 -> 1.5281`.
+If no candidate satisfies the component contract, selection fails closed unless
+the reference candidate itself passes; an invalid fallback is never promoted
+to become the hierarchy baseline.
+Final reports classify evidence coverage as `high` (hard >= 0.75 and soft >=
+0.25), `partial` (hard >= 0.25 and soft >= 0.10), or `low`; this is diagnostic
+provenance and does not change proxy or hierarchy acceptance gates. Path-tag
+clusters are reported as `explicit`, while flat-net connectivity is `inferred`.
 
 Neighbor impurity needs only the nearest four clustered hard macros. A cached
 Numba kernel therefore keeps a four-entry insertion-ordered selection per

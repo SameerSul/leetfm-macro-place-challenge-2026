@@ -177,6 +177,13 @@ final rollback audit. The
 `HIER_SEED_HIERARCHY_SELECT=1` experiment instead uses proxy only within the
 best hierarchy-quality band; it is default-off after the ibm10 hierarchy win
 caused a large proxy regression.
+Seed selection fails closed if its reference candidate does not satisfy the
+component contract; the selector never establishes an invalid fallback seed as
+the hierarchy baseline.
+Final reporting labels evidence as `high`, `partial`, or `low` using hard and
+soft coverage, and marks provenance as `explicit` for path-tag clusters or
+`inferred` for flat-net connectivity. These labels describe audit scope only;
+they do not relax the existing hierarchy contract.
 
 The compound soft pass is a bounded plateau escape between ordinary post-swap
 hard cleanup and later soft cleanup. It forms related owned-soft or
@@ -193,6 +200,10 @@ soft macros keep the ordinary independent search behavior.
 Every member stays inside its own hierarchy region. A candidate reaches exact
 incremental scoring only after the complete group state passes the rich-vector
 contract, and only the best complete state can commit.
+
+Oversized hard-component splitting uses unique bridge-soft evidence local to
+each flat component; bridge evidence belonging to another component cannot
+authorize its split.
 
 The ordinary post-swap soft relocation pass is no longer executed. Two clean
 attributable full suites at the current hierarchy contract produced zero gain
