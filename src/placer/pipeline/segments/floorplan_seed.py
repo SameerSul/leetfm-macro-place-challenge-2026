@@ -15,6 +15,7 @@ from placer.local_search.hierarchy_quality import (
     hierarchy_vector_contract,
     hierarchy_vector_limits,
 )
+from placer.local_search.plateau_telemetry import log_plateau_event
 from utils.config import HAS_NUMBA, _numba_njit
 
 if HAS_NUMBA:
@@ -96,6 +97,15 @@ def select_seed_candidate(
             if passed:
                 eligible.append(row)
         if not eligible:
+            reference_passed, reference_violations = hierarchy_vector_contract(
+                reference_vector,
+                limits,
+            )
+            if not reference_passed:
+                raise ValueError(
+                    "no seed candidate satisfies the component hierarchy contract; "
+                    f"reference violations: {reference_violations}"
+                )
             eligible = [reference]
     if not hierarchy_first:
         return min(eligible, key=lambda row: (float(row["score"]), str(row["name"])))
@@ -146,6 +156,16 @@ def run_seed_portfolio(
     perturbations that preserve hierarchy intent while improving overlap
     survivability before downstream region cleanup.
     """
+    benchmark_name = str(benchmark.name)
+
+    def _log_stage_timing(stage: str, elapsed_s: float, **extra) -> None:
+        payload = {
+            "benchmark": benchmark_name,
+            "stage": str(stage),
+            "elapsed_s": float(elapsed_s),
+        }
+        payload.update(extra)
+        log_plateau_event("hier_stage_timing", **payload)
 
     def _first_legalize(
         hard_xy: np.ndarray,
@@ -197,6 +217,7 @@ def run_seed_portfolio(
         random_seed: int,
         scratch_root: str,
     ):
+        dreamplace_t0 = time.perf_counter()
         raw_hard, raw_soft = run_dreamplace(
             str(benchmark_dir),
             plc=plc,
@@ -209,6 +230,12 @@ def run_seed_portfolio(
             group_weight=group_weight,
             return_full=True,
         )
+        _log_stage_timing(
+            "seed_dreamplace_cache_lookup",
+            float(time.perf_counter() - dreamplace_t0),
+            candidate="dreamplace",
+        )
+        seed_creation_t0 = time.perf_counter()
         legal_hard = _first_legalize(
             raw_hard.copy(),
             time.monotonic() + 120,
@@ -225,6 +252,11 @@ def run_seed_portfolio(
             n,
             deadline=time.monotonic() + 120,
             order=None,
+        )
+        _log_stage_timing(
+            "seed_creation",
+            float(time.perf_counter() - seed_creation_t0),
+            candidate="dreamplace",
         )
 
         return legal_hard, raw_soft
@@ -257,6 +289,7 @@ def run_seed_portfolio(
         budget_s: float = 60.0,
         constraint_graph: bool = False,
     ):
+        legalize_t0 = time.perf_counter()
         hard_xy, soft_xy = _clip_seed(hard_xy, soft_xy)
         seed_deadline = time.monotonic() + float(budget_s)
         legal_hard = _first_legalize(
@@ -277,6 +310,13 @@ def run_seed_portfolio(
             deadline=seed_deadline,
             order=None,
         )
+        _log_stage_timing(
+            "seed_creation",
+            float(time.perf_counter() - legalize_t0),
+            candidate=str(name),
+            constraint_graph=bool(constraint_graph),
+            budget_s=float(budget_s),
+        )
         return legal_hard, soft_xy
 
     def _score_seed(
@@ -287,6 +327,7 @@ def run_seed_portfolio(
         do_soft_cleanup: bool = False,
         cleanup_budget_s: float = 30.0,
     ):
+        prescore_t0 = time.perf_counter()
         hard_xy = np.asarray(hard_xy, dtype=np.float64).copy()
         soft_xy = np.asarray(soft_xy, dtype=np.float64).copy()
         soft_mov_local = movable[n : n + n_soft]
@@ -312,6 +353,13 @@ def run_seed_portfolio(
                     soft_movable=soft_mov_local,
                     use_density=use_density,
                 )
+        _log_stage_timing(
+            "seed_prescore",
+            float(time.perf_counter() - prescore_t0),
+            candidate=str(name),
+            do_soft_cleanup=bool(do_soft_cleanup),
+            score=float(score),
+        )
         return {
             "name": name,
             "hard": hard_xy,

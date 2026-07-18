@@ -14,6 +14,7 @@ from placer.local_search.fields import (
 )
 from placer.local_search.hierarchy_quality import (
     hierarchy_quality_vector,
+    hierarchy_coverage_scope,
     hierarchy_vector_contract,
     hierarchy_vector_limits,
 )
@@ -69,6 +70,7 @@ def run_post_coldspot_finalize(
     record_plateau_fn: Callable[..., None],
     hard_valid_fn: Callable[[np.ndarray], bool],
     deadline_fn: Callable[[float, float | None], float | None],
+    consume_final_audit_exact: Callable[[int], None] | None = None,
 ) -> torch.Tensor:
     """Run survivor search and emit the final hierarchy floorplan output."""
 
@@ -76,6 +78,15 @@ def run_post_coldspot_finalize(
     _record_plateau = record_plateau_fn
     _is_hard_valid = hard_valid_fn
     _deadline = deadline_fn
+
+    def _log_stage_timing(stage: str, elapsed_s: float, **extra) -> None:
+        payload = {
+            "benchmark": str(benchmark.name),
+            "stage": str(stage),
+            "elapsed_s": float(elapsed_s),
+        }
+        payload.update(extra)
+        log_plateau_event("hier_stage_timing", **payload)
 
     def _hard_legality_margin(hard_xy: np.ndarray, eps: float) -> dict[str, float]:
         if hard_xy.shape[0] == 0:
@@ -467,6 +478,7 @@ def run_post_coldspot_finalize(
             soft_targets = int(const.HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_SOFT_TARGETS)
             small_swap_soft_k = int(const.HIER_SMALL_DESIGN_NO_RELEASE_LOW_NET_SWAP_SOFT_K)
         min_gain = float(const.HIER_SMALL_DESIGN_MIN_GAIN)
+        small_gain_threshold = max(float(min_gain), float(const.HIER_PLATEAU_PROXY_GAIN))
         escape_min = float(const.HIER_SMALL_DESIGN_RELEASE_ESCAPE_MIN)
         rounds = max(1, int(const.HIER_SMALL_DESIGN_ROUNDS))
         abort_small_design = False
@@ -474,6 +486,10 @@ def run_post_coldspot_finalize(
             round_before = float(cur_proxy)
             component_target_pool = _small_design_target_pool(small_scorer)
             hard_reloc_before = float(cur_proxy)
+            hard_reloc_won = False
+            soft_reloc_won = False
+            hard_swap_won = False
+            swap_won = False
             round_abort = False
             for use_density in (False, True):
                 legal, got, cur_proxy = _relocation_moves(
@@ -506,6 +522,8 @@ def run_post_coldspot_finalize(
                     small_stats[key] += int(
                         getattr(_relocation_moves, "last_stats", {}).get(key, 0)
                     )
+                if int(got) > 0 and float(hard_reloc_before) - float(cur_proxy) > small_gain_threshold:
+                    hard_reloc_won = True
                 if small_deadline is not None and time.monotonic() >= small_deadline:
                     break
             small_last_report = _restore_small_if_needed()
@@ -523,6 +541,7 @@ def run_post_coldspot_finalize(
                 and not round_abort
             ):
                 for use_density in (False, True):
+                    soft_reloc_before = float(cur_proxy)
                     s_pos, got, cur_proxy = _soft_relocation_moves(
                         s_pos,
                         soft_hw,
@@ -551,6 +570,8 @@ def run_post_coldspot_finalize(
                         small_stats[key] += int(
                             getattr(_soft_relocation_moves, "last_stats", {}).get(key, 0)
                         )
+                    if int(got) > 0 and float(soft_reloc_before) - float(cur_proxy) > small_gain_threshold:
+                        soft_reloc_won = True
                     if small_deadline is not None and time.monotonic() >= small_deadline:
                         break
                 small_last_report = _restore_small_if_needed()
@@ -562,7 +583,7 @@ def run_post_coldspot_finalize(
                 break
             if small_deadline is not None and time.monotonic() >= small_deadline:
                 break
-            if released_cids and hard_reloc_gain >= min_gain:
+            if released_cids and hard_reloc_won and hard_reloc_gain >= min_gain:
                 if round_abort:
                     break
                 for use_density in (False, True):
@@ -607,6 +628,8 @@ def run_post_coldspot_finalize(
                     for key, value in stats.items():
                         if key in swap_stats:
                             swap_stats[key] += value
+                    if int(got) > 0 and float(hard_swap_before) - float(cur_proxy) > small_gain_threshold:
+                        hard_swap_won = True
                     small_last_report = _restore_small_if_needed()
                     if small_last_report.get("restored"):
                         round_abort = True
@@ -622,9 +645,69 @@ def run_post_coldspot_finalize(
                 break
             if abort_small_design:
                 break
-            for use_density in (False, True):
-                swap_before = float(cur_proxy)
-                legal, s_pos, got, cur_proxy, stats = _region_bounded_swap_relief(
+            if (hard_reloc_won or soft_reloc_won or hard_swap_won) and not round_abort:
+                for use_density in (False, True):
+                    swap_before = float(cur_proxy)
+                    legal, s_pos, got, cur_proxy, stats = _region_bounded_swap_relief(
+                        legal,
+                        s_pos,
+                        sizes[:n],
+                        hw,
+                        hh,
+                        soft_hw,
+                        soft_hh,
+                        float(cw),
+                        float(ch),
+                        movable[:n],
+                        soft_mov,
+                        benchmark,
+                        small_scorer,
+                        float(cur_proxy),
+                        released_region,
+                        released_soft_region,
+                        deadline=small_deadline,
+                        rounds=1,
+                        hard_k=max(1, int(const.HIER_SMALL_DESIGN_SWAP_HARD_K)),
+                        soft_k=max(1, int(small_swap_soft_k)),
+                        region_bias=float(const.REGION_BIAS),
+                        escape_min=escape_min,
+                        min_gain=float(const.HIER_SMALL_DESIGN_SWAP_MIN_GAIN),
+                        soft_barrier_gain=0.0,
+                        min_field_relief=0.0,
+                        enable_hh=False,
+                        enable_hs=True,
+                        enable_ss=True,
+                        use_density=use_density,
+                        hierarchy_quality_fn=lambda cand_h: hierarchy_quality_metric_fn(
+                            cand_h,
+                            clusters,
+                        ),
+                        hierarchy_quality_limit=audit_limit,
+                    )
+                    small_acc += int(got)
+                    for key, value in stats.items():
+                        if key in swap_stats:
+                            swap_stats[key] += value
+                    if int(got) > 0 and float(swap_before) - float(cur_proxy) > small_gain_threshold:
+                        swap_won = True
+                    small_last_report = _restore_small_if_needed()
+                    if small_last_report.get("restored"):
+                        round_abort = True
+                        abort_small_design = True
+                        break
+                    if float(swap_before) - float(cur_proxy) <= min_gain:
+                        break
+                    if small_deadline is not None and time.monotonic() >= small_deadline:
+                        break
+
+            if small_deadline is not None and time.monotonic() >= small_deadline:
+                break
+            if abort_small_design:
+                break
+            if round_abort:
+                break
+            if (hard_reloc_won or soft_reloc_won or hard_swap_won or swap_won) and not round_abort:
+                legal, s_pos, got, cur_proxy = _micro_shift_polish(
                     legal,
                     s_pos,
                     sizes[:n],
@@ -636,83 +719,27 @@ def run_post_coldspot_finalize(
                     float(ch),
                     movable[:n],
                     soft_mov,
+                    int(n),
+                    plc,
                     benchmark,
                     small_scorer,
                     float(cur_proxy),
-                    released_region,
-                    released_soft_region,
+                    hard_region=released_region,
+                    soft_region=released_soft_region,
                     deadline=small_deadline,
-                    rounds=1,
-                    hard_k=max(1, int(const.HIER_SMALL_DESIGN_SWAP_HARD_K)),
-                    soft_k=max(1, int(small_swap_soft_k)),
-                    region_bias=float(const.REGION_BIAS),
-                    escape_min=escape_min,
-                    min_gain=float(const.HIER_SMALL_DESIGN_SWAP_MIN_GAIN),
-                    soft_barrier_gain=0.0,
-                    min_field_relief=0.0,
-                    enable_hh=False,
-                    enable_hs=True,
-                    enable_ss=True,
-                    use_density=use_density,
-                    hierarchy_quality_fn=lambda cand_h: hierarchy_quality_metric_fn(
-                        cand_h,
-                        clusters,
-                    ),
-                    hierarchy_quality_limit=audit_limit,
+                    radius_cells=max(1, int(const.HIER_MICRO_SHIFT_RADIUS)),
+                    top_hot=max(1, int(const.HIER_MICRO_SHIFT_TOP)),
+                    min_gain=min_gain,
+                    use_density=bool(high_net_lane),
                 )
                 small_acc += int(got)
-                for key, value in stats.items():
-                    if key in swap_stats:
-                        swap_stats[key] += value
                 small_last_report = _restore_small_if_needed()
                 if small_last_report.get("restored"):
                     round_abort = True
                     abort_small_design = True
                     break
-                if float(swap_before) - float(cur_proxy) <= min_gain:
+                if float(round_before) - float(cur_proxy) <= min_gain:
                     break
-                if small_deadline is not None and time.monotonic() >= small_deadline:
-                    break
-
-            if small_deadline is not None and time.monotonic() >= small_deadline:
-                break
-            if abort_small_design:
-                break
-            if round_abort:
-                break
-            legal, s_pos, got, cur_proxy = _micro_shift_polish(
-                legal,
-                s_pos,
-                sizes[:n],
-                hw,
-                hh,
-                soft_hw,
-                soft_hh,
-                float(cw),
-                float(ch),
-                movable[:n],
-                soft_mov,
-                int(n),
-                plc,
-                benchmark,
-                small_scorer,
-                float(cur_proxy),
-                hard_region=released_region,
-                soft_region=released_soft_region,
-                deadline=small_deadline,
-                radius_cells=max(1, int(const.HIER_MICRO_SHIFT_RADIUS)),
-                top_hot=max(1, int(const.HIER_MICRO_SHIFT_TOP)),
-                min_gain=min_gain,
-                use_density=bool(high_net_lane),
-            )
-            small_acc += int(got)
-            small_last_report = _restore_small_if_needed()
-            if small_last_report.get("restored"):
-                round_abort = True
-                abort_small_design = True
-                break
-            if float(round_before) - float(cur_proxy) <= min_gain:
-                break
         cur_quality = hierarchy_quality_metric_fn(legal, clusters)
         cur_vector_passed = _vector_contract(legal, s_pos)
         if float(cur_proxy) < best_small_score and cur_quality <= audit_limit and cur_vector_passed:
@@ -804,8 +831,18 @@ def run_post_coldspot_finalize(
             num_macros=int(n) + int(n_soft),
         )
 
+    exact_t0 = time.perf_counter()
     full = np.vstack([legal, s_pos]).astype(np.float32)
     full_proxy = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
+    if consume_final_audit_exact is not None:
+        consume_final_audit_exact(exact=1)
+    _log_stage_timing(
+        "full_exact_score",
+        time.perf_counter() - exact_t0,
+        pass_name="final_audit",
+        score_before=float(cur_proxy),
+        score_after=float(full_proxy),
+    )
     final_vector = _placement_hierarchy_vector(legal, s_pos)
     final_coverage = _hierarchy_coverage(final_vector)
     final_quality = hierarchy_quality_metric_fn(legal, clusters)
@@ -814,9 +851,12 @@ def run_post_coldspot_finalize(
     final_contract_violation_count = len(final_contract_violations)
     audit_passed = final_quality <= audit_limit and vector_audit_passed
     audit_rollback = False
-    if not audit_passed and _is_hard_valid(audit_checkpoint_h):
+    audit_t0 = time.perf_counter()
+    pre_audit_proxy = float(full_proxy)
+    pre_audit_quality = float(final_quality)
+    if _is_hard_valid(audit_checkpoint_h):
         if audit_checkpoint_quality <= audit_limit and audit_checkpoint_vector_passed:
-            full_proxy = float(
+            checkpoint_proxy = float(
                 _exact_proxy(
                     torch.tensor(
                         np.vstack([audit_checkpoint_h, audit_checkpoint_s]).astype(np.float32),
@@ -826,17 +866,31 @@ def run_post_coldspot_finalize(
                     plc,
                 )
             )
-            legal = audit_checkpoint_h.copy()
-            s_pos = audit_checkpoint_s.copy()
-            full = np.vstack([legal, s_pos]).astype(np.float32)
-            final_quality = float(audit_checkpoint_quality)
-            final_vector = _placement_hierarchy_vector(legal, s_pos)
-            final_coverage = _hierarchy_coverage(final_vector)
-            _, final_contract_violations = _vector_contract_with_violations(legal, s_pos)
-            final_contract_violation_count = len(final_contract_violations)
-            vector_audit_passed = True
-            audit_passed = True
-            audit_rollback = True
+            if (not audit_passed) or checkpoint_proxy < full_proxy - 1.0e-9:
+                full_proxy = checkpoint_proxy
+                if consume_final_audit_exact is not None:
+                    consume_final_audit_exact(exact=1)
+                legal = audit_checkpoint_h.copy()
+                s_pos = audit_checkpoint_s.copy()
+                full = np.vstack([legal, s_pos]).astype(np.float32)
+                final_quality = float(audit_checkpoint_quality)
+                final_vector = _placement_hierarchy_vector(legal, s_pos)
+                final_coverage = _hierarchy_coverage(final_vector)
+                _, final_contract_violations = _vector_contract_with_violations(legal, s_pos)
+                final_contract_violation_count = len(final_contract_violations)
+                vector_audit_passed = True
+                audit_passed = True
+                audit_rollback = True
+    _log_stage_timing(
+        "final_audit",
+        time.perf_counter() - audit_t0,
+        rollback=bool(audit_rollback),
+        audit_passed=bool(audit_passed),
+        score_before=float(pre_audit_proxy),
+        score_after=float(full_proxy),
+        quality_before=float(pre_audit_quality),
+        quality_after=float(final_quality),
+    )
     state = PlacementState(
         legal.copy(),
         s_pos.copy(),
@@ -846,12 +900,12 @@ def run_post_coldspot_finalize(
     proxy = float(state.proxy)
     margin_eps = float(const.HIER_LEGALITY_MARGIN_EPS)
     legality_margin = _hard_legality_margin(legal, margin_eps)
+    coverage_scope = hierarchy_coverage_scope(final_vector)
+    provenance = "explicit" if hierarchy_source == "hierarchy_path_tags" else "inferred"
 
     _log(
         f"  [hier] {len(clusters)} clusters, {len(hierarchy.edges)} edges, "
-        f"oversize=1, "
         f"seed={selected_seed_name}, "
-        f"additive=1, "
         f"margin={float(legality_margin['min_margin']):.3f}, "
         f"audit={'rollback' if audit_rollback else ('pass' if audit_passed else 'fail')}, "
         f"vector_audit={'pass' if vector_audit_passed else 'fail'}, "
@@ -861,6 +915,7 @@ def run_post_coldspot_finalize(
         f"{float(final_coverage['clustered_hard_fraction']):.3f}, "
         f"cov_s={float(seed_hierarchy_coverage['soft_coverage']):.3f}->"
         f"{float(final_coverage['soft_coverage']):.3f}, "
+        f"coverage={coverage_scope}, provenance={provenance}, "
         f"weight={group_weight}: proxy={proxy:.4f} "
         f"(pre-relief {pre_relief:.4f}; hierarchy-preserving NON-proxy mode)"
     )

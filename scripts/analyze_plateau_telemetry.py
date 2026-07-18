@@ -18,7 +18,7 @@ def _matches(row: dict, args) -> bool:
         return False
     if args.benchmark and str(row.get("benchmark", "")) not in args.benchmark:
         return False
-    return row.get("event") == "hier_plateau_telemetry" and row.get("plateau_pass")
+    return row.get("event") == "hier_plateau_telemetry"
 
 
 def load_rows(paths: list[Path], args) -> list[dict]:

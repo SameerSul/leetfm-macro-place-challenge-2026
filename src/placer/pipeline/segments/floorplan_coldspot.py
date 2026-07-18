@@ -30,6 +30,7 @@ from placer.pipeline.segments.floorplan_coldspot_utils import (
     occupied_cells,
     remember_cold_cells,
 )
+from placer.local_search.plateau_telemetry import log_plateau_event
 from placer.scoring.exact import _exact_proxy
 from placer.scoring.incremental import IncrementalScorer
 
@@ -71,6 +72,17 @@ def run_coldspot_tightening(
     graph_confidence: dict[int, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """Run coldspot tightening and return the post-coldspot placement."""
+
+    def _log_stage_timing(stage: str, elapsed_s: float, **extra) -> None:
+        payload = {
+            "benchmark": str(benchmark.name),
+            "stage": str(stage),
+            "elapsed_s": float(elapsed_s),
+        }
+        payload.update(extra)
+        log_plateau_event("hier_stage_timing", **payload)
+
+    ck_stage_t0 = time.perf_counter()
 
     def _additive_spare(deadline: "float | None" = None) -> bool:
         # Deterministic operator quotas are always applied by default; deadlines
@@ -986,5 +998,18 @@ def run_coldspot_tightening(
             f"  [hier] post-coldspot micro-shift replay: {post_ck_micro_acc} accepts, "
             f"proxy {pre_post_ck_micro_score:.4f}->{cur_proxy:.4f}"
         )
+
+    _log_stage_timing(
+        "coldspot_work",
+        float(time.perf_counter() - ck_stage_t0),
+        accepts=int(ck_acc),
+        post_soft_only_acc=int(soft_only_acc),
+        post_micro_acc=int(post_ck_micro_acc) if "post_ck_micro_acc" in locals() else 0,
+        final_quality=float(cur_quality),
+        base_proxy=float(base_proxy),
+        final_proxy=float(cur_proxy),
+        dry_rounds=int(ck_dry_rounds),
+        run_fallbacks=bool(ck_run_fallbacks),
+    )
 
     return legal, s_pos, cur_proxy, cur_quality
