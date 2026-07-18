@@ -25,13 +25,16 @@ region expansion/decompression, small-design polish, no-release low-net soft/SS
 breadth, medium/large soft-continuation scheduling, and strict final hierarchy
 audit rollback with audit-aware local relief plus large-design graph-tension
 opportunity ordering, prepared Numba routing/legalization kernels, and batched
-soft relocation/swap scoring, exact batched hard-hard/hard-soft scoring, and a
+soft relocation/swap scoring with compiled density tails, exact batched
+hard-hard/hard-soft scoring, cached stable nearest-four hierarchy-audit
+selection, and a
 guarded constraint-graph legalization candidate for `initial.plc`, plus the
-per-component seed/final hierarchy contract:
+per-component seed/final hierarchy contract and conservative explicit
+soft-bundle inference:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  542.58s
+AVG 1.1205  17/17 VALID  0 overlaps  554.54s
 ```
 
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7252`,
@@ -143,12 +146,7 @@ flowchart TD
     A1 --> V[Exact-gated cluster decompression + graph-tension ordering]
     V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
     T --> T1[Per-round micro-shift replay + audit checkpoint]
-    T1 --> Y[Post-swap micro-shift replay]
-    Y --> P{HIER_POST_RELOC_PROPOSE_ALL enabled?}
-    P -->|Yes| Q[Post-swap hard propose-all polish]
-    P -->|No| W
-    Q --> X[Telemetry scheduler skips duplicate ordinary post-swap soft pass]
-    W --> X
+    T1 --> X[Post-swap micro-shift replay; telemetry skips duplicate ordinary post-swap soft pass]
     X --> C1{Post-soft plateau and spare budget?}
     C1 -->|Yes| C2[Compound related-soft relocation with final-state exact acceptance]
     C1 -->|No| X1
@@ -184,6 +182,14 @@ The compound soft pass is a bounded plateau escape between ordinary post-swap
 hard cleanup and later soft cleanup. It forms related owned-soft or
 same-corridor bridge groups, preserves their relative geometry, and tests
 pair, quartet, and full-group translations toward cold connected components.
+Explicit shared soft instance-path prefixes are treated as higher-confidence
+groups and take precedence when the input names expose them.
+The hierarchy model also derives soft-only connectivity communities from
+repeated low-fanout shared nets. The communities are scored against common
+owned/bridge hard-cluster affinity. Only explicit instance-path bundles reach
+`high` confidence (score ≥0.90) and are consumed. Connectivity-only and
+connectivity-plus-hard-affinity evidence remains `medium` at most, so those
+soft macros keep the ordinary independent search behavior.
 Every member stays inside its own hierarchy region. A candidate reaches exact
 incremental scoring only after the complete group state passes the rich-vector
 contract, and only the best complete state can commit.
@@ -313,13 +319,18 @@ uv run python test/verification/_verify_coldspot_kick.py ibm10  # coldspot verif
 ## GPU Status
 
 The hierarchy path uses CUDA through DREAMPlace when PyTorch can see a GPU.
-The `cuda_delta` scorer is verified for hard/soft relocation proposal batches
-and is used by post-swap propose-all hard relocation; bounded relocation and
-micro-shift can reuse it for large local target batches, but small cleanup
-batches stay on the faster incremental CPU path by default. Region swaps and
-cluster decompression remain sequential exact-gated CPU/NumPy passes — region
-swap candidate ranking can use CUDA sorting for large rank arrays, but there
-is no batched GPU exact-scoring kernel.
+Local candidate ranking, pre-scoring, and bounded relocation use CPU/Numba;
+the rejected post-swap propose-all pass has been removed. Their per-source CUDA
+transfers were slower in the compound/graph control runs. Region swaps and
+cluster decompression remain sequential exact-gated CPU/NumPy passes.
+
+`HIER_GPU_EXPERIMENT=<feature>` retains only the diagnostic isolation harness:
+`overlap_prefilter` enables the fp64 overlap/bounds prefilter and
+`graph_tension_batches` provides a graph-tension control. All other CUDA
+hypothesis routes were removed after their full-suite regressions. The retained
+prefilter is default-off because per-source transfers and synchronization lose
+to the Numba loop; graph tension has only 14–75 edges on active IBM designs,
+too little work for a GPU batch kernel. See `PROGRESS.md` for measurements.
 
 Incremental CPU scoring uses cached Numba kernels for routing-grid
 re-smoothing over only the touched net bbox. Reusable prefix buffers avoid the
@@ -341,8 +352,9 @@ cached JIT with a reusable delta buffer.
 Soft relocation target sets are batch-scored on CPU once at least two targets
 are present. Per-target raw routing, touched-bbox smoothing values, touched-net
 HPWL, and density grids are produced in compiled loops, followed by batched
-top-tail proxy reductions. The operation is read-only with respect to the
-prepared scorer state; the winning target still goes through the existing
+top-tail proxy reductions. A cached Numba reduction preserves the scalar
+nonzero filtering, tiny-grid, and top-tail semantics. The operation is
+read-only with respect to the prepared scorer state; the winning target still goes through the existing
 commit method and acceptance gates.
 
 Soft-soft swap candidates are also batched when at least two share the same
@@ -350,6 +362,11 @@ first endpoint. Cached pair topologies are flattened into one compiled call;
 each row removes both endpoints, swaps their centers, restores their routing
 and density contributions, and scores the union bbox. The operation restores
 the placement cache per row and leaves all committed grids unchanged.
+
+Hierarchy-vector neighbor impurity is also CPU JIT: each clustered hard macro
+keeps an insertion-ordered stable nearest-four selection, avoiding the prior
+full distance matrix and per-row sort. Equal-distance ties retain original
+clustered-row order, so hierarchy audit decisions are unchanged.
 
 See [OBJECTIVES.md](OBJECTIVES.md) for the structural objectives behind these
 passes and [PROGRESS.md](PROGRESS.md) for the historical learned-ranking

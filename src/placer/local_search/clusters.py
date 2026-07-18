@@ -262,16 +262,20 @@ def derive_oversized_hard_clusters(
             max_fanout=max_fanout,
             bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
         )
-        allow_split = len(bridge_flat) >= min_bridge_softs
+        comp_bridge_soft_counts: dict[int, int] = {}
+        for soft_idx, comp_ids in bridge_flat.items():
+            for comp_id in np.asarray(comp_ids, dtype=np.int64).reshape(-1):
+                comp_bridge_soft_counts[int(comp_id)] = comp_bridge_soft_counts.get(int(comp_id), 0) + 1
     else:
-        allow_split = True
+        comp_bridge_soft_counts = {}
 
     leaves: list[np.ndarray] = []
-    for comp in flat_clusters.values():
+    for comp_id, comp in flat_clusters.items():
         comp = np.asarray(comp, dtype=np.int64)
         if comp.size < 2:
             continue
-        if not allow_split or comp.size <= start_size:
+        comp_bridge_softs = int(comp_bridge_soft_counts.get(int(comp_id), 0))
+        if comp_bridge_softs < min_bridge_softs or comp.size <= start_size:
             leaves.append(comp)
             continue
         split_leaves = _recursive_bisect_component(

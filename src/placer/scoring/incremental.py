@@ -954,6 +954,70 @@ if HAS_NUMBA:
                         overlap_x = 0.0
                     out[batch_idx, row * grid_col + col] += overlap_x * overlap_y
 
+    @_numba_njit(cache=True, fastmath=False)
+    def _batch_density_costs_jit(density_grids, density_count, grid_area, out):
+        """Reduce each trial density grid with the scalar cost semantics."""
+        n_cells = density_grids.shape[1]
+        packed = np.empty(n_cells, dtype=np.float64)
+        for batch_idx in range(density_grids.shape[0]):
+            count_nonzero = 0
+            total = 0.0
+            for cell in range(n_cells):
+                value = density_grids[batch_idx, cell]
+                if value != 0.0:
+                    packed[count_nonzero] = value
+                    count_nonzero += 1
+                    total += value
+            if count_nonzero == 0:
+                out[batch_idx] = 0.0
+            elif n_cells < 10:
+                out[batch_idx] = 0.5 * (total / count_nonzero / grid_area)
+            else:
+                top_count = min(density_count, count_nonzero)
+                partitioned = np.partition(
+                    packed[:count_nonzero],
+                    count_nonzero - top_count,
+                )
+                top_sum = 0.0
+                for index in range(count_nonzero - top_count, count_nonzero):
+                    top_sum += partitioned[index]
+                out[batch_idx] = 0.5 * top_sum / grid_area / density_count
+
+
+def _batch_congestion_costs(congestion_values: np.ndarray) -> np.ndarray:
+    """Return top-tail congestion costs for a batch of trial grids."""
+    values = np.ascontiguousarray(congestion_values, dtype=np.float64)
+    count = int(values.shape[1] * 0.05)
+    if count == 0:
+        return values.max(axis=1)
+    top = np.partition(values, values.shape[1] - count, axis=1)[:, -count:]
+    return top.sum(axis=1) / count
+
+
+def _batch_density_costs(
+    density_grids: np.ndarray,
+    density_count: int,
+    grid_area: float,
+) -> np.ndarray:
+    """Return scalar-equivalent density costs for a batch of trial grids."""
+    grids = np.ascontiguousarray(density_grids, dtype=np.float64)
+    out = np.empty(grids.shape[0], dtype=np.float64)
+    if HAS_NUMBA:
+        _batch_density_costs_jit(grids, int(density_count), float(grid_area), out)
+        return out
+
+    for batch_idx, occupied in enumerate(grids):
+        nonzero = occupied[occupied != 0.0]
+        if nonzero.size == 0:
+            out[batch_idx] = 0.0
+        elif grids.shape[1] < 10:
+            out[batch_idx] = 0.5 * float(nonzero.mean() / grid_area)
+        else:
+            count = min(int(density_count), nonzero.size)
+            top = np.partition(nonzero, nonzero.size - count)[nonzero.size - count :]
+            out[batch_idx] = 0.5 * float(top.sum()) / grid_area / density_count
+    return out
+
 
 class IncrementalScorer:
     """Fast proxy scorer for small local-search moves."""
@@ -1348,25 +1412,6 @@ class IncrementalScorer:
             return a
         out = np.union1d(a, b)
         self._touched_cache2[key] = out
-        return out
-
-    def _touched_nets3(self, m1: int, m2: int, m3: int) -> np.ndarray:
-        """Return nets touched by three modules."""
-        key = tuple(sorted({int(m1), int(m2), int(m3)}))
-        if len(key) == 1:
-            return self._touched_nets_only(key[0])
-        if len(key) == 2:
-            return self._touched_nets(key[0], key[1])
-        cached = self._touched_cache_many.get(key)
-        if cached is not None:
-            return cached
-        parts = [self._macro_nets(int(m)) for m in key]
-        if not parts:
-            return np.empty(0, dtype=np.int64)
-        if len(parts) == 1:
-            return parts[0]
-        out = np.unique(np.concatenate(parts))
-        self._touched_cache_many[key] = out
         return out
 
     def _touched_nets_only(self, module: int) -> np.ndarray:
@@ -2096,16 +2141,7 @@ class IncrementalScorer:
             self.grid_col,
             congestion_values,
         )
-        congestion_count = int(congestion_values.shape[1] * 0.05)
-        if congestion_count == 0:
-            congestion = congestion_values.max(axis=1)
-        else:
-            top = np.partition(
-                congestion_values,
-                congestion_values.shape[1] - congestion_count,
-                axis=1,
-            )[:, -congestion_count:]
-            congestion = top.sum(axis=1) / congestion_count
+        congestion = _batch_congestion_costs(congestion_values)
 
         wirelength = np.empty(n_batch, dtype=np.float64)
         _batch_soft_swap_wirelength_jit(
@@ -2148,20 +2184,11 @@ class IncrementalScorer:
             self.dens_grid_col,
             density_grids,
         )
-        density = np.empty(n_batch, dtype=np.float64)
-        for batch_idx in range(n_batch):
-            occupied = density_grids[batch_idx]
-            nonzero = occupied[occupied != 0.0]
-            if nonzero.size == 0:
-                density[batch_idx] = 0.0
-            elif self.dens_n_cells < 10:
-                density[batch_idx] = 0.5 * float(nonzero.mean() / self.dens_grid_area)
-            else:
-                count = min(self.dens_density_cnt, nonzero.size)
-                top = np.partition(nonzero, nonzero.size - count)[nonzero.size - count :]
-                density[batch_idx] = (
-                    0.5 * float(top.sum()) / self.dens_grid_area / self.dens_density_cnt
-                )
+        density = _batch_density_costs(
+            density_grids,
+            self.dens_density_cnt,
+            self.dens_grid_area,
+        )
         return wirelength + 0.5 * density + 0.5 * congestion
 
     def score_swap_soft_soft_many(self, soft_a: int, candidates: np.ndarray) -> np.ndarray:
@@ -2248,16 +2275,7 @@ class IncrementalScorer:
             self.grid_col,
             congestion_values,
         )
-        congestion_count = int(congestion_values.shape[1] * 0.05)
-        if congestion_count == 0:
-            congestion = congestion_values.max(axis=1)
-        else:
-            top = np.partition(
-                congestion_values,
-                congestion_values.shape[1] - congestion_count,
-                axis=1,
-            )[:, -congestion_count:]
-            congestion = top.sum(axis=1) / congestion_count
+        congestion = _batch_congestion_costs(congestion_values)
 
         wirelength = np.empty(cand.size, dtype=np.float64)
         _batch_soft_swap_wirelength_jit(
@@ -2300,20 +2318,11 @@ class IncrementalScorer:
             self.dens_grid_col,
             density_grids,
         )
-        density = np.empty(cand.size, dtype=np.float64)
-        for batch_idx in range(cand.size):
-            occupied = density_grids[batch_idx]
-            nonzero = occupied[occupied != 0.0]
-            if nonzero.size == 0:
-                density[batch_idx] = 0.0
-            elif self.dens_n_cells < 10:
-                density[batch_idx] = 0.5 * float(nonzero.mean() / self.dens_grid_area)
-            else:
-                count = min(self.dens_density_cnt, nonzero.size)
-                top = np.partition(nonzero, nonzero.size - count)[nonzero.size - count :]
-                density[batch_idx] = (
-                    0.5 * float(top.sum()) / self.dens_grid_area / self.dens_density_cnt
-                )
+        density = _batch_density_costs(
+            density_grids,
+            self.dens_density_cnt,
+            self.dens_grid_area,
+        )
         return wirelength + 0.5 * density + 0.5 * congestion
 
     def commit_swap_soft_soft(self, soft_a: int, soft_b: int) -> None:
@@ -2685,16 +2694,7 @@ class IncrementalScorer:
             self.grid_col,
             congestion_values,
         )
-        congestion_count = int(congestion_values.shape[1] * 0.05)
-        if congestion_count == 0:
-            congestion = congestion_values.max(axis=1)
-        else:
-            top = np.partition(
-                congestion_values,
-                congestion_values.shape[1] - congestion_count,
-                axis=1,
-            )[:, -congestion_count:]
-            congestion = top.sum(axis=1) / congestion_count
+        congestion = _batch_congestion_costs(congestion_values)
 
         touched = self._macro_nets(int(prep["s_module"]))
         wirelength = np.empty(batch_size, dtype=np.float64)
@@ -2729,20 +2729,11 @@ class IncrementalScorer:
             self.dens_grid_col,
             density_grids,
         )
-        density = np.empty(batch_size, dtype=np.float64)
-        for batch_idx in range(batch_size):
-            occupied = density_grids[batch_idx]
-            nonzero = occupied[occupied != 0.0]
-            if nonzero.size == 0:
-                density[batch_idx] = 0.0
-            elif self.dens_n_cells < 10:
-                density[batch_idx] = 0.5 * float(nonzero.mean() / self.dens_grid_area)
-            else:
-                count = min(self.dens_density_cnt, nonzero.size)
-                top = np.partition(nonzero, nonzero.size - count)[nonzero.size - count :]
-                density[batch_idx] = (
-                    0.5 * float(top.sum()) / self.dens_grid_area / self.dens_density_cnt
-                )
+        density = _batch_density_costs(
+            density_grids,
+            self.dens_density_cnt,
+            self.dens_grid_area,
+        )
 
         return wirelength + 0.5 * density + 0.5 * congestion
 

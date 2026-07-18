@@ -25,10 +25,6 @@ class PassContext:
     """Immutable per-benchmark context shared by hierarchy passes."""
 
     benchmark_name: str
-    canvas_width: float
-    canvas_height: float
-    num_hard: int
-    num_soft: int
     diagnostic_no_deadlines: bool = False
 
 

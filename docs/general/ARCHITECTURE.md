@@ -12,6 +12,7 @@ benchmark input
        - infer hard-macro clusters from connectivity (or RTL instance-path
          prefixes when names provide useful coverage, e.g. NG45)
        - classify soft macros as owned (one dominant cluster) or bridge
+       - preserve explicit soft instance-path bundles when names expose them
        - record inter-cluster edge weights and confidence
   -> grouped DREAMPlace global placement (synthetic clique nets per cluster)
   -> cluster-consecutive hard legalization
@@ -117,12 +118,13 @@ micro-shift replay, stronger opportunity gates, component-aware scheduling,
 post-coldspot small-design polish with subpass audit restore, no-release
 low-net soft/SS breadth, medium/large soft-continuation scheduling, prepared
 Numba routing/legalization kernels, exact batched hard-hard/hard-soft scoring,
-batched soft relocation/swap scoring, the guarded constraint-graph seed, and
+batched soft relocation/swap scoring with a compiled density-tail reducer,
+stable nearest-four hierarchy-audit selection, the guarded constraint-graph seed, and
 the per-component seed/final hierarchy contract:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  542.58s
+AVG 1.1205  17/17 VALID  0 overlaps  554.54s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
@@ -137,6 +139,14 @@ and the compound-relocation sweep was `AVG 1.1205` in `544.94s`.
 The learned-GNN removal sweep preserves every telemetry-scheduled production
 score at `AVG 1.1205` in `542.58s`; its candidate rankers, selectors, tracing,
 offline tooling, tests, and active schemas are gone.
+The later conservative soft-bundle inference sweep again preserved every proxy
+at `AVG 1.1205` in `547.05s`: only explicit soft instance paths change
+compound-relocation groups, while flat-net connectivity and hard-affinity
+communities remain diagnostic evidence.
+The current batch-density/nearest-four-audit JIT validation again preserved
+every proxy at `AVG 1.1205` in `554.54s`. That full-suite wall time is a
+loaded-host observation, not a claimed end-to-end speedup; isolated kernels
+are measured in [PROGRESS.md](PROGRESS.md).
 The prior best same-path sweep was
 `AVG 1.1657`. The
 production path preserves the audit invariant earlier in local relief so fewer
@@ -228,7 +238,8 @@ not comparable to current numbers.
 | `src/placer/pipeline/hierarchy_floorplan.py` | The hierarchy pipeline itself: seed portfolio, region relief, swaps, and coldspot cleanup. |
 | `src/placer/pipeline/hierarchy_context.py` | Shared `PlacementState`, `PassContext`, `PassResult`, `PlateauTelemetry` used across pipeline stages. |
 | `src/placer/local_search/hierarchy_model.py` | Inferred hierarchy: hard clusters, soft roles, cluster graph, region builders. |
-| `src/placer/local_search/hierarchy_quality.py` | Complete hierarchy vector: compactness, worst spread, neighbor impurity, graph stretch, and owned/bridge soft-role distances. |
+| `src/placer/local_search/soft_hierarchy.py` | Confidence-calibrated soft bundles: explicit instance paths can be active; flat-netlist connectivity and affinity remain diagnostic evidence. |
+| `src/placer/local_search/hierarchy_quality.py` | Complete hierarchy vector, including cached-JIT stable nearest-four impurity selection. |
 | `src/placer/local_search/clusters.py` | Hard-cluster derivation, oversized-cluster splitting, region-box primitives. |
 | `src/placer/local_search/relocation.py` | Hard and soft relocation used by region-locked relief and post-swap polish. |
 | `src/placer/local_search/hierarchy_swaps.py` | Region-bounded hard-hard, hard-soft, soft-soft swap relief. |
@@ -238,7 +249,7 @@ not comparable to current numbers.
 | `src/placer/local_search/fields.py` | Congestion/coldspot fields used by relocation and coldspot tightening. |
 | `src/placer/local_search/plateau_telemetry.py` | Buffered schema-v2 pass-yield telemetry with run/revision provenance. |
 | `src/placer/scoring/exact.py` | Exact TILOS proxy wrapper. |
-| `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves, including Numba-JIT bbox re-smoothing. |
+| `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves, including cached-JIT bbox smoothing and batched density tails. |
 | `src/placer/legalize/spiral.py` | Hard-macro legalization, with cluster-consecutive order support. |
 | `src/placer/legalize/constraint_graph.py` | Deterministic horizontal/vertical separation-DAG projection for the guarded initial seed. |
 | `src/dreamplace_bridge/` | ICCAD04 pb/plc → Bookshelf, cluster grouping injection, DREAMPlace launcher, read-back. |
@@ -256,7 +267,19 @@ low-fanout net connectivity. Oversized bridge-connected flat clusters are
 selectively split toward a target leaf size. Soft macros are classified as
 **owned** (one cluster dominates their connectivity, so they move with that
 cluster) or **bridge** (comparable affinity to multiple clusters, so they get
-a region spanning the clusters they connect).
+a region spanning the clusters they connect). When soft names themselves carry
+useful slash-separated RTL paths, the deepest useful shared prefix creates a
+high-confidence soft bundle. Explicit bundles take precedence over owner or
+bridge-signature grouping during compound soft relocation; flat `Grp_*`
+benchmarks retain the existing behavior. A second diagnostic layer builds a
+soft-only graph from repeated low-fanout shared nets and retains only mutually
+strong components of at most 16 soft macros. These connectivity communities are
+scored against common owned/bridge hard-cluster affinity. Combined evidence is
+assigned deterministic `high` (≥0.90), `medium` (≥0.75), or `low` confidence.
+Only explicit instance-path membership is high confidence and replaces the
+weaker owner/bridge group during compound relocation. Flat-netlist connectivity
+plus hard affinity is limited to medium confidence: it is useful evidence, but
+not proof that the soft macros are one IP.
 
 ### 2. Grouped DREAMPlace
 
@@ -302,6 +325,13 @@ final rollback. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
 secondary choice inside the best hierarchy-quality band. That policy remains
 default-off: on the 2026-07-15 ibm10 experiment it improved seed composite
 `0.29168 -> 0.16328` but regressed final proxy `1.1778 -> 1.5281`.
+
+Neighbor impurity needs only the nearest four clustered hard macros. A cached
+Numba kernel therefore keeps a four-entry insertion-ordered selection per
+macro instead of materializing and stably sorting an N-by-N distance matrix.
+It compares squared distances (the same ordering as Euclidean distance) and
+uses the original clustered-row order for equal-distance ties, preserving the
+previous stable-sort result.
 
 Synthetic-clearance pair pushes are accumulated by a cached Numba kernel; the
 seed update, clipping, legalization, scoring, and selection semantics are
@@ -373,7 +403,9 @@ stages preserve their reference accumulation order and incremental deltas.
 Prepared soft-relocation target sets of size two or more use a true batched
 CPU path. Cached JIT loops build per-target routing grids, touched bboxes,
 wirelength, and density occupancy without mutating committed scorer state;
-the congestion and density tail reductions then operate over the batch. Scalar
+the congestion and density tail reductions then operate over the batch. The
+density reducer is itself a cached Numba kernel that retains the scalar
+nonzero filtering, tiny-grid mean, and top-tail partition semantics. Scalar
 trials remain the one-target path and the parity oracle.
 
 Soft-soft swap sets sharing one endpoint use the same batch reductions. Pair
@@ -486,8 +518,7 @@ HIER_REGION_ESCAPE_MIN=0.002
 HIER_REGION_COMPONENT_COLD_PCT=45     HIER_REGION_COMPONENT_MIN_CELLS=4
 HIER_PROPOSAL_CONGESTION_WEIGHT=2.5   HIER_PROPOSAL_DENSITY_WEIGHT=1.0
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08
-HIER_RELOC_PROPOSE_HOT_K=32           HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
-HIER_POST_RELOC_PROPOSE_ALL=auto      HIER_POST_RELOC_PROPOSE_TOP_M=16
+HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
 HIER_COMPOUND_SOFT_BUDGET_S=4         HIER_COMPOUND_SOFT_MIN_SPARE_S=5
 HIER_COMPOUND_SOFT_TOP_GROUPS=4       HIER_COMPOUND_SOFT_GROUP_SIZE=6
 HIER_COMPOUND_SOFT_COLD_PCT=35        HIER_COMPOUND_SOFT_ANCHORS=2
@@ -575,12 +606,11 @@ after regressing the full sweep.
 
 **Swap ranking**
 
-The current swap breadth and optional GPU ranking controls are:
+The current CPU/Numba swap breadth is:
 
 ```text
 HIER_HARD_SWAP_K=16          HIER_SOFT_SWAP_K=48
-HIER_SWAP_MIN_GAIN=0.00001   HIER_GPU_RANK_SWAP_CANDIDATES=auto
-HIER_GPU_RANK_MIN_CANDIDATES=512
+HIER_SWAP_MIN_GAIN=0.00001
 ```
 
 **Seed alternatives**
@@ -610,7 +640,17 @@ HIER_COLDSPOT_SOFT_ONLY=0           HIER_COLDSPOT_PARTIAL_FRONTIER=0
 HIER_PLATEAU_TRACE_DIR=ml_data/plateau_telemetry
 HIER_PLATEAU_TRACE_PATH=<optional output override>
 VIVAPLACE_RUN_ID=<optional attributable run id>
+HIER_GPU_EXPERIMENT=<one isolated diagnostic CUDA hypothesis>
 ```
+
+The gate is diagnostic-only: it does not enable a new production operator.
+When set, it selects exactly one CUDA hypothesis and forces every other
+optional CUDA route onto its CPU fallback; leave it unset for production.
+Selections are `overlap_prefilter` and `graph_tension_batches`. The former
+retains the fp64 overlap/bounds prefilter for diagnostics, while the latter is
+an isolation control because its active designs have too few graph edges for a
+viable batch kernel. Rejected exact-reduction, widened relocation-delta, and
+proposal-filter experiment code was removed. Details are in `PROGRESS.md`.
 
 Experiments that were tried and not promoted (full recursive bisection,
 cluster-room/bridge-corridor modeling, broad weak-hot region reshape, early
