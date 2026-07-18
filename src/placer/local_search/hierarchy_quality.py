@@ -20,6 +20,17 @@ HIERARCHY_VECTOR_METRICS = (
 )
 
 
+def hierarchy_coverage_scope(vector: Mapping[str, float]) -> str:
+    """Classify hierarchy evidence coverage without changing acceptance gates."""
+    hard_fraction = float(vector.get("clustered_hard_fraction", 0.0))
+    soft_fraction = float(vector.get("soft_coverage", 0.0))
+    if hard_fraction >= 0.75 and soft_fraction >= 0.25:
+        return "high"
+    if hard_fraction >= 0.25 and soft_fraction >= 0.10:
+        return "partial"
+    return "low"
+
+
 def hierarchy_vector_limits(
     reference: Mapping[str, float],
     absolute_slack: Mapping[str, float],
