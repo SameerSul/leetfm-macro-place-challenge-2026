@@ -7,7 +7,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from analyze_plateau_telemetry import aggregate, load_rows
+from analyze_plateau_telemetry import (
+    aggregate,
+    aggregate_quotas,
+    aggregate_stages,
+    load_rows,
+    load_stage_rows,
+)
 from placer.local_search import plateau_telemetry
 from utils import constants
 
@@ -67,6 +73,91 @@ def test_plateau_analysis_filters_provenance_and_flags_repeated_zero_yield(tmp_p
 
     assert [row["pass"] for row in summary] == ["dead_pass"]
     assert summary[0]["recommendation"] == "skip_candidate"
+    assert summary[0]["retained_gain_per_scored"] is None
+
+
+def test_stage_analysis_aggregates_stage_timings(tmp_path):
+    path = tmp_path / "trace.jsonl"
+    rows = [
+        {
+            "event": "hier_stage_timing",
+            "run_id": "wanted",
+            "code_revision": "abc",
+            "worktree_fingerprint": "fingerprint",
+            "benchmark": "ibm01",
+            "stage": "seed_prescore",
+            "elapsed_s": 1.25,
+        },
+        {
+            "event": "hier_stage_timing",
+            "run_id": "wanted",
+            "code_revision": "abc",
+            "worktree_fingerprint": "fingerprint",
+            "benchmark": "ibm02",
+            "stage": "seed_prescore",
+            "elapsed_s": 0.75,
+        },
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    args = SimpleNamespace(
+        run_id="wanted",
+        revision=None,
+        worktree_fingerprint="fingerprint",
+        benchmark=None,
+    )
+
+    summary = aggregate_stages(load_stage_rows([path], args), min_runs=1)
+
+    assert summary == [
+        {
+            "stage": "seed_prescore",
+            "runs": 2,
+            "benchmarks": 2,
+            "elapsed_s": 2.0,
+            "average_s": 1.0,
+            "maximum_s": 1.25,
+        }
+    ]
+
+
+def test_quota_analysis_aggregates_repeated_passes_per_benchmark():
+    rows = [
+        {
+            "benchmark": "ibm01",
+            "plateau_pass": "region_soft_relocation",
+            "scored": 7,
+            "elapsed_s": 0.2,
+            "retained_proxy_gain": 0.01,
+            "exact_quota_limit": 12,
+            "exact_quota_exhausted": False,
+        },
+        {
+            "benchmark": "ibm01",
+            "plateau_pass": "region_soft_relocation",
+            "scored": 5,
+            "elapsed_s": 0.1,
+            "retained_proxy_gain": 0.02,
+            "exact_quota_limit": 12,
+            "exact_quota_exhausted": True,
+        },
+        {
+            "benchmark": "ibm02",
+            "plateau_pass": "region_soft_relocation",
+            "scored": 4,
+            "elapsed_s": 0.1,
+            "retained_proxy_gain": 0.03,
+            "exact_quota_limit": 12,
+            "exact_quota_exhausted": False,
+        },
+    ]
+
+    summary = aggregate_quotas(rows, min_runs=1)
+
+    assert len(summary) == 1
+    assert summary[0]["configured_limit"] == 12
+    assert summary[0]["maximum_scored"] == 12
+    assert summary[0]["total_scored"] == 16
+    assert summary[0]["exhausted_benchmarks"] == 1
 
 
 def test_promoted_production_features_no_longer_have_boolean_gates():
@@ -101,3 +192,20 @@ def test_plateau_telemetry_always_records_even_with_legacy_disable_env(tmp_path,
     row = json.loads(path.read_text())
     assert row["event"] == "hier_plateau_telemetry"
     assert row["benchmark"] == "test"
+
+
+def test_plateau_telemetry_records_worktree_fingerprint_override(tmp_path, monkeypatch):
+    path = tmp_path / "plateau.jsonl"
+    monkeypatch.setenv("HIER_PLATEAU_TRACE_PATH", str(path))
+    monkeypatch.setenv("VIVAPLACE_WORKTREE_FINGERPRINT", "test-dirty-state")
+    plateau_telemetry._PLATEAU_BUFFER.clear()
+    plateau_telemetry._PLATEAU_BUFFER_PATH = None
+    plateau_telemetry._WORKTREE_PROVENANCE = None
+
+    plateau_telemetry.log_plateau_event("hier_plateau_telemetry", benchmark="test")
+    plateau_telemetry.flush_plateau_events()
+
+    row = json.loads(path.read_text())
+    assert row["worktree_dirty"] is True
+    assert row["worktree_fingerprint"] == "test-dirty-state"
+    plateau_telemetry._WORKTREE_PROVENANCE = None

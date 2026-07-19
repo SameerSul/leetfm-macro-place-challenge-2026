@@ -14,6 +14,7 @@ from placer.local_search.hierarchy_quality import (
     hierarchy_quality_vector,
     hierarchy_vector_contract,
     hierarchy_vector_limits,
+    hierarchy_vector_margins,
 )
 from placer.local_search.plateau_telemetry import log_plateau_event
 from utils.config import HAS_NUMBA, _numba_njit
@@ -57,6 +58,39 @@ if HAS_NUMBA:
                         delta[j, 1] -= 2.0 * push_y
 
 
+def _hard_placement_is_legal(
+    hard_xy: np.ndarray,
+    half_widths: np.ndarray,
+    half_heights: np.ndarray,
+    canvas_width: float,
+    canvas_height: float,
+) -> bool:
+    """Return whether hard-macro centers are in bounds and non-overlapping."""
+    hard = np.asarray(hard_xy, dtype=np.float64)
+    hw = np.asarray(half_widths, dtype=np.float64)
+    hh = np.asarray(half_heights, dtype=np.float64)
+    if hard.shape != (hw.size, 2) or hw.shape != hh.shape:
+        return False
+    if hard.shape[0] == 0:
+        return True
+    tolerance = 1.0e-6
+    if np.any(hard[:, 0] < hw - tolerance) or np.any(
+        hard[:, 0] > float(canvas_width) - hw + tolerance
+    ):
+        return False
+    if np.any(hard[:, 1] < hh - tolerance) or np.any(
+        hard[:, 1] > float(canvas_height) - hh + tolerance
+    ):
+        return False
+    dx = np.abs(hard[:, None, 0] - hard[None, :, 0])
+    dy = np.abs(hard[:, None, 1] - hard[None, :, 1])
+    separated = (dx + tolerance >= hw[:, None] + hw[None, :]) | (
+        dy + tolerance >= hh[:, None] + hh[None, :]
+    )
+    np.fill_diagonal(separated, True)
+    return bool(separated.all())
+
+
 def select_seed_candidate(
     rows: list[dict[str, object]],
     *,
@@ -66,6 +100,7 @@ def select_seed_candidate(
     component_absolute_slack: Mapping[str, float] | None = None,
     component_relative_slack: float = 0.0,
     component_reference_name: str = "initial",
+    component_reference_vector: Mapping[str, float] | None = None,
 ) -> dict[str, object]:
     """Select the lowest proxy seed inside the active hierarchy contract."""
     if not rows:
@@ -76,7 +111,11 @@ def select_seed_candidate(
             (row for row in rows if str(row["name"]) == str(component_reference_name)),
             min(rows, key=lambda row: (float(row["score"]), str(row["name"]))),
         )
-        reference_vector = reference.get("hierarchy_vector")
+        reference_vector = (
+            component_reference_vector
+            if component_reference_vector is not None
+            else reference.get("hierarchy_vector")
+        )
         if not isinstance(reference_vector, Mapping):
             raise ValueError("component hierarchy contract requires complete seed vectors")
         limits = hierarchy_vector_limits(
@@ -93,6 +132,7 @@ def select_seed_candidate(
             row["hierarchy_contract_eligible"] = bool(passed)
             row["hierarchy_contract_violations"] = violations
             row["hierarchy_contract_reference"] = str(reference["name"])
+            row["hierarchy_contract_reference_vector"] = dict(reference_vector)
             row["hierarchy_contract_limits"] = limits
             if passed:
                 eligible.append(row)
@@ -156,7 +196,7 @@ def run_seed_portfolio(
     perturbations that preserve hierarchy intent while improving overlap
     survivability before downstream region cleanup.
     """
-    benchmark_name = str(benchmark.name)
+    benchmark_name = str(getattr(benchmark, "_hierarchy_trace_name", benchmark.name))
 
     def _log_stage_timing(stage: str, elapsed_s: float, **extra) -> None:
         payload = {
@@ -524,6 +564,17 @@ def run_seed_portfolio(
         initial = benchmark.macro_positions.detach().cpu().numpy().astype(np.float64)
         init_hard = initial[:n].copy()
         init_soft = initial[n : n + n_soft].copy()
+        try:
+            initial_legal_hard, initial_legal_soft = _legalize_seed(
+                "initial",
+                init_hard,
+                init_soft,
+                budget_s=45.0,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "legalized initial.plc is required as the hierarchy-contract reference"
+            ) from exc
         immutable_contract_keys = (
             "cluster_compactness",
             "worst_cluster_spread",
@@ -532,9 +583,9 @@ def run_seed_portfolio(
         )
         contract_absolute_slack = const.HIER_VECTOR_CONTRACT_ABS_SLACK
         contract_relative_slack = float(const.HIER_VECTOR_CONTRACT_REL_SLACK)
-        seed_reference_vector = hierarchy_quality_vector(
-            init_hard,
-            init_soft,
+        legalized_reference_vector = hierarchy_quality_vector(
+            initial_legal_hard,
+            initial_legal_soft,
             clusters,
             csofts,
             bridge_softs,
@@ -542,6 +593,46 @@ def run_seed_portfolio(
             cw,
             ch,
         )
+        seed_reference_vector = legalized_reference_vector
+        seed_reference_kind = "legalized_initial"
+        seed_reference_name = "initial"
+        if str(cluster_source) == "hierarchy_single_component_soft_affinity":
+            if _hard_placement_is_legal(init_hard, hw, hh, cw, ch):
+                raw_reference_vector = hierarchy_quality_vector(
+                    init_hard,
+                    init_soft,
+                    clusters,
+                    csofts,
+                    bridge_softs,
+                    hierarchy_edges,
+                    cw,
+                    ch,
+                )
+                raw_reference_limits = hierarchy_vector_limits(
+                    raw_reference_vector,
+                    contract_absolute_slack,
+                    contract_relative_slack,
+                )
+                raw_reference_feasible, _ = hierarchy_vector_contract(
+                    legalized_reference_vector,
+                    raw_reference_limits,
+                )
+                if raw_reference_feasible:
+                    seed_reference_vector = raw_reference_vector
+                    seed_reference_kind = "raw_initial"
+            else:
+                seed_reference_vector = hierarchy_quality_vector(
+                    dp_hard,
+                    dp_soft,
+                    clusters,
+                    csofts,
+                    bridge_softs,
+                    hierarchy_edges,
+                    cw,
+                    ch,
+                )
+                seed_reference_kind = "dreamplace"
+                seed_reference_name = "dreamplace"
         reference_contract_limits = hierarchy_vector_limits(
             seed_reference_vector,
             contract_absolute_slack,
@@ -576,15 +667,14 @@ def run_seed_portfolio(
         try:
             dp_passed, _ = _immutable_contract_pass(dp_hard, dp_soft)
             if not dp_passed:
-                logger("  [hier] seed dreamplace failed immutable-contract prefilter; keeping for stability")
+                logger(
+                    "  [hier] seed dreamplace failed immutable-contract prefilter; keeping for stability"
+                )
             rows.append(_score_seed("dreamplace", dp_hard, dp_soft, do_soft_cleanup=True))
         except Exception as exc:
-            logger(
-                "  [hier] seed dreamplace scoring failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
+            logger("  [hier] seed dreamplace scoring failed: " f"{type(exc).__name__}: {exc}")
+        rows.append(_score_seed("initial", initial_legal_hard, initial_legal_soft))
         raw_candidates = []
-        raw_candidates.append(("initial", init_hard, init_soft))
         for alpha in tuple(float(a) for a in const.HIER_SEED_BLEND_ALPHAS):
             hard = (1.0 - alpha) * dp_hard + alpha * init_hard
             soft = (1.0 - alpha) * dp_soft + alpha * init_soft
@@ -644,10 +734,13 @@ def run_seed_portfolio(
             row["hierarchy_provenance"] = {
                 "source": str(cluster_source),
                 "immutable_contract_limits": dict(
-                    (str(k), float(v))
-                    for k, v in immutable_contract_limits.items()
+                    (str(k), float(v)) for k, v in immutable_contract_limits.items()
                 ),
             }
+        if seed_reference_kind == "dreamplace":
+            seed_reference_vector = dict(
+                next(row for row in rows if str(row["name"]) == "dreamplace")["hierarchy_vector"]
+            )
         hierarchy_first = os.environ.get(
             "HIER_SEED_HIERARCHY_SELECT",
             "1" if bool(const.HIER_SEED_HIERARCHY_SELECT) else "0",
@@ -659,6 +752,8 @@ def run_seed_portfolio(
             relative_slack=float(const.HIER_SEED_HIERARCHY_REL_SLACK),
             component_absolute_slack=const.HIER_VECTOR_CONTRACT_ABS_SLACK,
             component_relative_slack=float(const.HIER_VECTOR_CONTRACT_REL_SLACK),
+            component_reference_name=seed_reference_name,
+            component_reference_vector=seed_reference_vector,
         )
         rows.sort(
             key=lambda row: (
@@ -669,6 +764,39 @@ def run_seed_portfolio(
         )
         for row in rows:
             row["selected"] = row is selected
+            row["hierarchy_contract_reference_kind"] = seed_reference_kind
+        reference_name = str(selected.get("hierarchy_contract_reference", "initial"))
+        reference_row = next(row for row in rows if str(row["name"]) == reference_name)
+        reference_vector = dict(
+            selected.get(
+                "hierarchy_contract_reference_vector",
+                reference_row["hierarchy_vector"],
+            )
+        )
+        for row in rows:
+            vector = dict(row["hierarchy_vector"])
+            limits = dict(row.get("hierarchy_contract_limits", {}))
+            margins = hierarchy_vector_margins(vector, limits) if limits else {}
+            log_plateau_event(
+                "hierarchy_contract_audit",
+                benchmark=benchmark_name,
+                stage="seed_candidate",
+                candidate=str(row["name"]),
+                reference=reference_name,
+                reference_kind=str(row.get("hierarchy_contract_reference_kind", "unknown")),
+                selected=bool(row["selected"]),
+                passed=bool(row.get("hierarchy_contract_eligible", True)),
+                score=float(row["score"]),
+                hierarchy_first=bool(hierarchy_first),
+                hierarchy_source=str(cluster_source),
+                vector=vector,
+                reference_vector=reference_vector,
+                limits=limits,
+                margins=margins,
+                violations=dict(row.get("hierarchy_contract_violations", {})),
+                coverage=dict(row.get("hierarchy_coverage", {})),
+                provenance=dict(row.get("hierarchy_provenance", {})),
+            )
         summary = ", ".join(
             f"{r['name']}={float(r['score']):.4f}/hq={float(r['hierarchy_composite']):.5f}"
             f"/contract={int(bool(r.get('hierarchy_contract_eligible', True)))}"
@@ -677,10 +805,10 @@ def run_seed_portfolio(
             f"/src={str(r.get('hierarchy_provenance', {}).get('source', cluster_source))}"
             for r in rows
         )
-        reference_name = str(selected.get("hierarchy_contract_reference", "initial"))
         logger(
             f"  [hier] seed portfolio prescore: {summary}; selected={selected['name']}; "
             f"hierarchy_first={int(hierarchy_first)}; contract_reference={reference_name}"
+            f"/{seed_reference_kind}"
         )
         return selected["hard"], selected["soft"], float(selected["score"]), rows
 

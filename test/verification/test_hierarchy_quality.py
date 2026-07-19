@@ -13,8 +13,12 @@ from placer.local_search.hierarchy_quality import (
     hierarchy_quality_vector,
     hierarchy_vector_contract,
     hierarchy_vector_limits,
+    hierarchy_vector_margins,
 )
-from placer.pipeline.segments.floorplan_seed import select_seed_candidate
+from placer.pipeline.segments.floorplan_seed import (
+    _hard_placement_is_legal,
+    select_seed_candidate,
+)
 
 
 def _vector(hard, soft):
@@ -150,3 +154,104 @@ def test_component_contract_uses_independent_relative_and_absolute_limits():
     assert passed
     assert violations == {}
     assert limits["edge_stretch"] == 0.12000000000000001
+
+
+def test_seed_selector_can_use_stricter_external_reference_vector():
+    row_reference = {key: 0.105 for key in HIERARCHY_VECTOR_METRICS}
+    external_reference = {key: 0.10 for key in HIERARCHY_VECTOR_METRICS}
+    candidate = dict(external_reference)
+    candidate["worst_cluster_spread"] = 0.115
+    rows = [
+        {
+            "name": "initial",
+            "score": 1.10,
+            "hierarchy_composite": 0.105,
+            "hierarchy_vector": row_reference,
+        },
+        {
+            "name": "proxy",
+            "score": 1.00,
+            "hierarchy_composite": 0.10,
+            "hierarchy_vector": candidate,
+        },
+    ]
+
+    selected = select_seed_candidate(
+        rows,
+        hierarchy_first=False,
+        absolute_slack=0.0,
+        relative_slack=0.0,
+        component_absolute_slack={key: 0.01 for key in HIERARCHY_VECTOR_METRICS},
+        component_relative_slack=0.0,
+        component_reference_vector=external_reference,
+    )
+
+    assert selected["name"] == "initial"
+    assert rows[1]["hierarchy_contract_eligible"] is False
+    assert rows[0]["hierarchy_contract_reference_vector"] == external_reference
+
+
+def test_raw_seed_reference_requires_legal_hard_placement():
+    hw = np.asarray([1.0, 1.0], dtype=np.float64)
+    hh = np.asarray([1.0, 1.0], dtype=np.float64)
+
+    assert _hard_placement_is_legal(
+        np.asarray([[2.0, 2.0], [5.0, 5.0]], dtype=np.float64),
+        hw,
+        hh,
+        8.0,
+        8.0,
+    )
+    assert not _hard_placement_is_legal(
+        np.asarray([[2.0, 2.0], [3.0, 2.0]], dtype=np.float64),
+        hw,
+        hh,
+        8.0,
+        8.0,
+    )
+
+
+def test_seed_selector_can_anchor_an_illegal_initial_case_to_dreamplace():
+    dreamplace_vector = {key: 0.10 for key in HIERARCHY_VECTOR_METRICS}
+    initial_vector = dict(dreamplace_vector)
+    initial_vector["edge_stretch"] = 0.30
+    rows = [
+        {
+            "name": "initial",
+            "score": 5.0,
+            "hierarchy_composite": 0.30,
+            "hierarchy_vector": initial_vector,
+        },
+        {
+            "name": "dreamplace",
+            "score": 1.0,
+            "hierarchy_composite": 0.10,
+            "hierarchy_vector": dreamplace_vector,
+        },
+    ]
+
+    selected = select_seed_candidate(
+        rows,
+        hierarchy_first=False,
+        absolute_slack=0.0,
+        relative_slack=0.0,
+        component_absolute_slack={key: 0.01 for key in HIERARCHY_VECTOR_METRICS},
+        component_relative_slack=0.0,
+        component_reference_name="dreamplace",
+        component_reference_vector=dreamplace_vector,
+    )
+
+    assert selected["name"] == "dreamplace"
+    assert rows[0]["hierarchy_contract_eligible"] is False
+    assert selected["hierarchy_contract_reference"] == "dreamplace"
+
+
+def test_component_margins_are_positive_headroom_and_negative_violations():
+    candidate = {key: 0.10 for key in HIERARCHY_VECTOR_METRICS}
+    limits = {key: 0.12 for key in HIERARCHY_VECTOR_METRICS}
+    candidate["bridge_soft_distance"] = 0.13
+
+    margins = hierarchy_vector_margins(candidate, limits)
+
+    assert np.isclose(margins["cluster_compactness"], 0.02)
+    assert np.isclose(margins["bridge_soft_distance"], -0.01)

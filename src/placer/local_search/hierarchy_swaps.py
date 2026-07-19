@@ -49,6 +49,10 @@ def _record_accept(stats, kind: str, outside_region: bool, old_score: float, new
     stats["proxy_gain"] += max(0.0, float(old_score) - float(new_score))
 
 
+def _score_count(stats: dict) -> int:
+    return int(stats["hh_scores"] + stats["hs_scores"] + stats["ss_scores"])
+
+
 def _cell_values(pos: np.ndarray, field: np.ndarray, cw: float, ch: float) -> np.ndarray:
     nr, nc = field.shape
     cell_w, cell_h = cw / nc, ch / nr
@@ -624,6 +628,7 @@ def _try_hard_hard(
     graph_delta_weight: float = 0.0,
     graph_delta_samples: int = 9,
     graph_mask_penalty_weight: float = 0.0,
+    max_scored: "int | None" = None,
 ) -> tuple[int, float]:
     accepts = 0
     n = h_pos.shape[0]
@@ -643,6 +648,8 @@ def _try_hard_hard(
     source_rank = local + max(0.0, float(priority_weight)) * span * priority
     hot = movable_idx[np.argsort(-source_rank[movable_idx])][: min(128, movable_idx.size)]
     for i_raw in hot:
+        if max_scored is not None and _score_count(stats) >= int(max_scored):
+            break
         if deadline is not None and time.monotonic() > deadline:
             break
         i = int(i_raw)
@@ -753,6 +760,8 @@ def _try_hard_hard(
             for j, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside)
             if bool(is_legal)
         ]
+        if max_scored is not None:
+            scored = scored[: max(0, int(max_scored) - _score_count(stats))]
         scores = (
             scorer.score_swap_hard_hard_many(i, np.asarray([j for j, _ in scored], dtype=np.int64))
             if scored
@@ -805,6 +814,7 @@ def _try_soft_soft(
     graph_delta_weight: float = 0.0,
     graph_delta_samples: int = 9,
     graph_mask_penalty_weight: float = 0.0,
+    max_scored: "int | None" = None,
 ) -> tuple[int, float]:
     accepts = 0
     n_soft = s_pos.shape[0]
@@ -820,6 +830,8 @@ def _try_soft_soft(
     span = max(float(field.max()), 1e-12)
     hot = movable_idx[np.argsort(-local[movable_idx])][: min(256, movable_idx.size)]
     for a_raw in hot:
+        if max_scored is not None and _score_count(stats) >= int(max_scored):
+            break
         if deadline is not None and time.monotonic() > deadline:
             break
         a = int(a_raw)
@@ -886,6 +898,8 @@ def _try_soft_soft(
             if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
                 continue
             scored.append((b, bool(outside_move)))
+        if max_scored is not None:
+            scored = scored[: max(0, int(max_scored) - _score_count(stats))]
         scores = (
             scorer.score_swap_soft_soft_many(a, np.asarray([b for b, _ in scored], dtype=np.int64))
             if scored
@@ -945,6 +959,7 @@ def _try_hard_soft(
     graph_delta_weight: float = 0.0,
     graph_delta_samples: int = 9,
     graph_mask_penalty_weight: float = 0.0,
+    max_scored: "int | None" = None,
 ) -> tuple[int, float]:
     accepts = 0
     if h_pos.shape[0] == 0 or s_pos.shape[0] == 0:
@@ -968,6 +983,8 @@ def _try_hard_soft(
     source_rank = hard_local + max(0.0, float(priority_weight)) * span * priority
     hot = hard_idx[np.argsort(-source_rank[hard_idx])][: min(128, hard_idx.size)]
     for i_raw in hot:
+        if max_scored is not None and _score_count(stats) >= int(max_scored):
+            break
         if deadline is not None and time.monotonic() > deadline:
             break
         i = int(i_raw)
@@ -1080,6 +1097,8 @@ def _try_hard_soft(
             if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
                 continue
             scored.append((k, hx, hy, sx, sy, bool(outside_move)))
+        if max_scored is not None:
+            scored = scored[: max(0, int(max_scored) - _score_count(stats))]
         scores = (
             scorer.score_swap_hard_soft_many(i, np.asarray([k for k, *_ in scored], dtype=np.int64))
             if scored
@@ -1146,6 +1165,7 @@ def _region_bounded_swap_relief(
     graph_delta_weight: float = 0.0,
     graph_delta_samples: int = 9,
     graph_mask_penalty_weight: float = 0.0,
+    max_scored: "int | None" = None,
 ) -> tuple[np.ndarray, np.ndarray, int, float, dict]:
     """Run bounded hierarchy-preserving swap relief."""
     nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
@@ -1209,6 +1229,7 @@ def _region_bounded_swap_relief(
                 graph_delta_weight,
                 graph_delta_samples,
                 graph_mask_penalty_weight,
+                max_scored,
             )
             accepts += got
         if enable_hs:
@@ -1253,6 +1274,7 @@ def _region_bounded_swap_relief(
                 graph_delta_weight,
                 graph_delta_samples,
                 graph_mask_penalty_weight,
+                max_scored,
             )
             accepts += got
         if enable_ss:
@@ -1287,6 +1309,7 @@ def _region_bounded_swap_relief(
                 graph_delta_weight,
                 graph_delta_samples,
                 graph_mask_penalty_weight,
+                max_scored,
             )
             accepts += got
 

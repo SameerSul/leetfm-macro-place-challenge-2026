@@ -11,7 +11,7 @@ The active submission now lives at the repository root: `src/`, `docs/`,
 absent after the root-layout migration; if present, treat it as frozen /
 read-only.
 
-**Current production mode (2026-07-16): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-07-18): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py` and raises if grouped DREAMPlace is not
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
@@ -19,16 +19,26 @@ hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
 Current verified result with normal BB/cache behavior:
-`uv run evaluate src/main.py --all` = **AVG 1.1205**, 17/17 VALID, 0
-overlaps, all final hierarchy audits passed, **554.54s**. The exact-scored seed
+`uv run evaluate src/main.py --all` = **AVG 1.1412**, 17/17 VALID, 0
+overlaps, all final hierarchy audits passed, **423.87s**. Every per-design
+score is bit-identical to the preceding 398.57s deterministic-quota reference;
+the runtime difference is observed host variation, not changed search work.
+Deterministic per-pass exact-score quotas cap work before the wall-clock safety
+guards and preserve every placement and score from the preceding 404.01s
+reference. The seed
 portfolio filters candidates through an independent six-component hierarchy
-contract relative to legalized `initial.plc`, and the same contract is enforced
-against the selected seed throughout relief and final rollback. The portfolio
+contract relative to an `initial.plc` reference that is legalized before its
+limits are built; immutable-hard failures are removed before exact scoring where
+the candidate is not mandatory. The same contract is enforced against the
+selected seed throughout relief and final rollback. The portfolio
 includes a default-on constraint-graph legalization alternative for
 `initial.plc`, and hard-hard / hard-soft swap sets use exact batched scoring.
 Batch density-tail reductions and nearest-neighbor hierarchy-audit selection
 also use cached Numba kernels while preserving the scalar and stable-sort
 reference semantics.
+Region hard relocation rejects candidates above the selected seed's cheap hard-
+containment limit before exact batch scoring. The full six-component checkpoint
+remains authoritative after the pass.
 Plateaued late soft cleanup also tests a bounded compound related-soft move:
 every member stays in-region, the complete state must pass the rich hierarchy
 contract, and exact incremental scoring occurs only after the group is formed.
@@ -49,8 +59,35 @@ a compound; repeated flat-net connectivity and shared hard-cluster affinity are
 recorded as medium/low-confidence evidence only. Do not treat a flat-netlist
 community as a confirmed IP without an explicit structural tag.
 
+Flat hard-cluster inference has one conservative single-component refinement.
+When at least 90% of hard macros collapse into one connectivity component, the
+model may partition the hard macros from shared low-fanout soft affinity, with
+a strict hard-graph-cut fallback. The result remains inferred, does not create
+an explicit compound soft bundle, and is dormant on audited multi-component IBM
+graphs. A legal raw seed may anchor the refined contract to avoid double slack;
+an illegal raw seed uses grouped DREAMPlace as the reference. The 2026-07-18
+synthetic sweep reached AVG 1.4204, 10/10 VALID, zero overlaps, and 10/10 truth
+passes; `syn03_sram` recovered its four truth groups exactly. `ibm10` reproduced
+the accepted 1.1348 score. The subsequent full IBM sweep reproduced all 17
+accepted scores exactly at AVG 1.1412, with 17/17 valid, zero overlaps, and all
+audits passing in 423.87s.
+
+The hierarchy model retains exactly one additional parent/child level; it does
+not recursively discover an arbitrary tree. Explicit slash-separated paths keep
+their nearest useful ancestor above the active leaf partition. Existing
+oversized connectivity splits keep the original flat component as their parent;
+otherwise an eligible active cluster may receive one strict graph bisection.
+After ordinary leaf-local relief, a bounded pass rigidly relocates child groups
+or swaps sibling slots inside the parent region, co-moving leaf-owned soft
+macros. Blocked candidates may compact and legalize only the affected child set.
+Every candidate passes the child and parent hierarchy contracts before exact
+mixed hard/soft scoring. A retained child move activates those multilevel
+contracts for later passes and final rollback. The pass has a shared 24-score
+quota, a 4s guard, and a `0.0001` minimum local gain; it is non-recursive and
+leaves the active DREAMPlace grouping unchanged.
+
 NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
-**AVG 0.7252**, 4/4 VALID, 0 overlaps, all hierarchy audits passed, 232.41s;
+**AVG 0.7121**, 4/4 VALID, 0 overlaps, all hierarchy audits passed, 76.85s.
 `uv run python
 test/verification/_verify_ng45_hierarchy_tags.py` passes. The hierarchy model
 uses slash-separated instance-path prefixes when macro names provide useful
@@ -66,7 +103,16 @@ Pass-level plateau telemetry remains because it drove a productive schedule
 change and does not affect candidate ordering. It writes buffered,
 attributable schema-v2 rows to
 `ml_data/plateau_telemetry/plateau_telemetry.jsonl` unless
-`HIER_PLATEAU_TRACE_PATH` is supplied.
+`HIER_PLATEAU_TRACE_PATH` is supplied. Rows distinguish proposed from retained
+work and include both the committed revision and a scoped dirty-worktree
+fingerprint; exact-scored seeds and final placements also emit structured
+hierarchy-contract audit events. NG45 audit rows use the parent design name,
+not their shared `output_CT_Grouping` leaf. Use
+`scripts/analyze_plateau_telemetry.py --quotas` for per-pass exact-score
+utilization and exhaustion, and use
+`scripts/analyze_hierarchy_contract.py` for component headroom and offline
+slack replay; current production limits were retained after calibration on 31
+IBM, NG45, and synthetic final rows.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
 

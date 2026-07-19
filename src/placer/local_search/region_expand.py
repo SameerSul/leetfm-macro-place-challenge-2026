@@ -299,7 +299,7 @@ def expand_regions_by_congestion(
                 graph_component_expanded += 1
         else:
             finite = [v for v in side_vals.values() if np.isfinite(v)]
-            if not finite:
+            if not finite or min(finite) >= float(h) - 1e-12:
                 continue
             cold = min(finite)
             left = local_max_dx if side_vals["left"] <= cold + 1e-12 else side_floor * local_max_dx

@@ -33,6 +33,19 @@ HIER_OVERSIZE_CLUSTER_MIN_BRIDGE_SOFTS = 5
 HIER_OVERSIZE_CLUSTER_MIN_SIZE = 6
 # Maximum cut/total edge-weight ratio accepted for oversized hierarchy bisection.
 HIER_OVERSIZE_CLUSTER_MAX_CUT_RATIO = 0.45
+# A flat netlist can collapse into one component, making bridge-soft evidence
+# impossible because every soft has only one possible hard-cluster owner. In
+# that narrow case, allow only strongly separated graph cuts and keep partial
+# refinement even when recursion cannot reach the ordinary target leaf size.
+HIER_SINGLE_COMPONENT_SPLIT_MIN_COVERAGE = 0.90
+HIER_SINGLE_COMPONENT_SPLIT_MIN_SIZE = 4
+HIER_SINGLE_COMPONENT_SPLIT_MAX_CUT_RATIO = 0.20
+# Minimum cosine similarity between hard-to-soft low-fanout affinity vectors.
+# This signal is used only by the single-flat-component refinement fallback.
+HIER_SINGLE_COMPONENT_SOFT_COSINE = 0.25
+# Exact per-candidate rich-vector checks are reserved for small refined graphs;
+# larger designs retain the normal pass checkpoint and final rollback audits.
+HIER_SINGLE_COMPONENT_CANDIDATE_GUARD_MAX_HARD = 64
 
 # DREAMPlace group attraction weight for cluster grouping constraints.
 HIER_GROUP_WEIGHT = 8
@@ -92,6 +105,35 @@ HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN = 0.08
 # Minimum exact-proxy gain required to accept hard propose-all relocation.
 HIER_RELOC_PROPOSE_MIN_GAIN = 0.0005
 
+# One retained parent layer above the active leaf partition. The child operator
+# rigidly translates one complete leaf (including owned softs) inside its parent
+# footprint and exact-scores only contract-passing, hard-legal final states.
+HIER_SUBCLUSTER_RELOCATION_BUDGET_S = 4.0
+HIER_SUBCLUSTER_RELOCATION_MIN_SPARE_S = 12.0
+# Each eligible production cluster receives at most one strict graph bisection.
+HIER_SUBCLUSTER_MIN_PARENT_HARD = 12
+HIER_SUBCLUSTER_MIN_CHILD_HARD = 4
+HIER_SUBCLUSTER_MAX_CUT_RATIO = 0.20
+HIER_SUBCLUSTER_RELOCATION_TOP_CHILDREN = 4
+HIER_SUBCLUSTER_RELOCATION_TOP_SWAPS = 4
+HIER_SUBCLUSTER_RELOCATION_MAX_HARD = 64
+HIER_SUBCLUSTER_RELOCATION_MAX_SOFT = 32
+# Fallback target compaction before affected-only legalization. Rigid motion is
+# always tried first.
+HIER_SUBCLUSTER_RELOCATION_COMPACT_SCALE = 0.90
+HIER_SUBCLUSTER_RELOCATION_COLD_PCT = 35.0
+HIER_SUBCLUSTER_RELOCATION_MAX_COMPONENTS = 4
+HIER_SUBCLUSTER_RELOCATION_MIN_COMPONENT_CELLS = 4
+HIER_SUBCLUSTER_RELOCATION_ANCHORS = 2
+HIER_SUBCLUSTER_RELOCATION_SHIFT_FRACTIONS = (0.5, 1.0)
+HIER_SUBCLUSTER_RELOCATION_MIN_FIELD_DROP = 0.02
+# A retained child move activates the multilevel contract for every later pass,
+# so require more headroom than an ordinary leaf-local plateau move.  The
+# 0.00005 plateau threshold accepted a 0.000068 ibm08 move whose tighter later
+# contract cost 0.0053 at finalization; 0.0001 rejects that trajectory while
+# retaining the independently beneficial NG45 move.
+HIER_SUBCLUSTER_RELOCATION_MIN_GAIN = 0.0001
+
 # Final-only exact scoring for compound moves of related soft macros. Candidate
 # members preserve their relative layout and must remain inside their individual
 # hierarchy regions; the rich-vector contract is checked before exact scoring.
@@ -141,6 +183,10 @@ HIER_STRONG_SOFT_REPAIR_TOP_K = 512
 HIER_STRONG_SOFT_REPAIR_TARGETS = 12
 HIER_STRONG_SOFT_REPAIR_MIN_GAIN = 0.00005
 HIER_STRONG_SOFT_REPAIR_WL_PREFILTER = 0.0005
+# Scale late soft-relocation candidate quotas for smaller designs. Larger
+# designs retain the existing quotas; exact acceptance gates are unchanged.
+HIER_SOFT_QUOTA_REFERENCE_MACROS = 1200
+HIER_SOFT_QUOTA_MIN_SCALE = 0.50
 # Extra soft-only continuation for medium/large congestion cases where the
 # normal strong-soft pass is still producing exact proxy gain. This is
 # structural, not benchmark-name gated.
@@ -387,7 +433,8 @@ HIER_COLDSPOT_OPPORTUNITY_MIN_COLD_CELLS = 1
 # Stop coldspot tightening after this many generated-but-uncommitted rounds.
 HIER_COLDSPOT_MAX_DRY_ROUNDS = 2
 # Number of opportunity-ranked clusters tried in one coldspot round.
-HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS = 2
+# Prioritize the hottest component and avoid duplicate exact work per round.
+HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS = 1
 # Number of coldspot tightening rounds to attempt.
 HIER_COLDSPOT_ROUNDS = 8
 # Wall-clock budget for coldspot tightening.

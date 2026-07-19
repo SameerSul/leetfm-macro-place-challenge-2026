@@ -17,6 +17,7 @@ from placer.local_search.hierarchy_quality import (
     hierarchy_coverage_scope,
     hierarchy_vector_contract,
     hierarchy_vector_limits,
+    hierarchy_vector_margins,
 )
 from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
 from placer.local_search.relocation import (
@@ -43,6 +44,9 @@ def run_post_coldspot_finalize(
     pre_relief: float,
     seed_hierarchy_quality: float,
     seed_hierarchy_vector: dict[str, float],
+    seed_subcluster_hierarchy_vector: dict[str, float],
+    seed_parent_hierarchy_vector: dict[str, float],
+    subhierarchy_contract_active: bool,
     legal: np.ndarray,
     s_pos: np.ndarray,
     cur_proxy: float,
@@ -78,10 +82,11 @@ def run_post_coldspot_finalize(
     _record_plateau = record_plateau_fn
     _is_hard_valid = hard_valid_fn
     _deadline = deadline_fn
+    benchmark_trace_name = str(getattr(benchmark, "_hierarchy_trace_name", benchmark.name))
 
     def _log_stage_timing(stage: str, elapsed_s: float, **extra) -> None:
         payload = {
-            "benchmark": str(benchmark.name),
+            "benchmark": benchmark_trace_name,
             "stage": str(stage),
             "elapsed_s": float(elapsed_s),
         }
@@ -242,6 +247,24 @@ def run_post_coldspot_finalize(
         const.HIER_VECTOR_CONTRACT_ABS_SLACK,
         float(const.HIER_VECTOR_CONTRACT_REL_SLACK),
     )
+    parent_hierarchy_contract_limits = (
+        hierarchy_vector_limits(
+            seed_parent_hierarchy_vector,
+            const.HIER_VECTOR_CONTRACT_ABS_SLACK,
+            float(const.HIER_VECTOR_CONTRACT_REL_SLACK),
+        )
+        if hierarchy.parent_clusters
+        else {}
+    )
+    subcluster_hierarchy_contract_limits = (
+        hierarchy_vector_limits(
+            seed_subcluster_hierarchy_vector,
+            const.HIER_VECTOR_CONTRACT_ABS_SLACK,
+            float(const.HIER_VECTOR_CONTRACT_REL_SLACK),
+        )
+        if hierarchy.subclusters
+        else {}
+    )
     hierarchy_source = str(getattr(hierarchy, "cluster_source", "hierarchy"))
     seed_hierarchy_coverage = {
         "clustered_hard_fraction": float(seed_hierarchy_vector.get("clustered_hard_fraction", 0.0)),
@@ -266,12 +289,72 @@ def run_post_coldspot_finalize(
             ch,
         )
 
+    def _placement_parent_hierarchy_vector(hard_xy: np.ndarray, soft_xy: np.ndarray):
+        if not hierarchy.parent_clusters:
+            return {}
+        return hierarchy_quality_vector(
+            hard_xy,
+            soft_xy,
+            hierarchy.parent_clusters,
+            hierarchy.parent_cluster_softs,
+            hierarchy.parent_bridge_softs,
+            hierarchy.parent_edges,
+            cw,
+            ch,
+        )
+
+    def _placement_subcluster_hierarchy_vector(hard_xy: np.ndarray, soft_xy: np.ndarray):
+        if not hierarchy.subclusters:
+            return {}
+        return hierarchy_quality_vector(
+            hard_xy,
+            soft_xy,
+            hierarchy.subclusters,
+            hierarchy.subcluster_softs,
+            hierarchy.subcluster_bridge_softs,
+            hierarchy.subcluster_edges,
+            cw,
+            ch,
+        )
+
+    def _contract_violation_values(
+        hard_xy: np.ndarray,
+        soft_xy: np.ndarray,
+    ) -> tuple[bool, dict[str, float]]:
+        vector = _placement_hierarchy_vector(hard_xy, soft_xy)
+        leaf_passed, leaf_violations = hierarchy_vector_contract(
+            vector,
+            hierarchy_contract_limits,
+        )
+        violations = dict(leaf_violations)
+        passed = bool(leaf_passed)
+        if not subhierarchy_contract_active:
+            return passed, violations
+        if hierarchy.subclusters:
+            subcluster_vector = _placement_subcluster_hierarchy_vector(hard_xy, soft_xy)
+            subcluster_passed, subcluster_violations = hierarchy_vector_contract(
+                subcluster_vector,
+                subcluster_hierarchy_contract_limits,
+            )
+            passed = bool(passed and subcluster_passed)
+            violations.update(
+                {f"subcluster_{key}": value for key, value in subcluster_violations.items()}
+            )
+        if hierarchy.parent_clusters:
+            parent_vector = _placement_parent_hierarchy_vector(hard_xy, soft_xy)
+            parent_passed, parent_violations = hierarchy_vector_contract(
+                parent_vector,
+                parent_hierarchy_contract_limits,
+            )
+            passed = bool(passed and parent_passed)
+            violations.update({f"parent_{key}": value for key, value in parent_violations.items()})
+        return passed, violations
+
     def _vector_contract_with_violations(
         hard_xy: np.ndarray,
         soft_xy: np.ndarray,
     ) -> tuple[bool, tuple[str, ...]]:
-        vector = _placement_hierarchy_vector(hard_xy, soft_xy)
-        passed, violations = hierarchy_vector_contract(vector, hierarchy_contract_limits)
+        passed, violations = _contract_violation_values(hard_xy, soft_xy)
         return bool(passed), tuple(str(v) for v in violations)
 
     def _vector_contract(hard_xy: np.ndarray, soft_xy: np.ndarray) -> bool:
@@ -522,7 +605,10 @@ def run_post_coldspot_finalize(
                     small_stats[key] += int(
                         getattr(_relocation_moves, "last_stats", {}).get(key, 0)
                     )
-                if int(got) > 0 and float(hard_reloc_before) - float(cur_proxy) > small_gain_threshold:
+                if (
+                    int(got) > 0
+                    and float(hard_reloc_before) - float(cur_proxy) > small_gain_threshold
+                ):
                     hard_reloc_won = True
                 if small_deadline is not None and time.monotonic() >= small_deadline:
                     break
@@ -570,7 +656,10 @@ def run_post_coldspot_finalize(
                         small_stats[key] += int(
                             getattr(_soft_relocation_moves, "last_stats", {}).get(key, 0)
                         )
-                    if int(got) > 0 and float(soft_reloc_before) - float(cur_proxy) > small_gain_threshold:
+                    if (
+                        int(got) > 0
+                        and float(soft_reloc_before) - float(cur_proxy) > small_gain_threshold
+                    ):
                         soft_reloc_won = True
                     if small_deadline is not None and time.monotonic() >= small_deadline:
                         break
@@ -628,7 +717,10 @@ def run_post_coldspot_finalize(
                     for key, value in stats.items():
                         if key in swap_stats:
                             swap_stats[key] += value
-                    if int(got) > 0 and float(hard_swap_before) - float(cur_proxy) > small_gain_threshold:
+                    if (
+                        int(got) > 0
+                        and float(hard_swap_before) - float(cur_proxy) > small_gain_threshold
+                    ):
                         hard_swap_won = True
                     small_last_report = _restore_small_if_needed()
                     if small_last_report.get("restored"):
@@ -688,7 +780,10 @@ def run_post_coldspot_finalize(
                     for key, value in stats.items():
                         if key in swap_stats:
                             swap_stats[key] += value
-                    if int(got) > 0 and float(swap_before) - float(cur_proxy) > small_gain_threshold:
+                    if (
+                        int(got) > 0
+                        and float(swap_before) - float(cur_proxy) > small_gain_threshold
+                    ):
                         swap_won = True
                     small_last_report = _restore_small_if_needed()
                     if small_last_report.get("restored"):
@@ -844,6 +939,8 @@ def run_post_coldspot_finalize(
         score_after=float(full_proxy),
     )
     final_vector = _placement_hierarchy_vector(legal, s_pos)
+    final_subcluster_vector = _placement_subcluster_hierarchy_vector(legal, s_pos)
+    final_parent_vector = _placement_parent_hierarchy_vector(legal, s_pos)
     final_coverage = _hierarchy_coverage(final_vector)
     final_quality = hierarchy_quality_metric_fn(legal, clusters)
     vector_audit_passed = _vector_contract(legal, s_pos)
@@ -875,6 +972,8 @@ def run_post_coldspot_finalize(
                 full = np.vstack([legal, s_pos]).astype(np.float32)
                 final_quality = float(audit_checkpoint_quality)
                 final_vector = _placement_hierarchy_vector(legal, s_pos)
+                final_subcluster_vector = _placement_subcluster_hierarchy_vector(legal, s_pos)
+                final_parent_vector = _placement_parent_hierarchy_vector(legal, s_pos)
                 final_coverage = _hierarchy_coverage(final_vector)
                 _, final_contract_violations = _vector_contract_with_violations(legal, s_pos)
                 final_contract_violation_count = len(final_contract_violations)
@@ -902,9 +1001,56 @@ def run_post_coldspot_finalize(
     legality_margin = _hard_legality_margin(legal, margin_eps)
     coverage_scope = hierarchy_coverage_scope(final_vector)
     provenance = "explicit" if hierarchy_source == "hierarchy_path_tags" else "inferred"
+    vector_audit_passed, final_violation_values = _contract_violation_values(legal, s_pos)
+    log_plateau_event(
+        "hierarchy_contract_audit",
+        benchmark=benchmark_trace_name,
+        stage="final",
+        candidate="final_placement",
+        reference=str(selected_seed_name),
+        selected=True,
+        passed=bool(audit_passed),
+        vector_passed=bool(vector_audit_passed),
+        hard_quality_passed=bool(final_quality <= audit_limit),
+        rollback=bool(audit_rollback),
+        score=float(proxy),
+        hierarchy_source=hierarchy_source,
+        hierarchy_provenance=provenance,
+        coverage_scope=coverage_scope,
+        coverage=final_coverage,
+        vector=final_vector,
+        reference_vector=seed_hierarchy_vector,
+        limits=hierarchy_contract_limits,
+        margins=hierarchy_vector_margins(final_vector, hierarchy_contract_limits),
+        subcluster_vector=final_subcluster_vector,
+        subcluster_reference_vector=seed_subcluster_hierarchy_vector,
+        subcluster_limits=subcluster_hierarchy_contract_limits,
+        subcluster_margins=(
+            hierarchy_vector_margins(
+                final_subcluster_vector,
+                subcluster_hierarchy_contract_limits,
+            )
+            if hierarchy.subclusters
+            else {}
+        ),
+        parent_vector=final_parent_vector,
+        parent_reference_vector=seed_parent_hierarchy_vector,
+        parent_limits=parent_hierarchy_contract_limits,
+        parent_margins=(
+            hierarchy_vector_margins(final_parent_vector, parent_hierarchy_contract_limits)
+            if hierarchy.parent_clusters
+            else {}
+        ),
+        multilevel_contract_active=bool(subhierarchy_contract_active),
+        violations=final_violation_values,
+        hard_quality=float(final_quality),
+        hard_quality_limit=float(audit_limit),
+        legality_margin=legality_margin,
+    )
 
     _log(
-        f"  [hier] {len(clusters)} clusters, {len(hierarchy.edges)} edges, "
+        f"  [hier] {len(clusters)} clusters, {len(hierarchy.parent_clusters)} parents, "
+        f"{len(hierarchy.edges)} edges, "
         f"seed={selected_seed_name}, "
         f"margin={float(legality_margin['min_margin']):.3f}, "
         f"audit={'rollback' if audit_rollback else ('pass' if audit_passed else 'fail')}, "

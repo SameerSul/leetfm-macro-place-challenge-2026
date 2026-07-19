@@ -13,6 +13,7 @@ from placer.local_search.clusters import (
     compute_region_bbox,
     compute_soft_region_bbox,
     derive_hard_clusters,
+    derive_one_level_hard_subclusters,
     derive_oversized_hard_clusters,
     derive_path_tag_hard_clusters,
     derive_soft_cluster_roles,
@@ -45,8 +46,9 @@ class HierarchyModel:
     """Hierarchy state shared by placement passes.
 
     The flat benchmark netlists do not ship module hierarchy. This object keeps
-    the inferred hard clusters, soft ownership/bridge roles, inter-cluster
-    connectivity, and reusable region construction in one place.
+    the active hard clusters, one non-recursive parent/child level, soft
+    ownership/bridge roles, inter-cluster connectivity, and reusable region
+    construction in one place.
     """
 
     labels: np.ndarray
@@ -60,6 +62,21 @@ class HierarchyModel:
     edges: list[HierarchyEdge]
     cluster_confidence: dict[int, float]
     split_parents: dict[int, list[int]]
+    subcluster_labels: np.ndarray
+    subclusters: dict[int, np.ndarray]
+    subcluster_softs: dict[int, np.ndarray]
+    subcluster_bridge_softs: dict[int, np.ndarray]
+    subcluster_edges: list[HierarchyEdge]
+    subcluster_confidence: dict[int, float]
+    parent_labels: np.ndarray
+    parent_clusters: dict[int, np.ndarray]
+    parent_children: dict[int, tuple[int, ...]]
+    child_parent: dict[int, int]
+    parent_cluster_softs: dict[int, np.ndarray]
+    parent_bridge_softs: dict[int, np.ndarray]
+    parent_edges: list[HierarchyEdge]
+    parent_confidence: dict[int, float]
+    subhierarchy_source: str
     cluster_source: str
     max_fanout: int
     min_edge: int
@@ -72,6 +89,15 @@ class HierarchyModel:
         if tagged is not None:
             labels, clusters = tagged
             cluster_source = "hierarchy_path_tags"
+            path_hierarchy = getattr(plc, "_hard_clusters_path_tag_hierarchy", None)
+            if path_hierarchy is None:
+                retained_parent_clusters = {}
+                retained_parent_children = {}
+            else:
+                retained_parent_clusters = dict(path_hierarchy[1])
+                retained_parent_children = dict(path_hierarchy[2])
+            split_parents = {}
+            retained_source = "hierarchy_path_parent"
         else:
             labels, clusters = derive_oversized_hard_clusters(
                 plc,
@@ -81,15 +107,68 @@ class HierarchyModel:
                 min_edge=min_edge,
                 hard_sizes=hard_sizes,
             )
-            cluster_source = "hierarchy_oversized_connectivity"
-        split_parents = _derive_split_parents(
-            plc,
-            n,
-            n_soft,
-            labels,
-            max_fanout,
-            min_edge,
-        )
+            cluster_source = str(
+                getattr(
+                    plc,
+                    "_hard_clusters_oversized_source",
+                    "hierarchy_oversized_connectivity",
+                )
+            )
+            retained_parent_clusters, retained_parent_children, _retained_child_parent = (
+                _derive_split_hierarchy(
+                    plc,
+                    n,
+                    n_soft,
+                    labels,
+                    max_fanout,
+                    min_edge,
+                )
+            )
+            split_parents = {
+                int(parent_id): [int(child_id) for child_id in child_ids]
+                for parent_id, child_ids in retained_parent_children.items()
+            }
+            retained_source = "hierarchy_connectivity_parent"
+
+        subclusters: dict[int, np.ndarray] = {}
+        parent_children: dict[int, tuple[int, ...]] = {}
+        child_parent: dict[int, int] = {}
+        if retained_parent_clusters:
+            parent_clusters = retained_parent_clusters
+            next_child = 0
+            for parent_id, active_child_ids in sorted(retained_parent_children.items()):
+                child_ids = []
+                for active_child_id in active_child_ids:
+                    if int(active_child_id) not in clusters:
+                        continue
+                    child_id = int(next_child)
+                    next_child += 1
+                    subclusters[child_id] = np.asarray(
+                        clusters[int(active_child_id)],
+                        dtype=np.int64,
+                    )
+                    child_parent[child_id] = int(parent_id)
+                    child_ids.append(child_id)
+                if len(child_ids) >= 2:
+                    parent_children[int(parent_id)] = tuple(child_ids)
+            subhierarchy_source = retained_source
+        else:
+            (
+                parent_clusters,
+                subclusters,
+                parent_children,
+                child_parent,
+            ) = derive_one_level_hard_subclusters(
+                plc,
+                n,
+                clusters,
+                max_fanout=max_fanout,
+                hard_sizes=hard_sizes,
+                min_parent_size=int(const.HIER_SUBCLUSTER_MIN_PARENT_HARD),
+                min_child_size=int(const.HIER_SUBCLUSTER_MIN_CHILD_HARD),
+                max_cut_ratio=float(const.HIER_SUBCLUSTER_MAX_CUT_RATIO),
+            )
+            subhierarchy_source = "hierarchy_one_level_bisection"
         cluster_softs, bridge_softs = derive_soft_cluster_roles(
             plc,
             n,
@@ -136,6 +215,54 @@ class HierarchyModel:
             max_fanout,
             hard_sizes=hard_sizes,
         )
+        subcluster_labels = np.full(n, -1, dtype=np.int64)
+        for child_id, members in subclusters.items():
+            subcluster_labels[np.asarray(members, dtype=np.int64)] = int(child_id)
+        if subclusters:
+            subcluster_softs, subcluster_bridge_softs = derive_soft_cluster_roles(
+                plc,
+                n,
+                n_soft,
+                subcluster_labels,
+                max_fanout=max_fanout,
+                bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
+            )
+            subcluster_edges, subcluster_confidence = _cluster_graph(
+                plc,
+                subcluster_labels,
+                subclusters,
+                max_fanout,
+                hard_sizes=hard_sizes,
+            )
+        else:
+            subcluster_softs = {}
+            subcluster_bridge_softs = {}
+            subcluster_edges = []
+            subcluster_confidence = {}
+        parent_labels = np.full(n, -1, dtype=np.int64)
+        for parent_id, members in parent_clusters.items():
+            parent_labels[np.asarray(members, dtype=np.int64)] = int(parent_id)
+        if parent_clusters:
+            parent_cluster_softs, parent_bridge_softs = derive_soft_cluster_roles(
+                plc,
+                n,
+                n_soft,
+                parent_labels,
+                max_fanout=max_fanout,
+                bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
+            )
+            parent_edges, parent_confidence = _cluster_graph(
+                plc,
+                parent_labels,
+                parent_clusters,
+                max_fanout,
+                hard_sizes=hard_sizes,
+            )
+        else:
+            parent_cluster_softs = {}
+            parent_bridge_softs = {}
+            parent_edges = []
+            parent_confidence = {}
         return cls(
             labels=labels,
             clusters=clusters,
@@ -148,6 +275,21 @@ class HierarchyModel:
             edges=edges,
             cluster_confidence=confidence,
             split_parents=split_parents,
+            subcluster_labels=subcluster_labels,
+            subclusters=subclusters,
+            subcluster_softs=subcluster_softs,
+            subcluster_bridge_softs=subcluster_bridge_softs,
+            subcluster_edges=subcluster_edges,
+            subcluster_confidence=subcluster_confidence,
+            parent_labels=parent_labels,
+            parent_clusters=parent_clusters,
+            parent_children=parent_children,
+            child_parent=child_parent,
+            parent_cluster_softs=parent_cluster_softs,
+            parent_bridge_softs=parent_bridge_softs,
+            parent_edges=parent_edges,
+            parent_confidence=parent_confidence,
+            subhierarchy_source=(subhierarchy_source if parent_clusters else "none"),
             cluster_source=cluster_source,
             max_fanout=max_fanout,
             min_edge=min_edge,
@@ -239,6 +381,69 @@ class HierarchyModel:
             heat_expand_frac=heat_expand_frac,
             heat_hot_percentile=heat_hot_percentile,
             heat_escape_min=heat_escape_min,
+        )
+
+    def parent_hard_regions(
+        self,
+        hard_xy,
+        sizes,
+        hw,
+        hh,
+        cw,
+        ch,
+        n,
+    ) -> "np.ndarray | None":
+        """Build center-feasible regions for the retained parent layer."""
+        if not self.parent_clusters:
+            return None
+        return compute_region_bbox(
+            hard_xy,
+            sizes,
+            hw,
+            hh,
+            cw,
+            ch,
+            n,
+            self.parent_labels,
+            self.parent_clusters,
+            target_density=hier_region_density(),
+            margin=hier_region_margin(),
+            singleton_window=hier_region_singleton(),
+        )
+
+    def parent_soft_regions(
+        self,
+        hard_xy,
+        soft_xy,
+        hard_sizes,
+        hard_hw,
+        hard_hh,
+        soft_hw,
+        soft_hh,
+        cw,
+        ch,
+        n,
+    ) -> "np.ndarray | None":
+        """Build soft center regions for the retained parent layer."""
+        if not self.parent_clusters:
+            return None
+        return compute_soft_region_bbox(
+            hard_xy,
+            soft_xy,
+            hard_sizes,
+            hard_hw,
+            hard_hh,
+            soft_hw,
+            soft_hh,
+            cw,
+            ch,
+            n,
+            self.parent_clusters,
+            self.parent_cluster_softs,
+            bridge_softs=self.parent_bridge_softs,
+            target_density=hier_region_density(),
+            margin=hier_region_margin(),
+            singleton_window=hier_region_singleton(),
         )
 
 
@@ -334,9 +539,47 @@ def _cluster_graph(
         evidence_term = min(1.0, float(total) / expected)
         evidence_term = 0.6 + 0.4 * evidence_term
 
-        calibrated = base_term * evidence_term * size_term * area_term * conductance_term * cut_term * synthetic_term
+        calibrated = (
+            base_term
+            * evidence_term
+            * size_term
+            * area_term
+            * conductance_term
+            * cut_term
+            * synthetic_term
+        )
         confidence[int(cid)] = float(np.clip(calibrated, 0.0, 1.0))
     return edges, confidence
+
+
+def _derive_split_hierarchy(
+    plc,
+    n: int,
+    n_soft: int,
+    labels: np.ndarray,
+    max_fanout: int,
+    min_edge: int,
+) -> tuple[dict[int, np.ndarray], dict[int, tuple[int, ...]], dict[int, int]]:
+    """Retain one flat-component parent above oversized leaf clusters."""
+    _flat_labels, flat_clusters = derive_hard_clusters(
+        plc,
+        n,
+        n_soft=n_soft,
+        max_fanout=max_fanout,
+        min_edge=min_edge,
+    )
+    parent_clusters: dict[int, np.ndarray] = {}
+    parent_children: dict[int, tuple[int, ...]] = {}
+    child_parent: dict[int, int] = {}
+    for parent_id, members in flat_clusters.items():
+        members = np.asarray(members, dtype=np.int64)
+        child_ids = sorted({int(labels[int(i)]) for i in members if int(labels[int(i)]) >= 0})
+        if len(child_ids) > 1:
+            parent_clusters[int(parent_id)] = members.copy()
+            parent_children[int(parent_id)] = tuple(child_ids)
+            for child_id in child_ids:
+                child_parent[int(child_id)] = int(parent_id)
+    return parent_clusters, parent_children, child_parent
 
 
 def _derive_split_parents(
@@ -347,18 +590,16 @@ def _derive_split_parents(
     max_fanout: int,
     min_edge: int,
 ) -> dict[int, list[int]]:
-    """Map original flat clusters to child clusters created by oversized splitting."""
-    _flat_labels, flat_clusters = derive_hard_clusters(
+    """Backward-compatible parent-to-child map for verification utilities."""
+    _parents, children, _child_parent = _derive_split_hierarchy(
         plc,
         n,
-        n_soft=n_soft,
-        max_fanout=max_fanout,
-        min_edge=min_edge,
+        n_soft,
+        labels,
+        max_fanout,
+        min_edge,
     )
-    split_parents: dict[int, list[int]] = {}
-    for parent_id, members in flat_clusters.items():
-        members = np.asarray(members, dtype=np.int64)
-        child_ids = sorted({int(labels[int(i)]) for i in members if int(labels[int(i)]) >= 0})
-        if len(child_ids) > 1:
-            split_parents[int(parent_id)] = child_ids
-    return split_parents
+    return {
+        int(parent_id): [int(child_id) for child_id in child_ids]
+        for parent_id, child_ids in children.items()
+    }

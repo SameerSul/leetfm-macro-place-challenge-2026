@@ -1769,6 +1769,80 @@ class IncrementalScorer:
             {int(k): tuple(xy) for k, xy in zip(indices, targets)},
         )
 
+    def score_move_group(
+        self,
+        hard_indices,
+        hard_xy,
+        soft_indices=(),
+        soft_xy=(),
+    ) -> float:
+        """Exact-score one completed mixed hard/soft group relocation."""
+        hard_indices = np.asarray(hard_indices, dtype=np.int64).reshape(-1)
+        soft_indices = np.asarray(soft_indices, dtype=np.int64).reshape(-1)
+        hard_targets = np.asarray(hard_xy, dtype=np.float64).reshape((-1, 2))
+        soft_targets = np.asarray(soft_xy, dtype=np.float64).reshape((-1, 2))
+        if hard_targets.shape != (hard_indices.size, 2):
+            raise ValueError("hard group targets must have shape [hard_group_size, 2]")
+        if soft_targets.shape != (soft_indices.size, 2):
+            raise ValueError("soft group targets must have shape [soft_group_size, 2]")
+        if hard_indices.size == 0 and soft_indices.size == 0:
+            raise ValueError("mixed group must contain at least one macro")
+        if np.unique(hard_indices).size != hard_indices.size:
+            raise ValueError("hard group indices must be unique")
+        if np.unique(soft_indices).size != soft_indices.size:
+            raise ValueError("soft group indices must be unique")
+
+        modules = [int(self.hard_indices[int(i)]) for i in hard_indices]
+        modules.extend(int(self.soft_indices[int(k)]) for k in soft_indices)
+        old_xy = np.vstack(
+            [self.committed_hard_pos[hard_indices], self.committed_soft_pos[soft_indices]]
+        )
+        targets = np.vstack([hard_targets, soft_targets])
+        return self._score_multi_move(
+            modules,
+            old_xy,
+            targets,
+            self._hard_slot_array(*hard_indices),
+        )
+
+    def commit_move_group(
+        self,
+        hard_indices,
+        hard_xy,
+        soft_indices=(),
+        soft_xy=(),
+    ) -> None:
+        """Commit one completed mixed hard/soft group relocation."""
+        hard_indices = np.asarray(hard_indices, dtype=np.int64).reshape(-1)
+        soft_indices = np.asarray(soft_indices, dtype=np.int64).reshape(-1)
+        hard_targets = np.asarray(hard_xy, dtype=np.float64).reshape((-1, 2))
+        soft_targets = np.asarray(soft_xy, dtype=np.float64).reshape((-1, 2))
+        if hard_targets.shape != (hard_indices.size, 2):
+            raise ValueError("hard group targets must have shape [hard_group_size, 2]")
+        if soft_targets.shape != (soft_indices.size, 2):
+            raise ValueError("soft group targets must have shape [soft_group_size, 2]")
+        if hard_indices.size == 0 and soft_indices.size == 0:
+            raise ValueError("mixed group must contain at least one macro")
+        if np.unique(hard_indices).size != hard_indices.size:
+            raise ValueError("hard group indices must be unique")
+        if np.unique(soft_indices).size != soft_indices.size:
+            raise ValueError("soft group indices must be unique")
+
+        modules = [int(self.hard_indices[int(i)]) for i in hard_indices]
+        modules.extend(int(self.soft_indices[int(k)]) for k in soft_indices)
+        old_xy = np.vstack(
+            [self.committed_hard_pos[hard_indices], self.committed_soft_pos[soft_indices]]
+        )
+        targets = np.vstack([hard_targets, soft_targets])
+        self._commit_multi_move(
+            modules,
+            old_xy,
+            targets,
+            self._hard_slot_array(*hard_indices),
+            {int(i): tuple(xy) for i, xy in zip(hard_indices, hard_targets)},
+            {int(k): tuple(xy) for k, xy in zip(soft_indices, soft_targets)},
+        )
+
     def _score_multi_move(self, modules, old_xy, new_xy, hard_slots) -> float:
         """Score a small multi-macro move, then restore committed state."""
         modules = [int(m) for m in modules]
@@ -1958,6 +2032,14 @@ class IncrementalScorer:
         """Flatten cached pair topology for compiled swap batch scoring."""
         a_module = int(a_module)
         b_modules = np.ascontiguousarray(b_modules, dtype=np.int64)
+        batch_cache = getattr(self, "_pair_swap_batch_cache", None)
+        if batch_cache is None:
+            batch_cache = {}
+            self._pair_swap_batch_cache = batch_cache
+        cache_key = (a_module, tuple(int(module) for module in b_modules))
+        cached = batch_cache.get(cache_key)
+        if cached is not None:
+            return cached
         structs = [self._route_struct_many([a_module, int(b_module)]) for b_module in b_modules]
         if any(struct is None for struct in structs):
             return None
@@ -1991,7 +2073,7 @@ class IncrementalScorer:
         )
         max_unique = max(int(jit["unique_sinks"].size) for jit in jit_structs)
         max_three = max(int(jit["three_g0"].size) for jit in jit_structs)
-        return {
+        result = {
             "a_module": a_module,
             "b_modules": b_modules,
             "pin_offsets": pin_offsets,
@@ -2017,6 +2099,10 @@ class IncrementalScorer:
             "touched_offsets": touched_offsets,
             "touched": touched,
         }
+        if len(batch_cache) >= 32:
+            batch_cache.pop(next(iter(batch_cache)))
+        batch_cache[cache_key] = result
+        return result
 
     def _score_hard_endpoint_swaps_many(
         self,
