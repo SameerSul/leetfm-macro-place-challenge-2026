@@ -27,7 +27,7 @@ class _FakeScorer:
         self.committed = (np.asarray(indices).copy(), np.asarray(targets).copy())
 
 
-def _run(candidate_allowed):
+def _run(candidate_allowed, *, max_scored=None):
     soft = np.array([[70.0, 60.0], [74.0, 62.0], [72.0, 66.0]], dtype=np.float64)
     original = soft.copy()
     half = np.full(3, 1.0, dtype=np.float64)
@@ -56,6 +56,7 @@ def _run(candidate_allowed):
         shift_fractions=(1.0,),
         min_field_drop=0.01,
         min_gain=0.001,
+        max_scored=max_scored,
     )
     return original, moved, accepts, score, scorer, region
 
@@ -88,3 +89,17 @@ def test_compound_soft_move_applies_hierarchy_gate_before_exact_scoring():
     assert scorer.scored == []
     assert scorer.committed is None
     assert _compound_soft_relocation.last_stats["hierarchy_rejects"] >= 1
+
+
+def test_compound_soft_move_honors_zero_exact_score_quota():
+    original, moved, accepts, score, scorer, _region = _run(
+        lambda _trial: True,
+        max_scored=0,
+    )
+
+    assert accepts == 0
+    assert score == 1.0
+    np.testing.assert_allclose(moved, original)
+    assert scorer.scored == []
+    assert scorer.committed is None
+    assert _compound_soft_relocation.last_stats["quota_exhausted"] is True

@@ -61,6 +61,16 @@ def hierarchy_vector_contract(
     return not violations, violations
 
 
+def hierarchy_vector_margins(
+    candidate: Mapping[str, float],
+    limits: Mapping[str, float],
+) -> dict[str, float]:
+    """Return signed per-component headroom; negative values are violations."""
+    return {
+        key: float(limits[key]) - float(candidate.get(key, 0.0)) for key in HIERARCHY_VECTOR_METRICS
+    }
+
+
 def _edge_values(edge) -> tuple[int, int, float]:
     if isinstance(edge, Mapping):
         return int(edge["src"]), int(edge["dst"]), float(edge.get("weight", 1.0))
@@ -290,9 +300,7 @@ def hierarchy_quality_vector(
         "bridge_soft_distance": float(const.HIER_VECTOR_BRIDGE_SOFT_WEIGHT),
     }
     weight_sum = max(sum(max(value, 0.0) for value in weights.values()), 1.0e-12)
-    composite = sum(
-        max(weights[key], 0.0) * values[key] for key in weights
-    ) / weight_sum
+    composite = sum(max(weights[key], 0.0) * values[key] for key in weights) / weight_sum
     return {
         "composite": float(composite),
         "hard_containment": hard_quality,

@@ -23,7 +23,12 @@ Challenge](https://github.com/partcleda/macro-place-challenge-2026), built on
 the ICCAD04 benchmark suite and the TILOS exact proxy evaluator. We treat
 hierarchy preservation as the primary design objective rather than a side
 effect of cost minimization. The placer infers a hierarchy model directly
-from netlist connectivity, places it with a hierarchy-aware global solver
+from netlist connectivity, conservatively refining a nearly all-covering flat
+component from shared hard-to-soft affinity when ordinary connectivity hides
+its boundaries. It also retains one non-recursive parent/child level so active
+leaf clusters can be relocated or exchange slots inside a larger parent region,
+without changing the global DREAMPlace partition. The model is placed with a
+hierarchy-aware global solver
 (DREAMPlace, seeded with synthetic clique nets per cluster), legalizes hard
 macros in cluster-consecutive order, and then runs a sequence of
 exact-proxy-gated local search passes, region-locked relocation, cluster
@@ -37,11 +42,17 @@ Current full-suite result:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  all hierarchy audits passed  (554.54s)
+AVG 1.1412  17/17 VALID  0 overlaps  all hierarchy audits passed  (423.87s)
 
 uv run evaluate src/main.py --ng45
-AVG 0.7252  4/4 VALID  0 overlaps  all hierarchy audits passed  (232.41s)
+AVG 0.7121  4/4 VALID  0 overlaps  all hierarchy audits passed  (76.85s)
 ```
+
+The current IBM scores are bit-identical to the fastest accepted 398.57s
+deterministic-quota reference; 423.87s is the latest current-revision wall-time
+observation.
+The independent synthetic hierarchy suite is 10/10 valid with zero overlaps,
+10/10 truth-audit passes, and `AVG 1.4204`.
 
 ## Setup
 
@@ -67,6 +78,10 @@ uv run evaluate src/main.py --all
 # NG45 commercial designs (OpenROAD inputs)
 uv run evaluate src/main.py --ng45
 
+# Contract headroom and counterfactual slack calibration
+uv run python scripts/analyze_hierarchy_contract.py \
+  ml_data/plateau_telemetry/plateau_telemetry.jsonl
+
 # Visualize a placement
 uv run evaluate src/main.py -b ibm10 --vis
 
@@ -80,7 +95,7 @@ uv run python src/place_design.py \
 
 ```mermaid
 flowchart TD
-    A[Benchmark netlist] --> B[Infer hierarchy<br/>hard clusters, owned/bridge soft roles]
+    A[Benchmark netlist] --> B[Infer hierarchy<br/>hard clusters, owned/bridge soft roles,<br/>one parent/child level]
     B --> C[Grouped DREAMPlace global placement<br/>synthetic clique nets per cluster]
     C --> D[Cluster-consecutive hard legalization]
 
@@ -101,8 +116,9 @@ flowchart TD
     S6 --> E
 
     E --> F[Congestion-expanded hierarchy regions]
-    F --> G[Region-locked relocation + soft cleanup]
-    G --> H[Exact-gated cluster decompression]
+    F --> G[Region-locked relocation + soft cleanup<br/>hard containment prefilter before exact scoring]
+    G --> G2[Parent-bounded child relocation<br/>and sibling slot swaps]
+    G2 --> H[Exact-gated cluster decompression]
     H --> I[Region-bounded hard/soft swaps]
     I --> I2[Compound related-soft relocation<br/>final-state exact acceptance]
     I2 --> J[Coldspot tightening<br/>congestion-driven local relief]
@@ -125,14 +141,22 @@ Blue nodes build the hierarchy-aware seed; the lighter blue row is the seed
 portfolio — grouped DREAMPlace sits next to
 the legalized `initial.plc`, two DP/initial blends, a radial expansion of
 the DP basin, a synthetic-clearance push-apart of the DP basin, and a
-constraint-graph legalization of `initial.plc`. Every
-candidate is exact-scored, checked component-by-component against legalized
-`initial.plc`, and only the lowest-proxy eligible one advances. The six-part
+constraint-graph legalization of `initial.plc`. Production legalizes
+`initial.plc` before it builds the reference limits. Non-mandatory candidates
+that already fail immutable hard components are removed before exact scoring;
+the remaining candidates are checked component-by-component and only the
+lowest-proxy eligible one advances. The six-part
 hard/soft/graph hierarchy vector covers cluster compactness, worst spread,
 nearest-neighbor impurity, hierarchy-edge stretch, owned-soft distance, and
 bridge-soft corridor distance. An experimental
 hierarchy-first selector is available through `HIER_SEED_HIERARCHY_SELECT=1`,
 but remains default-off because focused validation materially regressed proxy.
+For single-component affinity refinement, an already legal raw `initial.plc`
+can remain the immutable reference when its legalized form satisfies the raw
+limits, preventing double slack. If the raw hard placement is illegal, grouped
+DREAMPlace is the reference instead. This keeps seedless/random input from
+defining false hierarchy geometry while preserving the exact contract and
+final rollback gates.
 Orange
 nodes are the exact-proxy-gated local search passes; green nodes are the
 final audit and the rollback to the best audit-passing checkpoint if either
@@ -150,10 +174,11 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
              expansion of DP basin, synthetic-clearance push-apart,
              constraint-graph legalized initial.plc
           -> exact-score all candidates, apply the per-component hierarchy
-             contract relative to legalized initial.plc, and advance the
-             lowest-proxy eligible seed
+             contract relative to the topology-appropriate legal reference,
+             and advance the lowest-proxy eligible seed
           -> congestion-expanded hierarchy regions
-          -> region-locked relocation + soft cleanup
+          -> region-locked relocation + soft cleanup; reject hard candidates
+             above the selected seed's containment limit before exact scoring
           -> exact-gated cluster decompression
           -> region-bounded hard/soft swaps
           -> hierarchy-bounded compound related-soft relocation; exact-score

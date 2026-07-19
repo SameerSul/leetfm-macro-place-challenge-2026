@@ -11,6 +11,12 @@ benchmark input
   -> build HierarchyModel
        - infer hard-macro clusters from connectivity (or RTL instance-path
          prefixes when names provide useful coverage, e.g. NG45)
+       - refine a nearly all-covering single flat component from shared
+         low-fanout hard-to-soft affinity, with a strict graph-cut fallback
+       - retain exactly one parent/child level without recursive discovery:
+         use the nearest useful explicit path ancestor, retain an original
+         connectivity component above existing split leaves, or bisect an
+         eligible active cluster once with a strict graph cut
        - classify soft macros as owned (one dominant cluster) or bridge
        - preserve explicit soft instance-path bundles when names expose them
        - record inter-cluster edge weights and confidence
@@ -21,10 +27,26 @@ benchmark input
         radial expansion, synthetic-clearance push-apart, and a
         constraint-graph-legalized initial.plc; every candidate gets a complete
         hierarchy vector, the vector is constrained component-by-component
-        relative to legalized initial.plc, and the lowest eligible exact proxy
-        enters relief)
+        relative to legalized initial.plc, except that a legal raw reference is
+        retained for single-component affinity refinement and an illegal raw
+        reference falls back to grouped DREAMPlace; the lowest eligible exact
+        proxy enters relief)
   -> congestion-expanded hard/soft hierarchy regions
   -> exact-gated local micro-shift polish
+  -> region-locked hard relocation + soft cleanup
+       - reject hard candidates that exceed the selected seed's inexpensive
+         hard-containment limit before exact batch scoring
+       - keep the complete six-component checkpoint authoritative after the pass
+       - on refined graphs with at most 64 hard macros, reject individual hard
+         and soft candidates that fail the complete contract before exact scoring
+  -> parent-bounded child-cluster search
+       - keep the production DREAMPlace/leaf partition unchanged
+       - rigidly translate hot child groups toward cold space inside the parent
+       - co-move every leaf-owned movable soft macro; bridge softs stay independent
+       - test sibling slot swaps inside the same parent
+       - when a rigid state is blocked, compact and legalize only the affected children
+       - enforce child and parent hierarchy contracts before exact mixed-group scoring
+       - activate the multilevel contract for later passes only after a move is retained
   -> exact-gated cluster decompression with composite hierarchy quality
        - large designs can order opportunities by hierarchy graph tension
   -> budget-aware interleaved soft repair
@@ -120,11 +142,13 @@ low-net soft/SS breadth, medium/large soft-continuation scheduling, prepared
 Numba routing/legalization kernels, exact batched hard-hard/hard-soft scoring,
 batched soft relocation/swap scoring with a compiled density-tail reducer,
 stable nearest-four hierarchy-audit selection, the guarded constraint-graph seed, and
-the per-component seed/final hierarchy contract:
+the per-component seed/final hierarchy contract, legalized-reference seed
+prefiltering, hierarchy-prefiltered hard relocation, and deterministic
+exact-score work quotas, plus one-level child relocation/sibling swaps:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  554.54s
+AVG 1.1412  17/17 VALID  0 overlaps  423.87s
 ```
 
 The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
@@ -147,6 +171,31 @@ The current batch-density/nearest-four-audit JIT validation again preserved
 every proxy at `AVG 1.1205` in `554.54s`. That full-suite wall time is a
 loaded-host observation, not a claimed end-to-end speedup; isolated kernels
 are measured in [PROGRESS.md](PROGRESS.md).
+Subsequent accepted 2026-07-18 scheduling, coldspot, incremental-scoring, and
+region-expansion changes established an active-root reference of `AVG 1.1487`
+in `409.72s`. Correcting the immutable contract reference to the actually
+legalized `initial.plc` improved the control to `AVG 1.1468` in `404.09s`.
+The hard-relocation containment prefilter then improved the active result to
+`AVG 1.1412` in `404.01s`, with all 17 final component audits passing.
+Deterministic exact-score quotas preserved every placement and score from that
+reference while the observed runtime moved to `398.57s`.
+The subsequent single-component hierarchy refinement is structurally dormant
+on the audited multi-component IBM graphs. Its full IBM validation reproduced
+all 17 accepted scores exactly at `AVG 1.1412`, with 17/17 VALID, zero overlaps,
+and all audits passing in 413.49s; the preceding deterministic-quota reference
+recorded the same placements in 398.57s. `ibm10` also reproduced `1.1348` VALID
+in 26.57s (the preceding repeat was 25.13s). Full synthetic validation reached
+`AVG 1.4206`, 10/10 VALID, zero
+overlaps, and 10/10 independent truth audits in 338.6s, versus the attributed
+`AVG 1.4262` reference with nine truth passes.
+The one-level hierarchy pass then preserved all 17 IBM placements at `AVG
+1.1412`, 17/17 VALID, zero overlaps, and all final audits passing in 423.87s.
+It formed 418 child candidates, localized 150 blocked variants, exact-scored
+55 complete states, and retained none; total operator time was 2.26s. NG45
+improved `AVG 0.7123 -> 0.7121` in 76.85s by retaining one localized child
+move on `ariane136` (`0.7298 -> 0.7291`), with 4/4 valid and all multilevel
+audits passing. Final synthetic validation reached `AVG 1.4204`, 10/10 valid,
+zero overlaps, and 10/10 truth audits.
 The 2026-07-17 SYS_DETRIMENT checkpoint experiment is not part of this
 reference: its vector-safe full sweep reached `AVG 1.1564 / 514.27s` and was
 rejected for proxy regression despite the lower runtime.
@@ -223,7 +272,7 @@ Current NG45 verification:
 
 ```text
 uv run evaluate src/main.py --ng45
-AVG 0.7252  4/4 VALID  0 overlaps  232.41s
+AVG 0.7121  4/4 VALID  0 overlaps  76.85s
 ```
 
 Historical proxy-optimized scores in `PROGRESS.md` and `ISSUES.md` (avg
@@ -240,11 +289,12 @@ not comparable to current numbers.
 | `src/placer/pipeline/macro_placer.py` | Production flow entrypoint; raises if `_hierarchy_floorplan()` cannot run. |
 | `src/placer/pipeline/hierarchy_floorplan.py` | The hierarchy pipeline itself: seed portfolio, region relief, swaps, and coldspot cleanup. |
 | `src/placer/pipeline/hierarchy_context.py` | Shared `PlacementState`, `PassContext`, `PassResult`, `PlateauTelemetry` used across pipeline stages. |
-| `src/placer/local_search/hierarchy_model.py` | Inferred hierarchy: hard clusters, soft roles, cluster graph, region builders. |
+| `src/placer/local_search/hierarchy_model.py` | Inferred hierarchy: active clusters, one parent/child level, soft roles, graphs, region builders. |
 | `src/placer/local_search/soft_hierarchy.py` | Confidence-calibrated soft bundles: explicit instance paths can be active; flat-netlist connectivity and affinity remain diagnostic evidence. |
 | `src/placer/local_search/hierarchy_quality.py` | Complete hierarchy vector, including cached-JIT stable nearest-four impurity selection. |
 | `src/placer/local_search/clusters.py` | Hard-cluster derivation, oversized-cluster splitting, region-box primitives. |
 | `src/placer/local_search/relocation.py` | Hard and soft relocation used by region-locked relief and post-swap polish. |
+| `src/placer/local_search/subcluster_relocation.py` | Parent-bounded child relocation, localized child legalization, and sibling slot swaps. |
 | `src/placer/local_search/hierarchy_swaps.py` | Region-bounded hard-hard, hard-soft, soft-soft swap relief. |
 | `src/placer/local_search/cluster_decompress.py` | Exact-gated decompression of hot hierarchy blobs. |
 | `src/placer/local_search/region_expand.py` | Expands hot cluster regions toward colder congestion bands. |
@@ -252,7 +302,7 @@ not comparable to current numbers.
 | `src/placer/local_search/fields.py` | Congestion/coldspot fields used by relocation and coldspot tightening. |
 | `src/placer/local_search/plateau_telemetry.py` | Buffered schema-v2 pass-yield telemetry with run/revision provenance. |
 | `src/placer/scoring/exact.py` | Exact TILOS proxy wrapper. |
-| `src/placer/scoring/incremental.py` | Incremental scorer for relocation and swap moves, including cached-JIT bbox smoothing and batched density tails. |
+| `src/placer/scoring/incremental.py` | Incremental scorer for relocation, swaps, and complete mixed hard/soft group moves, including cached-JIT bbox smoothing and batched density tails. |
 | `src/placer/legalize/spiral.py` | Hard-macro legalization, with cluster-consecutive order support. |
 | `src/placer/legalize/constraint_graph.py` | Deterministic horizontal/vertical separation-DAG projection for the guarded initial seed. |
 | `src/dreamplace_bridge/` | ICCAD04 pb/plc → Bookshelf, cluster grouping injection, DREAMPlace launcher, read-back. |
@@ -267,7 +317,15 @@ not comparable to current numbers.
 `HierarchyModel.build()` derives hard-macro clusters from RTL instance-path
 prefixes when macro names carry useful coverage (e.g. NG45), otherwise from
 low-fanout net connectivity. Oversized bridge-connected flat clusters are
-selectively split toward a target leaf size. Soft macros are classified as
+selectively split toward a target leaf size. If flat connectivity instead
+collapses nearly all hard macros into one component, bridge-soft evidence is
+mathematically unavailable because every soft has only one current owner. That
+narrow topology is refined by cosine-connected hard-to-soft affinity vectors
+from shared low-fanout nets. Tiny fragments merge into their strongest
+positive-affinity group; if the affinity partition is inconclusive, a stricter
+partial hard-graph cut is the fallback. The result remains inferred evidence,
+not an explicit IP tag, and multi-component designs retain the bridge-evidence
+rule. Soft macros are classified as
 **owned** (one cluster dominates their connectivity, so they move with that
 cluster) or **bridge** (comparable affinity to multiple clusters, so they get
 a region spanning the clusters they connect). When soft names themselves carry
@@ -285,6 +343,29 @@ plus hard affinity is limited to medium confidence: it is useful evidence, but
 not proof that the soft macros are one IP.
 Oversized split eligibility counts unique bridge softs per flat hard component;
 evidence from another component cannot authorize a split.
+
+The model separately retains one additional hierarchy level without changing
+the active clusters sent to DREAMPlace. Path-tag designs keep the nearest
+useful ancestor prefix above the selected leaf depth. If oversized-connectivity
+refinement already split a flat component, that original component becomes the
+parent of its active leaves. Otherwise, an active cluster with at least 12 hard
+macros may be bisected exactly once when both children contain at least four
+hard macros and the normalized cut is at most 0.20. No child is recursively
+split. Parent and child layers each receive their own labels, hard/soft roles,
+cluster graph, confidence, regions, reference vector, and six-component limits.
+
+After ordinary active-cluster relocation, the child pass ranks hot eligible
+children and tests rigid translations toward cold connected components and
+available parent boundaries. It co-moves the child's owned movable soft macros.
+If rigid geometry overlaps, only the affected child set is compacted and spiral
+legalized against fixed outside macros. Siblings may also exchange slots; the
+same affected-only legalization is available when a rigid exchange is blocked.
+Every complete hard/soft state must remain in the parent regions and pass the
+active, child, and parent contracts before exact incremental scoring. The pass
+shares a 24-state quota, a 4s deadline guard, and requires a local exact gain of
+0.0001. Multilevel limits become authoritative for downstream passes and final
+rollback only after a child state is retained; pure discovery therefore cannot
+perturb an otherwise unchanged placement trajectory.
 
 ### 2. Grouped DREAMPlace
 
@@ -318,13 +399,16 @@ constraint-graph legalization of `initial.plc`: overlapping pairs become
 horizontal or vertical separation edges, both graphs stay acyclic under stable
 seed-coordinate order, and longest-path earliest/latest bounds project each
 movable macro toward its original coordinate. The ordinary initial candidate
-remains in the same portfolio. All candidates are exact-scored and record a
-richer
-hierarchy vector covering mean and worst hard-cluster spread, nearest-neighbor
-cluster impurity, weighted inter-cluster edge stretch, owned-soft distance, and
-bridge-soft corridor distance. Each vector component must remain within its
-independent absolute-or-relative slack from legalized `initial.plc`; the
-lowest-proxy eligible seed enters hierarchy relief. The selected seed becomes
+remains in the same portfolio. The reference `initial.plc` is legalized before
+any immutable limit is built; the same legalized coordinates are then
+exact-scored as the ordinary initial candidate. Each scored candidate records a
+richer hierarchy vector covering mean and worst hard-cluster spread,
+nearest-neighbor cluster impurity, weighted inter-cluster edge stretch,
+owned-soft distance, and bridge-soft corridor distance. Each vector component
+must remain within its independent absolute-or-relative slack from the
+legalized reference. Non-mandatory alternatives whose immutable hard
+components already fail are rejected before exact scoring; the lowest-proxy
+eligible scored seed enters hierarchy relief. The selected seed becomes
 the reference for the same six-component contract at pass checkpoints and
 final rollback. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
 secondary choice inside the best hierarchy-quality band. That policy remains
@@ -333,10 +417,22 @@ default-off: on the 2026-07-15 ibm10 experiment it improved seed composite
 If no candidate satisfies the component contract, selection fails closed unless
 the reference candidate itself passes; an invalid fallback is never promoted
 to become the hierarchy baseline.
+Single-component soft-affinity refinement adds one reference rule to avoid
+compounding contract slack: when raw `initial.plc` is already in bounds and
+overlap-free and its legalized form satisfies the raw limits, the raw vector
+stays authoritative through final rollback. If the raw hard placement is
+illegal, it cannot define trustworthy geometry; grouped DREAMPlace becomes the
+reference for that topology. Seed telemetry records which reference was used.
 Final reports classify evidence coverage as `high` (hard >= 0.75 and soft >=
 0.25), `partial` (hard >= 0.25 and soft >= 0.10), or `low`; this is diagnostic
 provenance and does not change proxy or hierarchy acceptance gates. Path-tag
 clusters are reported as `explicit`, while flat-net connectivity is `inferred`.
+The production 15% relative allowance and component absolute allowances were
+retained after replay over 31 IBM, NG45, and synthetic final rows. A 10%
+relative profile invalidated `ibm18`'s final state and `ibm07`'s selected seed;
+a uniform 20% absolute reduction invalidated `ibm08`/`ibm11` finals and the
+selected NG45 `nvdla` seed. The active profile therefore has measured real-
+design support rather than being inferred from the aggregate composite score.
 
 Neighbor impurity needs only the nearest four clustered hard macros. A cached
 Numba kernel therefore keeps a four-entry insertion-ordered selection per
@@ -379,6 +475,22 @@ Hard and soft relocation inside these regions rank candidates by a
 congestion-weighted proposal field plus density; moves that leave the
 assigned region are accepted only when the exact-proxy gain clears
 `HIER_REGION_ESCAPE_MIN`.
+
+Before a region hard-relocation candidate reaches exact batch scoring, the
+pipeline temporarily applies that one move and evaluates the inexpensive
+legacy hard-cluster containment metric. Candidates above the selected seed's
+hard audit limit are discarded and counted as `hierarchy_rejects`. The rich
+six-component contract is still checked after the completed pass, so this
+prefilter reduces known-ineligible work without weakening the authoritative
+checkpoint. The accepted full sweep rejected 654 candidates this way,
+exact-scored 18,637 remaining relocation candidates, and required no hard-
+relocation rollback.
+
+For refined single-component graphs with at most 64 hard macros, micro-shift
+and hard/soft relocation candidates also pass the complete vector contract
+before exact scoring. This retains useful work on the small SRAM-shaped case.
+Larger refined graphs use the normal pass checkpoint and final rollback rather
+than recomputing the rich vector for every proposal.
 
 Relocation has a default-off structural ordering term
 (`HIER_OBJECTIVE_STRUCTURAL_WEIGHT=0.0`) that combines edge clearance, grid
@@ -461,15 +573,67 @@ survivor pool was removed after 636 telemetry records showed no proxy gain.
 
 ### 12. Plateau Telemetry
 
-The hierarchy flow always buffers schema-v2 pass-level telemetry: proxy
-before/after, elapsed time, accept rate, plateau flag, run id, code revision,
-and process id. The default output is
+The hierarchy flow always buffers schema-v2 pass-level telemetry: proposed and
+retained proxy/accepts, audit rollback and violations, discarded gain, scorer
+rebuild time, elapsed time, accept rate, plateau flag, run id, code revision,
+process id, dirty-worktree flag, and a deterministic scoped worktree
+fingerprint. Seed creation/prescore, cache lookup, coldspot work, full exact
+scores, and final audits are separate stage events. Exact-scored seed
+candidates and the final placement also emit structured
+`hierarchy_contract_audit` events containing vectors, limits, margins,
+violations, coverage, and provenance. The default output is
 `ml_data/plateau_telemetry/plateau_telemetry.jsonl`;
 `HIER_PLATEAU_TRACE_PATH` can redirect it. Candidate-level trace logging and
 learned ranking were removed because they added overhead and repeatedly failed
 to improve placement. `scripts/analyze_plateau_telemetry.py` filters the
-remaining scheduling telemetry by run, revision, or benchmark and reports
-aggregate yield and conservative skip candidates.
+remaining scheduling telemetry by run, revision, worktree fingerprint, or
+benchmark, reports aggregate retained yield and conservative skip candidates,
+prints stage timing with `--stages`, and summarizes exact-score limits,
+per-benchmark distributions, and exhaustion with `--quotas`. Every pass row
+records its exact quota, usage before and after the invocation, and whether the
+limit was exhausted. Passes with no exact-scored candidates
+report gain-per-score as `n/a`, never as an artificial infinite yield.
+`scripts/analyze_hierarchy_contract.py` separately aggregates per-component
+headroom, relevant-row counts, allowance utilization, coverage/provenance
+cohorts, and failures. It can replay alternative relative and per-component
+absolute slacks without changing production. NG45 audit rows use their design
+names (`ariane133`, `ariane136`, `mempool_tile`, and `nvdla`) even though their
+source directories share the leaf name `output_CT_Grouping`.
+
+The synthetic runner also emits `hierarchy_truth_audit` rows from cluster labels
+preserved by `generate_benchmarks.py`. These are independent accuracy checks,
+not production acceptance gates. The current ten-design sweep passes all ten.
+The previously failing `syn03_sram` case now recovers its four truth groups
+exactly (purity, pair precision, and recall all `1.0`) and improves proxy
+`4.3964 -> 4.3257`; this is structural recovery rather than looser slack.
+
+### 13. Deterministic Exact-Score Quotas
+
+Wall-clock deadlines remain safety guards, but the high-volume region,
+interleaved, plateau, compound, and strong/medium repair operators stop at
+deterministic work ceilings first. Repeated region rounds consume one shared
+pass allowance. Regional hard-hard, hard-soft, and soft-soft swaps likewise
+share one allowance, so no swap type receives unbounded work. The next stable
+candidate batch is sliced to the remaining allowance without changing
+candidate or commit order.
+
+| Pass | Exact-score ceiling |
+|---|---:|
+| region hard relocation | 2,600 |
+| region soft relocation | 24,000 |
+| parent-bounded child relocation / sibling swaps | 24 |
+| interleaved soft repair | 4,096 |
+| regional swaps | 72,000 |
+| regional-swap graph fallback | 100 |
+| plateau escape, first / post | 5,000 / 7,000 |
+| compound soft relocation | 60 |
+| strong / medium soft repair | 40,000 / 2,048 |
+
+These ceilings were derived from attributable accepted-run maxima with modest
+headroom. The IBM and NG45 validation sweeps preserved every preceding score.
+Only IBM interleaved soft repair reached a ceiling, on ibm11 and ibm17, where
+the reference already scored exactly 4,096 candidates. An intentionally
+aggressive binding profile regressed ibm11 and was not promoted.
 
 ## Scoring and Legality
 
@@ -509,6 +673,8 @@ CLUSTER_MAX_FANOUT=8                   HIER_OVERSIZE_CLUSTER_START_FRAC=0.40
 HIER_OVERSIZE_CLUSTER_TARGET_FRAC=0.15 HIER_OVERSIZE_CLUSTER_TARGET_TOL=1.10
 HIER_OVERSIZE_CLUSTER_MIN_BRIDGE_SOFTS=5
 HIER_OVERSIZE_CLUSTER_MIN_SIZE=6       HIER_OVERSIZE_CLUSTER_MAX_CUT_RATIO=0.45
+HIER_SUBCLUSTER_MIN_PARENT_HARD=12     HIER_SUBCLUSTER_MIN_CHILD_HARD=4
+HIER_SUBCLUSTER_MAX_CUT_RATIO=0.20     HIER_SUBCLUSTER_RELOCATION_MAX_HARD=64
 HIER_GROUP_WEIGHT=8
 ```
 
@@ -528,6 +694,9 @@ HIER_REGION_DENSITY=0.65        REGION_BIAS=1.0
 HIER_REGION_ROUNDS=2            HIER_REGION_BUDGET_S=40
 HIER_REGION_ESCAPE_MIN=0.002
 HIER_REGION_COMPONENT_COLD_PCT=45     HIER_REGION_COMPONENT_MIN_CELLS=4
+HIER_SUBCLUSTER_RELOCATION_BUDGET_S=4 HIER_SUBCLUSTER_RELOCATION_MIN_SPARE_S=12
+HIER_SUBCLUSTER_RELOCATION_TOP_CHILDREN=4 HIER_SUBCLUSTER_RELOCATION_TOP_SWAPS=4
+HIER_SUBCLUSTER_RELOCATION_MIN_GAIN=0.0001
 HIER_PROPOSAL_CONGESTION_WEIGHT=2.5   HIER_PROPOSAL_DENSITY_WEIGHT=1.0
 HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN=0.08
 HIER_RELOC_PROPOSE_MIN_GAIN=0.0005
@@ -625,6 +794,13 @@ HIER_HARD_SWAP_K=16          HIER_SOFT_SWAP_K=48
 HIER_SWAP_MIN_GAIN=0.00001
 ```
 
+Repeated batched swap evaluations reuse a bounded cache of static pair-topology
+packing inside the incremental scorer; exact score values and acceptance gates
+are unchanged.
+
+Fallback congestion expansion now skips a hot cluster when no adjacent fallback
+side is colder than the cluster; component-guided expansion remains unchanged.
+
 **Seed alternatives**
 ```text
 constraint-graph initial seed: always included; HIER_CONSTRAINT_GRAPH_MAX_ROUNDS=6
@@ -634,6 +810,7 @@ constraint-graph initial seed: always included; HIER_CONSTRAINT_GRAPH_MAX_ROUNDS
 ```text
 HIER_POST_SWAP_MICRO_SHIFT_BUDGET_S=8   HIER_STRONG_SOFT_REPAIR_BUDGET_S=12
 HIER_STRONG_SOFT_REPAIR_MIN_SPARE_S=2   HIER_STRONG_SOFT_REPAIR_ROUNDS=2
+HIER_SOFT_QUOTA_REFERENCE_MACROS=1200   HIER_SOFT_QUOTA_MIN_SCALE=0.50
 HIER_PLATEAU_ACCEPT_RATE=0.002          HIER_PLATEAU_PROXY_GAIN=0.00005
 HIER_PLATEAU_ESCAPE_BUDGET_S=4
 ```
@@ -643,6 +820,7 @@ HIER_PLATEAU_ESCAPE_BUDGET_S=4
 HIER_COLDSPOT_ROUNDS=8              HIER_COLDSPOT_BUDGET_S=30
 HIER_COLDSPOT_MIN_GAIN=0.0001       HIER_COLDSPOT_QUALITY_BUDGET=0.01
 HIER_COLDSPOT_MIN_FIELD_GAP=0.02    HIER_COLDSPOT_MAX_DRY_ROUNDS=2
+HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS=1
 HIER_COLDSPOT_WHOLE_VARIANTS=5      HIER_COLDSPOT_ANCHOR_VARIANTS=3
 HIER_COLDSPOT_SOFT_ONLY=0           HIER_COLDSPOT_PARTIAL_FRONTIER=0
 ```
@@ -652,6 +830,8 @@ HIER_COLDSPOT_SOFT_ONLY=0           HIER_COLDSPOT_PARTIAL_FRONTIER=0
 HIER_PLATEAU_TRACE_DIR=ml_data/plateau_telemetry
 HIER_PLATEAU_TRACE_PATH=<optional output override>
 VIVAPLACE_RUN_ID=<optional attributable run id>
+VIVAPLACE_WORKTREE_FINGERPRINT=<optional provenance override for tests/tools>
+HIER_<PASS_NAME>_MAX_EXACT=<optional positive exact-score ceiling override>
 HIER_GPU_EXPERIMENT=<one isolated diagnostic CUDA hypothesis>
 ```
 

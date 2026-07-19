@@ -169,6 +169,7 @@ def derive_path_tag_hard_clusters(plc, n: int):
         return "/".join(parts[:depth])
 
     best_groups = None
+    best_depth = None
     best_score = (-1, -1, 0)
     for depth in range(1, max_depth + 1):
         buckets: dict[str, list[int]] = {}
@@ -188,6 +189,7 @@ def derive_path_tag_hard_clusters(plc, n: int):
         score = (len(groups), covered, -max(int(len(g)) for g in groups))
         if score > best_score:
             best_groups = groups
+            best_depth = int(depth)
             best_score = score
     if not best_groups:
         return None
@@ -197,6 +199,44 @@ def derive_path_tag_hard_clusters(plc, n: int):
     for cid, members in enumerate(best_groups):
         labels[members] = int(cid)
         clusters[int(cid)] = members
+
+    # Retain exactly one useful ancestor level above the selected leaf
+    # partition. The production partition remains unchanged; this metadata is
+    # used only by the bounded child-group search.
+    parent_clusters: dict[int, np.ndarray] = {}
+    parent_children: dict[int, tuple[int, ...]] = {}
+    child_parent: dict[int, int] = {}
+    parent_depth = None
+    for depth in range(max(1, int(best_depth or 1) - 1), 0, -1):
+        children_by_prefix: dict[str, list[int]] = {}
+        for cid, members in clusters.items():
+            prefix = _prefix(names[int(members[0])], depth)
+            children_by_prefix.setdefault(prefix, []).append(int(cid))
+        useful = [
+            (prefix, tuple(sorted(child_ids)))
+            for prefix, child_ids in children_by_prefix.items()
+            if len(child_ids) >= 2
+        ]
+        if not useful:
+            continue
+        for parent_id, (_prefix_name, child_ids) in enumerate(sorted(useful)):
+            members = np.unique(
+                np.concatenate([clusters[int(child_id)] for child_id in child_ids])
+            ).astype(np.int64)
+            parent_clusters[int(parent_id)] = members
+            parent_children[int(parent_id)] = child_ids
+            for child_id in child_ids:
+                child_parent[int(child_id)] = int(parent_id)
+        parent_depth = int(depth)
+        break
+
+    plc._hard_clusters_path_tag_hierarchy = (
+        key,
+        parent_clusters,
+        parent_children,
+        child_parent,
+        parent_depth,
+    )
     plc._hard_clusters_path_tags = (key, labels, clusters)
     return labels, clusters
 
@@ -216,6 +256,12 @@ def derive_oversized_hard_clusters(
     `HIER_OVERSIZE_CLUSTER_START_FRAC` of hard macros before bisection is even
     considered; accepted splits then recurse until leaves are below
     `HIER_OVERSIZE_CLUSTER_TARGET_FRAC` of hard macros.
+
+    A single flat component cannot produce bridge-soft evidence because every
+    soft has only one possible owner. When that component covers nearly all
+    hard macros, shared hard-to-soft affinity may recover subgroups; a stricter
+    graph cut can retain a partial split when affinity is inconclusive.
+    Multi-component designs continue to require component-local bridge softs.
     """
     start_frac = float(const.HIER_OVERSIZE_CLUSTER_START_FRAC)
     target_frac = float(const.HIER_OVERSIZE_CLUSTER_TARGET_FRAC)
@@ -230,6 +276,10 @@ def derive_oversized_hard_clusters(
         int(const.HIER_OVERSIZE_CLUSTER_MIN_BRIDGE_SOFTS),
         int(const.HIER_OVERSIZE_CLUSTER_MIN_SIZE),
         float(const.HIER_OVERSIZE_CLUSTER_MAX_CUT_RATIO),
+        float(const.HIER_SINGLE_COMPONENT_SPLIT_MIN_COVERAGE),
+        int(const.HIER_SINGLE_COMPONENT_SPLIT_MIN_SIZE),
+        float(const.HIER_SINGLE_COMPONENT_SPLIT_MAX_CUT_RATIO),
+        float(const.HIER_SINGLE_COMPONENT_SOFT_COSINE),
         "oversized",
     )
     cached = getattr(plc, "_hard_clusters_oversized", None)
@@ -252,6 +302,10 @@ def derive_oversized_hard_clusters(
     )
     min_size = max(2, int(const.HIER_OVERSIZE_CLUSTER_MIN_SIZE))
     max_cut_ratio = float(const.HIER_OVERSIZE_CLUSTER_MAX_CUT_RATIO)
+    single_component_min_coverage = float(const.HIER_SINGLE_COMPONENT_SPLIT_MIN_COVERAGE)
+    single_component_min_size = max(2, int(const.HIER_SINGLE_COMPONENT_SPLIT_MIN_SIZE))
+    single_component_max_cut_ratio = float(const.HIER_SINGLE_COMPONENT_SPLIT_MAX_CUT_RATIO)
+    single_component_soft_cosine = float(const.HIER_SINGLE_COMPONENT_SOFT_COSINE)
     min_bridge_softs = max(0, int(const.HIER_OVERSIZE_CLUSTER_MIN_BRIDGE_SOFTS))
     if min_bridge_softs > 0:
         _owned_flat, bridge_flat = derive_soft_cluster_roles(
@@ -267,30 +321,51 @@ def derive_oversized_hard_clusters(
             for comp_id in np.asarray(comp_ids, dtype=np.int64).reshape(-1):
                 comp_bridge_soft_members.setdefault(int(comp_id), set()).add(int(soft_idx))
         comp_bridge_soft_counts = {
-            int(comp_id): len(members)
-            for comp_id, members in comp_bridge_soft_members.items()
+            int(comp_id): len(members) for comp_id, members in comp_bridge_soft_members.items()
         }
     else:
         comp_bridge_soft_counts = {}
 
     leaves: list[np.ndarray] = []
+    plc._hard_clusters_oversized_source = "hierarchy_oversized_connectivity"
     for comp_id, comp in flat_clusters.items():
         comp = np.asarray(comp, dtype=np.int64)
         if comp.size < 2:
             continue
         comp_bridge_softs = int(comp_bridge_soft_counts.get(int(comp_id), 0))
-        if comp_bridge_softs < min_bridge_softs or comp.size <= start_size:
+        bridge_supported = comp_bridge_softs >= min_bridge_softs
+        single_component_supported = bool(
+            len(flat_clusters) == 1
+            and float(comp.size) / max(float(n), 1.0) >= single_component_min_coverage
+        )
+        if (not bridge_supported and not single_component_supported) or comp.size <= start_size:
             leaves.append(comp)
             continue
+        if single_component_supported and not bridge_supported:
+            soft_affinity_leaves = _single_component_soft_affinity_split(
+                plc,
+                n,
+                n_soft,
+                max_fanout=max_fanout,
+                min_size=single_component_min_size,
+                cosine_threshold=single_component_soft_cosine,
+            )
+            if soft_affinity_leaves is not None:
+                leaves.extend(soft_affinity_leaves)
+                plc._hard_clusters_oversized_source = "hierarchy_single_component_soft_affinity"
+                continue
+        split_cut_ratio = max_cut_ratio if bridge_supported else single_component_max_cut_ratio
+        split_min_size = min_size if bridge_supported else single_component_min_size
         split_leaves = _recursive_bisect_component(
             comp,
             edge_weight,
             areas,
             max_size=target_size,
-            min_size=min_size,
-            max_cut_ratio=max_cut_ratio,
+            min_size=split_min_size,
+            max_cut_ratio=split_cut_ratio,
         )
-        if len(split_leaves) <= 1 or max(int(len(leaf)) for leaf in split_leaves) > target_accept:
+        reached_target = max(int(len(leaf)) for leaf in split_leaves) <= target_accept
+        if len(split_leaves) <= 1 or (bridge_supported and not reached_target):
             leaves.append(comp)
         else:
             leaves.extend(split_leaves)
@@ -335,6 +410,138 @@ def _hard_edge_maps(plc, n: int, max_fanout: int):
                 edge_count[e] = edge_count.get(e, 0) + 1
                 edge_weight[e] = edge_weight.get(e, 0.0) + weight
     return edge_count, edge_weight
+
+
+def derive_one_level_hard_subclusters(
+    plc,
+    n: int,
+    clusters: dict[int, np.ndarray],
+    *,
+    max_fanout: int,
+    hard_sizes=None,
+    min_parent_size: int,
+    min_child_size: int,
+    max_cut_ratio: float,
+):
+    """Bisect eligible active clusters once, without recursive refinement."""
+    _edge_count, edge_weight = _hard_edge_maps(plc, n, max_fanout)
+    areas = _cluster_partition_areas(n, hard_sizes)
+    min_child = max(2, int(min_child_size))
+    min_parent = max(2 * min_child, int(min_parent_size))
+    retained_parents: dict[int, np.ndarray] = {}
+    subclusters: dict[int, np.ndarray] = {}
+    parent_children: dict[int, tuple[int, ...]] = {}
+    child_parent: dict[int, int] = {}
+    next_child = 0
+    for parent_id, members_raw in sorted(clusters.items()):
+        members = np.asarray(members_raw, dtype=np.int64)
+        if members.size < min_parent:
+            continue
+        split = _balanced_graph_split(
+            members,
+            edge_weight,
+            areas,
+            min_size=min_child,
+        )
+        if split is None:
+            continue
+        left, right, cut_ratio = split
+        if float(cut_ratio) > float(max_cut_ratio):
+            continue
+        left_id, right_id = int(next_child), int(next_child + 1)
+        next_child += 2
+        retained_parents[int(parent_id)] = members.copy()
+        subclusters[left_id] = np.asarray(left, dtype=np.int64)
+        subclusters[right_id] = np.asarray(right, dtype=np.int64)
+        parent_children[int(parent_id)] = (left_id, right_id)
+        child_parent[left_id] = int(parent_id)
+        child_parent[right_id] = int(parent_id)
+    return retained_parents, subclusters, parent_children, child_parent
+
+
+def _cosine_affinity_components(
+    affinity: np.ndarray,
+    *,
+    cosine_threshold: float,
+    min_size: int,
+) -> list[np.ndarray] | None:
+    """Partition rows by strong cosine affinity and merge tiny fragments."""
+    affinity = np.asarray(affinity, dtype=np.float64)
+    if affinity.ndim != 2 or affinity.shape[0] < 2 or affinity.shape[1] == 0:
+        return None
+    norms = np.linalg.norm(affinity, axis=1)
+    similarity = affinity @ affinity.T
+    similarity /= np.maximum(norms[:, None] * norms[None, :], 1.0e-12)
+
+    parents = _union_find_parents(affinity.shape[0])
+    rows, cols = np.where(np.triu(similarity >= float(cosine_threshold), 1))
+    for left, right in zip(rows, cols):
+        parents[_find(parents, int(left))] = _find(parents, int(right))
+
+    by_root: dict[int, list[int]] = {}
+    for index in range(affinity.shape[0]):
+        by_root.setdefault(_find(parents, index), []).append(index)
+    groups = [np.asarray(values, dtype=np.int64) for values in by_root.values()]
+    if len(groups) <= 1:
+        return None
+
+    minimum = max(2, int(min_size))
+    large = [group for group in groups if group.size >= minimum]
+    small = [group for group in groups if group.size < minimum]
+    if len(large) < 2:
+        return None
+    large.sort(key=lambda group: int(group[0]))
+    small.sort(key=lambda group: (int(group.size), int(group[0])))
+    for fragment in small:
+        scores = np.asarray(
+            [float(np.mean(similarity[np.ix_(fragment, group)])) for group in large],
+            dtype=np.float64,
+        )
+        best = int(np.argmax(scores))
+        if float(scores[best]) <= 0.0:
+            return None
+        large[best] = np.sort(np.concatenate([large[best], fragment])).astype(np.int64)
+
+    large.sort(key=lambda group: int(group[0]))
+    return large
+
+
+def _single_component_soft_affinity_split(
+    plc,
+    n: int,
+    n_soft: int,
+    *,
+    max_fanout: int,
+    min_size: int,
+    cosine_threshold: float,
+) -> list[np.ndarray] | None:
+    """Infer hard subgroups from shared low-fanout soft-macro affinity."""
+    if n < 2 or n_soft <= 0:
+        return None
+    cache = _build_wl_cache(plc)
+    ref_idx = cache["ref_idx"]
+    net_starts = cache["net_starts"]
+    net_lengths = cache["net_lengths"]
+    hard_by_ref = {int(ref): index for index, ref in enumerate(plc.hard_macro_indices[:n])}
+    soft_by_ref = {int(ref): index for index, ref in enumerate(plc.soft_macro_indices[:n_soft])}
+    affinity = np.zeros((int(n), int(n_soft)), dtype=np.float64)
+    for net_index, start_raw in enumerate(net_starts):
+        length = int(net_lengths[net_index])
+        if length < 2 or length > int(max_fanout):
+            continue
+        start = int(start_raw)
+        refs = {int(ref) for ref in ref_idx[start : start + length]}
+        hard = [hard_by_ref[ref] for ref in refs if ref in hard_by_ref]
+        soft = [soft_by_ref[ref] for ref in refs if ref in soft_by_ref]
+        if not hard or not soft:
+            continue
+        for hard_index in hard:
+            affinity[hard_index, soft] += 1.0
+    return _cosine_affinity_components(
+        affinity,
+        cosine_threshold=cosine_threshold,
+        min_size=min_size,
+    )
 
 
 def _cluster_partition_areas(n: int, hard_sizes) -> np.ndarray:
