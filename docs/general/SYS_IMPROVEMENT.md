@@ -1,6 +1,6 @@
 # VivaPlace System Improvement Review
 
-Last reviewed: 2026-07-18.
+Last reviewed: 2026-07-19.
 
 ## Purpose
 
@@ -21,7 +21,7 @@ come from [PROGRESS.md](PROGRESS.md).
 The stable accepted reference is:
 
 ```text
-AVG 1.1412  17/17 VALID  0 overlaps  all hierarchy audits passed  423.87s
+AVG 1.1412  17/17 VALID  0 overlaps  all hierarchy audits passed  351.48s
 ```
 
 The July 18 active-root work first established a corrected-reference control at
@@ -29,9 +29,13 @@ The July 18 active-root work first established a corrected-reference control at
 `AVG 1.1412 / 404.01s`. Both sweeps were 17/17 valid with zero overlaps and all
 final hierarchy audits passing. Deterministic exact-score ceilings then
 preserved every placement and score at `AVG 1.1412 / 398.57s`.
-The one-level hierarchy revision again preserves every IBM placement at `AVG
-1.1412 / 423.87s`, while improving NG45 `AVG 0.7123 -> 0.7121` through one
-retained explicit-hierarchy child move.
+The current revision again preserves every IBM placement at `AVG 1.1412 /
+351.48s`. Its fallback inference combines structural edges with
+initial placement, density, and wire-pressure evidence. NG45 remains `AVG
+0.7121` through one retained explicit-hierarchy child move, now in 65.27s.
+Region swaps read global topology directly, reduce congestion/density from
+baseline plus touched cells, and share static hard separation geometry across
+their complete schedule.
 
 Latest attributable retained-yield telemetry
 (`20260718-issue2-deterministic-quotas-all`):
@@ -137,18 +141,24 @@ neither pass should be removed because retained yield remains high.
 Acceptance gate: final proxy and hierarchy vectors must match the control before
 any saved time is reinvested. Reinvestment requires a separate full-suite A/B.
 
-### 4. Accelerate region swaps while preserving exact CPU decisions
+### 4. Implemented: stable-prefix region swaps preserve exact CPU decisions
 
-Region swaps consume `153.22s`, about 38% of the latest reported full-suite
-runtime, and contribute `0.476290` retained proxy gain. They are the main optimization
-target, not a removal target.
+Region swaps remain the largest local-search runtime and contribute `0.476290`
+retained proxy gain. The accepted implementation preserves each source's stable
+candidate order but scores only a four-candidate hard-hard prefix, an
+eight-candidate hard-soft prefix, or a twelve-candidate soft-soft prefix first.
+If the prefix contains the first acceptable move,
+the untouched suffix is irrelevant and is not scored; otherwise the suffix runs
+as the original batch.
 
 Refine the existing batched scorer by:
 
 - constructing legality, region, blockage, routing, and density trial data in
   stable Numba batches for every candidate group with a common endpoint;
-- reusing prepared routing/density buffers across hard-hard, hard-soft, and
-  soft-soft groups where the committed scorer version is unchanged;
+- consuming one global net/pin topology rather than constructing a topology
+  object for every candidate pair;
+- reducing exact congestion/density tails from changed cells plus the sorted
+  unchanged baseline instead of materializing full result matrices;
 - batching small singleton groups together only when their original stable
   order and per-source commit boundary can be reproduced;
 - keeping final float64 reduction and near-tie decisions in the accepted CPU
@@ -158,9 +168,33 @@ Do not move per-source batches to CUDA. Existing experiments showed that device
 launch, copies, synchronization, and changed reduction order cost both proxy
 and runtime.
 
-Acceptance gate: batch/scalar deltas and committed grids must match the scalar
-reference, candidate and winner order must be identical, and a full suite must
-not lose any accepted proxy result.
+Acceptance result: batch/scalar parity still passes; all 17 IBM scores are
+bit-identical. The initial sweep avoided 58,820 exact evaluations versus full
+batches and reduced attributed region-swap time `159.91s -> 150.68s`. Ranking
+before hard legality, calibrating only the soft-soft prefix to 12, and skipping
+disabled graph allocations then increased avoided work to 66,703 and reduced
+the phase again to 148.29s. NG45 avoided 10,068 evaluations and synthetic
+avoided 2,578. Reusable full-grid workspaces and a fused density reducer were
+rejected because they did not improve isolated runtime.
+
+A follow-up kept all candidate, score, and placement decisions identical while
+removing two remaining allocation classes: congestion-tail reduction uses the
+already-disposable batch grid as its partition workspace, and the complete
+swap schedule shares one immutable pair of hard separation matrices. IBM
+physical/avoided work remained 1,077,431 / 66,703 and attributed region time
+fell `148.29s -> 146.98s`. Full evaluator time was flat at 416.87s, so the
+accepted claim is the measured 1.32s local reduction, not an end-to-end speedup.
+
+The direct-topology/touched-tail implementation completed that recommendation.
+The compiled route loop packs selected pin cells from global net starts,
+lengths, weights, pin references, and offsets while retaining the evaluator's
+2-pin/3-pin/high-fanout order. Congestion recomputes only route-bbox strips and
+changed hard-blockage cells; density applies only the four swap rectangles.
+Both reducers merge candidate values with the sorted unchanged baseline for an
+exact top tail. IBM physical/avoided work remained 1,077,431 / 66,703 while
+attributed region time fell `146.98s -> 104.04s` and complete runtime fell
+`416.87s -> 351.48s`. NG45 preserved AVG 0.7121 while total runtime fell
+`79.43s -> 65.27s`.
 
 ### 5. Implemented: prune the seed portfolio before expensive scoring
 
@@ -189,13 +223,13 @@ full control improved and all 17 final contracts passed.
 
 ### 6. Tune late cleanup from retained yield
 
-After rollback-aware telemetry is available, use conservative structural gates
-inside the existing scheduler:
+Rollback-aware lane telemetry and conservative stopping are now implemented:
 
 - keep both region micro-shift and region soft relocation unchanged;
 - keep plateau escape and interleaved soft repair unless retained telemetry
   contradicts their current positive yield;
-- stop strong soft repair after its first no-retained-gain lane or round;
+- stop strong/medium soft repair after audit restore or its first lane with
+  retained gain no larger than `0.00005`;
 - run post-swap micro-shift only when the preceding swap state changed relevant
   hot macros or the refreshed field exposes a new local opportunity;
 - retain compound soft relocation. A full control/off A/B saved 6.66 seconds
@@ -204,7 +238,9 @@ inside the existing scheduler:
 
 Do not directly broaden another pass with saved time. The rejected `384/10/4s`
 to `512/12/6.5s` plateau expansion regressed the suite by changing later search
-basins.
+basins. Do not truncate the ordered sources inside a lane: 128-, 256-, and
+384-source dry probes regressed IBM12 because a useful second-round congestion
+move appears deeper in the tail.
 
 ## Priority 2: Improve Hierarchy Accuracy Without Replacing the Model
 
@@ -294,8 +330,12 @@ partition.
 The hierarchy model now retains one additional structural level beside the
 active DREAMPlace partition. The level comes from the nearest useful explicit
 path ancestor, an original component above existing split leaves, or one strict
-graph bisection of an eligible active cluster. It never recurses, so discovery
-cost and confidence do not compound down an inferred tree.
+graph bisection of an eligible active cluster. The fallback graph contains only
+direct low-fanout hard relations and shared-soft support. Initial
+hard/soft proximity, local macro-area density, and placed wire demand reinforce
+those relations, but cannot invent a disconnected group. Raw structural cut,
+compactness gain, and combined confidence gate the result. It never recurses,
+so discovery cost and confidence do not compound down an inferred tree.
 
 The corresponding local pass runs after active-cluster macro relief. It tests
 child translations and sibling slot swaps inside the parent region, carries
@@ -307,11 +347,34 @@ important: enabling the tighter contract from discovery alone changed otherwise
 unrelated cleanup trajectories on the synthetic suite.
 
 The pass has a shared 24-state exact quota, 4s guard, and 0.0001 gain floor. The
-IBM sweep considered 418 candidates, exact-scored 55 in 2.26s, retained none,
-and reproduced every reference score at `AVG 1.1412`. NG45 retained one
-localized child move on `ariane136`, improving the suite to `AVG 0.7121` with
-all audits passing. The 10-design synthetic suite remained 10/10 valid with
-10/10 truth audits and improved slightly to `AVG 1.4204`.
+spatial/structural IBM sweep inferred 23 fallback parents / 46 children on ten
+designs, saw 38 eligible children, exact-scored 24 states, retained none, and
+reproduced every reference score at `AVG 1.1412`. NG45 retained one localized
+child move on `ariane136`, improving the suite to `AVG 0.7121` with all audits
+passing. The 10-design synthetic suite remained 10/10 valid with 10/10 truth
+audits at `AVG 1.4195`.
+
+The deepest-child extension now turns that retained level into an internal
+search boundary without inferring another partition. Each current child
+footprint receives `0.01` base canvas-fraction margin plus up to `0.025` from a
+congestion/density/graph-pressure blend. Hot boxes may grow another `0.01`
+toward cold connected components, with graph corridors biasing direction, and
+the final box is clipped to its parent. The operator searches individual hard
+and owned-soft relocations plus same-child hard swaps, uses graph tension and
+neighboring-child centroids for priority/anchors, and applies the full
+multilevel contract before exact acceptance.
+
+The accepted 48-score/3s pass exact-scored 528 IBM states in 2.93s and retained
+none at its 0.0005 floor, preserving all reference placements at AVG 1.1412.
+This zero retained yield is deliberate calibration, not a disabled operator:
+the 0.0001 trial retained six moves with total immediate gains between roughly
+0.0001 and 0.0004 per design, but the newly active downstream contract displaced
+larger later gains and regressed AVG to 1.1453, including ibm18
+`1.3773 -> 1.4361`. The higher floor restores every affected design exactly.
+The independent synthetic sweep reached `AVG 1.4193`, 10/10 valid, zero
+overlaps, and 10/10 truth-audit passes, confirming that the fixed boxes and
+quotas also hold on non-square, fixed-macro, route-inverted, seedless, and
+large-scale cases.
 
 ## Promotion Order
 
@@ -321,10 +384,11 @@ all audits passing. The 10-design synthetic suite remained 10/10 valid with
 4. Stable CPU/Numba swap throughput work.
 5. Evidence-gated late-pass scheduling.
 6. Synthetic accuracy metrics (implemented); extend NG45 nested-prefix checks.
-7. Single-component split (implemented); continue confidence calibration.
+7. Single-component split and spatial/structural child confidence gates
+   (implemented); continue independent precision calibration.
 8. Conservative soft-role calibration.
 9. One-level parent/child search (implemented); keep recursive inference out of
-   scope until one-level evidence coverage is independently calibrated.
+   scope until retained-move yield justifies more hierarchy depth.
 
 For every promotion, run focused `ibm10` plus at least one low-coverage and one
 large-grid case before `--all`. A clustering change also requires the synthetic

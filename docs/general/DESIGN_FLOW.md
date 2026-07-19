@@ -25,7 +25,8 @@ region expansion/decompression, small-design polish, no-release low-net soft/SS
 breadth, medium/large soft-continuation scheduling, and strict final hierarchy
 audit rollback with audit-aware local relief plus large-design graph-tension
 opportunity ordering, prepared Numba routing/legalization kernels, and batched
-soft relocation/swap scoring with compiled density tails, exact batched
+soft relocation/swap scoring with in-place congestion tails and compiled
+density tails, exact batched
 hard-hard/hard-soft scoring, cached stable nearest-four hierarchy-audit
 selection, and a
 guarded constraint-graph legalization candidate for `initial.plc`, plus the
@@ -34,20 +35,43 @@ soft-bundle inference, legalized-reference seed prefiltering, structured
 contract calibration telemetry, hierarchy-prefiltered hard relocation, and
 deterministic exact-score work quotas, plus conservative refinement of a
 nearly all-covering single flat hard component, and one non-recursive
-parent/child hierarchy level with bounded child relocation and sibling swaps:
+parent/child hierarchy level whose fallback combines structural, placement,
+density, and wire-pressure evidence, with bounded child relocation and sibling
+swaps, followed by deepest-child footprint-plus-margin boxes and graph-guided
+internal relief:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1412  17/17 VALID  0 overlaps  423.87s
+AVG 1.1412  17/17 VALID  0 overlaps  351.48s
 ```
 
 All 17 per-design scores are bit-identical to the preceding 398.57s
-deterministic-quota reference. The one-level operator exact-scored 55 complete
-IBM child states in 2.26s and retained none, so discovery alone did not change
-the established trajectory.
+deterministic-quota reference. Spatial/structural fallback inferred 23 parents
+and 46 children on ten designs. The one-level operator exact-scored 24 complete
+IBM child states and retained none, so discovery alone did not change the
+established trajectory.
+The deepest-child pass exact-scored 528 bounded states across 11 participating
+designs in 2.93s and retained none at its calibrated 0.0005 gain floor, again
+preserving every accepted placement.
+Stable-prefix swap scoring, ranked-only hard legality, and disabled-graph
+allocation removal avoid 66,703 exact evaluations and reduce the attributed
+IBM region-swap phase from 159.91s to 148.29s without changing any winner. The
+latest refinement alone reduced the preceding 150.68s phase to 148.29s. Late
+congestion/density lanes stop the remaining rounds after their
+audited retained gain reaches the 0.00005 floor.
+In-place partition of disposable congestion batches and one schedule-scoped
+hard-separation cache reduce the phase again to 146.98s with the same
+1,077,431 physical and 66,703 avoided exact scores. Direct global-topology swap
+routing removes candidate-pair topology builds and flattening. Exact sparse
+tail reducers recompute only touched congestion strips/blockage cells and the
+four changed density rectangles, merging them with the unchanged baseline.
+The phase falls again to 104.04s and complete runtime to 351.48s without any
+placement or score change.
+The independent synthetic sweep completed at `AVG 1.4193`, 10/10 VALID, zero
+overlaps, and 10/10 truth-audit passes with the deep boxes enabled.
 
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7121`,
-4/4 VALID, zero overlaps, all hierarchy audits passed, in 76.85s. A localized
+4/4 VALID, zero overlaps, all hierarchy audits passed, in 65.27s. A localized
 child relocation on `ariane136` improved that design from `0.7298` to `0.7291`.
 
 The earlier `AVG 1.1627` hierarchy sweep remains an important proxy reference,
@@ -141,7 +165,7 @@ implements it, and the constants that control it), see
 ```mermaid
 flowchart TD
     A[Benchmark + initial macro locations] --> B[Load PLC]
-    B --> C[Build HierarchyModel from path tags or inferred connectivity<br/>refine a nearly all-covering single flat component<br/>retain one parent/child level]
+    B --> C[Build HierarchyModel from path tags or inferred connectivity<br/>refine a nearly all-covering single flat component<br/>retain one spatial/structural parent/child level]
     C --> D[Classify soft macros as owned or bridge]
     D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
     E --> F[Cluster-consecutive hard legalization]
@@ -154,15 +178,16 @@ flowchart TD
     R --> J[Region-locked hard relocation + soft cleanup<br/>hard-containment prefilter before exact scoring]
     J --> A1[In-region micro-shift polish]
     A1 --> A2[Parent-bounded child relocation<br/>or sibling slot swap; owned softs co-move]
-    A2 --> V[Exact-gated cluster decompression + graph-tension ordering]
-    V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps]
+    A2 --> A3[Freeze deepest-child footprint + graph/field margin boxes<br/>bounded hard/owned-soft relocation + hard swaps]
+    A3 --> V[Exact-gated cluster decompression + graph-tension ordering]
+    V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps<br/>stable exact prefix, untouched suffix on demand]
     T --> T1[Per-round micro-shift replay + audit checkpoint]
     T1 --> X[Post-swap micro-shift replay; telemetry skips duplicate ordinary post-swap soft pass]
     X --> C1{Post-soft plateau and spare budget?}
     C1 -->|Yes| C2[Compound related-soft relocation with final-state exact acceptance]
     C1 -->|No| X1
     C2 --> X1{Strong soft repair scheduled?}
-    X1 -->|Yes| X2[Plateau/component-aware strong soft repair]
+    X1 -->|Yes| X2[Plateau/component-aware strong soft repair<br/>stop after audited weak retained lane]
     X1 -->|No| L
     X2 --> L[Coldspot cluster tightening with optional ego-net candidates]
     L --> Z[Post-coldspot micro-shift replay]
@@ -200,7 +225,11 @@ larger graphs retain pass-level checkpoints and final rollback.
 DREAMPlace partition. Explicit paths retain their nearest useful ancestor;
 connectivity leaves retain an original split component when available;
 otherwise an eligible active cluster is bisected once under strict size and
-cut limits. There is no recursive descent. After active-cluster macro relief,
+evidence limits. Direct hard edges and shared-soft connections are
+mandatory; initial hard/soft proximity, local macro-area density, and placed
+low-fanout wire demand may only reinforce those structural relations. The split
+must pass raw-cut (`<=0.20`), compactness-gain (`>=0.10`), and confidence
+(`>=0.54`) gates. There is no recursive descent. After active-cluster macro relief,
 the child pass tests rigid child translations and sibling slot swaps within
 the parent region. Owned soft macros move with their child, while bridge softs
 remain independent. Blocked group states may compact and legalize only the
@@ -288,7 +317,16 @@ Region swaps exact-score hard-hard and hard-soft sets in batches when at least
 two candidates share the first hard endpoint. Candidate routing, hard blockage,
 wirelength, and density states are built in compiled loops without mutating the
 committed scorer; the existing scalar commit path still applies the winner.
-Soft relocation and soft-soft swaps retain their existing batched paths.
+Soft relocation and soft-soft swaps retain their batched paths. Swap batches
+read global net/pin topology directly and pack only selected pin cells in the
+compiled old/new routing loop, so no candidate-pair routing structures are
+built or flattened. Their congestion reducer recomputes only route-bbox strips
+and changed hard-blockage cells; their density reducer accumulates only the four
+changed rectangles. Each merges changed values with the sorted unchanged
+baseline to recover the exact scalar tail. Ordinary relocation batches still
+consume disposable full congestion grids in place. The region-swap schedule
+also shares one immutable pair of hard separation matrices across
+congestion/density rounds and graph fallback calls.
 
 After post-coldspot cleanup, structurally eligible small designs run one extra
 exact-gated polish pass. Eligibility is based on a small hard-macro population,

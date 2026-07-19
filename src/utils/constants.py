@@ -114,6 +114,17 @@ HIER_SUBCLUSTER_RELOCATION_MIN_SPARE_S = 12.0
 HIER_SUBCLUSTER_MIN_PARENT_HARD = 12
 HIER_SUBCLUSTER_MIN_CHILD_HARD = 4
 HIER_SUBCLUSTER_MAX_CUT_RATIO = 0.20
+# One-level flat-name inference strengthens low-fanout hard connectivity with
+# shared-soft affinity, initial-placement proximity, local macro-area density,
+# and a gridless routing-pressure estimate. Geometry cannot create an edge by
+# itself; it can only reinforce already connected hard/soft structure.
+HIER_SUBCLUSTER_SHARED_SOFT_WEIGHT = 0.75
+HIER_SUBCLUSTER_SPATIAL_PROXIMITY_WEIGHT = 1.0
+HIER_SUBCLUSTER_SPATIAL_PRESSURE_WEIGHT = 0.50
+HIER_SUBCLUSTER_SPATIAL_NEIGHBORS = 8
+HIER_SUBCLUSTER_SPATIAL_MAX_SOFT_DEGREE = 24
+HIER_SUBCLUSTER_SPATIAL_MIN_COMPACTNESS_GAIN = 0.10
+HIER_SUBCLUSTER_SPATIAL_MIN_CONFIDENCE = 0.54
 HIER_SUBCLUSTER_RELOCATION_TOP_CHILDREN = 4
 HIER_SUBCLUSTER_RELOCATION_TOP_SWAPS = 4
 HIER_SUBCLUSTER_RELOCATION_MAX_HARD = 64
@@ -133,6 +144,35 @@ HIER_SUBCLUSTER_RELOCATION_MIN_FIELD_DROP = 0.02
 # contract cost 0.0053 at finalization; 0.0001 rejects that trajectory while
 # retaining the independently beneficial NG45 move.
 HIER_SUBCLUSTER_RELOCATION_MIN_GAIN = 0.0001
+
+# Deepest-child relief keeps each member inside a box equal to the child's
+# current footprint plus a graph/field-calibrated margin. Congestion and density
+# heat supply most of the margin signal; inter-child graph tension supplies the
+# structural term and target-anchor bias. The boxes are built once after rigid
+# child motion and remain immutable during the internal pass.
+HIER_DEEP_CLUSTER_BUDGET_S = 3.0
+HIER_DEEP_CLUSTER_MIN_SPARE_S = 8.0
+HIER_DEEP_CLUSTER_BASE_MARGIN = 0.01
+HIER_DEEP_CLUSTER_EXTRA_MARGIN = 0.025
+HIER_DEEP_CLUSTER_CONGESTION_WEIGHT = 0.45
+HIER_DEEP_CLUSTER_DENSITY_WEIGHT = 0.35
+HIER_DEEP_CLUSTER_GRAPH_WEIGHT = 0.20
+HIER_DEEP_CLUSTER_DIRECTIONAL_EXPAND_FRAC = 0.01
+HIER_DEEP_CLUSTER_EXPAND_HOT_PCT = 60.0
+HIER_DEEP_CLUSTER_GRAPH_COMPONENT_WEIGHT = 0.25
+HIER_DEEP_CLUSTER_TOP_CHILDREN = 4
+HIER_DEEP_CLUSTER_HARD_TARGETS = 4
+HIER_DEEP_CLUSTER_SOFT_TARGETS = 4
+HIER_DEEP_CLUSTER_RELOCATION_TARGETS = 3
+HIER_DEEP_CLUSTER_SWAP_K = 4
+HIER_DEEP_CLUSTER_GRAPH_ANCHOR_BLEND = 0.15
+HIER_DEEP_CLUSTER_GRAPH_DELTA_WEIGHT = 0.10
+# A deep move activates child/parent limits for every later pass. The first full
+# sweep showed that 0.00010--0.00039 local gains can displace much larger later
+# improvements, so require enough immediate headroom to pay for that tighter
+# downstream trajectory.
+HIER_DEEP_CLUSTER_MIN_GAIN = 0.0005
+HIER_DEEP_CLUSTER_MAX_SCORED_PER_CALL = 8
 
 # Final-only exact scoring for compound moves of related soft macros. Candidate
 # members preserve their relative layout and must remain inside their individual
@@ -182,6 +222,10 @@ HIER_STRONG_SOFT_REPAIR_ROUNDS = 2
 HIER_STRONG_SOFT_REPAIR_TOP_K = 512
 HIER_STRONG_SOFT_REPAIR_TARGETS = 12
 HIER_STRONG_SOFT_REPAIR_MIN_GAIN = 0.00005
+# Do not start another late lane after the audited retained gain from the current
+# lane falls below this deterministic floor. In particular, a weak density lane
+# cannot reopen another congestion/density round.
+HIER_STRONG_SOFT_CONTINUE_MIN_GAIN = 0.00005
 HIER_STRONG_SOFT_REPAIR_WL_PREFILTER = 0.0005
 # Scale late soft-relocation candidate quotas for smaller designs. Larger
 # designs retain the existing quotas; exact acceptance gates are unchanged.
@@ -203,6 +247,7 @@ HIER_MEDIUM_SOFT_ROUNDS = 2
 HIER_MEDIUM_SOFT_TOP_K = 768
 HIER_MEDIUM_SOFT_TARGETS = 14
 HIER_MEDIUM_SOFT_MIN_GAIN = 0.00005
+HIER_MEDIUM_SOFT_CONTINUE_MIN_GAIN = 0.00005
 # Soft-only repair interleaved before hard/soft swap search.
 HIER_INTERLEAVED_SOFT_REPAIR_BUDGET_S = 3.0
 HIER_INTERLEAVED_SOFT_REPAIR_MIN_SPARE_S = 12.0
@@ -367,6 +412,13 @@ HIER_REGION_SWAP_BUDGET_S = 20.0
 HIER_HARD_SWAP_K = 16
 # Number of soft candidates considered per soft swap source.
 HIER_SOFT_SWAP_K = 48
+# Exact-score a short stable prefix first. When that prefix contains the first
+# acceptable candidate, the untouched suffix cannot affect the committed move
+# and is skipped. Logical score accounting remains candidate-order compatible
+# with the deterministic pass quotas.
+HIER_SWAP_HARD_EXACT_PREFIX = 4
+HIER_SWAP_HARD_SOFT_EXACT_PREFIX = 8
+HIER_SWAP_SOFT_SOFT_EXACT_PREFIX = 12
 # Minimum exact-proxy gain required for a swap move.
 HIER_SWAP_MIN_GAIN = 0.00001
 # Optional soft-macro barrier for soft relocation and soft-involving swaps.
