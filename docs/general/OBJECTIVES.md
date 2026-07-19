@@ -20,6 +20,16 @@ These are the structural objectives we use to guide macro placement.
   hierarchy components relative to legalized `initial.plc`; relief checkpoints
   and final rollback enforce the same component contract relative to the
   selected seed.
+- The non-recursive fallback child level treats direct hard connections and
+  shared-soft connectivity as mandatory evidence, then uses initial
+  macro proximity, local macro-area density, and placed low-fanout wire demand
+  to decide whether that structure also looks like a physical subsystem.
+  Physical proximity cannot create a hierarchy without connectivity.
+- Each deepest child gets a fixed footprint-plus-margin box. Congestion and
+  density determine where extra internal breathing room is valuable, while
+  inter-child graph tension and graph corridors influence the margin, selected
+  child order, cold-side expansion, and relocation anchors. Internal hard and
+  owned-soft moves cannot leave the child box or its retained parent.
 - Congestion pressure comes from the density/congestion fields used by
   relocation, swaps, decompression, micro-shift polish, compound related-soft
   relocation, and coldspot tightening. The compound pass preserves each

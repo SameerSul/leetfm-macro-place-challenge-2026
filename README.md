@@ -25,9 +25,19 @@ hierarchy preservation as the primary design objective rather than a side
 effect of cost minimization. The placer infers a hierarchy model directly
 from netlist connectivity, conservatively refining a nearly all-covering flat
 component from shared hard-to-soft affinity when ordinary connectivity hides
-its boundaries. It also retains one non-recursive parent/child level so active
-leaf clusters can be relocated or exchange slots inside a larger parent region,
-without changing the global DREAMPlace partition. The model is placed with a
+its boundaries. It also retains one non-recursive parent/child level. When no
+explicit or retained connectivity parent exists, direct/shared-soft structural
+relations are reinforced by initial placement proximity, local macro density,
+and placed wire pressure; proximity alone cannot declare an IP. Active leaf
+clusters can then relocate or exchange slots inside a larger parent region
+without changing the global DREAMPlace partition. Each deepest child also gets
+a footprint-plus-margin relief box whose margin and cold-side expansion blend
+congestion, density, and hierarchy-graph pressure. Individual members can
+relocate or swap only inside that box. Region swaps exact-score a stable prefix
+first and skip an untouched suffix only when that prefix already contains the
+same first acceptable move. Disposable batched congestion grids are reduced
+in place, and static hard-macro separation geometry is shared by every field
+and round in one swap schedule. The model is placed with a
 hierarchy-aware global solver
 (DREAMPlace, seeded with synthetic clique nets per cluster), legalizes hard
 macros in cluster-consecutive order, and then runs a sequence of
@@ -42,17 +52,26 @@ Current full-suite result:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1412  17/17 VALID  0 overlaps  all hierarchy audits passed  (423.87s)
+AVG 1.1412  17/17 VALID  0 overlaps  all hierarchy audits passed  (351.48s)
 
 uv run evaluate src/main.py --ng45
-AVG 0.7121  4/4 VALID  0 overlaps  all hierarchy audits passed  (76.85s)
+AVG 0.7121  4/4 VALID  0 overlaps  all hierarchy audits passed  (65.27s)
 ```
 
-The current IBM scores are bit-identical to the fastest accepted 398.57s
-deterministic-quota reference; 423.87s is the latest current-revision wall-time
-observation.
+The current IBM scores are bit-identical to both the fastest accepted 398.57s
+deterministic-quota reference and the preceding 433.09s deepest-child sweep.
+Stable-prefix swap scoring, ranked-only hard legality, and disabled-graph
+allocation removal now avoid 66,703 exact evaluations and reduce attributed
+region-swap time from 159.91s to 148.29s. In-place congestion-tail reduction
+and schedule-scoped hard-geometry reuse reduce it again to 146.98s while
+preserving all placements and exact-score counts. Direct global-topology swap
+routing then removes pair-specific topology construction, while exact sparse
+congestion/density reducers merge only changed cells with the cached baseline
+tail. Attributed region-swap time falls again to 104.04s with the same
+1,077,431 physical and 66,703 avoided exact scores; complete IBM runtime falls
+to 351.48s.
 The independent synthetic hierarchy suite is 10/10 valid with zero overlaps,
-10/10 truth-audit passes, and `AVG 1.4204`.
+10/10 truth-audit passes, and `AVG 1.4193` with the deepest-child pass enabled.
 
 ## Setup
 
@@ -95,7 +114,7 @@ uv run python src/place_design.py \
 
 ```mermaid
 flowchart TD
-    A[Benchmark netlist] --> B[Infer hierarchy<br/>hard clusters, owned/bridge soft roles,<br/>one parent/child level]
+    A[Benchmark netlist] --> B[Infer hierarchy<br/>hard clusters, owned/bridge soft roles,<br/>one spatial/structural parent/child level]
     B --> C[Grouped DREAMPlace global placement<br/>synthetic clique nets per cluster]
     C --> D[Cluster-consecutive hard legalization]
 
@@ -118,7 +137,8 @@ flowchart TD
     E --> F[Congestion-expanded hierarchy regions]
     F --> G[Region-locked relocation + soft cleanup<br/>hard containment prefilter before exact scoring]
     G --> G2[Parent-bounded child relocation<br/>and sibling slot swaps]
-    G2 --> H[Exact-gated cluster decompression]
+    G2 --> G3[Deepest-child footprint + graph/field margin boxes<br/>bounded internal relocation and hard swaps]
+    G3 --> H[Exact-gated cluster decompression]
     H --> I[Region-bounded hard/soft swaps]
     I --> I2[Compound related-soft relocation<br/>final-state exact acceptance]
     I2 --> J[Coldspot tightening<br/>congestion-driven local relief]
@@ -133,7 +153,7 @@ flowchart TD
     classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     class A,B,C,D,P,E seed
     class S0,S1,S2,S3,S4,S5,S6 cand
-    class F,G,H,I,I2,J search
+    class F,G,G2,G3,H,I,I2,J search
     class L,M,N audit
 ```
 
@@ -179,6 +199,10 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
           -> congestion-expanded hierarchy regions
           -> region-locked relocation + soft cleanup; reject hard candidates
              above the selected seed's containment limit before exact scoring
+          -> parent-bounded child relocation and sibling slot swaps
+          -> build immutable deepest-child footprint-plus-margin boxes from
+             congestion, density, and graph pressure; run bounded internal
+             hard/owned-soft relocation and hard-hard swaps
           -> exact-gated cluster decompression
           -> region-bounded hard/soft swaps
           -> hierarchy-bounded compound related-soft relocation; exact-score

@@ -30,7 +30,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         hierarchy_quality_metric,
     )
     from placer.local_search.compound_relocation import _compound_soft_relocation
-    from placer.local_search.fields import _congestion_field
+    from placer.local_search.fields import _congestion_field, _density_field
     from placer.local_search.plateau_telemetry import log_plateau_event
     from placer.local_search.graph_tension import (
         cluster_graph_tension,
@@ -44,7 +44,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         hierarchy_vector_limits,
     )
     from placer.local_search.region_expand import expand_regions_by_congestion
-    from placer.local_search.subcluster_relocation import _subcluster_relocation
+    from placer.local_search.subcluster_relocation import (
+        _deep_cluster_field_heat,
+        _deep_cluster_internal_relief,
+        _deep_cluster_margin_fractions,
+        _subcluster_relocation,
+    )
     from placer.local_search.relocation import (
         _micro_shift_polish,
         _relocation_moves,
@@ -56,6 +61,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         PlateauTelemetry,
     )
     from placer.scoring.incremental import IncrementalScorer
+    from placer.shared.geometry import separation_matrices
     from placer.scoring.wirelength import _build_wl_cache
     from placer.plc.loader import _load_plc, _resolve_benchmark_dir, _trace_benchmark_name
     from placer.pipeline.segments.floorplan_seed import run_seed_portfolio
@@ -134,6 +140,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             "region_hard_relocation": {"exact": 2600, "candidates": 0},
             "region_soft_relocation": {"exact": 24000, "candidates": 0},
             "subcluster_relocation": {"exact": 24, "candidates": 0},
+            "deep_cluster_internal": {"exact": 48, "candidates": 0},
             "interleaved_soft_repair": {"exact": 4096, "candidates": 0},
             "region_swaps": {"exact": 72000, "candidates": 0},
             "region_swap_graph_fallback": {"exact": 100, "candidates": 0},
@@ -576,6 +583,17 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     else:
         seed_parent_hierarchy_vector = {}
         seed_parent_hierarchy_vector_limits = {}
+    inferred_parent_evidence = [
+        evidence
+        for evidence in hierarchy.subcluster_evidence.values()
+        if evidence.get("source") == "placement_spatial_structural"
+    ]
+    inferred_parent_confidence = [
+        float(evidence.get("confidence", 0.0)) for evidence in inferred_parent_evidence
+    ]
+    inferred_parent_compactness = [
+        float(evidence.get("compactness_gain", 0.0)) for evidence in inferred_parent_evidence
+    ]
     log_plateau_event(
         "hier_subhierarchy_model",
         benchmark=pass_context.benchmark_name,
@@ -583,6 +601,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         parent_count=int(len(hierarchy.parent_clusters)),
         child_count=int(len(hierarchy.subclusters)),
         parent_edge_count=int(len(hierarchy.parent_edges)),
+        spatial_parent_count=int(len(inferred_parent_evidence)),
+        spatial_confidence_mean=(
+            float(np.mean(inferred_parent_confidence)) if inferred_parent_confidence else 0.0
+        ),
+        spatial_compactness_mean=(
+            float(np.mean(inferred_parent_compactness)) if inferred_parent_compactness else 0.0
+        ),
     )
 
     graph_tension_enabled = int(n) >= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MIN", 0)) and int(
@@ -1524,6 +1549,19 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 return False
             return bool(_multilevel_vector_contract(trial_hard, trial_soft)[0])
 
+        child_graph_field = _congestion_field(rscorer, nr, nc)
+        child_graph_tension = cluster_graph_tension(
+            h_pos,
+            hierarchy.subclusters,
+            hierarchy.subcluster_edges,
+            cw=float(cw),
+            ch=float(ch),
+            field=child_graph_field,
+            seed_hard_xy=seed_hard_for_tension,
+            confidence=hierarchy.subcluster_confidence,
+            samples=max(2, int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9))),
+        )
+
         h_pos, s_pos, subcluster_acc, r_score = _subcluster_relocation(
             h_pos,
             s_pos,
@@ -1545,6 +1583,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             soft_movable=soft_mov,
             hard_parent_region=parent_region,
             soft_parent_region=parent_soft_region,
+            child_graph_tension=child_graph_tension,
+            graph_priority_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_WEIGHT),
             candidate_allowed=_subcluster_candidate_allowed,
             deadline=subcluster_deadline,
             top_children=max(1, int(const.HIER_SUBCLUSTER_RELOCATION_TOP_CHILDREN)),
@@ -1604,6 +1644,277 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         legalized_candidates=int(subcluster_stats.get("legalized_candidates", 0)),
         best_candidate_gain=float(subcluster_stats.get("best_candidate_gain", 0.0)),
         accepted_kind=str(subcluster_stats.get("accepted_kind", "none")),
+        graph_prioritized_children=int(subcluster_stats.get("graph_prioritized_children", 0)),
+        graph_tension_mean=float(subcluster_stats.get("graph_tension_mean", 0.0)),
+        multilevel_contract_active=bool(subhierarchy_contract_active),
+        subhierarchy_source=hierarchy.subhierarchy_source,
+        spatial_parent_count=int(len(inferred_parent_evidence)),
+        spatial_confidence_mean=(
+            float(np.mean(inferred_parent_confidence)) if inferred_parent_confidence else 0.0
+        ),
+    )
+
+    deep_before = float(r_score)
+    deep_t0 = time.monotonic()
+    deep_acc = 0
+    deep_stats = _empty_pass_stats()
+    deep_stats.update(
+        {
+            "eligible_children": 0,
+            "selected_children": 0,
+            "graph_prioritized_children": 0,
+            "hard_accepts": 0,
+            "soft_accepts": 0,
+            "swap_accepts": 0,
+            "swap_scored": 0,
+            "expanded_regions": 0,
+            "graph_component_expanded": 0,
+        }
+    )
+    deep_margins: dict[int, float] = {}
+    deep_enforce = _empty_audit_report()
+    if (
+        hierarchy.subclusters
+        and parent_region is not None
+        and _has_spare(
+            rdeadline,
+            float(const.HIER_DEEP_CLUSTER_MIN_SPARE_S),
+            phase="deep_cluster_internal",
+        )
+    ):
+        deep_deadline = _deadline(float(const.HIER_DEEP_CLUSTER_BUDGET_S), rdeadline)
+        deep_congestion = _congestion_field(rscorer, nr, nc)
+        deep_density = _density_field(rscorer, nr, nc)
+        deep_congestion_heat = _deep_cluster_field_heat(
+            h_pos,
+            s_pos,
+            hierarchy.subclusters,
+            hierarchy.subcluster_softs,
+            deep_congestion,
+            n=n,
+            cw=cw,
+            ch=ch,
+        )
+        deep_density_heat = _deep_cluster_field_heat(
+            h_pos,
+            s_pos,
+            hierarchy.subclusters,
+            hierarchy.subcluster_softs,
+            deep_density,
+            n=n,
+            cw=cw,
+            ch=ch,
+        )
+        deep_graph_field = None
+        if deep_congestion is not None:
+            congestion_scale = max(float(np.max(deep_congestion)), 1.0e-12)
+            deep_graph_field = np.asarray(deep_congestion, dtype=np.float64) / congestion_scale
+        if deep_density is not None:
+            density_scale = max(float(np.max(deep_density)), 1.0e-12)
+            density_norm = np.asarray(deep_density, dtype=np.float64) / density_scale
+            deep_graph_field = (
+                density_norm
+                if deep_graph_field is None
+                else 0.60 * deep_graph_field + 0.40 * density_norm
+            )
+        deep_graph_tension = cluster_graph_tension(
+            h_pos,
+            hierarchy.subclusters,
+            hierarchy.subcluster_edges,
+            cw=float(cw),
+            ch=float(ch),
+            field=deep_graph_field,
+            seed_hard_xy=seed_hard_for_tension,
+            confidence=hierarchy.subcluster_confidence,
+            samples=max(2, int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9))),
+        )
+        deep_margins = _deep_cluster_margin_fractions(
+            hierarchy.subclusters,
+            deep_congestion_heat,
+            deep_density_heat,
+            deep_graph_tension,
+            base_margin=float(const.HIER_DEEP_CLUSTER_BASE_MARGIN),
+            extra_margin=float(const.HIER_DEEP_CLUSTER_EXTRA_MARGIN),
+            congestion_weight=float(const.HIER_DEEP_CLUSTER_CONGESTION_WEIGHT),
+            density_weight=float(const.HIER_DEEP_CLUSTER_DENSITY_WEIGHT),
+            graph_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_WEIGHT),
+        )
+        deep_region = hierarchy.subcluster_hard_regions(
+            h_pos,
+            sizes[:n],
+            hw,
+            hh,
+            cw,
+            ch,
+            n,
+            cluster_margins=deep_margins,
+        )
+        deep_soft_region = hierarchy.subcluster_soft_regions(
+            h_pos,
+            s_pos,
+            sizes[:n],
+            hw,
+            hh,
+            soft_hw,
+            soft_hh,
+            cw,
+            ch,
+            n,
+            cluster_margins=deep_margins,
+        )
+        if deep_region is not None and deep_soft_region is not None:
+            deep_region, deep_soft_region, deep_expanded = expand_regions_by_congestion(
+                deep_region,
+                deep_soft_region,
+                h_pos,
+                s_pos,
+                hierarchy.subclusters,
+                hierarchy.subcluster_softs,
+                {},
+                hw,
+                hh,
+                soft_hw,
+                soft_hh,
+                cw,
+                ch,
+                deep_graph_field,
+                hot_percentile=float(const.HIER_DEEP_CLUSTER_EXPAND_HOT_PCT),
+                max_expand_frac=float(const.HIER_DEEP_CLUSTER_DIRECTIONAL_EXPAND_FRAC),
+                side_band=max(1, int(const.HIER_REGION_EXPAND_BAND)),
+                component_cold_percentile=float(
+                    getattr(const, "HIER_REGION_COMPONENT_COLD_PCT", 45.0)
+                ),
+                component_min_cells=max(
+                    1, int(getattr(const, "HIER_REGION_COMPONENT_MIN_CELLS", 4))
+                ),
+                component_max_distance_cells=max(
+                    0,
+                    int(getattr(const, "HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS", 4)),
+                ),
+                graph_edges=hierarchy.subcluster_edges,
+                graph_component_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_COMPONENT_WEIGHT),
+            )
+            deep_expand_stats = dict(getattr(expand_regions_by_congestion, "last_stats", {}))
+            deep_stats["expanded_regions"] = int(deep_expanded)
+            deep_stats["graph_component_expanded"] = int(
+                deep_expand_stats.get("graph_component_expanded", 0)
+            )
+
+            def _clip_deep_region(child_box, parent_box, current):
+                if parent_box is None:
+                    return child_box
+                clipped = np.asarray(child_box, dtype=np.float64).copy()
+                clipped[:, 0] = np.maximum(clipped[:, 0], parent_box[:, 0])
+                clipped[:, 1] = np.maximum(clipped[:, 1], parent_box[:, 1])
+                clipped[:, 2] = np.minimum(clipped[:, 2], parent_box[:, 2])
+                clipped[:, 3] = np.minimum(clipped[:, 3], parent_box[:, 3])
+                invalid_x = clipped[:, 0] > clipped[:, 2]
+                invalid_y = clipped[:, 1] > clipped[:, 3]
+                clipped[invalid_x, 0] = current[invalid_x, 0]
+                clipped[invalid_x, 2] = current[invalid_x, 0]
+                clipped[invalid_y, 1] = current[invalid_y, 1]
+                clipped[invalid_y, 3] = current[invalid_y, 1]
+                clipped[:, 0] = np.minimum(clipped[:, 0], current[:, 0])
+                clipped[:, 1] = np.minimum(clipped[:, 1], current[:, 1])
+                clipped[:, 2] = np.maximum(clipped[:, 2], current[:, 0])
+                clipped[:, 3] = np.maximum(clipped[:, 3], current[:, 1])
+                return clipped
+
+            deep_region = _clip_deep_region(deep_region, parent_region, h_pos)
+            deep_soft_region = _clip_deep_region(
+                deep_soft_region,
+                parent_soft_region,
+                s_pos,
+            )
+
+            def _deep_candidate_allowed(trial_hard, trial_soft):
+                if hierarchy_quality_metric(trial_hard, clusters) > audit_limit + 1.0e-12:
+                    return False
+                return bool(_multilevel_vector_contract(trial_hard, trial_soft)[0])
+
+            h_pos, s_pos, deep_acc, r_score = _deep_cluster_internal_relief(
+                h_pos,
+                s_pos,
+                sizes[:n],
+                hw,
+                hh,
+                soft_hw,
+                soft_hh,
+                cw,
+                ch,
+                n,
+                plc,
+                benchmark,
+                rscorer,
+                r_score,
+                child_clusters=hierarchy.subclusters,
+                cluster_softs=hierarchy.subcluster_softs,
+                subcluster_labels=hierarchy.subcluster_labels,
+                graph_edges=hierarchy.subcluster_edges,
+                graph_confidence=hierarchy.subcluster_confidence,
+                graph_tension=deep_graph_tension,
+                seed_hard_xy=seed_hard_for_tension,
+                movable_h=movable[:n],
+                soft_movable=soft_mov,
+                hard_region=deep_region,
+                soft_region=deep_soft_region,
+                candidate_allowed=_deep_candidate_allowed,
+                deadline=deep_deadline,
+                top_children=max(1, int(const.HIER_DEEP_CLUSTER_TOP_CHILDREN)),
+                hard_targets=max(1, int(const.HIER_DEEP_CLUSTER_HARD_TARGETS)),
+                soft_targets=max(1, int(const.HIER_DEEP_CLUSTER_SOFT_TARGETS)),
+                relocation_targets=max(1, int(const.HIER_DEEP_CLUSTER_RELOCATION_TARGETS)),
+                swap_k=max(1, int(const.HIER_DEEP_CLUSTER_SWAP_K)),
+                graph_priority_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_WEIGHT),
+                graph_anchor_blend=float(const.HIER_DEEP_CLUSTER_GRAPH_ANCHOR_BLEND),
+                graph_delta_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_DELTA_WEIGHT),
+                min_gain=max(
+                    float(const.HIER_DEEP_CLUSTER_MIN_GAIN),
+                    adaptive_floor_proxy_gain,
+                ),
+                max_scored_per_call=max(1, int(const.HIER_DEEP_CLUSTER_MAX_SCORED_PER_CALL)),
+                max_scored=_pass_budget_remaining("deep_cluster_internal", "exact"),
+            )
+            deep_stats.update(getattr(_deep_cluster_internal_relief, "last_stats", {}))
+            if deep_acc:
+                subhierarchy_contract_active = True
+            deep_enforce = _enforce_audit_checkpoint(
+                "deep_cluster_internal",
+                return_report=True,
+            )
+            if deep_enforce.get("restored"):
+                r_score = float(deep_enforce["proxy_after"])
+            if _hard_valid(h_pos) and r_score < best_score - 1.0e-9:
+                best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), float(r_score)
+            _log(
+                f"  [hier] deep-cluster internal relief: {deep_acc} accepts, "
+                f"children={int(deep_stats.get('selected_children', 0))}/"
+                f"{int(deep_stats.get('eligible_children', 0))}, "
+                f"scored={int(deep_stats.get('scored', 0))}, "
+                f"proxy {deep_before:.4f}->{float(r_score):.4f}"
+            )
+    _record_plateau(
+        "deep_cluster_internal",
+        deep_before,
+        float(r_score),
+        int(deep_acc),
+        time.monotonic() - deep_t0,
+        candidates=int(deep_stats.get("candidates", 0)),
+        legal=int(deep_stats.get("legal", 0)),
+        scored=int(deep_stats.get("scored", 0)),
+        hierarchy_rejects=int(deep_stats.get("hierarchy_rejects", 0)),
+        rollback_report=deep_enforce,
+        eligible_children=int(deep_stats.get("eligible_children", 0)),
+        selected_children=int(deep_stats.get("selected_children", 0)),
+        graph_prioritized_children=int(deep_stats.get("graph_prioritized_children", 0)),
+        hard_accepts=int(deep_stats.get("hard_accepts", 0)),
+        soft_accepts=int(deep_stats.get("soft_accepts", 0)),
+        swap_accepts=int(deep_stats.get("swap_accepts", 0)),
+        swap_scored=int(deep_stats.get("swap_scored", 0)),
+        expanded_regions=int(deep_stats.get("expanded_regions", 0)),
+        graph_component_expanded=int(deep_stats.get("graph_component_expanded", 0)),
+        margin_mean=(float(np.mean(list(deep_margins.values()))) if deep_margins else 0.0),
+        margin_max=(float(np.max(list(deep_margins.values()))) if deep_margins else 0.0),
         multilevel_contract_active=bool(subhierarchy_contract_active),
         subhierarchy_source=hierarchy.subhierarchy_source,
     )
@@ -1854,18 +2165,25 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     enable_ss = True
     swap_stats = {
         "hh_scores": 0,
+        "hh_exact_scores": 0,
+        "hh_avoided_scores": 0,
         "hh_accepts": 0,
         "hh_escape_accepts": 0,
         "hs_scores": 0,
+        "hs_exact_scores": 0,
+        "hs_avoided_scores": 0,
         "hs_accepts": 0,
         "hs_escape_accepts": 0,
         "ss_scores": 0,
+        "ss_exact_scores": 0,
+        "ss_avoided_scores": 0,
         "ss_accepts": 0,
         "ss_escape_accepts": 0,
         "proxy_gain": 0.0,
     }
     swap_acc = 0
     swap_round_micro_acc = 0
+    swap_hard_separation = separation_matrices(sizes[:n])
     pre_swap_score = r_score
     swap_t0 = time.monotonic()
     swap_fallback_used = False
@@ -1939,6 +2257,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         swap_stats["hh_scores"] + swap_stats["hs_scores"] + swap_stats["ss_scores"]
                     ),
                 ),
+                hard_separation=swap_hard_separation,
             )
             swap_acc += got
             swap_round_masked_accepts += int(got)
@@ -1949,7 +2268,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             ):
                 swap_round_had_winner = True
             for k, v in stats.items():
-                swap_stats[k] += v
+                swap_stats[k] = swap_stats.get(k, 0) + v
         swap_round_enforce = _enforce_audit_checkpoint(
             "region_swaps",
             return_report=True,
@@ -2018,6 +2337,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         "region_swap_graph_fallback",
                         "exact",
                     ),
+                    hard_separation=swap_hard_separation,
                 )
                 fallback_scored = int(
                     fallback_stats["hh_scores"]
@@ -2027,7 +2347,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 _consume_pass_budget("region_swap_graph_fallback", exact=fallback_scored)
                 if got:
                     for k, v in fallback_stats.items():
-                        swap_stats[k] += v
+                        swap_stats[k] = swap_stats.get(k, 0) + v
                 swap_acc += int(got)
                 _log(
                     "  [hier] region swap graph-mask fallback: "
@@ -2117,9 +2437,22 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         f"ss {swap_stats['ss_accepts']}/{swap_stats['ss_scores']}, "
         f"esc {escape_accepts}, "
         f"gain {swap_stats['proxy_gain']:.4f}, "
-        f"round_micro {swap_round_micro_acc}), proxy={r_score:.4f}"
+        f"round_micro {swap_round_micro_acc}, "
+        f"exact {swap_stats['hh_exact_scores'] + swap_stats['hs_exact_scores'] + swap_stats['ss_exact_scores']}, "
+        f"avoided {swap_stats['hh_avoided_scores'] + swap_stats['hs_avoided_scores'] + swap_stats['ss_avoided_scores']}), "
+        f"proxy={r_score:.4f}"
     )
     swap_scored = int(swap_stats["hh_scores"] + swap_stats["hs_scores"] + swap_stats["ss_scores"])
+    swap_exact_scored = int(
+        swap_stats["hh_exact_scores"]
+        + swap_stats["hs_exact_scores"]
+        + swap_stats["ss_exact_scores"]
+    )
+    swap_avoided_scored = int(
+        swap_stats["hh_avoided_scores"]
+        + swap_stats["hs_avoided_scores"]
+        + swap_stats["ss_avoided_scores"]
+    )
     swap_record = _record_plateau(
         "region_swaps",
         pre_swap_score,
@@ -2129,6 +2462,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         candidates=swap_scored,
         legal=swap_scored,
         scored=swap_scored,
+        physical_exact_scored=swap_exact_scored,
+        avoided_exact_scores=swap_avoided_scored,
         quality=hierarchy_quality_metric(h_pos, clusters),
         stats=swap_stats,
         proposed_after=swap_proposed_after,
@@ -2606,11 +2941,20 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 float(const.HIER_STRONG_SOFT_REPAIR_MIN_GAIN),
                 adaptive_floor_proxy_gain,
             )
+            strong_continue_min_gain = max(
+                float(const.HIER_STRONG_SOFT_CONTINUE_MIN_GAIN),
+                adaptive_floor_proxy_gain,
+            )
+            strong_lane_reports = []
+            strong_early_stop_reason = "completed"
+            strong_stop_lanes = False
             for _strong_round in range(scheduled_strong_rounds):
                 strong_round_before = float(r_score)
                 strong_enforce = _empty_audit_report()
                 for use_density in (False, True):
                     strong_before = float(r_score)
+                    strong_lane_scored_before = int(strong_stats["scored"])
+                    strong_lane_accepts_before = int(strong_acc)
                     s_pos, got, r_score = _soft_relocation_moves(
                         s_pos,
                         soft_hw,
@@ -2659,19 +3003,48 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         strong_stats,
                         getattr(_soft_relocation_moves, "last_stats", {}),
                     )
-                    if not _adaptive_pass_gain(strong_before, r_score):
-                        break
-                    strong_enforce = _enforce_audit_checkpoint(
-                        "strong_soft_repair",
-                        return_report=True,
-                    )
+                    strong_lane_proposed_gain = max(0.0, strong_before - float(r_score))
+                    # Even a sub-floor accepted lane changed the placement. Audit it
+                    # before using retained gain to decide whether another lane is
+                    # worth starting.
+                    if strong_lane_proposed_gain > 1.0e-12:
+                        strong_enforce = _enforce_audit_checkpoint(
+                            "strong_soft_repair",
+                            return_report=True,
+                        )
+                    strong_lane_retained_gain = max(0.0, strong_before - float(r_score))
                     if strong_enforce.get("restored"):
+                        strong_lane_reason = "audit_restore"
+                        strong_stop_lanes = True
+                    elif strong_lane_retained_gain <= strong_continue_min_gain:
+                        strong_lane_reason = "weak_retained_gain"
+                        strong_stop_lanes = True
+                    elif strong_deadline is not None and time.monotonic() >= strong_deadline:
+                        strong_lane_reason = "deadline"
+                        strong_stop_lanes = True
+                    else:
+                        strong_lane_reason = "continue"
+                    strong_lane_reports.append(
+                        {
+                            "round": int(_strong_round),
+                            "use_density": bool(use_density),
+                            "proposed_gain": float(strong_lane_proposed_gain),
+                            "retained_gain": float(strong_lane_retained_gain),
+                            "accepts": int(strong_acc - strong_lane_accepts_before),
+                            "scored": int(strong_stats["scored"] - strong_lane_scored_before),
+                            "reason": strong_lane_reason,
+                        }
+                    )
+                    if strong_stop_lanes:
+                        strong_early_stop_reason = strong_lane_reason
                         break
-                    if strong_deadline is not None and time.monotonic() >= strong_deadline:
-                        break
+                if strong_stop_lanes:
+                    break
                 if not _adaptive_pass_gain(strong_round_before, r_score):
+                    strong_early_stop_reason = "weak_round_gain"
                     break
                 if strong_deadline is not None and time.monotonic() >= strong_deadline:
+                    strong_early_stop_reason = "deadline"
                     break
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
@@ -2697,6 +3070,11 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 quality=hierarchy_quality_metric(h_pos, clusters),
                 proposed_after=strong_proposed_after,
                 rollback_report=strong_enforce,
+                lane_reports=strong_lane_reports,
+                lanes_run=int(len(strong_lane_reports)),
+                lanes_planned=int(2 * scheduled_strong_rounds),
+                early_stop_reason=strong_early_stop_reason,
+                continue_min_gain=float(strong_continue_min_gain),
             )
         strong_gain = max(0.0, float(pre_strong_score) - float(r_score))
         medium_has_spare = _has_spare(
@@ -2738,11 +3116,20 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 float(const.HIER_MEDIUM_SOFT_MIN_GAIN),
                 adaptive_floor_proxy_gain,
             )
+            medium_continue_min_gain = max(
+                float(const.HIER_MEDIUM_SOFT_CONTINUE_MIN_GAIN),
+                adaptive_floor_proxy_gain,
+            )
+            medium_lane_reports = []
+            medium_early_stop_reason = "completed"
+            medium_stop_lanes = False
             for _medium_round in range(max(1, int(const.HIER_MEDIUM_SOFT_ROUNDS))):
                 medium_round_before = float(r_score)
                 medium_enforce = _empty_audit_report()
                 for use_density in (False, True):
                     medium_before = float(r_score)
+                    medium_lane_scored_before = int(medium_stats["scored"])
+                    medium_lane_accepts_before = int(medium_acc)
                     s_pos, got, r_score = _soft_relocation_moves(
                         s_pos,
                         soft_hw,
@@ -2785,19 +3172,47 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                         medium_stats,
                         getattr(_soft_relocation_moves, "last_stats", {}),
                     )
-                    if not _adaptive_pass_gain(medium_before, r_score):
-                        break
-                    medium_enforce = _enforce_audit_checkpoint(
-                        "medium_soft_continuation",
-                        return_report=True,
-                    )
+                    medium_lane_proposed_gain = max(0.0, medium_before - float(r_score))
+                    # Continuation is based on audited retained gain, including for
+                    # lanes whose accepted proxy gain is below the scheduling floor.
+                    if medium_lane_proposed_gain > 1.0e-12:
+                        medium_enforce = _enforce_audit_checkpoint(
+                            "medium_soft_continuation",
+                            return_report=True,
+                        )
+                    medium_lane_retained_gain = max(0.0, medium_before - float(r_score))
                     if medium_enforce.get("restored"):
+                        medium_lane_reason = "audit_restore"
+                        medium_stop_lanes = True
+                    elif medium_lane_retained_gain <= medium_continue_min_gain:
+                        medium_lane_reason = "weak_retained_gain"
+                        medium_stop_lanes = True
+                    elif medium_deadline is not None and time.monotonic() >= medium_deadline:
+                        medium_lane_reason = "deadline"
+                        medium_stop_lanes = True
+                    else:
+                        medium_lane_reason = "continue"
+                    medium_lane_reports.append(
+                        {
+                            "round": int(_medium_round),
+                            "use_density": bool(use_density),
+                            "proposed_gain": float(medium_lane_proposed_gain),
+                            "retained_gain": float(medium_lane_retained_gain),
+                            "accepts": int(medium_acc - medium_lane_accepts_before),
+                            "scored": int(medium_stats["scored"] - medium_lane_scored_before),
+                            "reason": medium_lane_reason,
+                        }
+                    )
+                    if medium_stop_lanes:
+                        medium_early_stop_reason = medium_lane_reason
                         break
-                    if medium_deadline is not None and time.monotonic() >= medium_deadline:
-                        break
+                if medium_stop_lanes:
+                    break
                 if not _adaptive_pass_gain(medium_round_before, r_score):
+                    medium_early_stop_reason = "weak_round_gain"
                     break
                 if medium_deadline is not None and time.monotonic() >= medium_deadline:
+                    medium_early_stop_reason = "deadline"
                     break
             if _hard_valid(h_pos) and r_score < best_score - 1e-9:
                 best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
@@ -2825,6 +3240,11 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 nets_per_macro=float(nets_per_macro),
                 proposed_after=medium_proposed_after,
                 rollback_report=medium_enforce,
+                lane_reports=medium_lane_reports,
+                lanes_run=int(len(medium_lane_reports)),
+                lanes_planned=int(2 * max(1, int(const.HIER_MEDIUM_SOFT_ROUNDS))),
+                early_stop_reason=medium_early_stop_reason,
+                continue_min_gain=float(medium_continue_min_gain),
             )
         else:
             reason = "insufficient_spare" if not has_spare else "no_trigger"

@@ -9,9 +9,13 @@ import numpy as np
 
 from placer.legalize.spiral import _will_legalize
 from placer.local_search.fields import (
+    _congestion_field,
+    _density_field,
     cold_connected_component_target_pool,
     weighted_congestion_field,
 )
+from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
+from placer.local_search.relocation import _relocation_moves, _soft_relocation_moves
 
 
 def _hard_group_is_legal(
@@ -182,6 +186,8 @@ def _subcluster_relocation(
     soft_movable: np.ndarray,
     hard_parent_region: np.ndarray | None,
     soft_parent_region: np.ndarray | None,
+    child_graph_tension: Mapping[int, float] | None = None,
+    graph_priority_weight: float = 0.0,
     candidate_allowed: Callable[[np.ndarray, np.ndarray], bool] | None = None,
     deadline: float | None = None,
     top_children: int = 4,
@@ -215,6 +221,8 @@ def _subcluster_relocation(
         "accepts": 0,
         "accepted_kind": "none",
         "best_candidate_gain": 0.0,
+        "graph_prioritized_children": 0,
+        "graph_tension_mean": 0.0,
         "score_limit": score_limit,
         "quota_exhausted": bool(score_limit is not None and score_limit <= 0),
     }
@@ -229,7 +237,9 @@ def _subcluster_relocation(
     if field is None or np.asarray(field).size == 0:
         return hard_pos, soft_pos, 0, float(initial_score)
     field = np.asarray(field, dtype=np.float64)
+    field_span = max(float(np.max(field) - np.min(field)), 1.0e-12)
     cell_w, cell_h = float(cw) / nc, float(ch) / nr
+    child_graph_tension = child_graph_tension or {}
 
     rows: list[dict[str, object]] = []
     for parent_id, child_ids in sorted(parent_children.items()):
@@ -259,6 +269,7 @@ def _subcluster_relocation(
             if soft_indices.size:
                 points = np.vstack([points, soft_pos[soft_indices]])
             heat = float(np.mean(_field_values(points, field, cell_w, cell_h)))
+            graph_tension = max(0.0, float(child_graph_tension.get(child_id, 0.0)))
             rows.append(
                 {
                     "parent": int(parent_id),
@@ -266,12 +277,21 @@ def _subcluster_relocation(
                     "members": members,
                     "soft_indices": soft_indices,
                     "heat": heat,
+                    "graph_tension": graph_tension,
+                    "priority": heat
+                    + max(0.0, float(graph_priority_weight)) * field_span * graph_tension,
                 }
             )
-    rows.sort(key=lambda row: (-float(row["heat"]), int(row["parent"]), int(row["child"])))
+    rows.sort(key=lambda row: (-float(row["priority"]), int(row["parent"]), int(row["child"])))
     all_rows = rows
     rows = all_rows[: max(1, int(top_children))]
     stats["eligible_children"] = int(len(all_rows))
+    stats["graph_prioritized_children"] = int(
+        sum(float(row["graph_tension"]) > 0.0 for row in rows)
+    )
+    stats["graph_tension_mean"] = (
+        float(np.mean([float(row["graph_tension"]) for row in rows])) if rows else 0.0
+    )
     if not rows:
         return hard_pos, soft_pos, 0, float(initial_score)
 
@@ -486,11 +506,11 @@ def _subcluster_relocation(
     for parent_id, siblings in by_parent.items():
         for left_index, left in enumerate(siblings):
             for right in siblings[left_index + 1 :]:
-                contrast = abs(float(left["heat"]) - float(right["heat"]))
+                contrast = abs(float(left["priority"]) - float(right["priority"]))
                 swap_pairs.append(
                     (
                         -contrast,
-                        -max(float(left["heat"]), float(right["heat"])),
+                        -max(float(left["priority"]), float(right["priority"])),
                         int(parent_id),
                         int(left["child"]),
                         int(right["child"]),
@@ -625,4 +645,520 @@ def _subcluster_relocation(
     return hard_pos, soft_pos, int(stats["accepts"]), float(best_score)
 
 
+def _deep_cluster_field_heat(
+    hard_pos: np.ndarray,
+    soft_pos: np.ndarray,
+    child_clusters: Mapping[int, Sequence[int]],
+    cluster_softs: Mapping[int, Sequence[int]],
+    field: np.ndarray | None,
+    *,
+    n: int,
+    cw: float,
+    ch: float,
+) -> dict[int, float]:
+    """Sample one placement field over every deepest child and its owned softs."""
+    if field is None or np.asarray(field).size == 0:
+        return {}
+    field = np.asarray(field, dtype=np.float64)
+    nr, nc = field.shape
+    cell_w, cell_h = float(cw) / nc, float(ch) / nr
+    result: dict[int, float] = {}
+    for child_id, raw_members in child_clusters.items():
+        members = np.asarray(raw_members, dtype=np.int64).reshape(-1)
+        members = members[(members >= 0) & (members < hard_pos.shape[0])]
+        points = hard_pos[members]
+        soft_indices = np.asarray(cluster_softs.get(int(child_id), ()), dtype=np.int64) - int(n)
+        soft_indices = soft_indices[(soft_indices >= 0) & (soft_indices < soft_pos.shape[0])]
+        if soft_indices.size:
+            points = (
+                np.vstack([points, soft_pos[soft_indices]])
+                if points.size
+                else soft_pos[soft_indices]
+            )
+        if points.size:
+            result[int(child_id)] = float(np.mean(_field_values(points, field, cell_w, cell_h)))
+    return result
+
+
+def _deep_cluster_margin_fractions(
+    child_clusters: Mapping[int, Sequence[int]],
+    congestion_heat: Mapping[int, float] | None,
+    density_heat: Mapping[int, float] | None,
+    graph_tension: Mapping[int, float] | None,
+    *,
+    base_margin: float,
+    extra_margin: float,
+    congestion_weight: float = 0.45,
+    density_weight: float = 0.35,
+    graph_weight: float = 0.20,
+) -> dict[int, float]:
+    """Blend normalized field heat and graph pressure into child-box margins."""
+    congestion_heat = congestion_heat or {}
+    density_heat = density_heat or {}
+    graph_tension = graph_tension or {}
+    weights = np.asarray(
+        [
+            max(0.0, float(congestion_weight)),
+            max(0.0, float(density_weight)),
+            max(0.0, float(graph_weight)),
+        ],
+        dtype=np.float64,
+    )
+    if float(np.sum(weights)) <= 1.0e-12:
+        weights[:] = (1.0, 0.0, 0.0)
+
+    def _scale(values: Mapping[int, float]) -> dict[int, float]:
+        top = max((max(0.0, float(value)) for value in values.values()), default=0.0)
+        if top <= 1.0e-12:
+            return {}
+        return {int(cid): max(0.0, float(value)) / top for cid, value in values.items()}
+
+    cong = _scale(congestion_heat)
+    dens = _scale(density_heat)
+    graph = _scale(graph_tension)
+    margins: dict[int, float] = {}
+    for child_id in child_clusters:
+        signals = np.asarray(
+            [
+                cong.get(int(child_id), 0.0),
+                dens.get(int(child_id), 0.0),
+                graph.get(int(child_id), 0.0),
+            ],
+            dtype=np.float64,
+        )
+        present = np.asarray(
+            [bool(cong), bool(dens), bool(graph)],
+            dtype=np.float64,
+        )
+        active_weights = weights * present
+        denom = float(np.sum(active_weights))
+        pressure = float(np.dot(active_weights, signals) / denom) if denom > 1.0e-12 else 0.0
+        margins[int(child_id)] = max(0.0, float(base_margin)) + max(
+            0.0, float(extra_margin)
+        ) * float(np.clip(pressure, 0.0, 1.0))
+    return margins
+
+
+def _graph_anchor_arrays(
+    hard_pos: np.ndarray,
+    soft_pos: np.ndarray,
+    child_clusters: Mapping[int, Sequence[int]],
+    cluster_softs: Mapping[int, Sequence[int]],
+    graph_edges,
+    *,
+    n: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map weighted neighboring-child centroids onto member target anchors."""
+    hard_anchor = np.asarray(hard_pos, dtype=np.float64).copy()
+    soft_anchor = np.asarray(soft_pos, dtype=np.float64).copy()
+    centroids: dict[int, np.ndarray] = {}
+    for child_id, raw_members in child_clusters.items():
+        members = np.asarray(raw_members, dtype=np.int64).reshape(-1)
+        members = members[(members >= 0) & (members < hard_pos.shape[0])]
+        if members.size:
+            centroids[int(child_id)] = np.asarray(np.mean(hard_pos[members], axis=0))
+    neighbor_sum = {cid: np.zeros(2, dtype=np.float64) for cid in centroids}
+    neighbor_weight = {cid: 0.0 for cid in centroids}
+    for edge in graph_edges or ():
+        left = int(getattr(edge, "src", -1))
+        right = int(getattr(edge, "dst", -1))
+        weight = max(0.0, float(getattr(edge, "weight", 1.0)))
+        if weight <= 0.0 or left not in centroids or right not in centroids:
+            continue
+        neighbor_sum[left] += weight * centroids[right]
+        neighbor_sum[right] += weight * centroids[left]
+        neighbor_weight[left] += weight
+        neighbor_weight[right] += weight
+    for child_id, centroid in centroids.items():
+        if neighbor_weight[child_id] <= 1.0e-12:
+            anchor = centroid
+        else:
+            anchor = neighbor_sum[child_id] / neighbor_weight[child_id]
+        members = np.asarray(child_clusters[child_id], dtype=np.int64)
+        members = members[(members >= 0) & (members < hard_anchor.shape[0])]
+        hard_anchor[members] = anchor
+        soft_indices = np.asarray(cluster_softs.get(child_id, ()), dtype=np.int64) - int(n)
+        soft_indices = soft_indices[(soft_indices >= 0) & (soft_indices < soft_anchor.shape[0])]
+        soft_anchor[soft_indices] = anchor
+    return hard_anchor, soft_anchor
+
+
+def _region_target_pool(
+    region: np.ndarray,
+    indices: np.ndarray,
+    *,
+    rows: int,
+    cols: int,
+    cw: float,
+    ch: float,
+) -> np.ndarray:
+    """Return grid-cell centers intersecting the union of selected member boxes."""
+    indices = np.asarray(indices, dtype=np.int64).reshape(-1)
+    indices = indices[(indices >= 0) & (indices < region.shape[0])]
+    if indices.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    boxes = region[indices]
+    xlo, ylo = float(np.min(boxes[:, 0])), float(np.min(boxes[:, 1]))
+    xhi, yhi = float(np.max(boxes[:, 2])), float(np.max(boxes[:, 3]))
+    cell_w, cell_h = float(cw) / int(cols), float(ch) / int(rows)
+    xs = (np.arange(int(cols), dtype=np.float64) + 0.5) * cell_w
+    ys = (np.arange(int(rows), dtype=np.float64) + 0.5) * cell_h
+    valid_cols = np.flatnonzero((xs >= xlo - 1.0e-9) & (xs <= xhi + 1.0e-9))
+    valid_rows = np.flatnonzero((ys >= ylo - 1.0e-9) & (ys <= yhi + 1.0e-9))
+    if not valid_cols.size or not valid_rows.size:
+        return np.zeros(0, dtype=np.int64)
+    return (valid_rows[:, None] * int(cols) + valid_cols[None, :]).reshape(-1)
+
+
+def _deep_cluster_internal_relief(
+    hard_pos: np.ndarray,
+    soft_pos: np.ndarray,
+    sizes: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    soft_hw: np.ndarray,
+    soft_hh: np.ndarray,
+    cw: float,
+    ch: float,
+    n: int,
+    plc,
+    benchmark,
+    incremental_scorer,
+    initial_score: float,
+    *,
+    child_clusters: Mapping[int, Sequence[int]],
+    cluster_softs: Mapping[int, Sequence[int]],
+    subcluster_labels: np.ndarray,
+    graph_edges,
+    graph_confidence: Mapping[int, float] | None,
+    graph_tension: Mapping[int, float] | None,
+    seed_hard_xy: np.ndarray | None,
+    movable_h: np.ndarray,
+    soft_movable: np.ndarray,
+    hard_region: np.ndarray | None,
+    soft_region: np.ndarray | None,
+    candidate_allowed: Callable[[np.ndarray, np.ndarray], bool] | None = None,
+    deadline: float | None = None,
+    top_children: int = 4,
+    hard_targets: int = 4,
+    soft_targets: int = 4,
+    relocation_targets: int = 3,
+    swap_k: int = 4,
+    graph_priority_weight: float = 0.20,
+    graph_anchor_blend: float = 0.15,
+    graph_delta_weight: float = 0.10,
+    min_gain: float = 0.0001,
+    max_scored_per_call: int = 8,
+    max_scored: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, int, float]:
+    """Relocate and swap members inside immutable deepest-child boxes."""
+    score_limit = None if max_scored is None else max(0, int(max_scored))
+    stats = {
+        "eligible_children": 0,
+        "selected_children": 0,
+        "graph_prioritized_children": 0,
+        "candidates": 0,
+        "legal": 0,
+        "scored": 0,
+        "hierarchy_rejects": 0,
+        "hard_accepts": 0,
+        "soft_accepts": 0,
+        "swap_accepts": 0,
+        "swap_scored": 0,
+        "accepts": 0,
+        "score_limit": score_limit,
+        "quota_exhausted": bool(score_limit is not None and score_limit <= 0),
+    }
+    _deep_cluster_internal_relief.last_stats = stats
+    if not child_clusters or hard_region is None or soft_region is None:
+        return hard_pos, soft_pos, 0, float(initial_score)
+
+    nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
+    congestion = _congestion_field(incremental_scorer, nr, nc)
+    density = _density_field(incremental_scorer, nr, nc)
+    if congestion is None and density is None:
+        return hard_pos, soft_pos, 0, float(initial_score)
+    congestion_heat = _deep_cluster_field_heat(
+        hard_pos, soft_pos, child_clusters, cluster_softs, congestion, n=n, cw=cw, ch=ch
+    )
+    density_heat = _deep_cluster_field_heat(
+        hard_pos, soft_pos, child_clusters, cluster_softs, density, n=n, cw=cw, ch=ch
+    )
+    graph_tension = graph_tension or {}
+
+    def _normalized(values: Mapping[int, float]) -> dict[int, float]:
+        maximum = max((max(0.0, float(value)) for value in values.values()), default=0.0)
+        if maximum <= 1.0e-12:
+            return {}
+        return {int(cid): max(0.0, float(value)) / maximum for cid, value in values.items()}
+
+    cong_norm = _normalized(congestion_heat)
+    density_norm = _normalized(density_heat)
+    graph_norm = _normalized(graph_tension)
+    rows = []
+    movable_h = np.asarray(movable_h, dtype=bool)
+    soft_movable = np.asarray(soft_movable, dtype=bool)
+    for child_id, raw_members in child_clusters.items():
+        members = np.asarray(raw_members, dtype=np.int64).reshape(-1)
+        members = members[(members >= 0) & (members < hard_pos.shape[0])]
+        child_movable = members[movable_h[members]]
+        soft_indices = np.asarray(cluster_softs.get(int(child_id), ()), dtype=np.int64) - int(n)
+        soft_indices = soft_indices[(soft_indices >= 0) & (soft_indices < soft_pos.shape[0])]
+        child_soft_movable = soft_indices[soft_movable[soft_indices]]
+        if not child_movable.size and not child_soft_movable.size:
+            continue
+        graph_value = graph_norm.get(int(child_id), 0.0)
+        priority = (
+            0.45 * cong_norm.get(int(child_id), 0.0)
+            + 0.35 * density_norm.get(int(child_id), 0.0)
+            + max(0.0, float(graph_priority_weight)) * graph_value
+        )
+        rows.append(
+            (
+                -float(priority),
+                int(child_id),
+                members,
+                child_movable,
+                soft_indices,
+                child_soft_movable,
+                float(graph_value),
+            )
+        )
+    rows.sort(key=lambda row: (row[0], row[1]))
+    stats["eligible_children"] = int(len(rows))
+    rows = rows[: max(1, int(top_children))]
+    stats["selected_children"] = int(len(rows))
+    stats["graph_prioritized_children"] = int(sum(row[6] > 0.0 for row in rows))
+    if not rows:
+        return hard_pos, soft_pos, 0, float(initial_score)
+
+    hard_anchor, soft_anchor = _graph_anchor_arrays(
+        hard_pos,
+        soft_pos,
+        child_clusters,
+        cluster_softs,
+        graph_edges,
+        n=n,
+    )
+    assigned_hard = np.flatnonzero(np.asarray(subcluster_labels, dtype=np.int64) >= 0)
+    best_score = float(initial_score)
+    accepts = 0
+
+    def _remaining() -> int | None:
+        if score_limit is None:
+            return None
+        return max(0, score_limit - int(stats["scored"]))
+
+    def _call_quota() -> int | None:
+        remaining = _remaining()
+        cap = max(1, int(max_scored_per_call))
+        return cap if remaining is None else min(cap, remaining)
+
+    def _hard_allowed(index: int, x: float, y: float) -> bool:
+        box = hard_region[int(index)]
+        if x < box[0] - 1.0e-9 or x > box[2] + 1.0e-9:
+            return False
+        if y < box[1] - 1.0e-9 or y > box[3] + 1.0e-9:
+            return False
+        old = hard_pos[int(index)].copy()
+        hard_pos[int(index)] = (float(x), float(y))
+        try:
+            return candidate_allowed is None or bool(candidate_allowed(hard_pos, soft_pos))
+        finally:
+            hard_pos[int(index)] = old
+
+    def _soft_allowed(index: int, x: float, y: float) -> bool:
+        box = soft_region[int(index)]
+        if x < box[0] - 1.0e-9 or x > box[2] + 1.0e-9:
+            return False
+        if y < box[1] - 1.0e-9 or y > box[3] + 1.0e-9:
+            return False
+        old = soft_pos[int(index)].copy()
+        soft_pos[int(index)] = (float(x), float(y))
+        try:
+            return candidate_allowed is None or bool(candidate_allowed(hard_pos, soft_pos))
+        finally:
+            soft_pos[int(index)] = old
+
+    def _accumulate(source: dict) -> None:
+        stats["candidates"] += int(source.get("candidates", 0))
+        stats["legal"] += int(source.get("legal", 0))
+        stats["scored"] += int(source.get("scored", 0))
+        stats["hierarchy_rejects"] += int(source.get("hierarchy_rejects", 0))
+
+    for _priority, child_id, members, child_movable, soft_indices, child_soft, _graph in rows:
+        remaining = _remaining()
+        if remaining is not None and remaining <= 0:
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        hard_mask = np.zeros(hard_pos.shape[0], dtype=bool)
+        hard_mask[child_movable] = True
+        soft_mask = np.zeros(soft_pos.shape[0], dtype=bool)
+        soft_mask[child_soft] = True
+        hard_pool = _region_target_pool(
+            hard_region,
+            members,
+            rows=nr,
+            cols=nc,
+            cw=cw,
+            ch=ch,
+        )
+        soft_pool = _region_target_pool(
+            soft_region,
+            soft_indices,
+            rows=nr,
+            cols=nc,
+            cw=cw,
+            ch=ch,
+        )
+
+        if child_movable.size and hard_pool.size:
+            for use_density in (False, True):
+                quota = _call_quota()
+                if quota is not None and quota <= 0:
+                    break
+                hard_pos, got, best_score = _relocation_moves(
+                    hard_pos,
+                    sizes,
+                    hw,
+                    hh,
+                    cw,
+                    ch,
+                    hard_mask,
+                    n,
+                    plc,
+                    benchmark,
+                    incremental_scorer,
+                    best_score,
+                    deadline=deadline,
+                    top_hot=max(1, min(int(hard_targets), child_movable.size)),
+                    n_targets=max(1, int(relocation_targets)),
+                    net_centroid=hard_anchor,
+                    wl_blend=max(0.0, min(1.0, float(graph_anchor_blend))),
+                    use_density=bool(use_density),
+                    propose_all=True,
+                    propose_top_m=max(1, int(relocation_targets)),
+                    region_bbox=hard_region,
+                    region_bias=1.0,
+                    region_escape_min=float("inf"),
+                    propose_accept_min_gain=max(1.0e-9, float(min_gain)),
+                    target_pool=hard_pool,
+                    candidate_allowed=_hard_allowed,
+                    max_scored=quota,
+                )
+                call_stats = dict(getattr(_relocation_moves, "last_stats", {}))
+                _accumulate(call_stats)
+                stats["hard_accepts"] += int(got)
+                accepts += int(got)
+
+        if child_soft.size and soft_pool.size:
+            for use_density in (False, True):
+                quota = _call_quota()
+                if quota is not None and quota <= 0:
+                    break
+                soft_pos, got, best_score = _soft_relocation_moves(
+                    soft_pos,
+                    soft_hw,
+                    soft_hh,
+                    cw,
+                    ch,
+                    n,
+                    plc,
+                    benchmark,
+                    incremental_scorer,
+                    best_score,
+                    deadline=deadline,
+                    top_hot=max(1, min(int(soft_targets), child_soft.size)),
+                    n_targets=max(1, int(relocation_targets)),
+                    soft_movable=soft_mask,
+                    use_density=bool(use_density),
+                    net_centroid=soft_anchor,
+                    wl_blend=max(0.0, min(1.0, float(graph_anchor_blend))),
+                    wl_prefilter=0.0,
+                    region_bbox=soft_region,
+                    region_bias=1.0,
+                    region_escape_min=float("inf"),
+                    accept_min_gain=max(1.0e-9, float(min_gain)),
+                    target_pool=soft_pool,
+                    candidate_allowed=_soft_allowed,
+                    max_scored=quota,
+                )
+                call_stats = dict(getattr(_soft_relocation_moves, "last_stats", {}))
+                _accumulate(call_stats)
+                stats["soft_accepts"] += int(got)
+                accepts += int(got)
+
+        quota = _call_quota()
+        if child_movable.size >= 2 and (quota is None or quota > 0):
+
+            def _swap_quality(trial_hard: np.ndarray) -> float:
+                inside = (
+                    (trial_hard[assigned_hard, 0] >= hard_region[assigned_hard, 0] - 1.0e-9)
+                    & (trial_hard[assigned_hard, 0] <= hard_region[assigned_hard, 2] + 1.0e-9)
+                    & (trial_hard[assigned_hard, 1] >= hard_region[assigned_hard, 1] - 1.0e-9)
+                    & (trial_hard[assigned_hard, 1] <= hard_region[assigned_hard, 3] + 1.0e-9)
+                )
+                if not bool(np.all(inside)):
+                    return 1.0
+                if candidate_allowed is not None and not bool(
+                    candidate_allowed(trial_hard, soft_pos)
+                ):
+                    return 1.0
+                return 0.0
+
+            hard_priority = np.zeros(hard_pos.shape[0], dtype=np.float64)
+            hard_priority[members] = float(graph_norm.get(int(child_id), 0.0))
+            hard_pos, soft_pos, got, best_score, swap_stats = _region_bounded_swap_relief(
+                hard_pos,
+                soft_pos,
+                sizes,
+                hw,
+                hh,
+                soft_hw,
+                soft_hh,
+                cw,
+                ch,
+                hard_mask,
+                soft_mask,
+                benchmark,
+                incremental_scorer,
+                best_score,
+                hard_region,
+                soft_region,
+                deadline=deadline,
+                rounds=1,
+                hard_k=max(1, int(swap_k)),
+                soft_k=1,
+                region_bias=1.0,
+                escape_min=float("inf"),
+                min_gain=max(1.0e-9, float(min_gain)),
+                enable_hh=True,
+                enable_hs=False,
+                enable_ss=False,
+                hierarchy_quality_fn=_swap_quality,
+                hierarchy_quality_limit=0.0,
+                hard_priority=hard_priority,
+                priority_weight=max(0.0, float(graph_priority_weight)),
+                graph_clusters=dict(child_clusters),
+                graph_labels=np.asarray(subcluster_labels, dtype=np.int64),
+                graph_edges=graph_edges,
+                graph_confidence=graph_confidence,
+                seed_hard_xy=seed_hard_xy,
+                graph_delta_weight=max(0.0, float(graph_delta_weight)),
+                max_scored=quota,
+            )
+            swap_scored = int(swap_stats.get("hh_scores", 0))
+            stats["scored"] += swap_scored
+            stats["swap_scored"] += swap_scored
+            stats["swap_accepts"] += int(got)
+            accepts += int(got)
+
+    stats["accepts"] = int(accepts)
+    stats["quota_exhausted"] = bool(score_limit is not None and int(stats["scored"]) >= score_limit)
+    _deep_cluster_internal_relief.last_stats = stats
+    return hard_pos, soft_pos, int(accepts), float(best_score)
+
+
 _subcluster_relocation.last_stats = {}
+_deep_cluster_internal_relief.last_stats = {}

@@ -16,7 +16,217 @@ from placer.scoring.density import _build_density_cache, _vectorized_get_grid_ce
 from placer.scoring.wirelength import _build_wl_cache
 
 if HAS_NUMBA:
-    from placer.routing.apply import _apply_route_struct_prepared_jit
+    from placer.routing.apply import _apply_3pin_routing_vec_jit, _apply_route_struct_prepared_jit
+
+    @_numba_njit(cache=True, fastmath=False, inline="always")
+    def _global_pin_gcell_jit(
+        pin,
+        pos_cache,
+        ref_inv,
+        unique_ref,
+        x_off,
+        y_off,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
+    ):
+        """Return one global pin's clipped routing cell."""
+        module = unique_ref[ref_inv[pin]]
+        col = int((pos_cache[module, 0] + x_off[pin]) / grid_w)
+        row = int((pos_cache[module, 1] + y_off[pin]) / grid_h)
+        if col < 0:
+            col = 0
+        elif col >= grid_col:
+            col = grid_col - 1
+        if row < 0:
+            row = 0
+        elif row >= grid_row:
+            row = grid_row - 1
+        return row * grid_col + col
+
+    @_numba_njit(cache=True, fastmath=False, inline="always")
+    def _apply_2pin_cells_jit(H_flat, V_flat, source, sink, weight, grid_col):
+        """Apply the evaluator's source-rooted two-pin L route."""
+        if source == sink:
+            return
+        src_row = source // grid_col
+        src_col = source % grid_col
+        sink_row = sink // grid_col
+        sink_col = sink % grid_col
+        c_lo = src_col if src_col < sink_col else sink_col
+        c_hi = src_col if src_col > sink_col else sink_col
+        base = src_row * grid_col
+        for col in range(c_lo, c_hi):
+            H_flat[base + col] += weight
+        r_lo = src_row if src_row < sink_row else sink_row
+        r_hi = src_row if src_row > sink_row else sink_row
+        for row in range(r_lo, r_hi):
+            V_flat[row * grid_col + sink_col] += weight
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _apply_global_net_subset_jit(
+        H_flat,
+        V_flat,
+        pos_cache,
+        touched,
+        pin_gcell,
+        net_starts,
+        net_lengths,
+        net_weights,
+        ref_inv,
+        unique_ref,
+        x_off,
+        y_off,
+        weight_mult,
+        unique_sinks,
+        three_g0,
+        three_g1,
+        three_g2,
+        three_weights,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
+    ):
+        """Route selected global nets without constructing pair-specific topology."""
+        min_row = grid_row
+        max_row = -1
+        min_col = grid_col
+        max_col = -1
+        packed_pin = 0
+        for touched_idx in range(touched.shape[0]):
+            net = touched[touched_idx]
+            start = net_starts[net]
+            length = net_lengths[net]
+            for pin_offset in range(length):
+                cell = _global_pin_gcell_jit(
+                    start + pin_offset,
+                    pos_cache,
+                    ref_inv,
+                    unique_ref,
+                    x_off,
+                    y_off,
+                    grid_w,
+                    grid_h,
+                    grid_row,
+                    grid_col,
+                )
+                pin_gcell[packed_pin] = cell
+                packed_pin += 1
+                row = cell // grid_col
+                col = cell % grid_col
+                if row < min_row:
+                    min_row = row
+                if row > max_row:
+                    max_row = row
+                if col < min_col:
+                    min_col = col
+                if col > max_col:
+                    max_col = col
+
+        # Preserve the reference accumulation order: every two-pin net first,
+        # followed by every three-pin net, then every high-fanout net.
+        packed_pin = 0
+        for touched_idx in range(touched.shape[0]):
+            net = touched[touched_idx]
+            length = net_lengths[net]
+            if length != 2:
+                packed_pin += length
+                continue
+            source = pin_gcell[packed_pin]
+            sink = pin_gcell[packed_pin + 1]
+            _apply_2pin_cells_jit(
+                H_flat, V_flat, source, sink, net_weights[net] * weight_mult, grid_col
+            )
+            packed_pin += length
+
+        packed_pin = 0
+        for touched_idx in range(touched.shape[0]):
+            net = touched[touched_idx]
+            length = net_lengths[net]
+            if length != 3:
+                packed_pin += length
+                continue
+            g0 = pin_gcell[packed_pin]
+            g1 = pin_gcell[packed_pin + 1]
+            g2 = pin_gcell[packed_pin + 2]
+            packed_pin += length
+            eq01 = g0 == g1
+            eq02 = g0 == g2
+            eq12 = g1 == g2
+            eq_count = int(eq01) + int(eq02) + int(eq12)
+            if eq_count == 3:
+                continue
+            weight = net_weights[net] * weight_mult
+            if eq_count == 1:
+                sink = g2 if eq01 else g1
+                _apply_2pin_cells_jit(H_flat, V_flat, g0, sink, weight, grid_col)
+                continue
+            three_g0[0] = g0
+            three_g1[0] = g1
+            three_g2[0] = g2
+            three_weights[0] = weight
+            _apply_3pin_routing_vec_jit(
+                H_flat,
+                V_flat,
+                three_g0[:1],
+                three_g1[:1],
+                three_g2[:1],
+                three_weights[:1],
+                grid_col,
+            )
+
+        n_three = 0
+        packed_pin = 0
+        for touched_idx in range(touched.shape[0]):
+            net = touched[touched_idx]
+            length = net_lengths[net]
+            if length < 4:
+                packed_pin += length
+                continue
+            source = pin_gcell[packed_pin]
+            unique_count = 0
+            for pin_offset in range(1, length):
+                sink = pin_gcell[packed_pin + pin_offset]
+                if sink == source:
+                    continue
+                insert_at = 0
+                while insert_at < unique_count and unique_sinks[insert_at] < sink:
+                    insert_at += 1
+                if insert_at < unique_count and unique_sinks[insert_at] == sink:
+                    continue
+                for shift in range(unique_count, insert_at, -1):
+                    unique_sinks[shift] = unique_sinks[shift - 1]
+                unique_sinks[insert_at] = sink
+                unique_count += 1
+
+            weight = net_weights[net] * weight_mult
+            if unique_count == 2:
+                three_g0[n_three] = source
+                three_g1[n_three] = unique_sinks[0]
+                three_g2[n_three] = unique_sinks[1]
+                three_weights[n_three] = weight
+                n_three += 1
+                packed_pin += length
+                continue
+            for sink_idx in range(unique_count):
+                _apply_2pin_cells_jit(
+                    H_flat, V_flat, source, unique_sinks[sink_idx], weight, grid_col
+                )
+            packed_pin += length
+
+        if n_three:
+            _apply_3pin_routing_vec_jit(
+                H_flat,
+                V_flat,
+                three_g0[:n_three],
+                three_g1[:n_three],
+                three_g2[:n_three],
+                three_weights[:n_three],
+                grid_col,
+            )
+        return min_row, max_row, min_col, max_col
 
     @_numba_njit(cache=True, fastmath=False)
     def _hpwl_subset_jit(
@@ -206,21 +416,15 @@ if HAS_NUMBA:
         out_h,
         out_v,
         bboxes,
-        pin_offsets,
-        pin_gcell,
-        pin_module,
-        pin_x_off,
-        pin_y_off,
-        starts2_offsets,
-        starts2,
-        weights2,
-        starts3_offsets,
-        starts3,
-        weights3,
-        starts4_offsets,
-        starts4,
-        lengths4,
-        weights4,
+        touched_offsets,
+        touched,
+        net_starts,
+        net_lengths,
+        net_weights,
+        ref_inv,
+        unique_ref,
+        x_off,
+        y_off,
         unique_sinks,
         three_g0,
         three_g1,
@@ -231,35 +435,28 @@ if HAS_NUMBA:
         grid_row,
         grid_col,
     ):
-        """Build routing grids for a batch sharing one soft-swap endpoint."""
+        """Build swap routing grids directly from the global net topology."""
+        pin_gcell = np.empty(x_off.shape[0], dtype=np.int64)
         for batch_idx in range(b_modules.shape[0]):
             for cell in range(base_h.shape[0]):
                 out_h[batch_idx, cell] = base_h[cell]
                 out_v[batch_idx, cell] = base_v[cell]
 
-            pin_lo = pin_offsets[batch_idx]
-            pin_hi = pin_offsets[batch_idx + 1]
-            starts2_lo = starts2_offsets[batch_idx]
-            starts2_hi = starts2_offsets[batch_idx + 1]
-            starts3_lo = starts3_offsets[batch_idx]
-            starts3_hi = starts3_offsets[batch_idx + 1]
-            starts4_lo = starts4_offsets[batch_idx]
-            starts4_hi = starts4_offsets[batch_idx + 1]
-            bbox_old = _apply_route_struct_prepared_jit(
+            touched_lo = touched_offsets[batch_idx]
+            touched_hi = touched_offsets[batch_idx + 1]
+            bbox_old = _apply_global_net_subset_jit(
                 out_h[batch_idx],
                 out_v[batch_idx],
                 pos_cache,
-                pin_gcell[pin_lo:pin_hi],
-                pin_module[pin_lo:pin_hi],
-                pin_x_off[pin_lo:pin_hi],
-                pin_y_off[pin_lo:pin_hi],
-                starts2[starts2_lo:starts2_hi],
-                weights2[starts2_lo:starts2_hi],
-                starts3[starts3_lo:starts3_hi],
-                weights3[starts3_lo:starts3_hi],
-                starts4[starts4_lo:starts4_hi],
-                lengths4[starts4_lo:starts4_hi],
-                weights4[starts4_lo:starts4_hi],
+                touched[touched_lo:touched_hi],
+                pin_gcell,
+                net_starts,
+                net_lengths,
+                net_weights,
+                ref_inv,
+                unique_ref,
+                x_off,
+                y_off,
                 -1.0,
                 unique_sinks,
                 three_g0,
@@ -279,21 +476,19 @@ if HAS_NUMBA:
             pos_cache[a_module, 1] = b_xy[batch_idx, 1]
             pos_cache[b_module, 0] = a_xy[0]
             pos_cache[b_module, 1] = a_xy[1]
-            bbox_new = _apply_route_struct_prepared_jit(
+            bbox_new = _apply_global_net_subset_jit(
                 out_h[batch_idx],
                 out_v[batch_idx],
                 pos_cache,
-                pin_gcell[pin_lo:pin_hi],
-                pin_module[pin_lo:pin_hi],
-                pin_x_off[pin_lo:pin_hi],
-                pin_y_off[pin_lo:pin_hi],
-                starts2[starts2_lo:starts2_hi],
-                weights2[starts2_lo:starts2_hi],
-                starts3[starts3_lo:starts3_hi],
-                weights3[starts3_lo:starts3_hi],
-                starts4[starts4_lo:starts4_hi],
-                lengths4[starts4_lo:starts4_hi],
-                weights4[starts4_lo:starts4_hi],
+                touched[touched_lo:touched_hi],
+                pin_gcell,
+                net_starts,
+                net_lengths,
+                net_weights,
+                ref_inv,
+                unique_ref,
+                x_off,
+                y_off,
                 1.0,
                 unique_sinks,
                 three_g0,
@@ -682,6 +877,155 @@ if HAS_NUMBA:
                     smoothed = prefix_v[v_window_hi[col] + 1] - prefix_v[v_window_lo[col]]
                     out[batch_idx, cell] = smoothed + v_macro[batch_idx, cell] / v_capacity
 
+    @_numba_njit(cache=True, fastmath=False, inline="always")
+    def _mark_sparse_cell_jit(mark, touched_cells, touched_count, cell):
+        """Mark one sparse trial cell and return the new touched count."""
+        if mark[cell] == 0:
+            mark[cell] = 1
+            touched_cells[touched_count] = cell
+            return touched_count + 1
+        return touched_count
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _batch_sparse_swap_congestion_costs_jit(
+        raw_h,
+        raw_v,
+        bboxes,
+        base_h_smoothed,
+        base_v_smoothed,
+        base_h_macro,
+        base_v_macro,
+        h_macro,
+        v_macro,
+        candidate_hard_macro,
+        h_capacity,
+        v_capacity,
+        h_window_lo,
+        h_window_hi,
+        h_window_count,
+        v_window_lo,
+        v_window_hi,
+        v_window_count,
+        smooth_range,
+        grid_row,
+        grid_col,
+        base_values,
+        base_order,
+        top_count,
+        out,
+    ):
+        """Reduce exact congestion from only routing/blockage-changed cells."""
+        n_cells = grid_row * grid_col
+        n_values = 2 * n_cells
+        mark = np.zeros(n_values, dtype=np.uint8)
+        touched_cells = np.empty(n_values, dtype=np.int64)
+        changed_values = np.empty(n_values, dtype=np.float64)
+        candidates = np.empty(n_values + top_count, dtype=np.float64)
+        prefix_h = np.empty(grid_row + 1, dtype=np.float64)
+        prefix_v = np.empty(grid_col + 1, dtype=np.float64)
+
+        for batch_idx in range(raw_h.shape[0]):
+            touched_count = 0
+            r_lo = bboxes[batch_idx, 0]
+            r_hi = bboxes[batch_idx, 1]
+            c_lo = bboxes[batch_idx, 2]
+            c_hi = bboxes[batch_idx, 3]
+
+            # Routing changes affect complete H columns and complete V rows
+            # after separable smoothing. Compute each strip once.
+            if c_lo <= c_hi:
+                for col in range(c_lo, c_hi + 1):
+                    if smooth_range > 0:
+                        prefix_h[0] = 0.0
+                        for row in range(grid_row):
+                            cell = row * grid_col + col
+                            value = raw_h[batch_idx, cell] / h_capacity
+                            prefix_h[row + 1] = prefix_h[row] + value / h_window_count[row]
+                    for row in range(grid_row):
+                        cell = row * grid_col + col
+                        index = n_cells + cell
+                        touched_count = _mark_sparse_cell_jit(
+                            mark, touched_cells, touched_count, index
+                        )
+                        if smooth_range > 0:
+                            route_value = (
+                                prefix_h[h_window_hi[row] + 1] - prefix_h[h_window_lo[row]]
+                            )
+                        else:
+                            route_value = raw_h[batch_idx, cell] / h_capacity
+                        macro_value = (
+                            h_macro[batch_idx, cell] if candidate_hard_macro else base_h_macro[cell]
+                        )
+                        changed_values[index] = route_value + macro_value / h_capacity
+
+            if r_lo <= r_hi:
+                for row in range(r_lo, r_hi + 1):
+                    base = row * grid_col
+                    if smooth_range > 0:
+                        prefix_v[0] = 0.0
+                        for col in range(grid_col):
+                            value = raw_v[batch_idx, base + col] / v_capacity
+                            prefix_v[col + 1] = prefix_v[col] + value / v_window_count[col]
+                    for col in range(grid_col):
+                        cell = base + col
+                        touched_count = _mark_sparse_cell_jit(
+                            mark, touched_cells, touched_count, cell
+                        )
+                        if smooth_range > 0:
+                            route_value = (
+                                prefix_v[v_window_hi[col] + 1] - prefix_v[v_window_lo[col]]
+                            )
+                        else:
+                            route_value = raw_v[batch_idx, cell] / v_capacity
+                        macro_value = (
+                            v_macro[batch_idx, cell] if candidate_hard_macro else base_v_macro[cell]
+                        )
+                        changed_values[cell] = route_value + macro_value / v_capacity
+
+            # Hard swaps can change blockage outside the net-routing bbox.
+            if candidate_hard_macro:
+                for cell in range(n_cells):
+                    if v_macro[batch_idx, cell] != base_v_macro[cell] and mark[cell] == 0:
+                        touched_count = _mark_sparse_cell_jit(
+                            mark, touched_cells, touched_count, cell
+                        )
+                        changed_values[cell] = (
+                            base_v_smoothed[cell] + v_macro[batch_idx, cell] / v_capacity
+                        )
+                    h_index = n_cells + cell
+                    if h_macro[batch_idx, cell] != base_h_macro[cell] and mark[h_index] == 0:
+                        touched_count = _mark_sparse_cell_jit(
+                            mark, touched_cells, touched_count, h_index
+                        )
+                        changed_values[h_index] = (
+                            base_h_smoothed[cell] + h_macro[batch_idx, cell] / h_capacity
+                        )
+
+            candidate_count = 0
+            for touched_idx in range(touched_count):
+                index = touched_cells[touched_idx]
+                candidates[candidate_count] = changed_values[index]
+                candidate_count += 1
+            unchanged_count = 0
+            for order_idx in range(n_values):
+                index = base_order[order_idx]
+                if mark[index] != 0:
+                    continue
+                candidates[candidate_count] = base_values[index]
+                candidate_count += 1
+                unchanged_count += 1
+                if unchanged_count == top_count:
+                    break
+
+            partitioned = np.partition(candidates[:candidate_count], candidate_count - top_count)
+            top_sum = 0.0
+            for index in range(candidate_count - top_count, candidate_count):
+                top_sum += partitioned[index]
+            out[batch_idx] = top_sum / top_count
+
+            for touched_idx in range(touched_count):
+                mark[touched_cells[touched_idx]] = 0
+
     @_numba_njit(cache=True, fastmath=False)
     def _batch_soft_wirelength_jit(
         xy,
@@ -846,6 +1190,195 @@ if HAS_NUMBA:
                 grid[row * grid_col + col] += weight * overlap_x * overlap_y
 
     @_numba_njit(cache=True, fastmath=False)
+    def _add_sparse_density_rect_jit(
+        delta,
+        mark,
+        touched_cells,
+        touched_count,
+        cx,
+        cy,
+        half_w,
+        half_h,
+        weight,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
+    ):
+        """Accumulate one rectangle into a sparse density delta."""
+        x_min = cx - half_w
+        x_max = cx + half_w
+        y_min = cy - half_h
+        y_max = cy + half_h
+        bl_col = int(np.floor(x_min / grid_w))
+        ur_col = int(np.floor(x_max / grid_w))
+        bl_row = int(np.floor(y_min / grid_h))
+        ur_row = int(np.floor(y_max / grid_h))
+        if ur_row < 0 or ur_col < 0 or bl_row >= grid_row or bl_col >= grid_col:
+            return touched_count
+        bl_col = min(max(bl_col, 0), grid_col - 1)
+        ur_col = min(max(ur_col, 0), grid_col - 1)
+        bl_row = min(max(bl_row, 0), grid_row - 1)
+        ur_row = min(max(ur_row, 0), grid_row - 1)
+        for row in range(bl_row, ur_row + 1):
+            overlap_y = min(grid_h * (row + 1), y_max) - max(grid_h * row, y_min)
+            if overlap_y < 0.0:
+                overlap_y = 0.0
+            for col in range(bl_col, ur_col + 1):
+                overlap_x = min(grid_w * (col + 1), x_max) - max(grid_w * col, x_min)
+                if overlap_x < 0.0:
+                    overlap_x = 0.0
+                cell = row * grid_col + col
+                if mark[cell] == 0:
+                    mark[cell] = 1
+                    delta[cell] = 0.0
+                    touched_cells[touched_count] = cell
+                    touched_count += 1
+                delta[cell] += weight * overlap_x * overlap_y
+        return touched_count
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _batch_sparse_swap_density_costs_jit(
+        a_xy,
+        b_xy,
+        a_half_w,
+        a_half_h,
+        b_half_w,
+        b_half_h,
+        base_grid,
+        base_order,
+        base_nonzero,
+        base_sum,
+        density_count,
+        grid_area,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
+        out,
+    ):
+        """Reduce exact swap density from the four changed rectangles only."""
+        n_cells = base_grid.shape[0]
+        mark = np.zeros(n_cells, dtype=np.uint8)
+        delta = np.empty(n_cells, dtype=np.float64)
+        touched_cells = np.empty(n_cells, dtype=np.int64)
+        candidates = np.empty(n_cells + density_count, dtype=np.float64)
+        for batch_idx in range(b_xy.shape[0]):
+            touched_count = 0
+            touched_count = _add_sparse_density_rect_jit(
+                delta,
+                mark,
+                touched_cells,
+                touched_count,
+                a_xy[0],
+                a_xy[1],
+                a_half_w,
+                a_half_h,
+                -1.0,
+                grid_w,
+                grid_h,
+                grid_row,
+                grid_col,
+            )
+            touched_count = _add_sparse_density_rect_jit(
+                delta,
+                mark,
+                touched_cells,
+                touched_count,
+                b_xy[batch_idx, 0],
+                b_xy[batch_idx, 1],
+                b_half_w[batch_idx],
+                b_half_h[batch_idx],
+                -1.0,
+                grid_w,
+                grid_h,
+                grid_row,
+                grid_col,
+            )
+            touched_count = _add_sparse_density_rect_jit(
+                delta,
+                mark,
+                touched_cells,
+                touched_count,
+                b_xy[batch_idx, 0],
+                b_xy[batch_idx, 1],
+                a_half_w,
+                a_half_h,
+                1.0,
+                grid_w,
+                grid_h,
+                grid_row,
+                grid_col,
+            )
+            touched_count = _add_sparse_density_rect_jit(
+                delta,
+                mark,
+                touched_cells,
+                touched_count,
+                a_xy[0],
+                a_xy[1],
+                b_half_w[batch_idx],
+                b_half_h[batch_idx],
+                1.0,
+                grid_w,
+                grid_h,
+                grid_row,
+                grid_col,
+            )
+
+            if n_cells < 10:
+                nonzero = base_nonzero
+                total = base_sum
+                for touched_idx in range(touched_count):
+                    cell = touched_cells[touched_idx]
+                    old_value = base_grid[cell]
+                    new_value = old_value + delta[cell]
+                    if old_value != 0.0:
+                        nonzero -= 1
+                    if new_value != 0.0:
+                        nonzero += 1
+                    total += delta[cell]
+                out[batch_idx] = 0.0 if nonzero == 0 else 0.5 * total / nonzero / grid_area
+            else:
+                nonzero = base_nonzero
+                candidate_count = 0
+                for touched_idx in range(touched_count):
+                    cell = touched_cells[touched_idx]
+                    old_value = base_grid[cell]
+                    new_value = old_value + delta[cell]
+                    if old_value != 0.0:
+                        nonzero -= 1
+                    if new_value != 0.0:
+                        nonzero += 1
+                        candidates[candidate_count] = new_value
+                        candidate_count += 1
+
+                top_count = min(density_count, nonzero)
+                if top_count == 0:
+                    out[batch_idx] = 0.0
+                else:
+                    unchanged_count = 0
+                    for order_idx in range(n_cells):
+                        cell = base_order[order_idx]
+                        if mark[cell] != 0 or base_grid[cell] == 0.0:
+                            continue
+                        candidates[candidate_count] = base_grid[cell]
+                        candidate_count += 1
+                        unchanged_count += 1
+                        if unchanged_count == top_count:
+                            break
+                    partitioned = np.partition(
+                        candidates[:candidate_count], candidate_count - top_count
+                    )
+                    top_sum = 0.0
+                    for index in range(candidate_count - top_count, candidate_count):
+                        top_sum += partitioned[index]
+                    out[batch_idx] = 0.5 * top_sum / grid_area / density_count
+
+            for touched_idx in range(touched_count):
+                mark[touched_cells[touched_idx]] = 0
+
+    @_numba_njit(cache=True, fastmath=False)
     def _batch_soft_swap_density_grids_jit(
         a_xy,
         b_xy,
@@ -985,13 +1518,13 @@ if HAS_NUMBA:
 
 
 def _batch_congestion_costs(congestion_values: np.ndarray) -> np.ndarray:
-    """Return top-tail congestion costs for a batch of trial grids."""
+    """Consume trial grids and return their top-tail congestion costs."""
     values = np.ascontiguousarray(congestion_values, dtype=np.float64)
     count = int(values.shape[1] * 0.05)
     if count == 0:
         return values.max(axis=1)
-    top = np.partition(values, values.shape[1] - count, axis=1)[:, -count:]
-    return top.sum(axis=1) / count
+    values.partition(values.shape[1] - count, axis=1)
+    return values[:, -count:].sum(axis=1) / count
 
 
 def _batch_density_costs(
@@ -1230,6 +1763,91 @@ class IncrementalScorer:
             return float(xx.max())
         top = np.partition(xx, n - cnt)[n - cnt :]
         return float(top.sum() / cnt)
+
+    def _batch_sparse_swap_congestion_costs(
+        self,
+        raw_h: np.ndarray,
+        raw_v: np.ndarray,
+        bboxes: np.ndarray,
+        h_macro: "np.ndarray | None" = None,
+        v_macro: "np.ndarray | None" = None,
+    ) -> np.ndarray:
+        """Return exact batch congestion without full candidate value grids."""
+        base_values = np.ascontiguousarray(
+            np.concatenate(
+                [
+                    self.V_smoothed.ravel() + self.V_macro_flat / self.grid_v_routes,
+                    self.H_smoothed.ravel() + self.H_macro_flat / self.grid_h_routes,
+                ]
+            ),
+            dtype=np.float64,
+        )
+        base_order = np.ascontiguousarray(np.argsort(base_values)[::-1], dtype=np.int64)
+        top_count = int(base_values.size * 0.05)
+        out = np.empty(raw_h.shape[0], dtype=np.float64)
+        candidate_hard_macro = h_macro is not None
+        _batch_sparse_swap_congestion_costs_jit(
+            raw_h,
+            raw_v,
+            bboxes,
+            np.ascontiguousarray(self.H_smoothed.ravel()),
+            np.ascontiguousarray(self.V_smoothed.ravel()),
+            self.H_macro_flat,
+            self.V_macro_flat,
+            h_macro if candidate_hard_macro else raw_h,
+            v_macro if candidate_hard_macro else raw_v,
+            candidate_hard_macro,
+            self.grid_h_routes,
+            self.grid_v_routes,
+            self._sm_row_lp if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
+            self._sm_row_up if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
+            self._sm_row_cnt if self.smooth_range > 0 else np.empty(0, dtype=np.float64),
+            self._sm_col_lp if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
+            self._sm_col_up if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
+            self._sm_col_cnt if self.smooth_range > 0 else np.empty(0, dtype=np.float64),
+            self.smooth_range,
+            self.grid_row,
+            self.grid_col,
+            base_values,
+            base_order,
+            top_count,
+            out,
+        )
+        return out
+
+    def _batch_sparse_swap_density_costs(
+        self,
+        a_xy: np.ndarray,
+        b_xy: np.ndarray,
+        a_half_w: float,
+        a_half_h: float,
+        b_half_w: np.ndarray,
+        b_half_h: np.ndarray,
+    ) -> np.ndarray:
+        """Return exact batch density using baseline-plus-rectangle deltas."""
+        base = np.ascontiguousarray(self.grid_occupied, dtype=np.float64)
+        base_order = np.ascontiguousarray(np.argsort(base)[::-1], dtype=np.int64)
+        out = np.empty(b_xy.shape[0], dtype=np.float64)
+        _batch_sparse_swap_density_costs_jit(
+            a_xy,
+            b_xy,
+            float(a_half_w),
+            float(a_half_h),
+            np.ascontiguousarray(b_half_w, dtype=np.float64),
+            np.ascontiguousarray(b_half_h, dtype=np.float64),
+            base,
+            base_order,
+            int(np.count_nonzero(base)),
+            float(base.sum()),
+            self.dens_density_cnt,
+            self.dens_grid_area,
+            self.dens_grid_w,
+            self.dens_grid_h,
+            self.dens_grid_row,
+            self.dens_grid_col,
+            out,
+        )
+        return out
 
     def congestion_field(self) -> np.ndarray:
         """Return the current max(H, V) routing congestion grid."""
@@ -2029,38 +2647,9 @@ class IncrementalScorer:
         return self._score_multi_move([am, bm], [a_xy, b_xy], [b_xy, a_xy], [])
 
     def _prepare_pair_swap_batch(self, a_module: int, b_modules: np.ndarray):
-        """Flatten cached pair topology for compiled swap batch scoring."""
+        """Pack only candidate net ids; topology stays in global scorer arrays."""
         a_module = int(a_module)
         b_modules = np.ascontiguousarray(b_modules, dtype=np.int64)
-        batch_cache = getattr(self, "_pair_swap_batch_cache", None)
-        if batch_cache is None:
-            batch_cache = {}
-            self._pair_swap_batch_cache = batch_cache
-        cache_key = (a_module, tuple(int(module) for module in b_modules))
-        cached = batch_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        structs = [self._route_struct_many([a_module, int(b_module)]) for b_module in b_modules]
-        if any(struct is None for struct in structs):
-            return None
-        jit_structs = [struct["jit"] for struct in structs]
-
-        def _offsets(key):
-            out = np.zeros(len(jit_structs) + 1, dtype=np.int64)
-            for idx, jit in enumerate(jit_structs):
-                out[idx + 1] = out[idx] + int(jit[key].size)
-            return out
-
-        def _concat(key, dtype):
-            arrays = [np.asarray(jit[key], dtype=dtype) for jit in jit_structs if jit[key].size]
-            if not arrays:
-                return np.empty(0, dtype=dtype)
-            return np.ascontiguousarray(np.concatenate(arrays), dtype=dtype)
-
-        pin_offsets = _offsets("pin_module")
-        starts2_offsets = _offsets("starts2")
-        starts3_offsets = _offsets("starts3")
-        starts4_offsets = _offsets("starts4")
         touched_parts = [self._touched_nets(a_module, int(b_module)) for b_module in b_modules]
         touched_offsets = np.zeros(len(touched_parts) + 1, dtype=np.int64)
         for idx, touched in enumerate(touched_parts):
@@ -2071,38 +2660,19 @@ class IncrementalScorer:
             if touched_arrays
             else np.empty(0, dtype=np.int64)
         )
-        max_unique = max(int(jit["unique_sinks"].size) for jit in jit_structs)
-        max_three = max(int(jit["three_g0"].size) for jit in jit_structs)
-        result = {
+        max_touched = max((int(part.size) for part in touched_parts), default=1)
+        max_unique = max(int(self.net_lengths.max()) - 1, 1) if self.net_lengths.size else 1
+        return {
             "a_module": a_module,
             "b_modules": b_modules,
-            "pin_offsets": pin_offsets,
-            "pin_gcell": np.empty(int(pin_offsets[-1]), dtype=np.int64),
-            "pin_module": _concat("pin_module", np.int64),
-            "pin_x_off": _concat("pin_x_off", np.float64),
-            "pin_y_off": _concat("pin_y_off", np.float64),
-            "starts2_offsets": starts2_offsets,
-            "starts2": _concat("starts2", np.int64),
-            "weights2": _concat("weights2", np.float64),
-            "starts3_offsets": starts3_offsets,
-            "starts3": _concat("starts3", np.int64),
-            "weights3": _concat("weights3", np.float64),
-            "starts4_offsets": starts4_offsets,
-            "starts4": _concat("starts4", np.int64),
-            "lengths4": _concat("lengths4", np.int64),
-            "weights4": _concat("weights4", np.float64),
             "unique_sinks": np.empty(max_unique, dtype=np.int64),
-            "three_g0": np.empty(max_three, dtype=np.int64),
-            "three_g1": np.empty(max_three, dtype=np.int64),
-            "three_g2": np.empty(max_three, dtype=np.int64),
-            "three_weights": np.empty(max_three, dtype=np.float64),
+            "three_g0": np.empty(max_touched, dtype=np.int64),
+            "three_g1": np.empty(max_touched, dtype=np.int64),
+            "three_g2": np.empty(max_touched, dtype=np.int64),
+            "three_weights": np.empty(max_touched, dtype=np.float64),
             "touched_offsets": touched_offsets,
             "touched": touched,
         }
-        if len(batch_cache) >= 32:
-            batch_cache.pop(next(iter(batch_cache)))
-        batch_cache[cache_key] = result
-        return result
 
     def _score_hard_endpoint_swaps_many(
         self,
@@ -2141,21 +2711,15 @@ class IncrementalScorer:
             raw_h,
             raw_v,
             bboxes,
-            batch["pin_offsets"],
-            batch["pin_gcell"],
-            batch["pin_module"],
-            batch["pin_x_off"],
-            batch["pin_y_off"],
-            batch["starts2_offsets"],
-            batch["starts2"],
-            batch["weights2"],
-            batch["starts3_offsets"],
-            batch["starts3"],
-            batch["weights3"],
-            batch["starts4_offsets"],
-            batch["starts4"],
-            batch["lengths4"],
-            batch["weights4"],
+            batch["touched_offsets"],
+            batch["touched"],
+            self.net_starts,
+            self.net_lengths,
+            self.net_weights,
+            self.ref_inv,
+            self.unique_ref,
+            self.x_off,
+            self.y_off,
             batch["unique_sinks"],
             batch["three_g0"],
             batch["three_g1"],
@@ -2205,29 +2769,13 @@ class IncrementalScorer:
             h_macro,
         )
 
-        congestion_values = np.empty((n_batch, 2 * n_cells), dtype=np.float64)
-        _batch_hard_swap_congestion_values_jit(
+        congestion = self._batch_sparse_swap_congestion_costs(
             raw_h,
             raw_v,
             bboxes,
-            np.ascontiguousarray(self.H_smoothed.ravel()),
-            np.ascontiguousarray(self.V_smoothed.ravel()),
             h_macro,
             v_macro,
-            self.grid_h_routes,
-            self.grid_v_routes,
-            self._sm_row_lp if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
-            self._sm_row_up if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
-            self._sm_row_cnt if self.smooth_range > 0 else np.empty(0, dtype=np.float64),
-            self._sm_col_lp if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
-            self._sm_col_up if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
-            self._sm_col_cnt if self.smooth_range > 0 else np.empty(0, dtype=np.float64),
-            self.smooth_range,
-            self.grid_row,
-            self.grid_col,
-            congestion_values,
         )
-        congestion = _batch_congestion_costs(congestion_values)
 
         wirelength = np.empty(n_batch, dtype=np.float64)
         _batch_soft_swap_wirelength_jit(
@@ -2251,29 +2799,17 @@ class IncrementalScorer:
             wirelength,
         )
 
-        density_grids = np.empty((n_batch, self.dens_n_cells), dtype=np.float64)
         a_half_w, a_half_h = self._dens_half[a_module]
         b_half = np.asarray(
             [self._dens_half[int(module)] for module in b_modules], dtype=np.float64
         )
-        _batch_soft_swap_density_grids_jit(
+        density = self._batch_sparse_swap_density_costs(
             a_xy,
             b_xy,
             a_half_w,
             a_half_h,
             np.ascontiguousarray(b_half[:, 0]),
             np.ascontiguousarray(b_half[:, 1]),
-            self.grid_occupied,
-            self.dens_grid_w,
-            self.dens_grid_h,
-            self.dens_grid_row,
-            self.dens_grid_col,
-            density_grids,
-        )
-        density = _batch_density_costs(
-            density_grids,
-            self.dens_density_cnt,
-            self.dens_grid_area,
         )
         return wirelength + 0.5 * density + 0.5 * congestion
 
@@ -2313,21 +2849,15 @@ class IncrementalScorer:
             raw_h,
             raw_v,
             bboxes,
-            batch["pin_offsets"],
-            batch["pin_gcell"],
-            batch["pin_module"],
-            batch["pin_x_off"],
-            batch["pin_y_off"],
-            batch["starts2_offsets"],
-            batch["starts2"],
-            batch["weights2"],
-            batch["starts3_offsets"],
-            batch["starts3"],
-            batch["weights3"],
-            batch["starts4_offsets"],
-            batch["starts4"],
-            batch["lengths4"],
-            batch["weights4"],
+            batch["touched_offsets"],
+            batch["touched"],
+            self.net_starts,
+            self.net_lengths,
+            self.net_weights,
+            self.ref_inv,
+            self.unique_ref,
+            self.x_off,
+            self.y_off,
             batch["unique_sinks"],
             batch["three_g0"],
             batch["three_g1"],
@@ -2339,29 +2869,11 @@ class IncrementalScorer:
             self.grid_col,
         )
 
-        congestion_values = np.empty((cand.size, 2 * n_cells), dtype=np.float64)
-        _batch_soft_congestion_values_jit(
+        congestion = self._batch_sparse_swap_congestion_costs(
             raw_h,
             raw_v,
             bboxes,
-            np.ascontiguousarray(self.H_smoothed.ravel()),
-            np.ascontiguousarray(self.V_smoothed.ravel()),
-            self.H_macro_flat,
-            self.V_macro_flat,
-            self.grid_h_routes,
-            self.grid_v_routes,
-            self._sm_row_lp if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
-            self._sm_row_up if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
-            self._sm_row_cnt if self.smooth_range > 0 else np.empty(0, dtype=np.float64),
-            self._sm_col_lp if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
-            self._sm_col_up if self.smooth_range > 0 else np.empty(0, dtype=np.int64),
-            self._sm_col_cnt if self.smooth_range > 0 else np.empty(0, dtype=np.float64),
-            self.smooth_range,
-            self.grid_row,
-            self.grid_col,
-            congestion_values,
         )
-        congestion = _batch_congestion_costs(congestion_values)
 
         wirelength = np.empty(cand.size, dtype=np.float64)
         _batch_soft_swap_wirelength_jit(
@@ -2385,29 +2897,17 @@ class IncrementalScorer:
             wirelength,
         )
 
-        density_grids = np.empty((cand.size, self.dens_n_cells), dtype=np.float64)
         a_half_w, a_half_h = self._dens_half[int(batch["a_module"])]
         b_half = np.asarray(
             [self._dens_half[int(module)] for module in batch["b_modules"]], dtype=np.float64
         )
-        _batch_soft_swap_density_grids_jit(
+        density = self._batch_sparse_swap_density_costs(
             a_xy,
             b_xy,
             a_half_w,
             a_half_h,
             np.ascontiguousarray(b_half[:, 0]),
             np.ascontiguousarray(b_half[:, 1]),
-            self.grid_occupied,
-            self.dens_grid_w,
-            self.dens_grid_h,
-            self.dens_grid_row,
-            self.dens_grid_col,
-            density_grids,
-        )
-        density = _batch_density_costs(
-            density_grids,
-            self.dens_density_cnt,
-            self.dens_grid_area,
         )
         return wirelength + 0.5 * density + 0.5 * congestion
 

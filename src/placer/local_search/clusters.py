@@ -1,12 +1,12 @@
 """Derive macro communities ("hierarchy") from the flat netlist.
 
 The ICCAD04 benchmarks ship no module hierarchy, so subsystems are inferred
-from connectivity: union-find over low-fanout nets, treating each such net as
-evidence that its hard-macro pins belong to the same logical group. High-fanout
-nets (clocks, buses) connect everything and are skipped — they carry no grouping
-signal. The result is a partition of movable hard macros into clusters, cached
-on the plc and consumed by the hierarchy floorplan, region-relief, swap, and
-coldspot-tightening passes.
+from low-fanout connectivity. The optional one-level refinement also requires
+the connected macros to form a compact physical group in the initial placement,
+using shared-soft affinity, local macro-area density, and placed wire demand as
+confidence evidence. High-fanout nets (clocks, buses) connect everything and
+are skipped. The result is consumed by the hierarchy floorplan, region-relief,
+swap, and coldspot-tightening passes.
 
 The labels intentionally preserve connected subsystems in the current
 hierarchy-only production path. Exact proxy gates still decide local relief
@@ -412,19 +412,337 @@ def _hard_edge_maps(plc, n: int, max_fanout: int):
     return edge_count, edge_weight
 
 
+def _robust_unit_interval(values: np.ndarray) -> np.ndarray:
+    """Scale a nonnegative signal by its robust upper tail."""
+    arr = np.maximum(np.asarray(values, dtype=np.float64), 0.0)
+    positive = arr[arr > 0.0]
+    if positive.size == 0:
+        return np.zeros_like(arr)
+    scale = max(float(np.percentile(positive, 90.0)), 1.0e-12)
+    return np.clip(arr / scale, 0.0, 1.0)
+
+
+def _spatial_structural_context(
+    plc,
+    n: int,
+    n_soft: int,
+    max_fanout: int,
+    hard_sizes,
+    direct_edges: dict[tuple[int, int], float],
+    *,
+    shared_soft_weight: float,
+    proximity_weight: float,
+    pressure_weight: float,
+    spatial_neighbors: int,
+    max_soft_degree: int,
+):
+    """Build connectivity affinities reinforced by initial physical evidence."""
+    try:
+        hard_refs = list(plc.hard_macro_indices[:n])
+        soft_refs = list(plc.soft_macro_indices[:n_soft])
+        hard_pos = np.asarray(
+            [plc.modules_w_pins[int(ref)].get_pos() for ref in hard_refs],
+            dtype=np.float64,
+        )
+        soft_pos = np.asarray(
+            [plc.modules_w_pins[int(ref)].get_pos() for ref in soft_refs],
+            dtype=np.float64,
+        ).reshape(-1, 2)
+        if hard_pos.shape != (int(n), 2) or not np.all(np.isfinite(hard_pos)):
+            return None
+        if hard_sizes is None:
+            hard_wh = np.asarray(
+                [
+                    (
+                        plc.modules_w_pins[int(ref)].get_width(),
+                        plc.modules_w_pins[int(ref)].get_height(),
+                    )
+                    for ref in hard_refs
+                ],
+                dtype=np.float64,
+            )
+        else:
+            hard_wh = np.asarray(hard_sizes[:n], dtype=np.float64).reshape(n, 2)
+        soft_wh = np.asarray(
+            [
+                (
+                    plc.modules_w_pins[int(ref)].get_width(),
+                    plc.modules_w_pins[int(ref)].get_height(),
+                )
+                for ref in soft_refs
+            ],
+            dtype=np.float64,
+        ).reshape(-1, 2)
+        canvas_w, canvas_h = plc.get_canvas_width_height()
+    except Exception:
+        return None
+
+    hard_area = np.maximum(hard_wh[:, 0] * hard_wh[:, 1], 1.0e-12)
+    soft_area = (
+        np.maximum(soft_wh[:, 0] * soft_wh[:, 1], 1.0e-12)
+        if soft_wh.size
+        else np.zeros(0, dtype=np.float64)
+    )
+    canvas_diag = max(float(np.hypot(canvas_w, canvas_h)), 1.0e-12)
+    hard_dist2 = np.sum((hard_pos[:, None, :] - hard_pos[None, :, :]) ** 2, axis=2)
+    np.fill_diagonal(hard_dist2, np.inf)
+    neighbor = min(max(1, int(spatial_neighbors)), max(int(n) - 1, 1))
+    kth = np.partition(hard_dist2, neighbor - 1, axis=1)[:, neighbor - 1]
+    finite_kth = kth[np.isfinite(kth)]
+    radius = float(np.sqrt(np.median(finite_kth))) if finite_kth.size else 0.05 * canvas_diag
+    radius = max(
+        radius,
+        2.0 * float(np.sqrt(np.median(hard_area))),
+        0.01 * canvas_diag,
+        1.0e-9,
+    )
+
+    all_pos = hard_pos if not soft_pos.size else np.vstack([hard_pos, soft_pos])
+    all_area = hard_area if not soft_area.size else np.concatenate([hard_area, soft_area])
+    local_dist2 = np.sum((hard_pos[:, None, :] - all_pos[None, :, :]) ** 2, axis=2)
+    density_signal = np.exp(-local_dist2 / max(radius * radius, 1.0e-12)) @ all_area
+    density_signal /= max(np.pi * radius * radius, 1.0e-12)
+
+    cache = _build_wl_cache(plc)
+    ref_idx = cache["ref_idx"]
+    net_starts = cache["net_starts"]
+    net_lengths = cache["net_lengths"]
+    net_weights = cache["net_weights"]
+    hard_by_ref = {int(ref): index for index, ref in enumerate(hard_refs)}
+    soft_by_ref = {int(ref): index for index, ref in enumerate(soft_refs)}
+    by_soft: dict[int, dict[int, float]] = {}
+    wire_signal = np.zeros(n, dtype=np.float64)
+    for net_index, start_raw in enumerate(net_starts):
+        length = int(net_lengths[net_index])
+        if length < 2 or length > int(max_fanout):
+            continue
+        start = int(start_raw)
+        refs = {int(ref) for ref in ref_idx[start : start + length]}
+        hard = [hard_by_ref[ref] for ref in refs if ref in hard_by_ref]
+        soft = [soft_by_ref[ref] for ref in refs if ref in soft_by_ref]
+        if not hard:
+            continue
+        weight = float(net_weights[net_index])
+        endpoint_pos = [hard_pos[int(index)] for index in hard]
+        endpoint_pos.extend(soft_pos[int(index)] for index in soft)
+        if len(endpoint_pos) >= 2:
+            endpoints = np.asarray(endpoint_pos, dtype=np.float64)
+            placed_span = float(np.sum(np.ptp(endpoints, axis=0))) / radius
+        else:
+            placed_span = 0.0
+        route_demand = 1.0 + min(max(placed_span, 0.0), 4.0)
+        for hard_index in hard:
+            wire_signal[int(hard_index)] += weight * max(length - 1, 1) * route_demand
+            for soft_index in soft:
+                rows = by_soft.setdefault(int(soft_index), {})
+                rows[int(hard_index)] = rows.get(int(hard_index), 0.0) + weight
+
+    shared_raw: dict[tuple[int, int], float] = {}
+    shared_spatial: dict[tuple[int, int], float] = {}
+    for soft_index, hard_rows in by_soft.items():
+        rows = sorted(hard_rows.items())
+        if len(rows) < 2 or len(rows) > max(2, int(max_soft_degree)):
+            continue
+        soft_xy = soft_pos[int(soft_index)]
+        for left_index, (left, left_weight) in enumerate(rows):
+            for right, right_weight in rows[left_index + 1 :]:
+                key = (min(int(left), int(right)), max(int(left), int(right)))
+                support = min(float(left_weight), float(right_weight))
+                mean_distance = 0.5 * (
+                    float(np.linalg.norm(hard_pos[int(left)] - soft_xy))
+                    + float(np.linalg.norm(hard_pos[int(right)] - soft_xy))
+                )
+                proximity = float(np.exp(-((mean_distance / radius) ** 2)))
+                shared_raw[key] = shared_raw.get(key, 0.0) + support
+                shared_spatial[key] = shared_spatial.get(key, 0.0) + support * proximity
+
+    structural = {key: float(value) for key, value in direct_edges.items() if value > 0.0}
+    for key, value in shared_raw.items():
+        structural[key] = structural.get(key, 0.0) + float(shared_soft_weight) * float(value)
+    if not structural:
+        return None
+
+    for (left, right), weight in structural.items():
+        wire_signal[int(left)] += float(weight)
+        wire_signal[int(right)] += float(weight)
+    density_norm = _robust_unit_interval(density_signal)
+    wire_norm = _robust_unit_interval(wire_signal)
+    pressure = 0.5 * density_norm + 0.5 * wire_norm
+
+    affinity: dict[tuple[int, int], float] = {}
+    for key, raw_weight in structural.items():
+        left, right = key
+        distance = float(np.sqrt(hard_dist2[int(left), int(right)]))
+        hard_proximity = float(np.exp(-((distance / radius) ** 2)))
+        pair_pressure = float(np.sqrt(pressure[int(left)] * pressure[int(right)]))
+        direct = float(direct_edges.get(key, 0.0))
+        soft = float(shared_spatial.get(key, 0.0)) * float(shared_soft_weight)
+        placed_weight = direct * (1.0 + float(proximity_weight) * hard_proximity) + soft
+        placed_weight *= 1.0 + float(pressure_weight) * hard_proximity * pair_pressure
+        if placed_weight > 0.0:
+            affinity[key] = placed_weight
+    if not affinity:
+        return None
+    return {
+        "hard_pos": hard_pos,
+        "hard_wh": hard_wh,
+        "hard_area": hard_area,
+        "structural": structural,
+        "affinity": affinity,
+        "pressure": pressure,
+        "radius": float(radius),
+    }
+
+
+def _bbox_utilization(
+    hard_pos: np.ndarray,
+    hard_wh: np.ndarray,
+    hard_area: np.ndarray,
+    members: np.ndarray,
+) -> float:
+    """Return footprint utilization of one hard-macro set's enclosing box."""
+    members = np.asarray(members, dtype=np.int64)
+    if members.size == 0:
+        return 0.0
+    lo = np.min(hard_pos[members] - 0.5 * hard_wh[members], axis=0)
+    hi = np.max(hard_pos[members] + 0.5 * hard_wh[members], axis=0)
+    bbox_area = max(float(np.prod(np.maximum(hi - lo, 1.0e-12))), 1.0e-12)
+    return float(np.sum(hard_area[members]) / bbox_area)
+
+
+def _spatial_split_evidence(
+    members: np.ndarray,
+    left: np.ndarray,
+    right: np.ndarray,
+    context: dict[str, object],
+) -> dict[str, float | str]:
+    """Score whether a topological split also looks like two placed subsystems."""
+    hard_pos = np.asarray(context["hard_pos"], dtype=np.float64)
+    hard_wh = np.asarray(context["hard_wh"], dtype=np.float64)
+    hard_area = np.asarray(context["hard_area"], dtype=np.float64)
+    pressure = np.asarray(context["pressure"], dtype=np.float64)
+    structural = context["structural"]
+    member_set = {int(index) for index in np.asarray(members, dtype=np.int64)}
+    left_set = {int(index) for index in np.asarray(left, dtype=np.int64)}
+    right_set = {int(index) for index in np.asarray(right, dtype=np.int64)}
+
+    total_weight = 0.0
+    cut_weight = 0.0
+    internal_weight = 0.0
+    for (a, b), weight_raw in structural.items():
+        if int(a) not in member_set or int(b) not in member_set:
+            continue
+        weight = float(weight_raw)
+        total_weight += weight
+        if (int(a) in left_set and int(b) in right_set) or (
+            int(a) in right_set and int(b) in left_set
+        ):
+            cut_weight += weight
+        else:
+            internal_weight += weight
+    if total_weight <= 0.0:
+        return {
+            "source": "placement_spatial_structural",
+            "confidence": 0.0,
+            "cut_ratio": 1.0,
+            "compactness_gain": 0.0,
+            "density_gain": 0.0,
+            "wire_gain": 0.0,
+            "pressure_support": 0.0,
+        }
+
+    parent_points = hard_pos[np.asarray(members, dtype=np.int64)]
+    parent_dist = np.linalg.norm(parent_points[:, None, :] - parent_points[None, :, :], axis=2)
+    parent_upper = parent_dist[np.triu_indices(parent_points.shape[0], 1)]
+    parent_mean = float(np.mean(parent_upper)) if parent_upper.size else 0.0
+    within_sum = 0.0
+    within_count = 0
+    for child in (left, right):
+        child_points = hard_pos[np.asarray(child, dtype=np.int64)]
+        child_dist = np.linalg.norm(
+            child_points[:, None, :] - child_points[None, :, :],
+            axis=2,
+        )
+        child_upper = child_dist[np.triu_indices(child_points.shape[0], 1)]
+        within_sum += float(np.sum(child_upper))
+        within_count += int(child_upper.size)
+    within_mean = within_sum / max(float(within_count), 1.0)
+    compactness_gain = float(np.clip(1.0 - within_mean / max(parent_mean, 1.0e-12), 0.0, 1.0))
+
+    parent_util = _bbox_utilization(hard_pos, hard_wh, hard_area, members)
+    child_util = 0.5 * (
+        _bbox_utilization(hard_pos, hard_wh, hard_area, left)
+        + _bbox_utilization(hard_pos, hard_wh, hard_area, right)
+    )
+    density_gain = float(np.clip(child_util / max(parent_util, 1.0e-12) - 1.0, 0.0, 1.0))
+    parent_span = np.ptp(parent_points, axis=0)
+    parent_bbox_area = max(float(np.prod(np.maximum(parent_span, 1.0e-12))), 1.0e-12)
+    child_bbox_area = 0.0
+    for child in (left, right):
+        span = np.ptp(hard_pos[np.asarray(child, dtype=np.int64)], axis=0)
+        child_bbox_area += max(float(np.prod(np.maximum(span, 1.0e-12))), 1.0e-12)
+    parent_wire_density = total_weight / parent_bbox_area
+    child_wire_density = internal_weight / max(child_bbox_area, 1.0e-12)
+    wire_gain = float(
+        np.clip(child_wire_density / max(parent_wire_density, 1.0e-12) - 1.0, 0.0, 1.0)
+    )
+    cut_ratio = float(cut_weight / total_weight)
+    connectivity = float(np.clip(1.0 - cut_ratio, 0.0, 1.0))
+    pressure_support = float(np.mean(pressure[np.asarray(members, dtype=np.int64)]))
+    confidence = (
+        0.50 * connectivity
+        + 0.25 * compactness_gain
+        + 0.10 * density_gain
+        + 0.10 * wire_gain
+        + 0.05 * pressure_support
+    )
+    return {
+        "source": "placement_spatial_structural",
+        "confidence": float(np.clip(confidence, 0.0, 1.0)),
+        "cut_ratio": cut_ratio,
+        "compactness_gain": compactness_gain,
+        "density_gain": density_gain,
+        "wire_gain": wire_gain,
+        "pressure_support": pressure_support,
+    }
+
+
 def derive_one_level_hard_subclusters(
     plc,
     n: int,
     clusters: dict[int, np.ndarray],
     *,
     max_fanout: int,
+    n_soft: int = 0,
     hard_sizes=None,
     min_parent_size: int,
     min_child_size: int,
     max_cut_ratio: float,
+    shared_soft_weight: float = 0.75,
+    proximity_weight: float = 1.0,
+    pressure_weight: float = 0.50,
+    spatial_neighbors: int = 8,
+    max_soft_degree: int = 24,
+    min_compactness_gain: float = 0.10,
+    min_confidence: float = 0.54,
 ):
-    """Bisect eligible active clusters once, without recursive refinement."""
+    """Infer one child level from connectivity reinforced by placed evidence."""
     _edge_count, edge_weight = _hard_edge_maps(plc, n, max_fanout)
+    spatial = _spatial_structural_context(
+        plc,
+        n,
+        n_soft,
+        max_fanout,
+        hard_sizes,
+        edge_weight,
+        shared_soft_weight=float(shared_soft_weight),
+        proximity_weight=float(proximity_weight),
+        pressure_weight=float(pressure_weight),
+        spatial_neighbors=max(1, int(spatial_neighbors)),
+        max_soft_degree=max(2, int(max_soft_degree)),
+    )
+    if spatial is None:
+        return {}, {}, {}, {}, {}
     areas = _cluster_partition_areas(n, hard_sizes)
     min_child = max(2, int(min_child_size))
     min_parent = max(2 * min_child, int(min_parent_size))
@@ -432,6 +750,7 @@ def derive_one_level_hard_subclusters(
     subclusters: dict[int, np.ndarray] = {}
     parent_children: dict[int, tuple[int, ...]] = {}
     child_parent: dict[int, int] = {}
+    parent_evidence: dict[int, dict[str, float | str]] = {}
     next_child = 0
     for parent_id, members_raw in sorted(clusters.items()):
         members = np.asarray(members_raw, dtype=np.int64)
@@ -439,14 +758,19 @@ def derive_one_level_hard_subclusters(
             continue
         split = _balanced_graph_split(
             members,
-            edge_weight,
+            spatial["affinity"],
             areas,
             min_size=min_child,
         )
         if split is None:
             continue
-        left, right, cut_ratio = split
-        if float(cut_ratio) > float(max_cut_ratio):
+        left, right, _affinity_cut_ratio = split
+        evidence = _spatial_split_evidence(members, left, right, spatial)
+        if (
+            float(evidence["cut_ratio"]) > float(max_cut_ratio)
+            or float(evidence["compactness_gain"]) < float(min_compactness_gain)
+            or float(evidence["confidence"]) < float(min_confidence)
+        ):
             continue
         left_id, right_id = int(next_child), int(next_child + 1)
         next_child += 2
@@ -456,7 +780,8 @@ def derive_one_level_hard_subclusters(
         parent_children[int(parent_id)] = (left_id, right_id)
         child_parent[left_id] = int(parent_id)
         child_parent[right_id] = int(parent_id)
-    return retained_parents, subclusters, parent_children, child_parent
+        parent_evidence[int(parent_id)] = evidence
+    return retained_parents, subclusters, parent_children, child_parent, parent_evidence
 
 
 def _cosine_affinity_components(
@@ -777,6 +1102,7 @@ def compute_region_bbox(
     heat_expand_frac: float = 0.0,
     heat_hot_percentile: float = 70.0,
     heat_escape_min: float = 0.25,
+    cluster_margins=None,
 ) -> np.ndarray:
     """Per-macro CENTER-feasible region box [n,4] = (xlo, ylo, xhi, yhi).
 
@@ -787,8 +1113,11 @@ def compute_region_bbox(
     `region_area = member_area / target_density`, at the cluster's current aspect
     ratio, never smaller than the current member footprint (so macros aren't
     trapped), centered on the cluster centroid, clipped to canvas by shifting.
-    `margin>0` uses the simpler footprint+margin sizing instead. Singletons get a
-    local window (`singleton_window`; 0 => pinned at their current spot).
+    `margin>0` uses the simpler footprint+margin sizing instead. A
+    `cluster_margins` mapping overrides that margin per cluster, which lets a
+    deeper hierarchy layer grant room from graph/field pressure without
+    changing the boxes of unrelated children. Singletons get a local window
+    (`singleton_window`; 0 => pinned at their current spot).
     """
     region = np.empty((n, 4), dtype=np.float64)
     big = max(float(cw), float(ch))
@@ -805,8 +1134,13 @@ def compute_region_bbox(
         mhw, mhh = float(hw[mem].max()), float(hh[mem].max())
         bw0 = max(float(xs.max() - xs.min()) + 2.0 * mhw, 1e-6)
         bh0 = max(float(ys.max() - ys.min()) + 2.0 * mhh, 1e-6)
-        if margin > 0.0:
-            rw, rh = bw0 + 2.0 * margin * big, bh0 + 2.0 * margin * big
+        local_margin = (
+            float(cluster_margins.get(int(cid), margin))
+            if cluster_margins is not None
+            else float(margin)
+        )
+        if local_margin > 0.0:
+            rw, rh = bw0 + 2.0 * local_margin * big, bh0 + 2.0 * local_margin * big
         else:
             member_area = float(np.sum(sizes[mem, 0] * sizes[mem, 1]))
             region_area = member_area / max(target_density, 1e-3)
@@ -879,6 +1213,7 @@ def _cluster_outer_region(
     heat_max=None,
     heat_expand_frac: float = 0.0,
     heat_escape_min: float = 0.25,
+    cluster_margins=None,
 ) -> tuple[float, float, float, float]:
     """Return the unclipped-footprint cluster region as an outer canvas box."""
     mem = np.asarray(mem, dtype=np.int64)
@@ -889,8 +1224,13 @@ def _cluster_outer_region(
     bw0 = max(float(xs.max() - xs.min()) + 2.0 * mhw, 1e-6)
     bh0 = max(float(ys.max() - ys.min()) + 2.0 * mhh, 1e-6)
     big = max(float(cw), float(ch))
-    if margin > 0.0:
-        rw, rh = bw0 + 2.0 * margin * big, bh0 + 2.0 * margin * big
+    local_margin = (
+        float(cluster_margins.get(int(cid), margin))
+        if cluster_margins is not None and cid is not None
+        else float(margin)
+    )
+    if local_margin > 0.0:
+        rw, rh = bw0 + 2.0 * local_margin * big, bh0 + 2.0 * local_margin * big
     else:
         member_area = float(np.sum(sizes[mem, 0] * sizes[mem, 1]))
         region_area = member_area / max(target_density, 1e-3)
@@ -947,6 +1287,7 @@ def compute_soft_region_bbox(
     heat_expand_frac: float = 0.0,
     heat_hot_percentile: float = 70.0,
     heat_escape_min: float = 0.25,
+    cluster_margins=None,
 ) -> np.ndarray:
     """Per-soft center-feasible region box [num_soft,4]."""
     num_soft = int(soft_xy.shape[0])
@@ -974,6 +1315,7 @@ def compute_soft_region_bbox(
             heat_max=heat_max,
             heat_expand_frac=heat_expand_frac,
             heat_escape_min=heat_escape_min,
+            cluster_margins=cluster_margins,
         )
         for p in np.asarray(soft_pidx, dtype=np.int64):
             k = int(p) - int(n)
@@ -1004,6 +1346,7 @@ def compute_soft_region_bbox(
                 heat_max=heat_max,
                 heat_expand_frac=heat_expand_frac,
                 heat_escape_min=heat_escape_min,
+                cluster_margins=cluster_margins,
             )
         big = max(float(cw), float(ch))
         pad = max(singleton_window * big, 0.02 * big)

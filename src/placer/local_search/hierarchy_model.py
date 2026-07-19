@@ -76,6 +76,7 @@ class HierarchyModel:
     parent_bridge_softs: dict[int, np.ndarray]
     parent_edges: list[HierarchyEdge]
     parent_confidence: dict[int, float]
+    subcluster_evidence: dict[int, dict[str, float | str]]
     subhierarchy_source: str
     cluster_source: str
     max_fanout: int
@@ -133,6 +134,7 @@ class HierarchyModel:
         subclusters: dict[int, np.ndarray] = {}
         parent_children: dict[int, tuple[int, ...]] = {}
         child_parent: dict[int, int] = {}
+        subcluster_evidence: dict[int, dict[str, float | str]] = {}
         if retained_parent_clusters:
             parent_clusters = retained_parent_clusters
             next_child = 0
@@ -151,6 +153,15 @@ class HierarchyModel:
                     child_ids.append(child_id)
                 if len(child_ids) >= 2:
                     parent_children[int(parent_id)] = tuple(child_ids)
+                    subcluster_evidence[int(parent_id)] = {
+                        "source": retained_source,
+                        "confidence": 1.0,
+                        "cut_ratio": 0.0,
+                        "compactness_gain": 0.0,
+                        "density_gain": 0.0,
+                        "wire_gain": 0.0,
+                        "pressure_support": 0.0,
+                    }
             subhierarchy_source = retained_source
         else:
             (
@@ -158,17 +169,33 @@ class HierarchyModel:
                 subclusters,
                 parent_children,
                 child_parent,
+                subcluster_evidence,
             ) = derive_one_level_hard_subclusters(
                 plc,
                 n,
                 clusters,
                 max_fanout=max_fanout,
+                n_soft=n_soft,
                 hard_sizes=hard_sizes,
                 min_parent_size=int(const.HIER_SUBCLUSTER_MIN_PARENT_HARD),
                 min_child_size=int(const.HIER_SUBCLUSTER_MIN_CHILD_HARD),
                 max_cut_ratio=float(const.HIER_SUBCLUSTER_MAX_CUT_RATIO),
+                shared_soft_weight=float(const.HIER_SUBCLUSTER_SHARED_SOFT_WEIGHT),
+                proximity_weight=float(const.HIER_SUBCLUSTER_SPATIAL_PROXIMITY_WEIGHT),
+                pressure_weight=float(const.HIER_SUBCLUSTER_SPATIAL_PRESSURE_WEIGHT),
+                spatial_neighbors=int(const.HIER_SUBCLUSTER_SPATIAL_NEIGHBORS),
+                max_soft_degree=int(const.HIER_SUBCLUSTER_SPATIAL_MAX_SOFT_DEGREE),
+                min_compactness_gain=float(const.HIER_SUBCLUSTER_SPATIAL_MIN_COMPACTNESS_GAIN),
+                min_confidence=float(const.HIER_SUBCLUSTER_SPATIAL_MIN_CONFIDENCE),
             )
-            subhierarchy_source = "hierarchy_one_level_bisection"
+            evidence_sources = {
+                str(evidence.get("source", "")) for evidence in subcluster_evidence.values()
+            }
+            subhierarchy_source = (
+                "hierarchy_spatial_structural_bisection"
+                if "placement_spatial_structural" in evidence_sources
+                else "hierarchy_one_level_bisection"
+            )
         cluster_softs, bridge_softs = derive_soft_cluster_roles(
             plc,
             n,
@@ -289,6 +316,7 @@ class HierarchyModel:
             parent_bridge_softs=parent_bridge_softs,
             parent_edges=parent_edges,
             parent_confidence=parent_confidence,
+            subcluster_evidence=subcluster_evidence,
             subhierarchy_source=(subhierarchy_source if parent_clusters else "none"),
             cluster_source=cluster_source,
             max_fanout=max_fanout,
@@ -444,6 +472,75 @@ class HierarchyModel:
             target_density=hier_region_density(),
             margin=hier_region_margin(),
             singleton_window=hier_region_singleton(),
+        )
+
+    def subcluster_hard_regions(
+        self,
+        hard_xy,
+        sizes,
+        hw,
+        hh,
+        cw,
+        ch,
+        n,
+        *,
+        cluster_margins,
+    ) -> "np.ndarray | None":
+        """Build deepest-child boxes from each footprint plus its margin."""
+        if not self.subclusters:
+            return None
+        return compute_region_bbox(
+            hard_xy,
+            sizes,
+            hw,
+            hh,
+            cw,
+            ch,
+            n,
+            self.subcluster_labels,
+            self.subclusters,
+            target_density=hier_region_density(),
+            margin=0.0,
+            singleton_window=0.0,
+            cluster_margins=cluster_margins,
+        )
+
+    def subcluster_soft_regions(
+        self,
+        hard_xy,
+        soft_xy,
+        hard_sizes,
+        hard_hw,
+        hard_hh,
+        soft_hw,
+        soft_hh,
+        cw,
+        ch,
+        n,
+        *,
+        cluster_margins,
+    ) -> "np.ndarray | None":
+        """Build owned-soft boxes for the deepest retained child layer."""
+        if not self.subclusters:
+            return None
+        return compute_soft_region_bbox(
+            hard_xy,
+            soft_xy,
+            hard_sizes,
+            hard_hw,
+            hard_hh,
+            soft_hw,
+            soft_hh,
+            cw,
+            ch,
+            n,
+            self.subclusters,
+            self.subcluster_softs,
+            bridge_softs=None,
+            target_density=hier_region_density(),
+            margin=0.0,
+            singleton_window=0.0,
+            cluster_margins=cluster_margins,
         )
 
 

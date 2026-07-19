@@ -11,7 +11,7 @@ The active submission now lives at the repository root: `src/`, `docs/`,
 absent after the root-layout migration; if present, treat it as frozen /
 read-only.
 
-**Current production mode (2026-07-18): hierarchy-only.** `MacroPlacer.place()`
+**Current production mode (2026-07-19): hierarchy-only.** `MacroPlacer.place()`
 always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py` and raises if grouped DREAMPlace is not
 available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
@@ -20,9 +20,34 @@ ranker defaults, and their proxy-only verifiers are not active code.
 
 Current verified result with normal BB/cache behavior:
 `uv run evaluate src/main.py --all` = **AVG 1.1412**, 17/17 VALID, 0
-overlaps, all final hierarchy audits passed, **423.87s**. Every per-design
-score is bit-identical to the preceding 398.57s deterministic-quota reference;
-the runtime difference is observed host variation, not changed search work.
+overlaps, all final hierarchy audits passed, **351.48s**. Every per-design
+score, accepted move, rollback decision, and exact-score count is unchanged
+from the preceding 416.87s reference.
+Region swaps now exact-score short stable prefixes before their untouched
+suffix. When a prefix contains the first acceptable candidate, the suffix is
+provably irrelevant and skipped. Hard-hard and hard-soft prefixes remain 4 and
+8; the calibrated soft-soft prefix is 12. Hard-involving legality is evaluated
+only after ranking, on the 16/48 candidates that can reach exact scoring, and
+disabled graph paths no longer build zero-valued masks/penalties. The accepted
+follow-up sweep increased avoided exact swap evaluations from 58,820 to 66,703
+and reduced attributed region-swap time from 150.68s to 148.29s without
+changing candidate order, logical quotas, placements, or scores. Its complete
+evaluator runtime was 416.74s, effectively flat under final-score noise. The
+scorer first reduced its disposable batched congestion grids with in-place
+top-tail partitioning, and each region-swap schedule computes the static hard
+separation matrices once for all fields, rounds, and graph-fallback work. That
+sweep preserved the same 1,077,431 physical and 66,703 avoided exact scores
+while reducing attributed region-swap time from 148.29s to 146.98s.
+The current region-swap scorer no longer builds or flattens a routing topology
+for every candidate pair. One compiled kernel packs the selected pins directly
+from the scorer's global net/pin arrays and preserves the evaluator's 2-pin,
+3-pin, then high-fanout accumulation order. Congestion top-tail scoring
+recomputes only routing-changed H columns, V rows, and hard-blockage cells, then
+merges those values with the sorted unchanged baseline. Density scoring applies
+only the four changed occupancy rectangles and merges their values with the
+baseline tail. The accepted sweep retained the same physical/avoided counts and
+reduced attributed region-swap time **146.98s -> 104.04s** (29.2%) and complete
+runtime **416.87s -> 351.48s** (15.7%).
 Deterministic per-pass exact-score quotas cap work before the wall-clock safety
 guards and preserve every placement and score from the preceding 404.01s
 reference. The seed
@@ -33,9 +58,10 @@ the candidate is not mandatory. The same contract is enforced against the
 selected seed throughout relief and final rollback. The portfolio
 includes a default-on constraint-graph legalization alternative for
 `initial.plc`, and hard-hard / hard-soft swap sets use exact batched scoring.
-Batch density-tail reductions and nearest-neighbor hierarchy-audit selection
-also use cached Numba kernels while preserving the scalar and stable-sort
-reference semantics.
+Swap congestion/density tails now use exact baseline-plus-touched-cell Numba
+reducers; ordinary disposable congestion batches still partition in place.
+Nearest-neighbor hierarchy-audit selection also uses a cached Numba kernel.
+All preserve the scalar and stable-sort reference semantics.
 Region hard relocation rejects candidates above the selected seed's cheap hard-
 containment limit before exact batch scoring. The full six-component checkpoint
 remains authoritative after the pass.
@@ -47,7 +73,10 @@ full suites produced zero gain in 34 runs; its time remains as deadline and
 final-audit headroom.
 Passes advance on
 gain (`HIER_PLATEAU_PROXY_GAIN=0.00005`) rather
-than fixed repeat counts, and a final hierarchy-quality audit rolls back to
+than fixed repeat counts. Strong/medium late-soft scheduling records every
+congestion/density lane and stops the entire remaining pass after an audited
+lane has no retained gain. Do not truncate a lane's ordered hot-source tail:
+IBM12 improvements begin beyond source 384. A final hierarchy-quality audit rolls back to
 the best saved audit-passing checkpoint if the post-search state drifts too
 far from the selected hierarchy seed. See `docs/general/ARCHITECTURE.md` for
 the full pipeline, `docs/general/ISSUES.md` for current gaps, and
@@ -77,6 +106,11 @@ not recursively discover an arbitrary tree. Explicit slash-separated paths keep
 their nearest useful ancestor above the active leaf partition. Existing
 oversized connectivity splits keep the original flat component as their parent;
 otherwise an eligible active cluster may receive one strict graph bisection.
+That fallback begins with direct low-fanout hard edges and shared-soft
+support, then reinforces only those structural relations using initial hard/soft
+proximity, local macro-area density, and placed low-fanout wire demand. Geometry
+alone cannot create a hierarchy. Production requires raw cut ratio `<=0.20`,
+within-child compactness gain `>=0.10`, and combined confidence `>=0.54`.
 After ordinary leaf-local relief, a bounded pass rigidly relocates child groups
 or swaps sibling slots inside the parent region, co-moving leaf-owned soft
 macros. Blocked candidates may compact and legalize only the affected child set.
@@ -86,8 +120,26 @@ contracts for later passes and final rollback. The pass has a shared 24-score
 quota, a 4s guard, and a `0.0001` minimum local gain; it is non-recursive and
 leaves the active DREAMPlace grouping unchanged.
 
+Every deepest retained child also receives an immutable internal relief box.
+The box starts at the child's current hard-macro footprint and adds a per-child
+canvas-fraction margin from congestion heat, density heat, and normalized
+inter-child graph tension; hot boxes can expand directionally toward cold
+components favored by graph corridors. The result is clipped to the retained
+parent region. Individual hard and owned-soft relocations and hard-hard swaps
+may then search inside the box, with neighboring-child graph centroids guiding
+targets and the complete active/child/parent contract checked before commit.
+The pass has a 48-score ceiling, a 3s guard, and a `0.0005` gain floor because
+any retained deep move activates the stricter downstream multilevel contract.
+The accepted IBM sweep exact-scored 528 states in 2.93s, retained none, and
+preserved every score at AVG 1.1412. A `0.0001` trial retained six shallow local
+moves but regressed the final average to 1.1453, so that floor is rejected.
+The independent synthetic sweep reached AVG 1.4193, 10/10 VALID, zero overlaps,
+and 10/10 truth-audit passes with the accepted deep pass enabled.
+
 NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
-**AVG 0.7121**, 4/4 VALID, 0 overlaps, all hierarchy audits passed, 76.85s.
+**AVG 0.7121**, 4/4 VALID, 0 overlaps, all hierarchy audits passed. The latest
+validation observed 65.27s; explicit path parents bypassed
+the fallback inference.
 `uv run python
 test/verification/_verify_ng45_hierarchy_tags.py` passes. The hierarchy model
 uses slash-separated instance-path prefixes when macro names provide useful

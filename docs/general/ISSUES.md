@@ -1,6 +1,6 @@
 # Current Issues
 
-Last revised: 2026-07-18.
+Last revised: 2026-07-19.
 
 This file tracks unresolved work in the hierarchy-only VivaPlace system. The
 complete experiment history, including rejected proxy-path work, lives in
@@ -13,13 +13,19 @@ pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1412  17/17 VALID  0 overlaps  423.87s
+AVG 1.1412  17/17 VALID  0 overlaps  351.48s
 ```
 
-All final hierarchy audits passed. The one-level hierarchy run reproduced every
-per-design score from the 398.57s deterministic-quota reference exactly; its
-observed wall time was 423.87s. The latest NG45 result is `AVG 0.7121`, 4/4
-VALID, zero overlaps, all audits passed, in 76.85s.
+All final hierarchy audits passed. Stable-prefix region-swap scoring,
+ranked-only hard legality, and disabled-graph allocation removal reproduced
+every per-design score from the 398.57s deterministic-quota reference exactly,
+avoided 66,703 exact evaluations, and reduced attributed swap time from 159.91s
+to 148.29s. In-place congestion-tail partitioning and schedule-scoped hard
+separation geometry preserve the same physical/avoided score counts and reduce
+the phase again to 146.98s. Direct global-topology swap routing plus exact
+baseline/touched-cell congestion and density tails preserve those same counts
+and reduce the phase to 104.04s. The latest NG45 result is `AVG 0.7121`, 4/4
+VALID, zero overlaps, all audits passed, in 65.27s.
 
 The learned-ranking stack has been removed. Candidate ordering is deterministic;
 exact proxy, hard legality, bounds, fixed-macro immobility, hierarchy regions,
@@ -164,30 +170,47 @@ the reference instead; this preserves the seedless case's useful basin. Exact
 candidate-level vector guards are limited to refined graphs of at most 64 hard
 macros, while larger graphs use pass checkpoints and final rollback.
 
-The final synthetic rerun reached `AVG 1.4204`, 10/10 valid, zero overlaps, and
-10/10 truth passes, versus the attributed `AVG 1.4262` run with nine truth
-passes. `syn03_sram` moved from purity `0.375` / pair precision `0.271` to
-`1.0 / 1.0`; `syn04_dense` also recovers its six groups exactly. Remaining work
-is to improve the still-coarse partitions on cases such as `syn01_wide`
-without weakening the exact contract or regressing general proxy.
+The latest synthetic rerun, with deepest-child boxes enabled, reached `AVG
+1.4193`, 10/10 valid, zero overlaps, and 10/10 truth passes, versus the
+attributed `AVG 1.4262` run with nine truth passes. `syn03_sram` moved from
+purity `0.375` / pair precision `0.271` to `1.0 / 1.0`; `syn04_dense` also
+recovers its six groups exactly. Remaining work is to improve the still-coarse
+partitions on cases such as `syn01_wide` without weakening the exact contract
+or regressing general proxy.
 
 One shallow hierarchy level is now resolved for production. Explicit path
 partitions retain their nearest useful ancestor; existing connectivity splits
 retain the original component; otherwise an eligible active cluster receives
-at most one strict graph bisection. The active DREAMPlace groups do not change,
-and discovery never recurses. A bounded pass relocates children or swaps sibling
-slots inside their parent, co-moves owned soft macros, and can legalize only the
-affected child set when rigid geometry is blocked. Child and parent contracts
-run before exact mixed-group scoring and become authoritative downstream only
-after a retained child move.
+at most one strict graph bisection. That fallback now requires direct hard or
+shared-soft structure, reinforced by initial macro proximity, local
+macro-area density, and placed low-fanout wire demand. Geometry cannot create
+an edge, and the split must clear raw-cut, compactness-gain, and confidence
+gates. The active DREAMPlace groups do not change, and discovery never recurses.
+A bounded pass relocates children or swaps sibling slots inside their parent,
+co-moves owned soft macros, and can legalize only the affected child set when
+rigid geometry is blocked. Child and parent contracts run before exact mixed-
+group scoring and become authoritative downstream only after a retained child
+move.
 
-The final IBM sweep retained no child moves and reproduced all scores exactly;
-the pass exact-scored 55 states in 2.26s. NG45 retained one localized child move
-on `ariane136`, improving `0.7298 -> 0.7291` and the suite `0.7123 -> 0.7121`.
+The deepest retained children now also receive fixed internal relief boxes:
+current footprint plus a congestion/density/graph-pressure margin, optionally
+expanded toward graph-favored cold components and clipped to the parent. Hard
+and owned-soft relocations and same-child hard swaps stay inside those boxes.
+The accepted 0.0005 floor retained no IBM deep moves while exact-scoring 528
+states and preserved AVG 1.1412. A 0.0001 calibration retained six locally
+improving states but regressed the final suite to 1.1453 by activating the
+tighter downstream multilevel contract; it is rejected.
+
+The final IBM sweep inferred 23 spatial parents / 46 children on ten designs,
+retained no child moves, and reproduced all scores exactly; the pass exact-
+scored 24 states. NG45 retained one localized child move on `ariane136`,
+improving `0.7298 -> 0.7291` and the suite `0.7123 -> 0.7121`.
 The rejected `0.00005` local-gain floor accepted a tiny ibm08 move and later
 regressed that design by 0.0053 after activating the tighter contract. The
-production 0.0001 floor rejects it. Deeper recursive hierarchy inference and
-promotion of low-confidence flat communities remain intentionally out of scope.
+production 0.0001 whole-child floor rejects it. Further recursive hierarchy
+inference and promotion of low-confidence flat communities remain intentionally
+out of scope; the deepest-child boxes add search room without adding another
+inferred partition level.
 
 Explicit slash-separated soft instance paths now form high-confidence bundles
 and take precedence in compound relocation. Flat IBM `Grp_*` names expose no
@@ -208,12 +231,22 @@ prove that their expected gain pays for their exact-score calls.
 Hard-hard and hard-soft swap trials now share exact compiled batch kernels,
 joining the existing batched soft relocation and soft-soft swap paths. Direct
 scalar parity checks pass to floating-point roundoff without changing committed
-scorer grids or caches. The remaining bottleneck is repeated full exact scoring,
-especially the evaluator's final large-grid report and operators that cannot
-share a fixed endpoint.
+scorer grids or caches. Region swaps now score four-candidate hard-hard,
+eight-candidate hard-soft, or twelve-candidate soft-soft stable prefixes before
+the untouched remainder; a prefix winner safely avoids the suffix. Hard
+legality is evaluated only after the ranked 16/48-candidate cut, and disabled
+graph paths avoid zero-array construction. Disposable congestion grids are now
+partitioned in place, and static hard separation matrices are computed once
+per swap schedule. Together these preserve all 66,703 avoided exact IBM swap
+evaluations and reduce attributed swap time by 12.93s without changing any
+winner. The
+remaining bottleneck is repeated full exact scoring, especially the evaluator's
+final large-grid report and operators that must choose the best candidate over
+a complete batch rather than the first acceptable one.
 
-The per-batch density tail reduction and hierarchy vector's nearest-four
-impurity selection now also use cached CPU Numba kernels. They preserve the
+The per-batch congestion tail reduction is exact in-place NumPy; the density
+tail reduction and hierarchy vector's nearest-four impurity selection use
+cached CPU Numba kernels. They preserve the
 scalar and stable-sort references exactly, remove avoidable local Python and
 N-by-N sort work, and do not replace the required final exact scorer.
 

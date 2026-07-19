@@ -91,11 +91,29 @@ reference; `reference_overlaps` identifies cases where that distinction
 matters. Use the truth audit to detect missing or merged hierarchy boundaries,
 not as a replacement production gate.
 
-The accepted one-level parent/child hierarchy revision completed the suite at
-`AVG 1.4204`, 10/10 valid, zero overlaps, and 10/10 truth-audit passes. The
-extra level is deliberately non-recursive; these truth labels continue to audit
-the active inferred partition independently rather than declaring every graph
-bisection to be a confirmed IP boundary.
+The accepted spatial/structural one-level hierarchy revision completed the
+suite at `AVG 1.4195`, 10/10 valid, zero overlaps, and 10/10 truth-audit passes.
+The extra level is deliberately non-recursive. Its fallback requires structural
+connectivity plus placement, local density, and placed wire-pressure support;
+proximity alone cannot create a hierarchy. These truth labels continue to audit
+the active inferred partition independently rather than declaring every
+confidence-gated bisection to be a confirmed IP boundary.
+
+The subsequent deepest-child bounded-relief revision completed the suite at
+`AVG 1.4193`, 10/10 valid, zero overlaps, and 10/10 truth-audit passes. The
+graph/field-derived boxes remained valid on every synthetic axis, including the
+seedless and scale-stress cases.
+
+Stable-prefix region-swap scoring and audited late-lane stopping then completed
+the suite at `AVG 1.4192`, 10/10 valid, zero overlaps, and 10/10 truth-audit
+passes. One syn05 late lane violated bridge-soft distance and was restored at
+the lane checkpoint before later search continued.
+
+Ranked-only hard legality, disabled-graph allocation removal, and the calibrated
+12-candidate soft-soft prefix then reproduced the suite at `AVG 1.4193`, 10/10
+valid, zero overlaps, and 10/10 truth-audit passes. Region-swap telemetry
+recorded 2,578 avoided exact evaluations; candidate and commit order remained
+unchanged.
 
 ## How the runner wires into v2
 
