@@ -42,11 +42,12 @@ internal relief:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1412  17/17 VALID  0 overlaps  351.48s
+AVG 1.1404  17/17 VALID  0 overlaps  318.55s
 ```
 
-All 17 per-design scores are bit-identical to the preceding 398.57s
-deterministic-quota reference. Spatial/structural fallback inferred 23 parents
+Sixteen per-design scores are bit-identical to the preceding accepted
+reference. A contract-preserving repair of the IBM09 constraint-graph seed
+improved that design from 1.0122 to 0.9978. Spatial/structural fallback inferred 23 parents
 and 46 children on ten designs. The one-level operator exact-scored 24 complete
 IBM child states and retained none, so discovery alone did not change the
 established trajectory.
@@ -67,11 +68,27 @@ tail reducers recompute only touched congestion strips/blockage cells and the
 four changed density rectangles, merging them with the unchanged baseline.
 The phase falls again to 104.04s and complete runtime to 351.48s without any
 placement or score change.
-The independent synthetic sweep completed at `AVG 1.4193`, 10/10 VALID, zero
+A commit-scoped tail cache then reuses the sorted congestion/density baseline
+and density nonzero/sum summary across rejected batches. It invalidates after
+every committed scorer-state change. The verification sweep retained the same
+1,077,431 physical and 66,703 avoided exact scores while reducing the phase to
+102.68s. Focused IBM04/12/18 phase reductions were 7.6%, 9.3%, and 5.5%; the
+complete sweep took 371.82s under unrelated run/compile variance, so this is a
+phase-local acceptance rather than a claimed end-to-end reduction.
+The current scheduler adds a second same-sized stable prefix before the swap
+suffix, raising avoided exact evaluations to 79,466 and reducing the trace-
+compatible region phase from 104.04s to 98.74s. Batched exact wirelength
+prefiltering rejected 100,831 soft proposals before field scoring and cut the
+four main soft-relocation phases by 20.7–22.3%. Exclusive phase telemetry
+covers at least 99.86% of each IBM placer call: the API total was 297.33s and
+external evaluator overhead was 21.22s. Flat role evidence is now explicitly
+medium/low confidence and cannot create compound groups; explicit path bundles
+remain eligible.
+The independent synthetic sweep completed at `AVG 1.4192`, 10/10 VALID, zero
 overlaps, and 10/10 truth-audit passes with the deep boxes enabled.
 
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7121`,
-4/4 VALID, zero overlaps, all hierarchy audits passed, in 65.27s. A localized
+4/4 VALID, zero overlaps, all hierarchy audits passed, in 64.80s. A localized
 child relocation on `ariane136` improved that design from `0.7298` to `0.7291`.
 
 The earlier `AVG 1.1627` hierarchy sweep remains an important proxy reference,
@@ -166,13 +183,14 @@ implements it, and the constants that control it), see
 flowchart TD
     A[Benchmark + initial macro locations] --> B[Load PLC]
     B --> C[Build HierarchyModel from path tags or inferred connectivity<br/>refine a nearly all-covering single flat component<br/>retain one spatial/structural parent/child level]
-    C --> D[Classify soft macros as owned or bridge]
+    C --> D[Classify soft macros as owned or bridge<br/>and calibrate role confidence]
     D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
     E --> F[Cluster-consecutive hard legalization]
     F --> E1[Exact-prescore seed portfolio + per-component hierarchy contract]
     F --> F1[Constraint-graph legalized initial.plc alternative]
     F1 --> E1
-    E1 --> G[Default-order safety legalization]
+    E1 --> E2[Repair a one-component mandatory near miss<br/>only if at least 95% source displacement remains]
+    E2 --> G[Default-order safety legalization]
     G --> H[Soft relocation cleanup]
     H --> R[Congestion-expanded hard/soft regions]
     R --> J[Region-locked hard relocation + soft cleanup<br/>hard-containment prefilter before exact scoring]
@@ -180,11 +198,11 @@ flowchart TD
     A1 --> A2[Parent-bounded child relocation<br/>or sibling slot swap; owned softs co-move]
     A2 --> A3[Freeze deepest-child footprint + graph/field margin boxes<br/>bounded hard/owned-soft relocation + hard swaps]
     A3 --> V[Exact-gated cluster decompression + graph-tension ordering]
-    V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps<br/>stable exact prefix, untouched suffix on demand]
+    V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps<br/>two stable exact prefixes, untouched suffix on demand]
     T --> T1[Per-round micro-shift replay + audit checkpoint]
     T1 --> X[Post-swap micro-shift replay; telemetry skips duplicate ordinary post-swap soft pass]
     X --> C1{Post-soft plateau and spare budget?}
-    C1 -->|Yes| C2[Compound related-soft relocation with final-state exact acceptance]
+    C1 -->|Yes| C2[Explicit high-confidence soft-bundle relocation<br/>with final-state exact acceptance]
     C1 -->|No| X1
     C2 --> X1{Strong soft repair scheduled?}
     X1 -->|Yes| X2[Plateau/component-aware strong soft repair<br/>stop after audited weak retained lane]
@@ -213,6 +231,12 @@ distance. Each component is independently constrained relative to legalized
 `initial.plc`. Non-mandatory alternatives whose immutable hard components fail
 are removed before exact scoring, and production advances the lowest exact-
 proxy eligible scored seed.
+A mandatory lower-proxy candidate that fails exactly one component may be
+interpolated toward the authoritative passing reference. Each deterministic
+trial is legalized and the passing boundary is bisected; a repair enters exact
+scoring only if it retains at least 95% of the source displacement. This keeps
+IBM09's 99.61%-retained constraint-graph improvement while rejecting broader
+IBM03/13 basin changes.
 For the refined single-component topology, a legal raw `initial.plc` can remain
 the immutable reference when its legalized form still passes the raw limits;
 this prevents a second layer of slack. An illegal raw hard placement instead
@@ -274,11 +298,9 @@ soft coverage, and marks provenance as `explicit` for path-tag clusters or
 they do not relax the existing hierarchy contract.
 
 The compound soft pass is a bounded plateau escape between ordinary post-swap
-hard cleanup and later soft cleanup. It forms related owned-soft or
-same-corridor bridge groups, preserves their relative geometry, and tests
-pair, quartet, and full-group translations toward cold connected components.
-Explicit shared soft instance-path prefixes are treated as higher-confidence
-groups and take precedence when the input names expose them.
+hard cleanup and later soft cleanup. It forms groups only from explicit shared
+soft instance-path prefixes, preserves their relative geometry, and tests pair,
+quartet, and full-group translations toward cold connected components.
 The hierarchy model also derives soft-only connectivity communities from
 repeated low-fanout shared nets. The communities are scored against common
 owned/bridge hard-cluster affinity. Only explicit instance-path bundles reach
@@ -317,13 +339,23 @@ Region swaps exact-score hard-hard and hard-soft sets in batches when at least
 two candidates share the first hard endpoint. Candidate routing, hard blockage,
 wirelength, and density states are built in compiled loops without mutating the
 committed scorer; the existing scalar commit path still applies the winner.
+Each source scores two stable prefixes of size 4/8/12 for hard-hard/hard-soft/
+soft-soft before the untouched remainder. A prefix winner skips only candidates
+that cannot affect the first acceptable result, so logical quotas and commit
+order are unchanged.
 Soft relocation and soft-soft swaps retain their batched paths. Swap batches
-read global net/pin topology directly and pack only selected pin cells in the
-compiled old/new routing loop, so no candidate-pair routing structures are
-built or flattened. Their congestion reducer recomputes only route-bbox strips
+read global net/pin topology directly. One compiled ragged-union kernel merges
+the two sorted incident-net CSR rows for every endpoint pair, and the compiled
+old/new routing loop packs only selected pin cells, so no candidate-pair
+routing structures are built or flattened. Their congestion reducer recomputes only route-bbox strips
 and changed hard-blockage cells; their density reducer accumulates only the four
 changed rectangles. Each merges changed values with the sorted unchanged
-baseline to recover the exact scalar tail. Ordinary relocation batches still
+baseline to recover the exact scalar tail. That baseline and the density
+summary persist until a hard, soft, swap, or compound commit invalidates them.
+Grid-sized marks, touched/changed arrays, tail buffers, and smoothing prefixes
+also persist for the scorer lifetime instead of being allocated by each tiny
+prefix dispatch.
+Ordinary relocation batches still
 consume disposable full congestion grids in place. The region-swap schedule
 also shares one immutable pair of hard separation matrices across
 congestion/density rounds and graph fallback calls.
@@ -423,6 +455,8 @@ rollback details are distinct, stage timing can be printed with `--stages`,
 exact quota distributions and exhaustion can be printed with `--quotas`, and
 exact-scored seeds plus the final placement emit structured hierarchy-
 contract vectors, limits, margins, violations, coverage, and provenance.
+The outer flow emits five mutually exclusive phases plus floorplan/API totals;
+`--coverage` reconciles them and exposes work outside the submission boundary.
 `scripts/analyze_hierarchy_contract.py` summarizes component headroom and
 replays alternative slacks against both final placements and seed candidates.
 The retained limits passed 31 IBM/NG45/synthetic inferred-contract finals;
@@ -474,16 +508,23 @@ the kernel reproduces expanding-ring and lexicographic tie behavior. The
 synthetic-clearance seed's quadratic pair-push accumulation uses a separate
 cached JIT with a reusable delta buffer.
 
-Soft relocation target sets are batch-scored on CPU once at least two targets
-are present. Per-target raw routing, touched-bbox smoothing values, touched-net
-HPWL, and density grids are produced in compiled loops, followed by batched
-top-tail proxy reductions. A cached Numba reduction preserves the scalar
-nonzero filtering, tiny-grid, and top-tail semantics. The operation is
+Soft relocation keeps proposals as integer grid-cell IDs while applying
+vectorized bounds and region-mask filters, stable generation-stamped
+deduplication, and the hierarchy callback in the original order. Only surviving
+IDs are converted to coordinates, then the unchanged wirelength threshold is
+applied with one compiled exact delta batch.
+Surviving sets are field-scored on CPU once at least two targets are present.
+Capacity-grown raw H/V, bbox, wirelength, congestion, and density workspaces
+are reused across sources. Per-target routing, touched-bbox smoothing,
+touched-net HPWL, and density grids are produced in compiled loops. The
+congestion loop overwrites the disposable H/V route buffers with exact smoothed
+values and reduces the top tail in the same call; cached density scratch
+preserves scalar nonzero filtering, tiny-grid, and top-tail semantics. The operation is
 read-only with respect to the prepared scorer state; the winning target still goes through the existing
 commit method and acceptance gates.
 
 Soft-soft swap candidates are also batched when at least two share the same
-first endpoint. Cached pair topologies are flattened into one compiled call;
+first endpoint. The compiled CSR union and global net/pin arrays feed one call;
 each row removes both endpoints, swaps their centers, restores their routing
 and density contributions, and scores the union bbox. The operation restores
 the placement cache per row and leaves all committed grids unchanged.

@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from analyze_plateau_telemetry import (
     aggregate,
+    aggregate_coverage,
     aggregate_quotas,
     aggregate_stages,
     load_rows,
@@ -118,6 +119,46 @@ def test_stage_analysis_aggregates_stage_timings(tmp_path):
             "maximum_s": 1.25,
         }
     ]
+
+
+def test_coverage_analysis_reconciles_exclusive_phases_to_api_boundary():
+    rows = [
+        {
+            "run_id": "run",
+            "benchmark": "ibm01",
+            "stage": "placer_api_total",
+            "elapsed_s": 10.0,
+        },
+        {
+            "run_id": "run",
+            "benchmark": "ibm01",
+            "stage": "hierarchy_floorplan_total",
+            "elapsed_s": 9.5,
+        },
+    ]
+    rows.extend(
+        {
+            "run_id": "run",
+            "benchmark": "ibm01",
+            "stage": stage,
+            "elapsed_s": elapsed,
+        }
+        for stage, elapsed in (
+            ("hierarchy_setup_total", 1.0),
+            ("seed_portfolio_total", 2.0),
+            ("hierarchy_search_total", 4.0),
+            ("coldspot_total", 1.0),
+            ("post_coldspot_total", 1.0),
+        )
+    )
+
+    summary = aggregate_coverage(rows, min_runs=1)
+
+    assert len(summary) == 1
+    assert summary[0]["phase_s"] == 9.0
+    assert summary[0]["floorplan_gap_s"] == 0.5
+    assert summary[0]["api_boundary_s"] == 0.5
+    assert summary[0]["phase_coverage"] == 9.0 / 9.5
 
 
 def test_quota_analysis_aggregates_repeated_passes_per_benchmark():

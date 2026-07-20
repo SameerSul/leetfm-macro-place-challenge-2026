@@ -75,6 +75,10 @@ HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
 HIER_SEED_HIERARCHY_SELECT = False
 HIER_SEED_HIERARCHY_ABS_SLACK = 0.002
 HIER_SEED_HIERARCHY_REL_SLACK = 0.15
+# Repair only a single-component near miss that can retain almost all of the
+# lower-proxy candidate. Broader interpolation changed downstream search basins
+# even when the repaired seed itself had a lower exact proxy.
+HIER_SEED_CONTRACT_REPAIR_MIN_FRACTION = 0.95
 # Complete-placement hierarchy vector weights. Lower is better.
 HIER_VECTOR_COMPACTNESS_WEIGHT = 0.25
 HIER_VECTOR_WORST_SPREAD_WEIGHT = 0.15

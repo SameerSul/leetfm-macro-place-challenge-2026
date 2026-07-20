@@ -21,7 +21,7 @@ come from [PROGRESS.md](PROGRESS.md).
 The stable accepted reference is:
 
 ```text
-AVG 1.1412  17/17 VALID  0 overlaps  all hierarchy audits passed  351.48s
+AVG 1.1404  17/17 VALID  0 overlaps  all hierarchy audits passed  318.55s
 ```
 
 The July 18 active-root work first established a corrected-reference control at
@@ -29,10 +29,11 @@ The July 18 active-root work first established a corrected-reference control at
 `AVG 1.1412 / 404.01s`. Both sweeps were 17/17 valid with zero overlaps and all
 final hierarchy audits passing. Deterministic exact-score ceilings then
 preserved every placement and score at `AVG 1.1412 / 398.57s`.
-The current revision again preserves every IBM placement at `AVG 1.1412 /
-351.48s`. Its fallback inference combines structural edges with
-initial placement, density, and wire-pressure evidence. NG45 remains `AVG
-0.7121` through one retained explicit-hierarchy child move, now in 65.27s.
+The current revision preserves 16 IBM scores and improves IBM09 `1.0122 ->
+0.9978` through a tightly bounded contract repair, reaching `AVG 1.1404 /
+318.55s`. Its fallback inference combines structural edges with initial
+placement, density, and wire-pressure evidence. NG45 remains `AVG 0.7121`
+through one retained explicit-hierarchy child move, now in 64.80s.
 Region swaps read global topology directly, reduce congestion/density from
 baseline plus touched cells, and share static hard separation geometry across
 their complete schedule.
@@ -59,6 +60,30 @@ proposed and retained outcomes, includes rollback reasons and discarded gain,
 and fingerprints dirty source trees. The accepted hard-relocation prefilter
 rejected 654 candidates before exact scoring and left all 34 relocation pass
 records rollback-free.
+
+## 2026-07-19 Priority-Order Outcome
+
+The requested priority sweep is complete:
+
+1. Seed opportunity: a one-component repair retaining at least 95% of the
+   failed source is now production. IBM09 retained 99.61% and improved its
+   final proxy by 0.0144; broad IBM03/13 repairs were rejected.
+2. Soft scoring: one exact compiled wirelength batch now filters targets before
+   congestion/density work. It rejected 100,831 IBM proposals and reduced the
+   four main soft phases by 20.7–22.3%. An exact sparse ordinary-move tail was
+   measured and removed because IBM12/18 did not amortize it.
+3. Swap throughput: a second stable 4/8/12 prefix preserves order and quotas,
+   increases avoided exact work to 79,466, and reduces trace-compatible region
+   time from 104.04s to 98.74s.
+4. Attribution: five exclusive phases cover at least 99.86% of each API call.
+   Hierarchy search is 202.38s of the 297.33s placer total; evaluator loading
+   and final scoring add 21.22s outside the API.
+5. Soft confidence: repeated support and ambiguity now calibrate role evidence.
+   Flat roles remain medium/low and independent; only explicit path bundles may
+   form compound moves.
+
+The full gates are `AVG 1.1404` on IBM (17/17), `AVG 0.7121` on NG45 (4/4),
+and `AVG 1.4192` on synthetic (10/10 truth), with all 94 project tests passing.
 
 ## Priority 0: Make Optimization Evidence Trustworthy
 
@@ -147,9 +172,9 @@ Region swaps remain the largest local-search runtime and contribute `0.476290`
 retained proxy gain. The accepted implementation preserves each source's stable
 candidate order but scores only a four-candidate hard-hard prefix, an
 eight-candidate hard-soft prefix, or a twelve-candidate soft-soft prefix first.
-If the prefix contains the first acceptable move,
-the untouched suffix is irrelevant and is not scored; otherwise the suffix runs
-as the original batch.
+If the first prefix misses, it scores one second prefix of the same size. If
+either contains the first acceptable move, the untouched suffix is irrelevant
+and is not scored; otherwise the remainder runs as the original batch.
 
 Refine the existing batched scorer by:
 
@@ -167,6 +192,13 @@ Refine the existing batched scorer by:
 Do not move per-source batches to CUDA. Existing experiments showed that device
 launch, copies, synchronization, and changed reduction order cost both proxy
 and runtime.
+
+Literature provenance and scope are recorded in
+[`REFERENCES.md`](REFERENCES.md#hierarchy-search-acceleration-literature),
+entries 21–27. ABCDPlace and GPU-DPO motivated the batch/concurrency
+investigation, but their published speedups are not VivaPlace forecasts. The
+accepted CSR union, scratch reuse, and exact sparse reductions are independent
+CPU implementations with VivaPlace's original sequential commit semantics.
 
 Acceptance result: batch/scalar parity still passes; all 17 IBM scores are
 bit-identical. The initial sweep avoided 58,820 exact evaluations versus full
@@ -196,12 +228,43 @@ attributed region time fell `146.98s -> 104.04s` and complete runtime fell
 `416.87s -> 351.48s`. NG45 preserved AVG 0.7121 while total runtime fell
 `79.43s -> 65.27s`.
 
+The next accepted refinement caches the sorted congestion/density baseline,
+density nonzero count, and density sum across rejected batches, invalidating
+them only when a scorer commit changes placement state. IBM physical/avoided
+work remained exactly 1,077,431 / 66,703 and attributed region time fell
+`104.04s -> 102.68s`. Focused phase measurements were IBM04
+`4.527s -> 4.183s`, IBM12 `6.811s -> 6.178s`, and IBM18
+`9.008s -> 8.508s`. NG45 region time fell `15.406s -> 14.616s` with AVG
+0.7121 unchanged. Complete sweep times (IBM 371.82s, NG45 67.27s) varied in
+other stages, so they are verification totals rather than the optimization's
+claimed gain.
+
+The current follow-up exact-scores a second prefix of the same size before the
+untouched remainder. It retains the first-acceptable winner and logical quota
+semantics while moving IBM physical/avoided work to 1,066,186 / 79,466. The
+trace-compatible region phase is 98.74s. The lower logical count (1,048,385)
+comes from IBM09's changed seed basin, not from prefix truncation.
+
+Two follow-ups were rejected and removed. Fusing hard-blockage batches into a
+single reducer scratch changed IBM04/12/18 region times to 4.220s, 6.386s, and
+8.428s, regressing two of three. Parallel congestion rows with Numba `prange`
+were substantially worse: IBM18 reached the 20s guard after 32,498 candidates,
+where the accepted serial reducer completes all 69,152 in 8.508s. The small,
+repeated batches do not amortize a 22-thread launch or per-row scratch.
+
 ### 5. Implemented: prune the seed portfolio before expensive scoring
 
 The legalized-reference correction and immutable hard-component prefilter are
 now production. Mandatory stability candidates remain available, while
 ordinary alternatives can be rejected before exact scoring. Structured events
 make later limit calibration attributable.
+
+A second accepted rule handles useful mandatory near misses without loosening
+the contract. Candidates must have lower exact proxy than the selected seed and
+violate exactly one component. Deterministic legalization/interpolation finds
+the passing boundary, and only repairs retaining at least 95% of source
+displacement are exact-scored. IBM09's accepted fraction is `0.99609375`;
+broader IBM03 and IBM13 repairs are rejected.
 
 Retain every current seed type, including the productive constraint-graph
 legalization. Change only evaluation order:
@@ -289,18 +352,21 @@ path.
 Acceptance gate: confidence must correlate with synthetic cluster precision and
 must not cause a previously protected explicit-tag group to be released.
 
-### 10. Expand soft evidence conservatively
+### 10. Implemented: calibrate soft role evidence conservatively
 
 All flat IBM designs currently have zero active high-confidence soft bundles,
 even though they expose many medium/low-confidence connectivity candidates.
 The earlier direct promotion of inferred communities regressed `ibm11` from
 `1.0085` to `1.0087`, so those communities must not be promoted wholesale.
 
-Improve the existing owned/bridge classifier with net weights, repeated-net
-support, and an explicit ambiguity margin. Use medium-confidence bundle
-evidence first for audit coverage and proposal ordering only. Compound movement
-remains restricted to explicit path bundles until an independent accuracy gate
-is passed.
+The existing owned/bridge classifier now records dominance share, runner-up
+ambiguity, repeated support, score, confidence, and evidence source. Its role
+mapping remains unchanged for individual regions and contracts. Flat evidence
+is capped below high confidence and therefore cannot form a compound group;
+compound movement remains restricted to explicit path bundles. The full IBM
+cohort recorded 3,246 medium and 1,938 low flat roles, with no inferred high
+roles. All proxy/legality gates passed, and compound stage time fell from 1.70s
+to 0.16s because unsupported flat groups are no longer proposed.
 
 ### 11. Implemented: validate clustering against independent truth
 
@@ -378,17 +444,29 @@ large-scale cases.
 
 ## Promotion Order
 
-1. Rollback-aware telemetry and missing stage timings (implemented).
-2. Deterministic work quotas and audit-churn measurement (implemented).
-3. Seed prescore pruning as an exact-equivalent speed change.
-4. Stable CPU/Numba swap throughput work.
-5. Evidence-gated late-pass scheduling.
-6. Synthetic accuracy metrics (implemented); extend NG45 nested-prefix checks.
-7. Single-component split and spatial/structural child confidence gates
-   (implemented); continue independent precision calibration.
-8. Conservative soft-role calibration.
-9. One-level parent/child search (implemented); keep recursive inference out of
-   scope until retained-move yield justifies more hierarchy depth.
+The preceding priority order is implemented through seed repair, stable CPU
+swap throughput, exclusive attribution, conservative soft-role calibration,
+compiled pair unions, reusable sparse-reducer scratch, stable integer soft
+targets, and fused reusable dense soft scoring. The exact-safe lower-bound
+prototype was removed after only 1.2% IBM10 soft-soft rejection; speculative
+source waves and net-optimal prefix ranking remain unpromoted.
+The incremental-routing paper motivated the rejected bound; FastDP and CROP
+motivated the unpromoted ranking experiment; Xplace supplied broad
+operator-fusion systems context. Their precise scope and non-adoption status
+are recorded as entries 23–27 in the
+[acceleration literature index](REFERENCES.md#hierarchy-search-acceleration-literature).
+The next order is:
+
+1. Reduce the remaining hierarchy-search phase with dependency-safe batching
+   or stronger exact-safe proposal bounds; measure region swaps and region-soft
+   relocation separately, and require a clean-host attributable win.
+2. Calibrate hard-cluster confidence against synthetic precision/conductance
+   before changing weak-cluster release behavior.
+3. Extend NG45 verification across every useful nested path-prefix depth.
+4. Keep recursive inferred hierarchy out of scope until the existing child/deep
+   operators show retained proxy yield.
+5. Broaden DREAMPlace and EDA-I/O portability coverage without changing the
+   accepted placement contract.
 
 For every promotion, run focused `ibm10` plus at least one low-coverage and one
 large-grid case before `--all`. A clustering change also requires the synthetic

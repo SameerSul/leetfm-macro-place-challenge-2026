@@ -22,6 +22,7 @@ def _related_soft_groups(
     n: int,
     group_size: int,
     soft_bundles: Sequence[object] | None = None,
+    soft_role_evidence: Mapping[int, Mapping[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Build one compact hot soft group per owner or bridge signature."""
     raw_groups: list[tuple[str, object, np.ndarray]] = []
@@ -37,6 +38,16 @@ def _related_soft_groups(
 
     for cid, members in sorted(cluster_softs.items()):
         indices = np.asarray(members, dtype=np.int64) - int(n)
+        if soft_role_evidence is not None:
+            indices = np.asarray(
+                [
+                    index
+                    for index in indices
+                    if str(soft_role_evidence.get(int(index), {}).get("confidence", "low"))
+                    == "high"
+                ],
+                dtype=np.int64,
+            )
         if explicit_members:
             indices = indices[~np.isin(indices, np.fromiter(explicit_members, dtype=np.int64))]
         raw_groups.append(("owned", int(cid), indices))
@@ -48,6 +59,16 @@ def _related_soft_groups(
             bridge_by_signature.setdefault(signature, []).append(int(soft_k))
     for signature, members in sorted(bridge_by_signature.items()):
         indices = np.asarray(members, dtype=np.int64)
+        if soft_role_evidence is not None:
+            indices = np.asarray(
+                [
+                    index
+                    for index in indices
+                    if str(soft_role_evidence.get(int(index), {}).get("confidence", "low"))
+                    == "high"
+                ],
+                dtype=np.int64,
+            )
         if explicit_members:
             indices = indices[~np.isin(indices, np.fromiter(explicit_members, dtype=np.int64))]
         raw_groups.append(("bridge", signature, indices))
@@ -92,6 +113,7 @@ def _compound_soft_relocation(
     cluster_softs: Mapping[int, np.ndarray],
     bridge_softs: Mapping[int, np.ndarray] | None = None,
     soft_bundles: Sequence[object] | None = None,
+    soft_role_evidence: Mapping[int, Mapping[str, object]] | None = None,
     soft_movable: np.ndarray | None = None,
     region_bbox: np.ndarray | None = None,
     candidate_allowed: Callable[[np.ndarray], bool] | None = None,
@@ -151,6 +173,7 @@ def _compound_soft_relocation(
         n,
         group_size,
         soft_bundles=soft_bundles,
+        soft_role_evidence=soft_role_evidence,
     )[: max(1, int(top_groups))]
     stats["groups"] = int(len(groups))
     if not groups:

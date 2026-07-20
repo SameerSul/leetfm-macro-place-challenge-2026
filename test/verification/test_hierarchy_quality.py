@@ -17,6 +17,7 @@ from placer.local_search.hierarchy_quality import (
 )
 from placer.pipeline.segments.floorplan_seed import (
     _hard_placement_is_legal,
+    repair_seed_to_contract,
     select_seed_candidate,
 )
 
@@ -244,6 +245,44 @@ def test_seed_selector_can_anchor_an_illegal_initial_case_to_dreamplace():
     assert selected["name"] == "dreamplace"
     assert rows[0]["hierarchy_contract_eligible"] is False
     assert selected["hierarchy_contract_reference"] == "dreamplace"
+
+
+def test_seed_contract_repair_finds_furthest_passing_interpolation():
+    source_hard = np.asarray([[1.0, 0.0]], dtype=np.float64)
+    reference_hard = np.asarray([[0.0, 0.0]], dtype=np.float64)
+    empty_soft = np.empty((0, 2), dtype=np.float64)
+    limits = {key: 1.0 for key in HIERARCHY_VECTOR_METRICS}
+    limits["edge_stretch"] = 0.60
+    calls = []
+
+    def legalize(hard, soft):
+        calls.append(float(hard[0, 0]))
+        return hard.copy(), soft.copy()
+
+    def vector(hard, _soft):
+        result = {key: 0.0 for key in HIERARCHY_VECTOR_METRICS}
+        result["edge_stretch"] = float(hard[0, 0])
+        result["composite"] = result["edge_stretch"]
+        return result
+
+    repaired = repair_seed_to_contract(
+        source_hard,
+        empty_soft,
+        reference_hard,
+        empty_soft,
+        legalize_fn=legalize,
+        vector_fn=vector,
+        limits=limits,
+        refine_rounds=5,
+    )
+
+    assert repaired is not None
+    hard, soft, repaired_vector, fraction, attempts = repaired
+    assert soft.shape == (0, 2)
+    assert np.allclose(hard, [[fraction, 0.0]])
+    assert 0.59 < fraction <= 0.60
+    assert repaired_vector["edge_stretch"] <= limits["edge_stretch"]
+    assert attempts == len(calls)
 
 
 def test_component_margins_are_positive_headroom_and_negative_violations():

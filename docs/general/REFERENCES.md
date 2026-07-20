@@ -13,11 +13,19 @@ Status terms used below:
   algorithm on which the program depends.
 - **Research-only**: a deterministic technique remains default-off or
   offline-only.
+- **Research context**: the paper motivates an investigation or comparison,
+  but VivaPlace does not claim to implement its algorithm.
 - **Historical**: the technique was evaluated and rejected or its code was
   removed; it remains cited because the experiment is recorded in
   `PROGRESS.md`.
 - **Future reference**: the paper is named in an open issue but its method is
   not implemented.
+
+When another design document invokes external work, it must link back to the
+numbered entry here and say whether the idea is implemented, independently
+adapted, rejected, or only future motivation. Paper-reported speedups and
+quality results are results on the paper's own workloads; they must not be
+presented as VivaPlace measurements or forecasts.
 
 ## Production Placement Papers
 
@@ -182,6 +190,93 @@ Status terms used below:
     weighted-proposal, and buffered-telemetry experiments were described as
     ArchGen-inspired in the experiment ledger; this is not a peer-reviewed
     research citation or a code dependency.
+
+## Hierarchy-Search Acceleration Literature
+
+These papers informed the 2026-07-19 acceleration investigation. The entries
+distinguish accepted implementation from experimental motivation so that
+related-work results are not confused with VivaPlace's measured results.
+
+21. **ABCDPlace — research context; no direct implementation dependency.**
+    Yibo Lin, Wuxi Li, Jiaqi Gu, Haoxing Ren, Brucek Khailany, and David Z.
+    Pan, “ABCDPlace: Accelerated Batch-Based Concurrent Detailed Placement on
+    Multithreaded CPUs and GPUs,” IEEE TCAD 39(12), 2020, pp. 5083–5096.
+    [DOI](https://doi.org/10.1109/TCAD.2020.2971531),
+    [NVIDIA publication page](https://research.nvidia.com/publication/2020-02_abcdplace-accelerated-batch-based-concurrent-detailed-placement-multi-threaded).
+    Its concurrent independent-set matching, global-swap, and local-reordering
+    formulation motivated evaluating larger batches. VivaPlace's accepted CSR
+    pair-net union and sparse exact reducers are independent CPU
+    implementations that retain sequential first-winner commits. ABCDPlace's
+    reported 2–5× CPU and over 10× GPU results belong to its ISPD and
+    industrial experiments and are not VivaPlace performance projections.
+
+22. **GPU-DPO — future reference; speculative waves were not promoted.**
+    Andrew B. Kahng, Jason Liang, and Zhiang Wang, “LSMC Meets GPU
+    Acceleration: Scalable and High-Quality Multi-Row Detailed Placement,”
+    ISCAS 2026, pp. 2728–2732.
+    [DOI](https://doi.org/10.1109/ISCAS66217.2026.11562434),
+    [author PDF](https://vlsicad.ucsd.edu/Publications/Conferences/425/c425.pdf),
+    [source](https://github.com/ABKGroup/GPU-DPO/tree/main/src/dpl).
+    The paper provides relevant examples of batched global swaps,
+    optimal-region candidates, GPU evaluation, and sequential conflict
+    resolution. VivaPlace's cross-source speculative-wave prototype did not
+    clear its exact-equivalence and dependency-invalidation promotion gate;
+    production does not run GPU-DPO, LSMC, or a GPU search path.
+
+23. **Incremental congestion-aware global placement — historical; lower bound
+    rejected.** Chin-Chih Chang, Jason Cong, Zhigang Pan, and Xin Yuan,
+    “Multilevel Global Placement with Congestion Control,” IEEE TCAD 22(4),
+    2003, pp. 395–409.
+    [DOI](https://doi.org/10.1109/TCAD.2003.809661),
+    [IBM Research page](https://research.ibm.com/publications/multilevel-global-placement-with-congestion-control).
+    Its integration of incremental global routing into placement motivated
+    testing exact incremental congestion bounds. VivaPlace independently
+    implemented an unchanged-cell optimistic bound, then removed it because it
+    rejected only 1.2% of the profiled IBM10 soft-soft rows and added net
+    runtime. The paper's routing algorithms are not reproduced here.
+
+24. **Xplace — research context; systems inspiration only, not an implemented
+    algorithm.** Lixin Liu, Bangqi Fu, Martin D. F. Wong, and Evangeline F. Y.
+    Young, “Xplace: An Extremely Fast and Extensible Global Placement
+    Framework,” DAC 2022, pp. 1309–1314.
+    [DOI](https://doi.org/10.1145/3489517.3530485),
+    [author PDF](https://liulixinkerry.github.io/src/dac22_xplace.pdf).
+    Xplace motivated examining fused GPU-oriented placement operations at a
+    systems level. It is a global analytical placer, not a source for
+    VivaPlace's detailed incremental scorer. Its roughly 2× DREAMPlace result
+    is specific to the paper's experiments and is not evidence for, or a
+    forecast of, the accepted CPU buffer-reuse work. VivaPlace does not use
+    Xplace's Fourier neural network extension.
+
+25. **FastDP — future reference; optimal-region ranking was not promoted.**
+    Min Pan, Natarajan Viswanathan, and Chris Chu, “An Efficient and Effective
+    Detailed Placement Algorithm,” ICCAD 2005, pp. 48–55.
+    [DOI](https://doi.org/10.1109/ICCAD.2005.1560039),
+    [author PDF](https://home.engineering.iastate.edu/~cnchu/pubs/c30.pdf).
+    FastDP's wirelength-optimal-position construction and global-swap flow are
+    the correct lineage for the net-optimal-region proposal. VivaPlace did not
+    promote that proposal because no exact-safe suffix-rejection rule reduced
+    work while preserving stable candidate order.
+
+26. **CROP — future reference; congestion-weighted ranking was not
+    promoted.** Yanheng Zhang and Chris Chu, “CROP: Fast and Effective
+    Congestion Refinement of Placement,” ICCAD 2009, pp. 344–350.
+    [DOI](https://doi.org/10.1145/1687399.1687465),
+    [author PDF](https://home.engineering.iastate.edu/~cnchu/pubs/c57.pdf).
+    CROP interleaves congestion-driven module shifting and detailed placement
+    and uses congestion-weighted wirelength costs. It motivated an unpromoted
+    target-ranking investigation; production does not implement CROP or change
+    candidate order from this paper.
+
+27. **FastPlace 2.0 — research context; citation correction only.** Natarajan
+    Viswanathan, Min Pan, and Chris Chu, “FastPlace 2.0: An Efficient
+    Analytical Placer for Mixed-Mode Designs,” ASP-DAC 2006, pp. 195–200.
+    [DOI](https://doi.org/10.1109/ASPDAC.2006.1594681),
+    [author PDF](https://home.engineering.iastate.edu/~cnchu/pubs/c32.pdf).
+    An early acceleration plan linked this paper while describing FastDP's
+    optimal-region detailed-placement technique. Entry 25 is the accurate
+    source for that technique; FastPlace 2.0 is a mixed-size analytical placer
+    and is not implemented by the hierarchy-search operators.
 
 ## Project, Evaluator, Data, and Tool Links
 

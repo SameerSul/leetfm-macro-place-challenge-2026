@@ -8,8 +8,8 @@ Two properties the prefilter relies on:
 
     uv run python test/verification/_verify_wl_delta_move_soft.py
 """
+
 import sys
-import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -23,28 +23,24 @@ sys.path.insert(0, str(REPO_DIR / "src"))
 
 from macro_place.loader import load_benchmark_from_dir  # noqa: E402
 
-_spec = importlib.util.spec_from_file_location("active_placer", str(REPO_DIR / "src" / "main.py"))
-_v2 = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_v2)
-_will_legalize = _v2._will_legalize
-_exact_proxy = _v2._exact_proxy
-_load_plc = _v2._load_plc
-IncrementalScorer = _v2.IncrementalScorer
+from placer import IncrementalScorer, _exact_proxy, _load_plc, _will_legalize  # noqa: E402
 
 TOL = 1e-9
 
 
 def _setup(name):
     bm, _ = load_benchmark_from_dir(
-        str(REPO_ROOT / f"external/MacroPlacement/Testcases/ICCAD04/{name}"))
+        str(REPO_ROOT / f"external/MacroPlacement/Testcases/ICCAD04/{name}")
+    )
     plc = _load_plc(name, bm)
     n = bm.num_hard_macros
     cw, ch = bm.canvas_width, bm.canvas_height
     sizes = bm.macro_sizes[:n].numpy().astype(np.float64)
     hw, hh = sizes[:, 0] / 2, sizes[:, 1] / 2
     movable = (bm.get_movable_mask() & bm.get_hard_macro_mask())[:n].numpy()
-    leg = _will_legalize(bm.macro_positions[:n].numpy().astype(np.float64),
-                         movable, sizes, hw, hh, cw, ch, n)
+    leg = _will_legalize(
+        bm.macro_positions[:n].numpy().astype(np.float64), movable, sizes, hw, hh, cw, ch, n
+    )
     pl = bm.macro_positions.clone()
     pl[:n, 0] = torch.tensor(leg[:, 0], dtype=torch.float32)
     pl[:n, 1] = torch.tensor(leg[:, 1], dtype=torch.float32)
@@ -68,27 +64,37 @@ def _run(name, n_trials=12):
 
         wl_before = sc.total_wl_raw / sc.wl_normalizer
         wl_d = sc.wl_delta_move_soft(k, new_xy)
-        side = abs(float(sc.total_wl_raw) - p0)   # property 1: no side effects
+        batch_wl_d = float(sc.wl_delta_move_soft_many(k, np.asarray([new_xy]))[0])
+        if abs(batch_wl_d - wl_d) > 1e-12:
+            print(
+                f"  FAIL soft {k}: scalar={wl_d:.12e} batch={batch_wl_d:.12e} "
+                f"delta={batch_wl_d - wl_d:.3e}"
+            )
+            fail += 1
+            continue
+        side = abs(float(sc.total_wl_raw) - p0)  # property 1: no side effects
 
         prep = sc._prepare_move_soft(k)
         sc._commit_after_prep_soft(prep, new_xy)
         wl_after = sc.total_wl_raw / sc.wl_normalizer
         true_d = wl_after - wl_before
-        prep2 = sc._prepare_move_soft(k)          # revert
+        prep2 = sc._prepare_move_soft(k)  # revert
         sc._commit_after_prep_soft(prep2, old_xy)
         p0 = float(sc.total_wl_raw)
 
         d = abs(wl_d - true_d)
         ok = d <= TOL and side <= TOL
         fail += 0 if ok else 1
-        print(f"  move soft({k:4d}) wl_d={wl_d:+.3e} true={true_d:+.3e} "
-              f"Δ={d:.1e} side={side:.1e} {'ok' if ok else 'FAIL'}")
+        print(
+            f"  move soft({k:4d}) wl_d={wl_d:+.3e} true={true_d:+.3e} "
+            f"Δ={d:.1e} side={side:.1e} {'ok' if ok else 'FAIL'}"
+        )
     return fail
 
 
 if __name__ == "__main__":
     total = 0
-    for nm in (sys.argv[1:] or ["ibm01", "ibm10", "ibm13"]):
+    for nm in sys.argv[1:] or ["ibm01", "ibm10", "ibm13"]:
         total += _run(nm)
     print(f"\n=== {'PASS' if total == 0 else f'{total} FAILURES'} ===")
     sys.exit(1 if total else 0)

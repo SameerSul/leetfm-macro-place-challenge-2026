@@ -16,6 +16,7 @@ from placer.local_search.clusters import (
     derive_one_level_hard_subclusters,
     derive_oversized_hard_clusters,
     derive_path_tag_hard_clusters,
+    derive_soft_cluster_role_evidence,
     derive_soft_cluster_roles,
     hier_region_density,
     hier_region_margin,
@@ -55,6 +56,7 @@ class HierarchyModel:
     clusters: dict[int, np.ndarray]
     cluster_softs: dict[int, np.ndarray]
     bridge_softs: dict[int, np.ndarray]
+    soft_role_evidence: dict[int, dict[str, object]]
     soft_bundles: tuple[SoftBundle, ...]
     soft_connectivity_bundles: tuple[SoftBundle, ...]
     soft_bundle_evidence: tuple[SoftBundle, ...]
@@ -204,6 +206,14 @@ class HierarchyModel:
             max_fanout=max_fanout,
             bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
         )
+        soft_role_evidence = derive_soft_cluster_role_evidence(
+            plc,
+            n,
+            n_soft,
+            labels,
+            max_fanout=max_fanout,
+            bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
+        )
         soft_bundles = derive_path_soft_bundles(
             plc,
             n_soft,
@@ -295,6 +305,7 @@ class HierarchyModel:
             clusters=clusters,
             cluster_softs=cluster_softs,
             bridge_softs=bridge_softs,
+            soft_role_evidence=soft_role_evidence,
             soft_bundles=soft_bundles,
             soft_connectivity_bundles=soft_connectivity_bundles,
             soft_bundle_evidence=soft_bundle_evidence,
