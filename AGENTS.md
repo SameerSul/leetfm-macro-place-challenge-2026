@@ -79,7 +79,17 @@ deduplication and uses capacity-grown dense workspaces with fused in-place
 congestion smoothing/tail reduction. The verification sweep preserved IBM
 AVG 1.1404, NG45 0.7121, and synthetic 1.4192 with all audits/truth checks; its
 330.75s IBM wall time is treated as run variance, not an end-to-end claim. The
-tested optimistic congestion lower bound rejected only 1.2% of IBM10
+latest exact-equivalent sweep prepares each multi-prefix swap source once,
+moving attributed region-swap time **94.37s -> 94.29s** with all work counts
+unchanged. Cached Numba grid conversion, clipping, region-mask filtering,
+symbolic keys, and stable stamp deduplication reduced the five measured soft-
+relocation phases **74.039s -> 73.400s**, including region-soft relocation
+**38.431s -> 37.916s**. Swap/soft exact caches, compact swap delta grids, and a
+fused soft scoring transaction were measured and removed after regressions.
+The accepted full verification remained **AVG 1.1404**, 17/17 valid, zero
+overlaps, and all hierarchy audits passing; its 349.27s wall time is not an
+end-to-end claim. The tested optimistic congestion lower bound rejected only
+1.2% of IBM10
 soft-soft rows and was removed; speculative source waves and net-optimal prefix
 ranking are not production paths.
 Deterministic per-pass exact-score quotas cap work before the wall-clock safety

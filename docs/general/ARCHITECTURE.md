@@ -302,6 +302,18 @@ semantics, scorer commits, and hierarchy gates are unchanged. The complete IBM
 run remained `AVG 1.1404`; NG45 remained `AVG 0.7121`; synthetic remained `AVG
 1.4192` with 10/10 truth audits.
 
+The latest exact-equivalent follow-up prepares a multi-prefix swap source only
+once. Candidate modules and coordinates, the position snapshot, and the ragged
+incident-net union are sliced by the existing stable prefix boundaries instead
+of rebuilt for each dispatch. The physical/logical/avoided work and all
+placements remain unchanged; attributed region-swap time was `94.37s ->
+94.29s`. Soft target filtering now runs grid-ID conversion, clipping, symbolic
+keys, region masks, and stable stamp deduplication in cached Numba kernels while
+leaving the ordered hierarchy callback unchanged. The identical five soft-
+relocation phase workloads fell `74.039s -> 73.400s`; region-soft relocation
+fell `38.431s -> 37.916s`. Exact-score caches, compact swap deltas, and a fused
+soft transaction API were measured and removed after phase regressions.
+
 The external algorithm lineage and the boundary between accepted code,
 research inspiration, and rejected prototypes are documented in
 [`REFERENCES.md`](REFERENCES.md#hierarchy-search-acceleration-literature),
@@ -677,6 +689,13 @@ that cannot reach exact scoring do not allocate overlap matrices. When graph
 masks and deltas are disabled, the same loop also skips their zero-valued array
 construction.
 
+When a source schedule reaches beyond its first prefix, the scorer prepares the
+source-invariant pair topology and coordinate snapshots once for the complete
+stable candidate list. Each prefix receives a view of its candidate rows and a
+rebased view of the ragged touched-net offsets. The untouched suffix is still
+unprepared for exact field scoring until needed, and any mock/scalar scorer
+without the prepared API follows the original batch calls.
+
 Hard-macro widths and heights do not change during the schedule. The pipeline
 therefore constructs their two pairwise center-separation matrices once before
 the congestion/density rounds and passes the immutable tuple through ordinary
@@ -692,7 +711,11 @@ and vertical-row bbox smoothing then uses cached Numba kernels with reusable
 prefix buffers. The NumPy formulas remain the diagnostic oracle; both JIT
 stages preserve their reference accumulation order and incremental deltas.
 
-Prepared soft-relocation target sets first use a compiled exact wirelength
+Soft-relocation grid IDs first pass through a compiled stable filter that
+converts and clips target centers, constructs exact symbolic coordinate keys,
+applies the optional region mask, and stamps first-winner duplicates. The
+hierarchy callback remains scalar and ordered because it evaluates the rich
+contract. Prepared target sets then use a compiled exact wirelength
 delta batch. The existing threshold is applied in stable proposal order before
 field scoring; this changes neither candidate order nor acceptance semantics.
 Surviving target sets of size two or more use a true batched CPU path. Cached

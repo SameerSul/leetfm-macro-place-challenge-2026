@@ -37,6 +37,16 @@ synthetic `AVG 1.4192`; all 96 tests pass. Its 330.75s IBM wall time is not
 treated as an end-to-end gain because broad host/runtime variance exceeded the
 focused operator effect.
 
+The next accepted same-work refinements prepare each multi-prefix swap source
+once (`94.37s -> 94.29s`) and compile soft grid conversion, clipping, mask
+filtering, symbolic keys, and stable stamp deduplication. The latter reduced
+the five measured soft-relocation phases `74.039s -> 73.400s`, including
+region-soft relocation `38.431s -> 37.916s`, with identical candidate and exact
+score counts. Revision-scoped exact caches, compact swap delta grids, and a
+fused soft prepare/score/revert API all regressed their attributable phases and
+were removed. This leaves the same fundamental open issue: exact field scoring
+still dominates after low-risk preparation overhead has been reduced.
+
 The learned-ranking stack has been removed. Candidate ordering is deterministic;
 exact proxy, hard legality, bounds, fixed-macro immobility, hierarchy regions,
 and hierarchy-quality gates remain authoritative.
@@ -274,7 +284,10 @@ N-by-N sort work, and do not replace the required final exact scorer.
 The tested optimistic congestion lower bound is not an open production hook:
 it rejected only 317/26,556 IBM10 soft-soft rows and was removed. Future
 cross-source batching must prove dependency-safe reuse after sequential commits;
-snapshot-only waves that alter first-winner behavior remain out of scope.
+snapshot-only waves that alter first-winner behavior remain out of scope. The
+tested revision-scoped caches are also closed experiments: 16,265 swap hits and
+15,094 soft hits did not amortize Python key/value overhead on the measured
+small batches.
 
 ### 6. Portability coverage is still narrower than challenge coverage
 

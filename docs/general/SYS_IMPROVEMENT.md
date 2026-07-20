@@ -245,6 +245,23 @@ semantics while moving IBM physical/avoided work to 1,066,186 / 79,466. The
 trace-compatible region phase is 98.74s. The lower logical count (1,048,385)
 comes from IBM09's changed seed basin, not from prefix truncation.
 
+The latest follow-up prepares source-invariant work once when a schedule spans
+multiple prefixes: candidate modules/coordinates, the position snapshot, and
+the ragged incident-net union. Prefix calls use stable slices and rebased
+offsets, so exact work and first-winner semantics remain unchanged. The full
+IBM phase was non-regressive at `94.37s -> 94.29s` with 1,048,385 logical,
+1,066,186 physical, and 79,466 avoided scores. A revision-scoped exact cache
+was rejected despite 16,265 hits (`94.37s -> 95.51s`), and compact route/
+blockage delta grids were rejected at 95.52s.
+
+For soft relocation, cached Numba kernels now fuse grid-ID conversion,
+clipping, symbolic-key construction, region-mask filtering, and stable stamp
+deduplication. Candidate order, rich hierarchy callbacks, and exact workload
+are unchanged. Across the five measured soft phases this reduced `74.039s ->
+73.400s`; region-soft relocation reduced `38.431s -> 37.916s`. A 15,094-hit
+exact cache regressed the five phases to 78.349s, and a fused scorer transaction
+API regressed the accepted 73.400s reference to 75.117s; both were removed.
+
 Two follow-ups were rejected and removed. Fusing hard-blockage batches into a
 single reducer scratch changed IBM04/12/18 region times to 4.220s, 6.386s, and
 8.428s, regressing two of three. Parallel congestion rows with Numba `prange`
@@ -447,7 +464,8 @@ large-scale cases.
 The preceding priority order is implemented through seed repair, stable CPU
 swap throughput, exclusive attribution, conservative soft-role calibration,
 compiled pair unions, reusable sparse-reducer scratch, stable integer soft
-targets, and fused reusable dense soft scoring. The exact-safe lower-bound
+targets, prepared multi-prefix swap sources, compiled stable target filtering,
+and fused reusable dense soft scoring. The exact-safe lower-bound
 prototype was removed after only 1.2% IBM10 soft-soft rejection; speculative
 source waves and net-optimal prefix ranking remain unpromoted.
 The incremental-routing paper motivated the rejected bound; FastDP and CROP
