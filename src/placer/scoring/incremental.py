@@ -458,8 +458,10 @@ if HAS_NUMBA:
         a_xy,
         b_xy,
         pos_cache,
-        delta_h,
-        delta_v,
+        base_h,
+        base_v,
+        out_h,
+        out_v,
         bboxes,
         touched_offsets,
         touched,
@@ -480,14 +482,18 @@ if HAS_NUMBA:
         grid_row,
         grid_col,
     ):
-        """Build compact swap routing deltas from the global net topology."""
+        """Build swap routing grids directly from the global net topology."""
         pin_gcell = np.empty(x_off.shape[0], dtype=np.int64)
         for batch_idx in range(b_modules.shape[0]):
+            for cell in range(base_h.shape[0]):
+                out_h[batch_idx, cell] = base_h[cell]
+                out_v[batch_idx, cell] = base_v[cell]
+
             touched_lo = touched_offsets[batch_idx]
             touched_hi = touched_offsets[batch_idx + 1]
             bbox_old = _apply_global_net_subset_jit(
-                delta_h[batch_idx],
-                delta_v[batch_idx],
+                out_h[batch_idx],
+                out_v[batch_idx],
                 pos_cache,
                 touched[touched_lo:touched_hi],
                 pin_gcell,
@@ -518,8 +524,8 @@ if HAS_NUMBA:
             pos_cache[b_module, 0] = a_xy[0]
             pos_cache[b_module, 1] = a_xy[1]
             bbox_new = _apply_global_net_subset_jit(
-                delta_h[batch_idx],
-                delta_v[batch_idx],
+                out_h[batch_idx],
+                out_v[batch_idx],
                 pos_cache,
                 touched[touched_lo:touched_hi],
                 pin_gcell,
@@ -705,7 +711,7 @@ if HAS_NUMBA:
                 h_grid[row * grid_col + ur_col] -= y_dist * halloc * weight
 
     @_numba_njit(cache=True, fastmath=False)
-    def _batch_hard_swap_macro_deltas_jit(
+    def _batch_hard_swap_macro_grids_jit(
         a_xy,
         b_xy,
         a_half_w,
@@ -713,20 +719,25 @@ if HAS_NUMBA:
         b_half_w,
         b_half_h,
         b_is_hard,
+        base_v,
+        base_h,
         grid_w,
         grid_h,
         grid_row,
         grid_col,
         valloc,
         halloc,
-        delta_v,
-        delta_h,
+        out_v,
+        out_h,
     ):
-        """Build per-candidate hard blockage deltas for HH or HS swaps."""
+        """Build per-candidate hard blockage grids for HH or HS swaps."""
         for batch_idx in range(b_xy.shape[0]):
+            for cell in range(base_v.shape[0]):
+                out_v[batch_idx, cell] = base_v[cell]
+                out_h[batch_idx, cell] = base_h[cell]
             _apply_pair_macro_blockage_jit(
-                delta_v[batch_idx],
-                delta_h[batch_idx],
+                out_v[batch_idx],
+                out_h[batch_idx],
                 a_xy[0],
                 a_xy[1],
                 a_half_w,
@@ -745,8 +756,8 @@ if HAS_NUMBA:
                 halloc,
             )
             _apply_pair_macro_blockage_jit(
-                delta_v[batch_idx],
-                delta_h[batch_idx],
+                out_v[batch_idx],
+                out_h[batch_idx],
                 b_xy[batch_idx, 0],
                 b_xy[batch_idx, 1],
                 a_half_w,
@@ -955,17 +966,15 @@ if HAS_NUMBA:
 
     @_numba_njit(cache=True, fastmath=False)
     def _batch_sparse_swap_congestion_costs_jit(
-        route_delta_h,
-        route_delta_v,
+        raw_h,
+        raw_v,
         bboxes,
-        base_h_raw,
-        base_v_raw,
         base_h_smoothed,
         base_v_smoothed,
         base_h_macro,
         base_v_macro,
-        h_macro_delta,
-        v_macro_delta,
+        h_macro,
+        v_macro,
         candidate_hard_macro,
         h_capacity,
         v_capacity,
@@ -993,7 +1002,7 @@ if HAS_NUMBA:
         n_cells = grid_row * grid_col
         n_values = 2 * n_cells
 
-        for batch_idx in range(route_delta_h.shape[0]):
+        for batch_idx in range(raw_h.shape[0]):
             touched_count = 0
             r_lo = bboxes[batch_idx, 0]
             r_hi = bboxes[batch_idx, 1]
@@ -1008,7 +1017,7 @@ if HAS_NUMBA:
                         prefix_h[0] = 0.0
                         for row in range(grid_row):
                             cell = row * grid_col + col
-                            value = (base_h_raw[cell] + route_delta_h[batch_idx, cell]) / h_capacity
+                            value = raw_h[batch_idx, cell] / h_capacity
                             prefix_h[row + 1] = prefix_h[row] + value / h_window_count[row]
                     for row in range(grid_row):
                         cell = row * grid_col + col
@@ -1021,13 +1030,9 @@ if HAS_NUMBA:
                                 prefix_h[h_window_hi[row] + 1] - prefix_h[h_window_lo[row]]
                             )
                         else:
-                            route_value = (
-                                base_h_raw[cell] + route_delta_h[batch_idx, cell]
-                            ) / h_capacity
+                            route_value = raw_h[batch_idx, cell] / h_capacity
                         macro_value = (
-                            base_h_macro[cell] + h_macro_delta[batch_idx, cell]
-                            if candidate_hard_macro
-                            else base_h_macro[cell]
+                            h_macro[batch_idx, cell] if candidate_hard_macro else base_h_macro[cell]
                         )
                         changed_values[index] = route_value + macro_value / h_capacity
 
@@ -1037,9 +1042,7 @@ if HAS_NUMBA:
                     if smooth_range > 0:
                         prefix_v[0] = 0.0
                         for col in range(grid_col):
-                            value = (
-                                base_v_raw[base + col] + route_delta_v[batch_idx, base + col]
-                            ) / v_capacity
+                            value = raw_v[batch_idx, base + col] / v_capacity
                             prefix_v[col + 1] = prefix_v[col] + value / v_window_count[col]
                     for col in range(grid_col):
                         cell = base + col
@@ -1051,35 +1054,29 @@ if HAS_NUMBA:
                                 prefix_v[v_window_hi[col] + 1] - prefix_v[v_window_lo[col]]
                             )
                         else:
-                            route_value = (
-                                base_v_raw[cell] + route_delta_v[batch_idx, cell]
-                            ) / v_capacity
+                            route_value = raw_v[batch_idx, cell] / v_capacity
                         macro_value = (
-                            base_v_macro[cell] + v_macro_delta[batch_idx, cell]
-                            if candidate_hard_macro
-                            else base_v_macro[cell]
+                            v_macro[batch_idx, cell] if candidate_hard_macro else base_v_macro[cell]
                         )
                         changed_values[cell] = route_value + macro_value / v_capacity
 
             # Hard swaps can change blockage outside the net-routing bbox.
             if candidate_hard_macro:
                 for cell in range(n_cells):
-                    if v_macro_delta[batch_idx, cell] != 0.0 and mark[cell] == 0:
+                    if v_macro[batch_idx, cell] != base_v_macro[cell] and mark[cell] == 0:
                         touched_count = _mark_sparse_cell_jit(
                             mark, touched_cells, touched_count, cell
                         )
                         changed_values[cell] = (
-                            base_v_smoothed[cell]
-                            + (base_v_macro[cell] + v_macro_delta[batch_idx, cell]) / v_capacity
+                            base_v_smoothed[cell] + v_macro[batch_idx, cell] / v_capacity
                         )
                     h_index = n_cells + cell
-                    if h_macro_delta[batch_idx, cell] != 0.0 and mark[h_index] == 0:
+                    if h_macro[batch_idx, cell] != base_h_macro[cell] and mark[h_index] == 0:
                         touched_count = _mark_sparse_cell_jit(
                             mark, touched_cells, touched_count, h_index
                         )
                         changed_values[h_index] = (
-                            base_h_smoothed[cell]
-                            + (base_h_macro[cell] + h_macro_delta[batch_idx, cell]) / h_capacity
+                            base_h_smoothed[cell] + h_macro[batch_idx, cell] / h_capacity
                         )
 
             candidate_count = 0
@@ -1936,32 +1933,30 @@ class IncrementalScorer:
 
     def _batch_sparse_swap_congestion_costs(
         self,
-        route_delta_h: np.ndarray,
-        route_delta_v: np.ndarray,
+        raw_h: np.ndarray,
+        raw_v: np.ndarray,
         bboxes: np.ndarray,
-        h_macro_delta: "np.ndarray | None" = None,
-        v_macro_delta: "np.ndarray | None" = None,
+        h_macro: "np.ndarray | None" = None,
+        v_macro: "np.ndarray | None" = None,
     ) -> np.ndarray:
-        """Return exact batch congestion from routing and blockage deltas."""
+        """Return exact batch congestion without full candidate value grids."""
         baseline = self._swap_tail_baseline()
         base_values = baseline["congestion"]
         base_order = baseline["congestion_order"]
         top_count = int(base_values.size * 0.05)
-        out = np.empty(route_delta_h.shape[0], dtype=np.float64)
-        candidate_hard_macro = h_macro_delta is not None
+        out = np.empty(raw_h.shape[0], dtype=np.float64)
+        candidate_hard_macro = h_macro is not None
         t0 = time.perf_counter()
         _batch_sparse_swap_congestion_costs_jit(
-            route_delta_h,
-            route_delta_v,
+            raw_h,
+            raw_v,
             bboxes,
-            self.H_flat,
-            self.V_flat,
             np.ascontiguousarray(self.H_smoothed.ravel()),
             np.ascontiguousarray(self.V_smoothed.ravel()),
             self.H_macro_flat,
             self.V_macro_flat,
-            h_macro_delta if candidate_hard_macro else route_delta_h,
-            v_macro_delta if candidate_hard_macro else route_delta_v,
+            h_macro if candidate_hard_macro else raw_h,
+            v_macro if candidate_hard_macro else raw_v,
             candidate_hard_macro,
             self.grid_h_routes,
             self.grid_v_routes,
@@ -1985,7 +1980,7 @@ class IncrementalScorer:
             self._swap_congestion_prefix_v,
             out,
         )
-        self.search_accel_stats["congestion_reduction_rows"] += int(route_delta_h.shape[0])
+        self.search_accel_stats["congestion_reduction_rows"] += int(raw_h.shape[0])
         self.search_accel_stats["congestion_reduction_seconds"] += time.perf_counter() - t0
         return out
 
@@ -2853,6 +2848,26 @@ class IncrementalScorer:
             out[k] = self.score_swap_hard_hard(i_hard, int(j_hard))
         return out
 
+    def score_prepared_swap_hard_hard(self, prepared: dict, start: int, stop: int) -> np.ndarray:
+        """Score one stable prefix of a prepared hard-hard source."""
+        start, stop = int(start), int(stop)
+        cand = prepared["candidates"][start:stop]
+        batch = self._score_hard_endpoint_swaps_many(
+            int(prepared["source"]),
+            prepared["b_modules"][start:stop],
+            prepared["b_xy"][start:stop],
+            b_is_hard=True,
+            prepared_batch=self._slice_pair_swap_batch(prepared["batch"], start, stop),
+            prepared_a_xy=prepared["a_xy"],
+            prepared_pos_cache=prepared["pos_cache"],
+        )
+        if batch is not None:
+            return batch
+        out = np.empty(cand.size, dtype=np.float64)
+        for row, target in enumerate(cand):
+            out[row] = self.score_swap_hard_hard(prepared["source"], int(target))
+        return out
+
     def commit_swap_hard_hard(self, i_hard: int, j_hard: int) -> None:
         """Commit exchanging two hard macro centers."""
         i_hard, j_hard = int(i_hard), int(j_hard)
@@ -2921,6 +2936,89 @@ class IncrementalScorer:
             "touched": touched,
         }
 
+    @staticmethod
+    def _slice_pair_swap_batch(batch: dict, start: int, stop: int) -> dict:
+        """View one stable candidate prefix of a prepared pair batch."""
+        start = int(start)
+        stop = int(stop)
+        offsets = batch["touched_offsets"]
+        touched_lo = int(offsets[start])
+        touched_hi = int(offsets[stop])
+        return {
+            "a_module": batch["a_module"],
+            "b_modules": batch["b_modules"][start:stop],
+            "unique_sinks": batch["unique_sinks"],
+            "three_g0": batch["three_g0"],
+            "three_g1": batch["three_g1"],
+            "three_g2": batch["three_g2"],
+            "three_weights": batch["three_weights"],
+            "touched_offsets": np.ascontiguousarray(
+                offsets[start : stop + 1] - touched_lo,
+                dtype=np.int64,
+            ),
+            "touched": batch["touched"][touched_lo:touched_hi],
+        }
+
+    def _prepare_swap_source(
+        self,
+        source: int,
+        candidates: np.ndarray,
+        *,
+        source_is_hard: bool,
+        targets_are_hard: bool,
+    ) -> "dict | None":
+        """Prepare source-invariant swap topology once for all stable prefixes."""
+        cand = np.ascontiguousarray(candidates, dtype=np.int64).reshape(-1)
+        source = int(source)
+        source_indices = self.hard_indices if source_is_hard else self.soft_indices
+        target_indices = self.hard_indices if targets_are_hard else self.soft_indices
+        a_module = int(source_indices[source])
+        b_modules = np.ascontiguousarray(
+            np.asarray(target_indices, dtype=np.int64)[cand],
+            dtype=np.int64,
+        )
+        batch = self._prepare_pair_swap_batch(a_module, b_modules)
+        if batch is None:
+            return None
+        source_pos = self.committed_hard_pos if source_is_hard else self.committed_soft_pos
+        target_pos = self.committed_hard_pos if targets_are_hard else self.committed_soft_pos
+        return {
+            "source": source,
+            "candidates": cand,
+            "b_modules": b_modules,
+            "b_xy": np.ascontiguousarray(target_pos[cand], dtype=np.float64),
+            "a_xy": np.ascontiguousarray(source_pos[source], dtype=np.float64),
+            "pos_cache": np.ascontiguousarray(_ensure_pos_cache(self.plc), dtype=np.float64),
+            "batch": batch,
+        }
+
+    def prepare_swap_hard_hard_source(self, i_hard: int, candidates: np.ndarray) -> "dict | None":
+        """Prepare one hard-hard source schedule."""
+        return self._prepare_swap_source(
+            i_hard,
+            candidates,
+            source_is_hard=True,
+            targets_are_hard=True,
+        )
+
+    def prepare_swap_hard_soft_source(self, i_hard: int, candidates: np.ndarray) -> "dict | None":
+        """Prepare one hard-soft source schedule."""
+        return self._prepare_swap_source(
+            i_hard,
+            candidates,
+            source_is_hard=True,
+            targets_are_hard=False,
+        )
+
+    def prepare_swap_soft_soft_source(self, soft_a: int, candidates: np.ndarray) -> "dict | None":
+        """Prepare one soft-soft source schedule."""
+        return self._prepare_swap_source(
+            soft_a,
+            candidates,
+            source_is_hard=False,
+            targets_are_hard=False,
+        )
+
     def _score_hard_endpoint_swaps_many(
         self,
         i_hard: int,
@@ -2928,6 +3026,9 @@ class IncrementalScorer:
         b_xy: np.ndarray,
         *,
         b_is_hard: bool,
+        prepared_batch: "dict | None" = None,
+        prepared_a_xy: "np.ndarray | None" = None,
+        prepared_pos_cache: "np.ndarray | None" = None,
     ) -> "np.ndarray | None":
         """Batch exact HH or HS swaps sharing one hard endpoint."""
         b_modules = np.ascontiguousarray(b_modules, dtype=np.int64)
@@ -2936,17 +3037,29 @@ class IncrementalScorer:
             return None
 
         a_module = int(self.hard_indices[int(i_hard)])
-        batch = self._prepare_pair_swap_batch(a_module, b_modules)
+        batch = (
+            prepared_batch
+            if prepared_batch is not None
+            else self._prepare_pair_swap_batch(a_module, b_modules)
+        )
         if batch is None:
             return None
 
         n_batch = int(b_modules.size)
         n_cells = self.grid_row * self.grid_col
-        route_delta_h = np.zeros((n_batch, n_cells), dtype=np.float64)
-        route_delta_v = np.zeros((n_batch, n_cells), dtype=np.float64)
+        raw_h = np.empty((n_batch, n_cells), dtype=np.float64)
+        raw_v = np.empty((n_batch, n_cells), dtype=np.float64)
         bboxes = np.empty((n_batch, 4), dtype=np.int64)
-        a_xy = np.ascontiguousarray(self.committed_hard_pos[int(i_hard)], dtype=np.float64)
-        pos_cache = np.ascontiguousarray(_ensure_pos_cache(self.plc), dtype=np.float64)
+        a_xy = (
+            prepared_a_xy
+            if prepared_a_xy is not None
+            else np.ascontiguousarray(self.committed_hard_pos[int(i_hard)], dtype=np.float64)
+        )
+        pos_cache = (
+            prepared_pos_cache
+            if prepared_pos_cache is not None
+            else np.ascontiguousarray(_ensure_pos_cache(self.plc), dtype=np.float64)
+        )
         route_t0 = time.perf_counter()
         _batch_soft_swap_route_grids_jit(
             batch["a_module"],
@@ -2954,8 +3067,10 @@ class IncrementalScorer:
             a_xy,
             b_xy,
             pos_cache,
-            route_delta_h,
-            route_delta_v,
+            self.H_flat,
+            self.V_flat,
+            raw_h,
+            raw_v,
             bboxes,
             batch["touched_offsets"],
             batch["touched"],
@@ -2995,9 +3110,9 @@ class IncrementalScorer:
         else:
             b_half_w = np.zeros(n_batch, dtype=np.float64)
             b_half_h = np.zeros(n_batch, dtype=np.float64)
-        h_macro_delta = np.zeros((n_batch, n_cells), dtype=np.float64)
-        v_macro_delta = np.zeros((n_batch, n_cells), dtype=np.float64)
-        _batch_hard_swap_macro_deltas_jit(
+        h_macro = np.empty((n_batch, n_cells), dtype=np.float64)
+        v_macro = np.empty((n_batch, n_cells), dtype=np.float64)
+        _batch_hard_swap_macro_grids_jit(
             a_xy,
             b_xy,
             float(cong_cache["hard_half_w"][a_slot]),
@@ -3005,22 +3120,24 @@ class IncrementalScorer:
             b_half_w,
             b_half_h,
             bool(b_is_hard),
+            self.V_macro_flat,
+            self.H_macro_flat,
             self.grid_w,
             self.grid_h,
             self.grid_row,
             self.grid_col,
             float(self.plc.vrouting_alloc),
             float(self.plc.hrouting_alloc),
-            v_macro_delta,
-            h_macro_delta,
+            v_macro,
+            h_macro,
         )
 
         congestion = self._batch_sparse_swap_congestion_costs(
-            route_delta_h,
-            route_delta_v,
+            raw_h,
+            raw_v,
             bboxes,
-            h_macro_delta,
-            v_macro_delta,
+            h_macro,
+            v_macro,
         )
 
         wirelength = np.empty(n_batch, dtype=np.float64)
@@ -3066,6 +3183,31 @@ class IncrementalScorer:
     ) -> np.ndarray:
         """Score soft-soft swaps for one soft macro, preserving candidate order."""
         cand = np.asarray(candidates, dtype=np.int64).reshape(-1)
+        return self._score_swap_soft_soft_many_impl(int(soft_a), cand)
+
+    def score_prepared_swap_soft_soft(self, prepared: dict, start: int, stop: int) -> np.ndarray:
+        """Score one stable prefix of a prepared soft-soft source."""
+        start, stop = int(start), int(stop)
+        return self._score_swap_soft_soft_many_impl(
+            int(prepared["source"]),
+            prepared["candidates"][start:stop],
+            prepared_batch=self._slice_pair_swap_batch(prepared["batch"], start, stop),
+            prepared_a_xy=prepared["a_xy"],
+            prepared_b_xy=prepared["b_xy"][start:stop],
+            prepared_pos_cache=prepared["pos_cache"],
+        )
+
+    def _score_swap_soft_soft_many_impl(
+        self,
+        soft_a: int,
+        cand: np.ndarray,
+        *,
+        prepared_batch: "dict | None" = None,
+        prepared_a_xy: "np.ndarray | None" = None,
+        prepared_b_xy: "np.ndarray | None" = None,
+        prepared_pos_cache: "np.ndarray | None" = None,
+    ) -> np.ndarray:
+        """Batch exact soft-soft rows with optional source preparation."""
         if not HAS_NUMBA or cand.size < 2:
             out = np.empty(cand.size, dtype=np.float64)
             for k, soft_b in enumerate(cand):
@@ -3074,7 +3216,11 @@ class IncrementalScorer:
 
         a_module = int(self.soft_indices[int(soft_a)])
         b_modules = np.asarray([self.soft_indices[int(soft_b)] for soft_b in cand], dtype=np.int64)
-        batch = self._prepare_pair_swap_batch(a_module, b_modules)
+        batch = (
+            prepared_batch
+            if prepared_batch is not None
+            else self._prepare_pair_swap_batch(a_module, b_modules)
+        )
         if batch is None:
             out = np.empty(cand.size, dtype=np.float64)
             for k, soft_b in enumerate(cand):
@@ -3082,12 +3228,24 @@ class IncrementalScorer:
             return out
 
         n_cells = self.grid_row * self.grid_col
-        route_delta_h = np.zeros((cand.size, n_cells), dtype=np.float64)
-        route_delta_v = np.zeros((cand.size, n_cells), dtype=np.float64)
+        raw_h = np.empty((cand.size, n_cells), dtype=np.float64)
+        raw_v = np.empty((cand.size, n_cells), dtype=np.float64)
         bboxes = np.empty((cand.size, 4), dtype=np.int64)
-        a_xy = np.ascontiguousarray(self.committed_soft_pos[int(soft_a)], dtype=np.float64)
-        b_xy = np.ascontiguousarray(self.committed_soft_pos[cand], dtype=np.float64)
-        pos_cache = np.ascontiguousarray(_ensure_pos_cache(self.plc), dtype=np.float64)
+        a_xy = (
+            prepared_a_xy
+            if prepared_a_xy is not None
+            else np.ascontiguousarray(self.committed_soft_pos[int(soft_a)], dtype=np.float64)
+        )
+        b_xy = (
+            prepared_b_xy
+            if prepared_b_xy is not None
+            else np.ascontiguousarray(self.committed_soft_pos[cand], dtype=np.float64)
+        )
+        pos_cache = (
+            prepared_pos_cache
+            if prepared_pos_cache is not None
+            else np.ascontiguousarray(_ensure_pos_cache(self.plc), dtype=np.float64)
+        )
         route_t0 = time.perf_counter()
         _batch_soft_swap_route_grids_jit(
             batch["a_module"],
@@ -3095,8 +3253,10 @@ class IncrementalScorer:
             a_xy,
             b_xy,
             pos_cache,
-            route_delta_h,
-            route_delta_v,
+            self.H_flat,
+            self.V_flat,
+            raw_h,
+            raw_v,
             bboxes,
             batch["touched_offsets"],
             batch["touched"],
@@ -3121,8 +3281,8 @@ class IncrementalScorer:
         self.search_accel_stats["route_construction_seconds"] += time.perf_counter() - route_t0
 
         congestion = self._batch_sparse_swap_congestion_costs(
-            route_delta_h,
-            route_delta_v,
+            raw_h,
+            raw_v,
             bboxes,
         )
 
@@ -3207,6 +3367,26 @@ class IncrementalScorer:
         out = np.empty(cand.size, dtype=np.float64)
         for k, soft_k in enumerate(cand):
             out[k] = self.score_swap_hard_soft(i_hard, int(soft_k))
+        return out
+
+    def score_prepared_swap_hard_soft(self, prepared: dict, start: int, stop: int) -> np.ndarray:
+        """Score one stable prefix of a prepared hard-soft source."""
+        start, stop = int(start), int(stop)
+        cand = prepared["candidates"][start:stop]
+        batch = self._score_hard_endpoint_swaps_many(
+            int(prepared["source"]),
+            prepared["b_modules"][start:stop],
+            prepared["b_xy"][start:stop],
+            b_is_hard=False,
+            prepared_batch=self._slice_pair_swap_batch(prepared["batch"], start, stop),
+            prepared_a_xy=prepared["a_xy"],
+            prepared_pos_cache=prepared["pos_cache"],
+        )
+        if batch is not None:
+            return batch
+        out = np.empty(cand.size, dtype=np.float64)
+        for row, target in enumerate(cand):
+            out[row] = self.score_swap_hard_soft(prepared["source"], int(target))
         return out
 
     def commit_swap_hard_soft(self, i_hard: int, soft_k: int) -> None:

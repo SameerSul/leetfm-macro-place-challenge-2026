@@ -797,6 +797,14 @@ def _try_hard_hard(
         ]
         if max_scored is not None:
             scored = scored[: max(0, int(max_scored) - _score_count(stats))]
+        prepared = None
+        if len(scored) > int(const.HIER_SWAP_HARD_EXACT_PREFIX) and hasattr(
+            scorer, "prepare_swap_hard_hard_source"
+        ):
+            prepared = scorer.prepare_swap_hard_hard_source(
+                i,
+                np.asarray([j for j, _ in scored], dtype=np.int64),
+            )
         accepted = False
         exact_before = int(stats["hh_exact_scores"])
         rank_offset = 0
@@ -804,10 +812,17 @@ def _try_hard_hard(
             scored,
             int(const.HIER_SWAP_HARD_EXACT_PREFIX),
         ):
-            scores = scorer.score_swap_hard_hard_many(
-                i,
-                np.asarray([j for j, _ in exact_rows], dtype=np.int64),
-            )
+            if prepared is not None:
+                scores = scorer.score_prepared_swap_hard_hard(
+                    prepared,
+                    rank_offset,
+                    rank_offset + len(exact_rows),
+                )
+            else:
+                scores = scorer.score_swap_hard_hard_many(
+                    i,
+                    np.asarray([j for j, _ in exact_rows], dtype=np.int64),
+                )
             stats["hh_exact_scores"] += len(exact_rows)
             for row_rank, ((j, outside_move), score) in enumerate(zip(exact_rows, scores)):
                 stats["hh_scores"] += 1
@@ -951,6 +966,14 @@ def _try_soft_soft(
             scored.append((b, bool(outside_move)))
         if max_scored is not None:
             scored = scored[: max(0, int(max_scored) - _score_count(stats))]
+        prepared = None
+        if len(scored) > int(const.HIER_SWAP_SOFT_SOFT_EXACT_PREFIX) and hasattr(
+            scorer, "prepare_swap_soft_soft_source"
+        ):
+            prepared = scorer.prepare_swap_soft_soft_source(
+                a,
+                np.asarray([b for b, _ in scored], dtype=np.int64),
+            )
         accepted = False
         exact_before = int(stats["ss_exact_scores"])
         rank_offset = 0
@@ -960,7 +983,14 @@ def _try_soft_soft(
         ):
             exact_candidates = np.asarray([b for b, _ in exact_rows], dtype=np.int64)
             required_gain = max(min_gain, soft_barrier_gain)
-            scores = scorer.score_swap_soft_soft_many(a, exact_candidates)
+            if prepared is not None:
+                scores = scorer.score_prepared_swap_soft_soft(
+                    prepared,
+                    rank_offset,
+                    rank_offset + len(exact_rows),
+                )
+            else:
+                scores = scorer.score_swap_soft_soft_many(a, exact_candidates)
             stats["ss_exact_scores"] += len(exact_rows)
             for row_rank, ((b, outside_move), score) in enumerate(zip(exact_rows, scores)):
                 stats["ss_scores"] += 1
@@ -1164,6 +1194,14 @@ def _try_hard_soft(
             scored.append((k, hx, hy, sx, sy, bool(outside_move)))
         if max_scored is not None:
             scored = scored[: max(0, int(max_scored) - _score_count(stats))]
+        prepared = None
+        if len(scored) > int(const.HIER_SWAP_HARD_SOFT_EXACT_PREFIX) and hasattr(
+            scorer, "prepare_swap_hard_soft_source"
+        ):
+            prepared = scorer.prepare_swap_hard_soft_source(
+                i,
+                np.asarray([k for k, *_ in scored], dtype=np.int64),
+            )
         accepted = False
         exact_before = int(stats["hs_exact_scores"])
         rank_offset = 0
@@ -1171,10 +1209,17 @@ def _try_hard_soft(
             scored,
             int(const.HIER_SWAP_HARD_SOFT_EXACT_PREFIX),
         ):
-            scores = scorer.score_swap_hard_soft_many(
-                i,
-                np.asarray([k for k, *_ in exact_rows], dtype=np.int64),
-            )
+            if prepared is not None:
+                scores = scorer.score_prepared_swap_hard_soft(
+                    prepared,
+                    rank_offset,
+                    rank_offset + len(exact_rows),
+                )
+            else:
+                scores = scorer.score_swap_hard_soft_many(
+                    i,
+                    np.asarray([k for k, *_ in exact_rows], dtype=np.int64),
+                )
             stats["hs_exact_scores"] += len(exact_rows)
             for row_rank, ((k, hx, hy, sx, sy, outside_move), score) in enumerate(
                 zip(exact_rows, scores)

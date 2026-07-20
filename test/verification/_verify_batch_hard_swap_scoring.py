@@ -77,14 +77,24 @@ def run(bench_name):
         )
         before = _state(scorer)
         batch = scorer.score_swap_hard_hard_many(hard_a, candidates)
+        prepared = scorer.prepare_swap_hard_hard_source(hard_a, candidates)
+        split = min(4, candidates.size)
+        prepared_scores = np.concatenate(
+            [
+                scorer.score_prepared_swap_hard_hard(prepared, 0, split),
+                scorer.score_prepared_swap_hard_hard(prepared, split, candidates.size),
+            ]
+        )
         state_exact = _unchanged(before, scorer)
         scalar = np.asarray(
             [scorer.score_swap_hard_hard(hard_a, int(hard_b)) for hard_b in candidates]
         )
         delta = float(np.max(np.abs(batch - scalar), initial=0.0))
-        passed = delta < 1.0e-12 and state_exact
+        prepared_delta = float(np.max(np.abs(batch - prepared_scores), initial=0.0))
+        passed = delta < 1.0e-12 and prepared_delta == 0.0 and state_exact
         print(
             f"  hard-hard source={hard_a}: max score delta={delta:.2e}, "
+            f"prepared delta={prepared_delta:.2e}, "
             f"state_exact={int(state_exact)} {'PASS' if passed else 'FAIL'}"
         )
         ok = ok and passed
@@ -93,14 +103,24 @@ def run(bench_name):
         candidates = np.asarray(soft_with_nets[:24], dtype=np.int64)
         before = _state(scorer)
         batch = scorer.score_swap_hard_soft_many(hard_a, candidates)
+        prepared = scorer.prepare_swap_hard_soft_source(hard_a, candidates)
+        split = min(8, candidates.size)
+        prepared_scores = np.concatenate(
+            [
+                scorer.score_prepared_swap_hard_soft(prepared, 0, split),
+                scorer.score_prepared_swap_hard_soft(prepared, split, candidates.size),
+            ]
+        )
         state_exact = _unchanged(before, scorer)
         scalar = np.asarray(
             [scorer.score_swap_hard_soft(hard_a, int(soft_b)) for soft_b in candidates]
         )
         delta = float(np.max(np.abs(batch - scalar), initial=0.0))
-        passed = delta < 1.0e-12 and state_exact
+        prepared_delta = float(np.max(np.abs(batch - prepared_scores), initial=0.0))
+        passed = delta < 1.0e-12 and prepared_delta == 0.0 and state_exact
         print(
             f"  hard-soft source={hard_a}: max score delta={delta:.2e}, "
+            f"prepared delta={prepared_delta:.2e}, "
             f"state_exact={int(state_exact)} {'PASS' if passed else 'FAIL'}"
         )
         ok = ok and passed
