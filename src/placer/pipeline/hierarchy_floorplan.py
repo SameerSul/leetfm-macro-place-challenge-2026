@@ -20,6 +20,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     cleanup recovers some congestion without making proxy score the primary
     objective.
     """
+    floorplan_t0 = time.perf_counter()
     from dreamplace_bridge.run_bridge import (  # noqa: E402
         run_dreamplace,
         is_available as _dp_available,
@@ -393,12 +394,22 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             "candidates": 0,
             "legal": 0,
             "scored": 0,
+            "wl_prefilter_rejects": 0,
+            "target_id_dedup_rejects": 0,
             "hierarchy_rejects": 0,
             "accepts": 0,
         }
 
     def _accum_pass_stats(total: dict[str, int], stats: dict) -> None:
-        for key in ("candidates", "legal", "scored", "hierarchy_rejects", "accepts"):
+        for key in (
+            "candidates",
+            "legal",
+            "scored",
+            "wl_prefilter_rejects",
+            "target_id_dedup_rejects",
+            "hierarchy_rejects",
+            "accepts",
+        ):
             total[key] += int(stats.get(key, 0))
 
     def _hard_legality_margin(hard_xy, eps: float) -> dict[str, float]:
@@ -467,6 +478,25 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     for mem in sorted(clusters.values(), key=_cluster_key):
         order += sorted((int(x) for x in mem), key=_member_key)
     order += sorted([i for i in range(n) if labels[i] < 0], key=_member_key)
+    _log_stage_timing(
+        "hierarchy_setup_total",
+        time.perf_counter() - floorplan_t0,
+        clusters=int(len(clusters)),
+        parents=int(len(hierarchy.parent_clusters)),
+        hard_macros=int(n),
+        soft_macros=int(n_soft),
+        soft_roles_high=sum(
+            row.get("confidence") == "high" for row in hierarchy.soft_role_evidence.values()
+        ),
+        soft_roles_medium=sum(
+            row.get("confidence") == "medium" for row in hierarchy.soft_role_evidence.values()
+        ),
+        soft_roles_low=sum(
+            row.get("confidence") == "low" for row in hierarchy.soft_role_evidence.values()
+        ),
+        active_soft_bundles=int(len(hierarchy.active_soft_bundles)),
+    )
+    seed_portfolio_t0 = time.perf_counter()
     try:
         hard, soft, s_score, seed_rows = run_seed_portfolio(
             benchmark=benchmark,
@@ -501,8 +531,21 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             scratch_root="/tmp/dreamplace_v1_hier",
         )
     except Exception as exc:
+        _log_stage_timing(
+            "seed_portfolio_total",
+            time.perf_counter() - seed_portfolio_t0,
+            succeeded=False,
+            error=type(exc).__name__,
+        )
         _log(f"  [hier] DREAMPlace failed: {type(exc).__name__}: {exc}")
         return None
+    _log_stage_timing(
+        "seed_portfolio_total",
+        time.perf_counter() - seed_portfolio_t0,
+        succeeded=True,
+        candidates=int(len(seed_rows)),
+    )
+    search_t0 = time.perf_counter()
     selected_seed_name = str(seed_rows[0].get("name", "dreamplace")) if seed_rows else "dreamplace"
 
     legal = hard
@@ -1509,6 +1552,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             candidates=soft_reloc_stats["candidates"],
             legal=soft_reloc_stats["legal"],
             scored=soft_reloc_stats["scored"],
+            wl_prefilter_rejects=soft_reloc_stats["wl_prefilter_rejects"],
+            target_id_dedup_rejects=soft_reloc_stats["target_id_dedup_rejects"],
             proposed_after=soft_reloc_proposed_after,
             rollback_report=soft_reloc_enforce,
             round=int(round_idx),
@@ -2143,6 +2188,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             candidates=inter_soft_stats["candidates"],
             legal=inter_soft_stats["legal"],
             scored=inter_soft_stats["scored"],
+            wl_prefilter_rejects=inter_soft_stats["wl_prefilter_rejects"],
+            target_id_dedup_rejects=inter_soft_stats["target_id_dedup_rejects"],
             proposed_after=inter_repair_proposed_after,
             rollback_report=inter_repair_enforce,
             quality=hierarchy_quality_metric(h_pos, clusters),
@@ -2584,6 +2631,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 candidates=escape_stats["candidates"],
                 legal=escape_stats["legal"],
                 scored=escape_stats["scored"],
+                wl_prefilter_rejects=escape_stats["wl_prefilter_rejects"],
+                target_id_dedup_rejects=escape_stats["target_id_dedup_rejects"],
                 proposed_after=escape_proposed_after,
                 rollback_report=escape_enforce,
                 quality=hierarchy_quality_metric(h_pos, clusters),
@@ -2694,6 +2743,7 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             cluster_softs=csofts,
             bridge_softs=bridge_softs,
             soft_bundles=hierarchy.active_soft_bundles,
+            soft_role_evidence=hierarchy.soft_role_evidence,
             soft_movable=soft_mov,
             region_bbox=soft_region,
             candidate_allowed=lambda trial_soft: _vector_contract(h_pos, trial_soft)[0],
@@ -2851,6 +2901,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 candidates=escape_stats["candidates"],
                 legal=escape_stats["legal"],
                 scored=escape_stats["scored"],
+                wl_prefilter_rejects=escape_stats["wl_prefilter_rejects"],
+                target_id_dedup_rejects=escape_stats["target_id_dedup_rejects"],
                 quality=hierarchy_quality_metric(h_pos, clusters),
                 proposed_after=escape_post_proposed_after,
                 rollback_report=escape_post_enforce,
@@ -3067,6 +3119,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 candidates=strong_stats["candidates"],
                 legal=strong_stats["legal"],
                 scored=strong_stats["scored"],
+                wl_prefilter_rejects=strong_stats["wl_prefilter_rejects"],
+                target_id_dedup_rejects=strong_stats["target_id_dedup_rejects"],
                 quality=hierarchy_quality_metric(h_pos, clusters),
                 proposed_after=strong_proposed_after,
                 rollback_report=strong_enforce,
@@ -3235,6 +3289,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
                 candidates=medium_stats["candidates"],
                 legal=medium_stats["legal"],
                 scored=medium_stats["scored"],
+                wl_prefilter_rejects=medium_stats["wl_prefilter_rejects"],
+                target_id_dedup_rejects=medium_stats["target_id_dedup_rejects"],
                 quality=hierarchy_quality_metric(h_pos, clusters),
                 strong_soft_gain=float(strong_gain),
                 nets_per_macro=float(nets_per_macro),
@@ -3294,6 +3350,13 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     else:
         legal = legal_candidate
         _maybe_update_audit_checkpoint(legal, s_pos, legal_score)
+    _log_stage_timing(
+        "hierarchy_search_total",
+        time.perf_counter() - search_t0,
+        proxy_before=float(s_score),
+        proxy_after=float(best_score),
+    )
+    coldspot_t0 = time.perf_counter()
     legal, s_pos, cur_proxy, _ = run_coldspot_tightening(
         benchmark=benchmark,
         plc=plc,
@@ -3329,9 +3392,15 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         seed_hard_xy=seed_hard_for_tension,
         graph_confidence=hierarchy.cluster_confidence,
     )
+    _log_stage_timing(
+        "coldspot_total",
+        time.perf_counter() - coldspot_t0,
+        proxy_after=float(cur_proxy),
+    )
     _maybe_update_audit_checkpoint(legal, s_pos, cur_proxy)
 
-    return run_post_coldspot_finalize(
+    post_coldspot_t0 = time.perf_counter()
+    result = run_post_coldspot_finalize(
         benchmark=benchmark,
         plc=plc,
         clusters=clusters,
@@ -3378,3 +3447,12 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             exact=int(exact),
         ),
     )
+    _log_stage_timing(
+        "post_coldspot_total",
+        time.perf_counter() - post_coldspot_t0,
+    )
+    _log_stage_timing(
+        "hierarchy_floorplan_total",
+        time.perf_counter() - floorplan_t0,
+    )
+    return result

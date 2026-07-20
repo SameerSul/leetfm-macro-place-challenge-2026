@@ -1010,7 +1010,7 @@ def derive_soft_cluster_roles(
     """
     key = (int(n), int(n_soft), int(max_fanout), id(labels), float(bridge_ratio))
     cached = getattr(plc, "_soft_cluster_roles", None)
-    if cached is not None and cached[0] == key:
+    if cached is not None and cached[0] == key and len(cached) >= 4:
         return cached[1], cached[2]
 
     cache = _build_wl_cache(plc)
@@ -1041,18 +1041,90 @@ def derive_soft_cluster_roles(
 
     owned: "dict[int, list[int]]" = {}
     bridge: "dict[int, np.ndarray]" = {}
+    evidence: "dict[int, dict[str, object]]" = {}
     for s, vals in by_soft.items():
-        vals.sort(key=lambda x: (-x[1], x[0]))
-        best_cid, best_count = vals[0]
-        tied = [cid for cid, c in vals if c >= max(1.0, bridge_ratio * best_count)]
-        if len(tied) >= 2:
-            bridge[s] = np.array(tied, dtype=np.int64)
+        row = classify_soft_role_evidence(vals, bridge_ratio=bridge_ratio)
+        evidence[int(s)] = row
+        role_clusters = tuple(int(cid) for cid in row["clusters"])
+        if row["role"] == "bridge":
+            bridge[s] = np.asarray(role_clusters, dtype=np.int64)
         else:
-            owned.setdefault(best_cid, []).append(n + s)
+            owned.setdefault(int(role_clusters[0]), []).append(n + s)
 
     owned_out = {cid: np.array(sorted(v), dtype=np.int64) for cid, v in owned.items()}
-    plc._soft_cluster_roles = (key, owned_out, bridge)
+    plc._soft_cluster_roles = (key, owned_out, bridge, evidence)
     return owned_out, bridge
+
+
+def classify_soft_role_evidence(
+    affinities,
+    *,
+    bridge_ratio: float = 0.6,
+) -> dict[str, object]:
+    """Calibrate flat-net hard-affinity as medium/low soft-role evidence."""
+    values = sorted(
+        ((int(cluster_id), int(count)) for cluster_id, count in affinities if int(count) > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    if not values:
+        raise ValueError("soft-role evidence requires at least one positive affinity")
+    best_cid, best_count = values[0]
+    second_count = int(values[1][1]) if len(values) > 1 else 0
+    tied = tuple(
+        int(cluster_id)
+        for cluster_id, count in values
+        if count >= max(1.0, float(bridge_ratio) * best_count)
+    )
+    role = "bridge" if len(tied) >= 2 else "owned"
+    total = max(1, sum(int(count) for _cluster_id, count in values))
+    affinity_share = float(best_count) / float(total)
+    if role == "bridge":
+        balance = float(second_count) / max(float(best_count), 1.0)
+        top_coverage = float(best_count + second_count) / float(total)
+        repeated = min(float(second_count) / 3.0, 1.0)
+        score = 0.25 + 0.20 * balance + 0.18 * top_coverage + 0.18 * repeated
+        clusters = tied
+    else:
+        dominance = 1.0 - float(second_count) / max(float(best_count), 1.0)
+        repeated = min(float(best_count) / 3.0, 1.0)
+        score = 0.25 + 0.20 * affinity_share + 0.16 * dominance + 0.18 * repeated
+        clusters = (int(best_cid),)
+    score = float(min(score, float(const.HIER_SOFT_BUNDLE_HIGH_CONFIDENCE) - 0.01))
+    confidence = "medium" if score >= float(const.HIER_SOFT_BUNDLE_MEDIUM_CONFIDENCE) else "low"
+    return {
+        "role": role,
+        "clusters": clusters,
+        "best_count": int(best_count),
+        "second_count": int(second_count),
+        "affinity_share": affinity_share,
+        "repeat_support": float(repeated),
+        "score": score,
+        "confidence": confidence,
+        "source": "flat_low_fanout_hard_affinity",
+    }
+
+
+def derive_soft_cluster_role_evidence(
+    plc,
+    n: int,
+    n_soft: int,
+    labels: np.ndarray,
+    max_fanout: int = 8,
+    bridge_ratio: float = 0.6,
+) -> dict[int, dict[str, object]]:
+    """Return calibrated evidence for the current owned/bridge role mapping."""
+    derive_soft_cluster_roles(
+        plc,
+        n=n,
+        n_soft=n_soft,
+        labels=labels,
+        max_fanout=max_fanout,
+        bridge_ratio=bridge_ratio,
+    )
+    cached = getattr(plc, "_soft_cluster_roles", None)
+    if cached is None or len(cached) < 4:
+        return {}
+    return {int(index): dict(row) for index, row in cached[3].items()}
 
 
 def derive_cluster_softs(

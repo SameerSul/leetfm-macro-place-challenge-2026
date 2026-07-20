@@ -197,7 +197,7 @@ def test_region_swap_exact_prefixes_preserve_stable_candidate_order():
 
     chunks = list(_stable_exact_prefixes(candidates, 4))
 
-    assert chunks == [candidates[:4], candidates[4:]]
+    assert chunks == [candidates[:4], candidates[4:8], candidates[8:]]
     assert [candidate for chunk in chunks for candidate in chunk] == candidates
     assert list(_stable_exact_prefixes(candidates[:3], 4)) == [candidates[:3]]
     assert list(_stable_exact_prefixes([], 4)) == []

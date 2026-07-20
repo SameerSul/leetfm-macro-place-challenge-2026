@@ -13,19 +13,29 @@ pipeline. The latest full IBM sweep is:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1412  17/17 VALID  0 overlaps  351.48s
+AVG 1.1404  17/17 VALID  0 overlaps  318.55s
 ```
 
-All final hierarchy audits passed. Stable-prefix region-swap scoring,
-ranked-only hard legality, and disabled-graph allocation removal reproduced
-every per-design score from the 398.57s deterministic-quota reference exactly,
-avoided 66,703 exact evaluations, and reduced attributed swap time from 159.91s
-to 148.29s. In-place congestion-tail partitioning and schedule-scoped hard
-separation geometry preserve the same physical/avoided score counts and reduce
-the phase again to 146.98s. Direct global-topology swap routing plus exact
-baseline/touched-cell congestion and density tails preserve those same counts
-and reduce the phase to 104.04s. The latest NG45 result is `AVG 0.7121`, 4/4
-VALID, zero overlaps, all audits passed, in 65.27s.
+All final hierarchy audits passed. Sixteen scores match the accepted reference;
+a one-component, 99.61%-retained repair of the IBM09 constraint-graph seed
+improved `1.0122 -> 0.9978`. Two stable swap prefixes preserve winner order and
+logical quotas while raising avoided exact work from 66,703 to 79,466; the
+trace-compatible region phase fell `104.04s -> 98.74s`. Batched exact soft
+wirelength prefiltering rejected 100,831 proposals before field scoring and cut
+the four main soft-relocation phases by 20.7–22.3%. Exclusive telemetry covers
+at least 99.86% of each IBM API call: 297.33s was inside the placer and 21.22s
+was evaluator loading/final scoring. NG45 remains `AVG 0.7121`, 4/4 VALID, zero
+overlaps, and all audits passed in 64.80s. Synthetic validation is `AVG 1.4192`,
+10/10 valid, with 10/10 truth passes.
+
+The latest exact-equivalent scorer sweep compiles pair incident-net unions and
+reuses sparse swap-reducer scratch, reducing the same-work region phase
+`98.74s -> 94.37s`. Soft relocation now uses stable integer grid IDs and
+capacity-grown dense field workspaces with fused in-place congestion reduction.
+The verification sweep reproduced IBM `AVG 1.1404`, NG45 `AVG 0.7121`, and
+synthetic `AVG 1.4192`; all 96 tests pass. Its 330.75s IBM wall time is not
+treated as an end-to-end gain because broad host/runtime variance exceeded the
+focused operator effect.
 
 The learned-ranking stack has been removed. Candidate ordering is deterministic;
 exact proxy, hard legality, bounds, fixed-macro immobility, hierarchy regions,
@@ -87,6 +97,12 @@ and attaches both the committed revision and a deterministic scoped dirty-
 worktree fingerprint. Seed/cache/coldspot/exact-score/final-audit stages are
 timed separately. The analyzer can filter by fingerprint, prints stage timing,
 and reports gain-per-score as `n/a` when a pass made no exact-score calls.
+The 2026-07-19 outer-boundary follow-up adds five mutually exclusive phases,
+`hierarchy_floorplan_total`, and `placer_api_total`. Analyzer `--coverage`
+reconciles at least 99.86% of every IBM API call; the accepted sweep attributes
+202.38s to hierarchy search, 37.35s to setup, 27.22s to coldspot, 23.48s to seed
+selection, and 6.46s after coldspot. The evaluator adds 21.22s outside the
+297.33s submission API total, so missing end-to-end attribution is resolved.
 
 A clean compound-move control/off A/B kept the production pass: control and off
 both rounded to `AVG 1.1468`, and off saved 6.66 seconds, but it regressed
@@ -170,8 +186,8 @@ the reference instead; this preserves the seedless case's useful basin. Exact
 candidate-level vector guards are limited to refined graphs of at most 64 hard
 macros, while larger graphs use pass checkpoints and final rollback.
 
-The latest synthetic rerun, with deepest-child boxes enabled, reached `AVG
-1.4193`, 10/10 valid, zero overlaps, and 10/10 truth passes, versus the
+The latest synthetic rerun reached `AVG 1.4192`, 10/10 valid, zero overlaps,
+and 10/10 truth passes, versus the
 attributed `AVG 1.4262` run with nine truth passes. `syn03_sram` moved from
 purity `0.375` / pair precision `0.271` to `1.0 / 1.0`; `syn04_dense` also
 recovers its six groups exactly. Remaining work is to improve the still-coarse
@@ -213,8 +229,8 @@ out of scope; the deepest-child boxes add search room without adding another
 inferred partition level.
 
 Explicit slash-separated soft instance paths now form high-confidence bundles
-and take precedence in compound relocation. Flat IBM `Grp_*` names expose no
-such paths, so production behavior is unchanged there. Conservative mutual-edge
+and are the only source of compound relocation groups. Flat IBM `Grp_*` names
+expose no such paths, so their softs stay independent. Conservative mutual-edge
 soft connectivity communities are now derived diagnostically and scored against
 common owned/bridge affinity. Only explicit high-confidence path evidence is
 eligible to move as a compound bundle; flat-netlist inferred communities remain
@@ -231,24 +247,34 @@ prove that their expected gain pays for their exact-score calls.
 Hard-hard and hard-soft swap trials now share exact compiled batch kernels,
 joining the existing batched soft relocation and soft-soft swap paths. Direct
 scalar parity checks pass to floating-point roundoff without changing committed
-scorer grids or caches. Region swaps now score four-candidate hard-hard,
-eight-candidate hard-soft, or twelve-candidate soft-soft stable prefixes before
-the untouched remainder; a prefix winner safely avoids the suffix. Hard
+scorer grids or caches. Region swaps now score two four-candidate hard-hard,
+two eight-candidate hard-soft, or two twelve-candidate soft-soft stable prefixes
+before the untouched remainder; a prefix winner safely avoids the suffix. Hard
 legality is evaluated only after the ranked 16/48-candidate cut, and disabled
 graph paths avoid zero-array construction. Disposable congestion grids are now
 partitioned in place, and static hard separation matrices are computed once
-per swap schedule. Together these preserve all 66,703 avoided exact IBM swap
-evaluations and reduce attributed swap time by 12.93s without changing any
-winner. The
-remaining bottleneck is repeated full exact scoring, especially the evaluator's
-final large-grid report and operators that must choose the best candidate over
-a complete batch rather than the first acceptable one.
+per swap schedule. The current scheduler avoids 79,466 exact IBM swap
+evaluations and completes the same-work phase in 94.37s without changing
+any winner outside IBM09's earlier seed repair. Batched soft wirelength deltas
+also remove Python scalar prefilter overhead before exact field work; stable
+integer target IDs and reusable dense scorer workspaces remove additional
+preparation and allocation overhead. The latest verification spent 218.61s in
+hierarchy search and 317.63s in the placer API, but that run is retained as a
+correctness/same-work result rather than a wall-time baseline. Region swaps
+remain the dominant measured phase, followed by region-soft relocation and the
+evaluator's final large-grid report outside the placer API.
 
-The per-batch congestion tail reduction is exact in-place NumPy; the density
-tail reduction and hierarchy vector's nearest-four impurity selection use
-cached CPU Numba kernels. They preserve the
+Swap congestion/density tails and ordinary soft density tails use cached CPU
+Numba scratch. Ordinary soft congestion overwrites disposable route grids with
+exact smoothed values and reduces the tail in the same compiled call; hierarchy
+nearest-four impurity is also cached CPU Numba. They preserve the
 scalar and stable-sort references exactly, remove avoidable local Python and
 N-by-N sort work, and do not replace the required final exact scorer.
+
+The tested optimistic congestion lower bound is not an open production hook:
+it rejected only 317/26,556 IBM10 soft-soft rows and was removed. Future
+cross-source batching must prove dependency-safe reuse after sequential commits;
+snapshot-only waves that alter first-winner behavior remain out of scope.
 
 ### 6. Portability coverage is still narrower than challenge coverage
 

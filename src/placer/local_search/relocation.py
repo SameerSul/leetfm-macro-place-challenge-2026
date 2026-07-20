@@ -57,6 +57,81 @@ def _dedupe_targets_xy(targets) -> np.ndarray:
     return arr[np.sort(keep)]
 
 
+def _soft_targets_from_grid_ids(
+    grid_ids: np.ndarray,
+    *,
+    half_w: float,
+    half_h: float,
+    cw: float,
+    ch: float,
+    nr: int,
+    nc: int,
+    stamps: np.ndarray,
+    generation: int,
+    region_mask=None,
+    candidate_allowed: "Callable[[float, float], bool] | None" = None,
+) -> tuple[np.ndarray, int, int]:
+    """Convert stable grid IDs once, deduplicating clipped coordinates by stamp."""
+    ids = np.asarray(grid_ids, dtype=np.int64).reshape(-1)
+    if ids.size == 0:
+        return np.empty((0, 2), dtype=np.float64), 0, 0
+    cell_w = float(cw) / int(nc)
+    cell_h = float(ch) / int(nr)
+    cols = ids % int(nc)
+    rows = ids // int(nc)
+    raw_x = (cols.astype(np.float64) + 0.5) * cell_w
+    raw_y = (rows.astype(np.float64) + 0.5) * cell_h
+    x_lo = float(half_w)
+    x_hi = float(cw) - float(half_w)
+    y_lo = float(half_h)
+    y_hi = float(ch) - float(half_h)
+    x = np.clip(raw_x, x_lo, x_hi)
+    y = np.clip(raw_y, y_lo, y_hi)
+
+    # A clipped coordinate has one of nc+2 / nr+2 exact symbolic values:
+    # lower edge, an unchanged cell center, or upper edge. These keys avoid
+    # coordinate tuples and preserve np.unique(axis=0)'s first-winner order.
+    if x_lo >= x_hi:
+        x_key = np.zeros(ids.size, dtype=np.int64)
+    else:
+        x_key = cols + 1
+        x_key[raw_x <= x_lo] = 0
+        x_key[raw_x >= x_hi] = int(nc) + 1
+    if y_lo >= y_hi:
+        y_key = np.zeros(ids.size, dtype=np.int64)
+    else:
+        y_key = rows + 1
+        y_key[raw_y <= y_lo] = 0
+        y_key[raw_y >= y_hi] = int(nr) + 1
+    keys = y_key * (int(nc) + 2) + x_key
+
+    keep = np.ones(ids.size, dtype=np.bool_)
+
+    if region_mask is not None and keep.any():
+        mask = np.asarray(region_mask, dtype=bool)
+        if mask.ndim == 2 and mask.size:
+            mask_rows, mask_cols = mask.shape
+            target_cols = np.clip((x / (float(cw) / mask_cols)).astype(np.int64), 0, mask_cols - 1)
+            target_rows = np.clip((y / (float(ch) / mask_rows)).astype(np.int64), 0, mask_rows - 1)
+            keep &= mask[target_rows, target_cols]
+
+    hierarchy_rejects = 0
+    if candidate_allowed is not None:
+        for idx in np.flatnonzero(keep):
+            if not bool(candidate_allowed(float(x[idx]), float(y[idx]))):
+                keep[idx] = False
+                hierarchy_rejects += 1
+    before_dedup = int(np.count_nonzero(keep))
+    for idx in np.flatnonzero(keep):
+        key = int(keys[idx])
+        if stamps[key] == int(generation):
+            keep[idx] = False
+        else:
+            stamps[key] = int(generation)
+    dedup_rejects = before_dedup - int(np.count_nonzero(keep))
+    return np.column_stack([x[keep], y[keep]]), hierarchy_rejects, dedup_rejects
+
+
 def _structural_local_penalty(
     full_pos: np.ndarray,
     sizes: np.ndarray,
@@ -1213,6 +1288,8 @@ def _soft_relocation_moves(
         "candidates": 0,
         "legal": 0,
         "scored": 0,
+        "wl_prefilter_rejects": 0,
+        "target_id_dedup_rejects": 0,
         "hierarchy_rejects": 0,
         "score_limit": None if max_scored is None else max(0, int(max_scored)),
         "quota_exhausted": bool(max_scored is not None and int(max_scored) <= 0),
@@ -1262,12 +1339,16 @@ def _soft_relocation_moves(
     tgt_x = ((pool % nc).astype(np.float64) + 0.5) * cell_w
     tgt_y = ((pool // nc).astype(np.float64) + 0.5) * cell_h
     tgt_cong = flat[pool]
+    target_stamps = np.zeros((nr + 2) * (nc + 2), dtype=np.int64)
+    target_generation = 0
 
     best_score = initial_score
     accepts = 0
     candidate_count = 0
     legal_count = 0
     scored_count = 0
+    wl_prefilter_rejects = 0
+    target_id_dedup_rejects = 0
     hierarchy_rejects = 0
     score_limit = None if max_scored is None else max(0, int(max_scored))
     full_pos_for_struct = _full_committed_pos(incremental_scorer)
@@ -1327,25 +1408,40 @@ def _soft_relocation_moves(
         cand = cand[order][:n_targets]
         best_k_xy = None
         try:
-            targets = []
-            for t in cand:
-                nx = float(np.clip(tgt_x[t], soft_hw[k], cw - soft_hw[k]))
-                ny = float(np.clip(tgt_y[t], soft_hh[k], ch - soft_hh[k]))
-                if not _point_in_region_mask(region_mask, nx, ny, cw, ch):
-                    continue
-                if candidate_allowed is not None and not bool(candidate_allowed(k, nx, ny)):
-                    hierarchy_rejects += 1
-                    continue
-                # Cheaply skip targets with too much wirelength damage.
-                wl_d = 0.0
-                if wl_prefilter > 0.0:
-                    wl_d = incremental_scorer.wl_delta_move_soft(k, (nx, ny))
-                if wl_prefilter > 0.0 and wl_d > wl_prefilter:
-                    continue
-                targets.append((nx, ny))
-            targets = _dedupe_targets_xy(targets)
+            target_generation += 1
+            targets, target_hierarchy_rejects, dedup_rejects = _soft_targets_from_grid_ids(
+                pool[cand],
+                half_w=float(soft_hw[k]),
+                half_h=float(soft_hh[k]),
+                cw=float(cw),
+                ch=float(ch),
+                nr=int(nr),
+                nc=int(nc),
+                stamps=target_stamps,
+                generation=target_generation,
+                region_mask=region_mask,
+                candidate_allowed=(
+                    None
+                    if candidate_allowed is None
+                    else lambda nx, ny, soft_k=k: candidate_allowed(soft_k, nx, ny)
+                ),
+            )
+            target_id_dedup_rejects += int(dedup_rejects)
+            hierarchy_rejects += int(target_hierarchy_rejects)
+            if wl_prefilter > 0.0 and targets.size:
+                if hasattr(incremental_scorer, "wl_delta_move_soft_many"):
+                    wl_delta = incremental_scorer.wl_delta_move_soft_many(k, targets)
+                else:
+                    wl_delta = np.asarray(
+                        [incremental_scorer.wl_delta_move_soft(k, target) for target in targets],
+                        dtype=np.float64,
+                    )
+                keep = wl_delta <= float(wl_prefilter)
+                wl_prefilter_rejects += int(np.count_nonzero(~keep))
+                targets = targets[keep]
             if score_limit is not None:
-                targets = targets[: max(0, score_limit - scored_count)]
+                target_limit = max(0, score_limit - scored_count)
+                targets = targets[:target_limit]
             if targets.size:
                 prep = incremental_scorer._prepare_move_soft(k)
                 try:
@@ -1383,6 +1479,8 @@ def _soft_relocation_moves(
         "candidates": int(candidate_count),
         "legal": int(legal_count),
         "scored": int(scored_count),
+        "wl_prefilter_rejects": int(wl_prefilter_rejects),
+        "target_id_dedup_rejects": int(target_id_dedup_rejects),
         "hierarchy_rejects": int(hierarchy_rejects),
         "score_limit": score_limit,
         "quota_exhausted": bool(score_limit is not None and scored_count >= score_limit),

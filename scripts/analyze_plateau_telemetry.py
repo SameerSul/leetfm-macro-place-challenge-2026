@@ -275,6 +275,66 @@ def print_stage_table(rows: list[dict]) -> None:
         )
 
 
+_COVERAGE_PHASES = (
+    "hierarchy_setup_total",
+    "seed_portfolio_total",
+    "hierarchy_search_total",
+    "coldspot_total",
+    "post_coldspot_total",
+)
+
+
+def aggregate_coverage(rows: list[dict], min_runs: int) -> list[dict]:
+    """Summarize mutually exclusive placer phases against the public API boundary."""
+    by_run: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for row in rows:
+        key = (str(row.get("run_id", "legacy")), str(row.get("benchmark", "")))
+        by_run[key][str(row.get("stage", "unknown"))] += float(row.get("elapsed_s", 0.0))
+
+    by_benchmark: dict[str, list[dict[str, float]]] = defaultdict(list)
+    for (_run_id, benchmark), stages in by_run.items():
+        if "placer_api_total" not in stages or "hierarchy_floorplan_total" not in stages:
+            continue
+        by_benchmark[benchmark].append(stages)
+
+    output = []
+    for benchmark, items in sorted(by_benchmark.items()):
+        if len(items) < min_runs:
+            continue
+        api_s = sum(item["placer_api_total"] for item in items)
+        floorplan_s = sum(item["hierarchy_floorplan_total"] for item in items)
+        phase_s = sum(sum(item.get(phase, 0.0) for phase in _COVERAGE_PHASES) for item in items)
+        output.append(
+            {
+                "benchmark": benchmark,
+                "runs": len(items),
+                "placer_api_s": api_s,
+                "floorplan_s": floorplan_s,
+                "phase_s": phase_s,
+                "phase_coverage": phase_s / max(floorplan_s, 1.0e-12),
+                "floorplan_gap_s": floorplan_s - phase_s,
+                "api_boundary_s": api_s - floorplan_s,
+            }
+        )
+    return sorted(output, key=lambda row: row["placer_api_s"], reverse=True)
+
+
+def print_coverage_table(rows: list[dict]) -> None:
+    header = (
+        f"{'benchmark':20} {'runs':>5} {'API s':>10} {'floor s':>10} "
+        f"{'phases s':>10} {'covered':>9} {'floor gap':>10} {'API gap':>10}"
+    )
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        print(
+            f"{row['benchmark'][:20]:20} {row['runs']:5d} {row['placer_api_s']:10.3f} "
+            f"{row['floorplan_s']:10.3f} {row['phase_s']:10.3f} "
+            f"{100.0 * row['phase_coverage']:8.2f}% {row['floorplan_gap_s']:10.3f} "
+            f"{row['api_boundary_s']:10.3f}"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", type=Path, default=[DEFAULT_PATH])
@@ -285,11 +345,14 @@ def main() -> int:
     parser.add_argument("--min-runs", type=int, default=1)
     parser.add_argument("--stages", action="store_true")
     parser.add_argument("--quotas", action="store_true")
+    parser.add_argument("--coverage", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    if args.stages and args.quotas:
-        parser.error("--stages and --quotas are mutually exclusive")
-    if args.stages:
+    if sum(bool(value) for value in (args.stages, args.quotas, args.coverage)) > 1:
+        parser.error("--stages, --quotas, and --coverage are mutually exclusive")
+    if args.coverage:
+        rows = aggregate_coverage(load_stage_rows(args.paths, args), max(1, args.min_runs))
+    elif args.stages:
         rows = aggregate_stages(load_stage_rows(args.paths, args), max(1, args.min_runs))
     elif args.quotas:
         rows = aggregate_quotas(load_rows(args.paths, args), max(1, args.min_runs))
@@ -297,6 +360,8 @@ def main() -> int:
         rows = aggregate(load_rows(args.paths, args), max(1, args.min_runs))
     if args.json:
         print(json.dumps(rows, indent=2, sort_keys=True))
+    elif args.coverage:
+        print_coverage_table(rows)
     elif args.stages:
         print_stage_table(rows)
     elif args.quotas:

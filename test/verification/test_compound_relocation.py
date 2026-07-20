@@ -61,6 +61,30 @@ def _run(candidate_allowed, *, max_scored=None):
     return original, moved, accepts, score, scorer, region
 
 
+def _run_with_low_role_evidence():
+    soft = np.array([[70.0, 60.0], [74.0, 62.0], [72.0, 66.0]], dtype=np.float64)
+    half = np.full(3, 1.0, dtype=np.float64)
+    region = np.tile(np.array([20.0, 20.0, 90.0, 90.0]), (3, 1))
+    scorer = _FakeScorer(np.tile(np.array([0.0, 0.1, 0.8, 1.0]), (4, 1)))
+    benchmark = SimpleNamespace(grid_rows=4, grid_cols=4, name="synthetic")
+    moved, accepts, score = _compound_soft_relocation(
+        soft,
+        half,
+        half,
+        100.0,
+        100.0,
+        5,
+        benchmark,
+        scorer,
+        1.0,
+        cluster_softs={3: np.array([5, 6, 7])},
+        soft_role_evidence={index: {"confidence": "low", "role": "owned"} for index in range(3)},
+        soft_movable=np.ones(3, dtype=bool),
+        region_bbox=region,
+    )
+    return moved, accepts, score, scorer
+
+
 def test_compound_soft_move_scores_and_commits_only_the_completed_group():
     allowed_trials = []
     original, moved, accepts, score, scorer, region = _run(
@@ -103,3 +127,12 @@ def test_compound_soft_move_honors_zero_exact_score_quota():
     assert scorer.scored == []
     assert scorer.committed is None
     assert _compound_soft_relocation.last_stats["quota_exhausted"] is True
+
+
+def test_low_confidence_flat_ownership_does_not_form_a_compound_group():
+    moved, accepts, score, scorer = _run_with_low_role_evidence()
+
+    assert accepts == 0
+    assert score == 1.0
+    assert scorer.scored == []
+    assert _compound_soft_relocation.last_stats["groups"] == 0

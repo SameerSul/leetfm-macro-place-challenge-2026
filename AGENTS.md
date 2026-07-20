@@ -19,10 +19,10 @@ hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
 Current verified result with normal BB/cache behavior:
-`uv run evaluate src/main.py --all` = **AVG 1.1412**, 17/17 VALID, 0
-overlaps, all final hierarchy audits passed, **351.48s**. Every per-design
-score, accepted move, rollback decision, and exact-score count is unchanged
-from the preceding 416.87s reference.
+`uv run evaluate src/main.py --all` = **AVG 1.1404**, 17/17 VALID, 0
+overlaps, all final hierarchy audits passed, **318.55s**. Sixteen per-design
+scores are unchanged; a contract-preserving repair of the IBM09 constraint-
+graph seed improved that design from **1.0122 to 0.9978**.
 Region swaps now exact-score short stable prefixes before their untouched
 suffix. When a prefix contains the first acceptable candidate, the suffix is
 provably irrelevant and skipped. Hard-hard and hard-soft prefixes remain 4 and
@@ -48,14 +48,51 @@ only the four changed occupancy rectangles and merges their values with the
 baseline tail. The accepted sweep retained the same physical/avoided counts and
 reduced attributed region-swap time **146.98s -> 104.04s** (29.2%) and complete
 runtime **416.87s -> 351.48s** (15.7%).
+The congestion/density baseline arrays, stable descending orders, density
+nonzero count, and density sum are now cached across rejected swap batches and
+invalidated after every committed hard, soft, swap, or compound move. The
+follow-up IBM sweep preserved the same 1,077,431 physical / 66,703 avoided
+scores and reduced attributed region-swap time again **104.04s -> 102.68s**;
+focused IBM04/12/18 reductions were 7.6%, 9.3%, and 5.5%. The complete sweep
+took 371.82s under broader run/compile variance, so this is accepted as an
+attributable region-swap improvement, not an end-to-end runtime claim. A fused
+single-candidate hard-blockage scratch and Numba `prange` candidate-row
+reduction were measured and removed: the former regressed two of three focused
+designs, while the latter hit the 20s IBM18 swap guard after less than half the
+normal candidates.
+The current sweep adds a second same-sized stable prefix before the untouched
+swap suffix. It preserves candidate order, first-winner semantics, and logical
+quotas while increasing avoided exact swap evaluations to **79,466**; the
+trace-compatible IBM region-swap phase fell **104.04s -> 98.74s**. Soft
+relocation now batches its exact wirelength prefilter, rejecting **100,831**
+proposals before congestion/density scoring. Full-suite region, interleaved,
+plateau, and strong-soft times fell respectively **44.09 -> 34.97s**, **6.24 ->
+4.93s**, **7.43 -> 5.87s**, and **23.41 -> 18.18s**. Mutually exclusive
+placer timing phases account for at least 99.86% of every IBM API call: the
+full sweep spent 297.33s in `MacroPlacer.place()` and 318.55s in the evaluator,
+leaving 21.22s in evaluator loading/final scoring outside the submission API.
+Swap pair-net unions are now merged from sorted incident-net CSR rows in one
+compiled kernel, and the sparse exact reducers reuse scorer-owned grid scratch.
+The same 1,048,385 logical / 1,066,186 physical / 79,466 avoided IBM work fell
+from 98.74s to 94.37s. Soft relocation retains stable integer grid IDs through
+deduplication and uses capacity-grown dense workspaces with fused in-place
+congestion smoothing/tail reduction. The verification sweep preserved IBM
+AVG 1.1404, NG45 0.7121, and synthetic 1.4192 with all audits/truth checks; its
+330.75s IBM wall time is treated as run variance, not an end-to-end claim. The
+tested optimistic congestion lower bound rejected only 1.2% of IBM10
+soft-soft rows and was removed; speculative source waves and net-optimal prefix
+ranking are not production paths.
 Deterministic per-pass exact-score quotas cap work before the wall-clock safety
 guards and preserve every placement and score from the preceding 404.01s
 reference. The seed
 portfolio filters candidates through an independent six-component hierarchy
 contract relative to an `initial.plc` reference that is legalized before its
 limits are built; immutable-hard failures are removed before exact scoring where
-the candidate is not mandatory. The same contract is enforced against the
-selected seed throughout relief and final rollback. The portfolio
+the candidate is not mandatory. A mandatory lower-proxy seed that misses exactly
+one component may be deterministically interpolated toward the passing reference;
+only a legal repair retaining at least 95% of the source displacement is exact-
+scored. The same contract is enforced against the selected seed throughout
+relief and final rollback. The portfolio
 includes a default-on constraint-graph legalization alternative for
 `initial.plc`, and hard-hard / hard-soft swap sets use exact batched scoring.
 Swap congestion/density tails now use exact baseline-plus-touched-cell Numba
@@ -65,8 +102,10 @@ All preserve the scalar and stable-sort reference semantics.
 Region hard relocation rejects candidates above the selected seed's cheap hard-
 containment limit before exact batch scoring. The full six-component checkpoint
 remains authoritative after the pass.
-Plateaued late soft cleanup also tests a bounded compound related-soft move:
-every member stays in-region, the complete state must pass the rich hierarchy
+Plateaued late soft cleanup also tests bounded compound moves for explicit
+high-confidence path bundles. Flat owner/bridge evidence remains useful for
+individual hierarchy regions but cannot form a compound group. Every compound
+member stays in-region, the complete state must pass the rich hierarchy
 contract, and exact incremental scoring occurs only after the group is formed.
 The ordinary post-swap soft relocation pass is skipped after two attributable
 full suites produced zero gain in 34 runs; its time remains as deadline and
@@ -138,7 +177,7 @@ and 10/10 truth-audit passes with the accepted deep pass enabled.
 
 NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
 **AVG 0.7121**, 4/4 VALID, 0 overlaps, all hierarchy audits passed. The latest
-validation observed 65.27s; explicit path parents bypassed
+validation observed 64.80s; explicit path parents bypassed
 the fallback inference.
 `uv run python
 test/verification/_verify_ng45_hierarchy_tags.py` passes. The hierarchy model
@@ -360,6 +399,13 @@ scripts/                  Comparison + benchmark-conversion utilities.
 - Iterate on one benchmark (`-b ibm10` is the current hierarchy smoke) until the change is sound; run `--all` only when you need a full benchmark sweep.
 - When a change alters hierarchy quality or proxy cost, verify it on more than one benchmark before treating it as a system improvement.
 - Record concrete numbers in `docs/general/PROGRESS.md` when a change becomes a new accepted system result - that file is the source of truth for "what works", not commit messages.
+- When a paper, technical article, or external method informs implementation or
+  an experiment, add or update its numbered entry in
+  `docs/general/REFERENCES.md`. Verify title, authors, venue/year, pages, and DOI
+  or primary-author/publisher link; state whether the method is production,
+  independently adapted, research-only, rejected, or future work; and link the
+  relevant design/experiment document back to that entry. Keep results reported
+  by the source explicitly separate from VivaPlace measurements and forecasts.
 - Documentation updates are part of every system modification. If a change alters placement flow, operator order, acceptance gates, constants, default behavior, diagnostics, structural hooks, verification status, or user-facing commands, update `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and all other relevant docs in the same turn. Relevant docs may include `README.md`, `docs/general/ISSUES.md`, `docs/general/PROGRESS.md`, or test/diagnostic READMEs. If no documentation needs an update, explicitly note why in the final response.
 - Once a change has been accepted and verified as a new system result, record concrete numbers in `docs/general/PROGRESS.md` and make sure `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and any related subsystem docs describe the accepted behavior instead of stale experiment behavior.
 - **All v2-specific tests, diagnostics, and probes live under `test/`** (current subdirs: `benchmarks/`, `diagnostic/`, `eda_io/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks an agent to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `test/` under the matching subdirectory - and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.

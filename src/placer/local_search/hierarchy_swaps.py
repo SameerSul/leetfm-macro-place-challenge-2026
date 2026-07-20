@@ -74,7 +74,7 @@ def _score_count(stats: dict) -> int:
 
 
 def _stable_exact_prefixes(scored: list, prefix: int):
-    """Yield a short exact prefix followed by the untouched stable remainder."""
+    """Yield two short stable prefixes followed by the untouched remainder."""
     if not scored:
         return
     prefix = max(1, int(prefix))
@@ -82,7 +82,10 @@ def _stable_exact_prefixes(scored: list, prefix: int):
         yield scored
         return
     yield scored[:prefix]
-    yield scored[prefix:]
+    second = min(2 * prefix, len(scored))
+    yield scored[prefix:second]
+    if second < len(scored):
+        yield scored[second:]
 
 
 def _cell_values(pos: np.ndarray, field: np.ndarray, cw: float, ch: float) -> np.ndarray:
@@ -955,14 +958,12 @@ def _try_soft_soft(
             scored,
             int(const.HIER_SWAP_SOFT_SOFT_EXACT_PREFIX),
         ):
-            scores = scorer.score_swap_soft_soft_many(
-                a,
-                np.asarray([b for b, _ in exact_rows], dtype=np.int64),
-            )
+            exact_candidates = np.asarray([b for b, _ in exact_rows], dtype=np.int64)
+            required_gain = max(min_gain, soft_barrier_gain)
+            scores = scorer.score_swap_soft_soft_many(a, exact_candidates)
             stats["ss_exact_scores"] += len(exact_rows)
             for row_rank, ((b, outside_move), score) in enumerate(zip(exact_rows, scores)):
                 stats["ss_scores"] += 1
-                required_gain = max(min_gain, soft_barrier_gain)
                 if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
                     scorer.commit_swap_soft_soft(a, b)
                     s_pos[[a, b]] = s_pos[[b, a]]
