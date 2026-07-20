@@ -115,6 +115,56 @@ def run_one(bench_name, n_trials=12, n_commits=5):
             f"delta={delta:.2e} {mark}"
         )
         ok = ok and delta < 1e-4
+
+    if n >= 2 and nsoft >= 2:
+        hard_group = np.asarray(rng.choice(n, size=2, replace=False), dtype=np.int64)
+        soft_group = np.asarray(rng.choice(nsoft, size=2, replace=False), dtype=np.int64)
+        hard_targets = np.column_stack(
+            [rng.uniform(0.0, cw, size=hard_group.size), rng.uniform(0.0, ch, size=2)]
+        )
+        soft_targets = np.column_stack(
+            [rng.uniform(0.0, cw, size=soft_group.size), rng.uniform(0.0, ch, size=2)]
+        )
+        pred = scorer.score_move_group(
+            hard_group,
+            hard_targets,
+            soft_group,
+            soft_targets,
+        )
+        ref = cur.copy()
+        ref[hard_group] = hard_targets
+        ref[n + soft_group] = soft_targets
+        actual = _exact_proxy(torch.from_numpy(ref.astype(np.float32)), bench, plc)
+        _fast_set_placement(plc, cur, bench)
+        plc.FLAG_UPDATE_DENSITY = True
+        plc.FLAG_UPDATE_CONGESTION = True
+        delta = abs(pred - actual)
+        mark = "ok" if delta < 1e-4 else "FAIL"
+        print(
+            f"  Test 5: mixed group trial scorer={pred:.6f} ref={actual:.6f} "
+            f"delta={delta:.2e} {mark}"
+        )
+        ok = ok and delta < 1e-4
+
+        scorer.commit_move_group(
+            hard_group,
+            hard_targets,
+            soft_group,
+            soft_targets,
+        )
+        cur[hard_group] = hard_targets
+        cur[n + soft_group] = soft_targets
+        actual = _exact_proxy(torch.from_numpy(cur.astype(np.float32)), bench, plc)
+        _fast_set_placement(plc, cur, bench)
+        plc.FLAG_UPDATE_DENSITY = True
+        plc.FLAG_UPDATE_CONGESTION = True
+        delta = abs(pred - actual)
+        mark = "ok" if delta < 1e-4 else "FAIL"
+        print(
+            f"  Test 6: mixed group commit scorer={pred:.6f} ref={actual:.6f} "
+            f"delta={delta:.2e} {mark}"
+        )
+        ok = ok and delta < 1e-4
     return ok
 
 

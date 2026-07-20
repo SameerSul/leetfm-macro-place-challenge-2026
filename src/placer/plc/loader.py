@@ -8,6 +8,17 @@ from macro_place.benchmark import Benchmark
 from utils.config import _log
 
 
+def _trace_benchmark_name(name: str, benchmark_dir: Optional[Path]) -> str:
+    """Return a stable design name for telemetry and calibration reports."""
+    raw = str(name)
+    if raw != "output_CT_Grouping" or benchmark_dir is None:
+        return raw
+    path = Path(benchmark_dir)
+    if path.name == "output_CT_Grouping" and path.parent.name == "netlist":
+        return path.parent.parent.name
+    return raw
+
+
 def _resolve_benchmark_dir(name: str, benchmark: Optional[Benchmark] = None) -> Optional[Path]:
     """Resolve the benchmark source directory for DREAMPlace/PlacementCost loading.
 

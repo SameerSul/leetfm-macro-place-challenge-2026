@@ -14,6 +14,7 @@ from placer.local_search.soft_hierarchy import (
     select_high_confidence_soft_bundles,
     soft_bundle_confidence,
 )
+from placer.local_search.clusters import classify_soft_role_evidence
 
 
 def test_path_soft_bundles_choose_useful_explicit_prefixes():
@@ -99,3 +100,21 @@ def test_connectivity_plus_owner_evidence_stays_medium_without_explicit_path():
 
     assert soft_bundle_confidence(linked.score) == "medium"
     assert select_high_confidence_soft_bundles((linked,)) == ()
+
+
+def test_flat_soft_role_confidence_requires_repeated_hard_affinity():
+    single_owner = classify_soft_role_evidence([(3, 1)])
+    repeated_owner = classify_soft_role_evidence([(3, 3)])
+    single_bridge = classify_soft_role_evidence([(3, 1), (4, 1)])
+    repeated_bridge = classify_soft_role_evidence([(3, 3), (4, 3)])
+
+    assert single_owner["role"] == "owned"
+    assert single_owner["confidence"] == "low"
+    assert repeated_owner["confidence"] == "medium"
+    assert single_bridge["role"] == "bridge"
+    assert single_bridge["confidence"] == "low"
+    assert repeated_bridge["confidence"] == "medium"
+    assert all(
+        row["score"] < 0.90
+        for row in (single_owner, repeated_owner, single_bridge, repeated_bridge)
+    )

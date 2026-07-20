@@ -11,17 +11,36 @@ from pathlib import Path
 DEFAULT_PATH = Path("ml_data/plateau_telemetry/plateau_telemetry.jsonl")
 
 
+def _quantile(values: list[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    position = max(0.0, min(1.0, float(fraction))) * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
 def _matches(row: dict, args) -> bool:
-    if args.run_id and str(row.get("run_id", "legacy")) != args.run_id:
+    if getattr(args, "run_id", None) and str(row.get("run_id", "legacy")) != args.run_id:
         return False
-    if args.revision and str(row.get("code_revision", "unknown")) != args.revision:
+    if (
+        getattr(args, "revision", None)
+        and str(row.get("code_revision", "unknown")) != args.revision
+    ):
         return False
-    if args.benchmark and str(row.get("benchmark", "")) not in args.benchmark:
+    fingerprint = getattr(args, "worktree_fingerprint", None)
+    if fingerprint and str(row.get("worktree_fingerprint", "legacy")) != fingerprint:
         return False
-    return row.get("event") == "hier_plateau_telemetry" and row.get("plateau_pass")
+    if getattr(args, "benchmark", None) and str(row.get("benchmark", "")) not in args.benchmark:
+        return False
+    return True
 
 
-def load_rows(paths: list[Path], args) -> list[dict]:
+def _load_event_rows(paths: list[Path], args, event: str) -> list[dict]:
     rows = []
     for path in paths:
         with path.open("r", encoding="utf-8") as stream:
@@ -30,9 +49,17 @@ def load_rows(paths: list[Path], args) -> list[dict]:
                     row = json.loads(line)
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"{path}:{line_number}: {exc}") from exc
-                if _matches(row, args):
+                if row.get("event") == event and _matches(row, args):
                     rows.append(row)
     return rows
+
+
+def load_rows(paths: list[Path], args) -> list[dict]:
+    return _load_event_rows(paths, args, "hier_plateau_telemetry")
+
+
+def load_stage_rows(paths: list[Path], args) -> list[dict]:
+    return _load_event_rows(paths, args, "hier_stage_timing")
 
 
 def aggregate(rows: list[dict], min_runs: int) -> list[dict]:
@@ -72,7 +99,7 @@ def aggregate(rows: list[dict], min_runs: int) -> list[dict]:
         )
         zero_accept = sum(int(item.get("accepts", 0)) == 0 for item in items)
         retained_gain_per_s = retained_gain / max(elapsed, 1.0e-12)
-        retained_gain_per_scored = retained_gain / max(int(scored), 1)
+        retained_gain_per_scored = retained_gain / scored if scored > 0 else None
         rollback_fraction = rollback_count / runs
         audit_rebuild_ratio = audit_rebuild_s / max(elapsed, 1.0e-12)
         retained_to_proposed_gain = (
@@ -109,7 +136,11 @@ def aggregate(rows: list[dict], min_runs: int) -> list[dict]:
     return sorted(
         output,
         key=lambda row: (
-            row["retained_gain_per_scored"],
+            (
+                float(row["retained_gain_per_scored"])
+                if row["retained_gain_per_scored"] is not None
+                else float("-inf")
+            ),
             row["gain_per_s"],
             row["proxy_gain"],
         ),
@@ -125,12 +156,182 @@ def print_table(rows: list[dict]) -> None:
     print(header)
     print("-" * len(header))
     for row in rows:
+        gain_per_scored = row["retained_gain_per_scored"]
+        gain_per_scored_text = (
+            f"{float(gain_per_scored):10.7f}" if gain_per_scored is not None else f"{'n/a':>10}"
+        )
         print(
             f"{row['pass'][:26]:26} {row['runs']:4d} {row['benchmarks']:7d} "
             f"{row['proxy_gain']:10.6f} {row['elapsed_s']:8.2f} {row['gain_per_s']:10.7f} "
-            f"{row['retained_gain_per_scored']:10.7f} {100.0 * row['rollback_fraction']:8.1f}% "
+            f"{gain_per_scored_text} {100.0 * row['rollback_fraction']:8.1f}% "
             f"{row['audit_rebuild_ratio']:9.7f} {100.0 * row['zero_gain_fraction']:6.1f}% "
             f"{row['recommendation']}"
+        )
+
+
+def aggregate_quotas(rows: list[dict], min_runs: int) -> list[dict]:
+    """Summarize exact-scored candidate use per pass and benchmark."""
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["plateau_pass"])].append(row)
+    output = []
+    for name, items in sorted(grouped.items()):
+        if len(items) < min_runs:
+            continue
+        by_benchmark: dict[str, dict] = defaultdict(
+            lambda: {"scored": 0, "elapsed_s": 0.0, "gain": 0.0, "exhausted": False}
+        )
+        limits = set()
+        for item in items:
+            benchmark = str(item.get("benchmark", ""))
+            summary = by_benchmark[benchmark]
+            summary["scored"] += int(item.get("scored", 0))
+            summary["elapsed_s"] += float(item.get("elapsed_s", 0.0))
+            summary["gain"] += float(item.get("retained_proxy_gain", item.get("proxy_gain", 0.0)))
+            summary["exhausted"] = bool(
+                summary["exhausted"] or item.get("exact_quota_exhausted", False)
+            )
+            limit = item.get("exact_quota_limit")
+            if limit is not None:
+                limits.add(int(limit))
+        scored = [int(item["scored"]) for item in by_benchmark.values()]
+        elapsed = [float(item["elapsed_s"]) for item in by_benchmark.values()]
+        configured_limit = next(iter(limits)) if len(limits) == 1 else None
+        output.append(
+            {
+                "pass": name,
+                "runs": len(items),
+                "benchmarks": len(by_benchmark),
+                "configured_limit": configured_limit,
+                "minimum_scored": min(scored, default=0),
+                "median_scored": _quantile(scored, 0.50),
+                "p90_scored": _quantile(scored, 0.90),
+                "maximum_scored": max(scored, default=0),
+                "total_scored": sum(scored),
+                "exhausted_benchmarks": sum(
+                    bool(item["exhausted"]) for item in by_benchmark.values()
+                ),
+                "p90_elapsed_s": _quantile(elapsed, 0.90),
+                "maximum_elapsed_s": max(elapsed, default=0.0),
+                "proxy_gain": sum(float(item["gain"]) for item in by_benchmark.values()),
+            }
+        )
+    return sorted(output, key=lambda row: (row["maximum_scored"], row["pass"]), reverse=True)
+
+
+def print_quota_table(rows: list[dict]) -> None:
+    header = (
+        f"{'pass':34} {'runs':>4} {'benches':>7} {'limit':>8} {'min':>8} "
+        f"{'median':>8} {'p90':>8} {'max':>8} {'exhaust':>8} {'p90 s':>8} {'max s':>8}"
+    )
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        limit = row["configured_limit"]
+        limit_text = str(limit) if limit is not None else "n/a"
+        print(
+            f"{row['pass'][:34]:34} {row['runs']:4d} {row['benchmarks']:7d} "
+            f"{limit_text:>8} {row['minimum_scored']:8d} "
+            f"{float(row['median_scored'] or 0.0):8.0f} "
+            f"{float(row['p90_scored'] or 0.0):8.0f} {row['maximum_scored']:8d} "
+            f"{row['exhausted_benchmarks']:8d} {float(row['p90_elapsed_s'] or 0.0):8.3f} "
+            f"{row['maximum_elapsed_s']:8.3f}"
+        )
+
+
+def aggregate_stages(rows: list[dict], min_runs: int) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row.get("stage", "unknown"))].append(row)
+    output = []
+    for name, items in sorted(grouped.items()):
+        runs = len(items)
+        if runs < min_runs:
+            continue
+        elapsed = [float(item.get("elapsed_s", 0.0)) for item in items]
+        output.append(
+            {
+                "stage": name,
+                "runs": runs,
+                "benchmarks": len({str(item.get("benchmark", "")) for item in items}),
+                "elapsed_s": sum(elapsed),
+                "average_s": sum(elapsed) / runs,
+                "maximum_s": max(elapsed, default=0.0),
+            }
+        )
+    return sorted(output, key=lambda row: row["elapsed_s"], reverse=True)
+
+
+def print_stage_table(rows: list[dict]) -> None:
+    header = (
+        f"{'stage':32} {'runs':>5} {'benches':>7} {'seconds':>10} {'average':>10} {'maximum':>10}"
+    )
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        print(
+            f"{row['stage'][:32]:32} {row['runs']:5d} {row['benchmarks']:7d} "
+            f"{row['elapsed_s']:10.2f} {row['average_s']:10.4f} {row['maximum_s']:10.4f}"
+        )
+
+
+_COVERAGE_PHASES = (
+    "hierarchy_setup_total",
+    "seed_portfolio_total",
+    "hierarchy_search_total",
+    "coldspot_total",
+    "post_coldspot_total",
+)
+
+
+def aggregate_coverage(rows: list[dict], min_runs: int) -> list[dict]:
+    """Summarize mutually exclusive placer phases against the public API boundary."""
+    by_run: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for row in rows:
+        key = (str(row.get("run_id", "legacy")), str(row.get("benchmark", "")))
+        by_run[key][str(row.get("stage", "unknown"))] += float(row.get("elapsed_s", 0.0))
+
+    by_benchmark: dict[str, list[dict[str, float]]] = defaultdict(list)
+    for (_run_id, benchmark), stages in by_run.items():
+        if "placer_api_total" not in stages or "hierarchy_floorplan_total" not in stages:
+            continue
+        by_benchmark[benchmark].append(stages)
+
+    output = []
+    for benchmark, items in sorted(by_benchmark.items()):
+        if len(items) < min_runs:
+            continue
+        api_s = sum(item["placer_api_total"] for item in items)
+        floorplan_s = sum(item["hierarchy_floorplan_total"] for item in items)
+        phase_s = sum(sum(item.get(phase, 0.0) for phase in _COVERAGE_PHASES) for item in items)
+        output.append(
+            {
+                "benchmark": benchmark,
+                "runs": len(items),
+                "placer_api_s": api_s,
+                "floorplan_s": floorplan_s,
+                "phase_s": phase_s,
+                "phase_coverage": phase_s / max(floorplan_s, 1.0e-12),
+                "floorplan_gap_s": floorplan_s - phase_s,
+                "api_boundary_s": api_s - floorplan_s,
+            }
+        )
+    return sorted(output, key=lambda row: row["placer_api_s"], reverse=True)
+
+
+def print_coverage_table(rows: list[dict]) -> None:
+    header = (
+        f"{'benchmark':20} {'runs':>5} {'API s':>10} {'floor s':>10} "
+        f"{'phases s':>10} {'covered':>9} {'floor gap':>10} {'API gap':>10}"
+    )
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        print(
+            f"{row['benchmark'][:20]:20} {row['runs']:5d} {row['placer_api_s']:10.3f} "
+            f"{row['floorplan_s']:10.3f} {row['phase_s']:10.3f} "
+            f"{100.0 * row['phase_coverage']:8.2f}% {row['floorplan_gap_s']:10.3f} "
+            f"{row['api_boundary_s']:10.3f}"
         )
 
 
@@ -139,13 +340,32 @@ def main() -> int:
     parser.add_argument("paths", nargs="*", type=Path, default=[DEFAULT_PATH])
     parser.add_argument("--run-id")
     parser.add_argument("--revision")
+    parser.add_argument("--worktree-fingerprint")
     parser.add_argument("--benchmark", action="append")
     parser.add_argument("--min-runs", type=int, default=1)
+    parser.add_argument("--stages", action="store_true")
+    parser.add_argument("--quotas", action="store_true")
+    parser.add_argument("--coverage", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    rows = aggregate(load_rows(args.paths, args), max(1, args.min_runs))
+    if sum(bool(value) for value in (args.stages, args.quotas, args.coverage)) > 1:
+        parser.error("--stages, --quotas, and --coverage are mutually exclusive")
+    if args.coverage:
+        rows = aggregate_coverage(load_stage_rows(args.paths, args), max(1, args.min_runs))
+    elif args.stages:
+        rows = aggregate_stages(load_stage_rows(args.paths, args), max(1, args.min_runs))
+    elif args.quotas:
+        rows = aggregate_quotas(load_rows(args.paths, args), max(1, args.min_runs))
+    else:
+        rows = aggregate(load_rows(args.paths, args), max(1, args.min_runs))
     if args.json:
         print(json.dumps(rows, indent=2, sort_keys=True))
+    elif args.coverage:
+        print_coverage_table(rows)
+    elif args.stages:
+        print_stage_table(rows)
+    elif args.quotas:
+        print_quota_table(rows)
     else:
         print_table(rows)
     return 0

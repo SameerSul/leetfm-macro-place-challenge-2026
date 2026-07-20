@@ -6,6 +6,306 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-07-19 — exact hierarchy-search scorer acceleration):** Swap
+> pair preparation now merges the two sorted incident-net CSR rows in one
+> compiled ragged-union kernel. The exact sparse congestion and density
+> reducers reuse scorer-owned marks, touched-cell arrays, changed-value arrays,
+> tail buffers, and smoothing prefixes across the thousands of 4/8/12-row
+> dispatches. The complete IBM sweep preserved the same **1,048,385 logical /
+> 1,066,186 physical / 79,466 avoided** swap counts and reduced attributed
+> region-swap time **98.74s -> 94.37s** (4.4%). Focused IBM04/12/18 region
+> times were 4.11s, 6.28s, and 8.03s; the mixed result is recorded without an
+> 8–15% claim.
+>
+> Soft relocation now keeps proposal cells as integer grid IDs through stable
+> deduplication and vectorized mask/bounds filtering. The exact dense scorer
+> grows reusable routing, bbox, wirelength, congestion, and density workspaces,
+> overwrites its disposable H/V grids with smoothed values, and fuses exact
+> congestion top-tail reduction into the compiled loop. Focused IBM04's two
+> region-soft rounds fell to **1.61s** from roughly 1.95–2.07s and IBM12 fell
+> **2.62s -> 2.38s**. The full sweep observed 80 stable-ID duplicate rejects.
+> Scalar/batched relocation parity is at most `4.44e-16`; HH/HS/SS and
+> sequential-commit oracles also pass.
+>
+> `uv run evaluate src/main.py --all` reproduced **AVG 1.1404**, **17/17
+> VALID**, zero overlaps, every per-design score, and all hierarchy audits in
+> **330.75s**. The placer API accounted for 317.63s and the exact-equivalent
+> full-run timing is treated as host variance, not an end-to-end improvement.
+> NG45 reproduced **AVG 0.7121**, 4/4 VALID, in **60.51s**. Synthetic reached
+> **AVG 1.4192**, 10/10 VALID, zero overlaps, and 10/10 truth-audit passes. All
+> **96** project tests pass.
+>
+> A conservative unchanged-cell congestion lower bound was correct but rejected
+> and removed: it rejected only 317 of 26,556 IBM10 soft-soft rows (1.2%) and
+> cost more than it saved. Cross-source speculative waves and net-optimal
+> prefix ranking were not promoted because sequential first-winner commits
+> invalidate dependent rows and no exact-safe workload reduction was
+> demonstrated. Production has no new lower-bound, speculative-wave, GPU, or
+> candidate-ordering path.
+>
+> Literature provenance, accurate publication metadata, and adoption status are
+> recorded in
+> [`REFERENCES.md`](REFERENCES.md#hierarchy-search-acceleration-literature),
+> entries 21–27. Results reported by those papers are not VivaPlace benchmark
+> results or forecasts.
+>
+> **Status (2026-07-19 — accepted priority sweep: seed repair, soft prefilter,
+> second swap prefix, role confidence, and complete attribution):** A mandatory
+> lower-proxy seed that fails exactly one hierarchy-contract component may now
+> be deterministically interpolated toward its passing reference. Legalized
+> trials bisect the pass boundary, but production exact-scores only repairs that
+> retain at least 95% of the source displacement. IBM09 retained 99.61% of its
+> constraint-graph candidate and improved `1.0122 -> 0.9978`; broader IBM03 and
+> IBM13 repairs were rejected by the same guard.
+>
+> Soft relocation now gathers/deduplicates eligible targets and applies the
+> unchanged exact wirelength threshold with one compiled batch. The IBM sweep
+> rejected **100,831** proposals before congestion/density scoring. Attributed
+> region, interleaved, plateau, and strong-soft phases fell respectively
+> **44.09 -> 34.97s**, **6.24 -> 4.93s**, **7.43 -> 5.87s**, and **23.41 ->
+> 18.18s** (20.7–22.3%). Scalar, batched, and committed wirelength deltas agree
+> to floating-point roundoff.
+>
+> Region swaps now score a second same-sized 4/8/12 stable prefix before the
+> untouched remainder. Candidate order, first-acceptable winner semantics, and
+> logical quotas are unchanged. The accepted full sweep used **1,048,385**
+> logical scores, **1,066,186** physical exact scores, and avoided **79,466**;
+> the trace-compatible region phase fell **104.04s -> 98.74s**. The logical
+> count differs from the prior reference only because IBM09 enters a better
+> seed basin.
+>
+> Soft role evidence now records repeated support, dominance/ambiguity, score,
+> confidence, and source. Flat owner/bridge roles remain active for individual
+> regions and contracts but are capped at medium/low confidence and cannot form
+> compound groups. Explicit slash-path bundles remain high confidence and take
+> precedence. The IBM cohort contained 0 high, 3,246 medium, and 1,938 low flat
+> roles; compound time fell **1.70s -> 0.16s** with no accepted compound moves.
+>
+> Outer orchestration now emits five mutually exclusive phases plus floorplan
+> and API totals. `scripts/analyze_plateau_telemetry.py --coverage` reconciles
+> at least 99.86% of every IBM API call. The full placer API used **297.33s**:
+> hierarchy search 202.38s, setup 37.35s, coldspot 27.22s, seed portfolio
+> 23.48s, and post-coldspot 6.46s. The evaluator command used **318.55s**, so
+> 21.22s is external load/final-score overhead.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/priority_full_all.jsonl uv run evaluate
+> src/main.py --all` produced **AVG 1.1404**, **17/17 VALID**, zero overlaps,
+> and all final hierarchy audits passing in **318.55s**. Sixteen scores match
+> the accepted reference and IBM09 carries the only proxy change. NG45 remained
+> **AVG 0.7121**, 4/4 VALID, zero overlaps, all audits passed, in **64.80s**;
+> explicit-tag verification passed. Synthetic validation reached **AVG
+> 1.4192**, 10/10 VALID, zero overlaps, and 10/10 truth-audit passes. All **94**
+> project tests passed.
+>
+> An exact sparse touched-cell reducer for ordinary soft moves was implemented
+> and verified to roughly `1e-15`, but rejected and removed after slowing or
+> regressing focused IBM12/18 runs. Sparse tails remain accepted for swaps,
+> where four endpoint rectangles and bounded route changes amortize the setup.
+>
+> **Status (2026-07-19 — accepted global swap topology and sparse exact tails):**
+> Region-swap batches no longer build and flatten one routing structure for
+> every endpoint pair. A compiled kernel consumes the scorer's global net/pin
+> arrays, packs only the selected pin cells per old/new state, and preserves the
+> evaluator's two-pin, three-pin, then high-fanout accumulation order.
+> Congestion reduction recomputes only route-bbox H columns/V rows and changed
+> hard-blockage cells; density reduction applies only the four changed
+> occupancy rectangles. Each exact reducer merges changed values with the
+> sorted unchanged baseline tail instead of materializing a full candidate
+> congestion-value or density-result matrix.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/global_sparse_all.jsonl uv run evaluate
+> src/main.py --all` produced **AVG 1.1412**, **17/17 VALID**, zero overlaps,
+> and all final hierarchy audits passing in **351.48s**. Every per-design score,
+> accepted move, rollback decision, physical exact count, and avoided suffix
+> count is unchanged. Attributed region-swap time fell **146.98s -> 104.04s**
+> (42.94s, 29.2%), while complete runtime fell **416.87s -> 351.48s** (65.39s,
+> 15.7%). Physical/avoided region work remained **1,077,431 / 66,703**.
+>
+> Focused profiled phases improved IBM04 `7.178s -> 4.527s`, IBM12 `7.503s ->
+> 6.811s`, and IBM18 `10.988s -> 9.008s`; all reproduced their exact placements
+> and work counts. The direct batch/scalar verification covered hard-hard,
+> hard-soft, and soft-soft swaps with maximum score delta `1.55e-15` and exact
+> scorer-state parity. All **89** project tests passed. NG45 remained **AVG
+> 0.7121**, 4/4 VALID, zero overlaps, all hierarchy audits passed, while runtime
+> fell **79.43s -> 65.27s**; physical/avoided swap work was unchanged at
+> 207,567 / 10,068. A whole-net baseline pin-cell cache was rejected after
+> increasing IBM12 region time to 10.26s; packing only selected pins inside the
+> compiled loop is the accepted form.
+>
+> **Status (2026-07-19 — accepted in-place congestion tails and swap-geometry reuse):**
+> Batched relocation/swap scoring now consumes its disposable float64
+> congestion grids with in-place row partitioning instead of allocating a
+> second full partition result. Region swaps also build their pairwise hard
+> center-separation matrices once per complete schedule and reuse them across
+> congestion/density fields, adaptive rounds, and graph fallback. Standalone
+> callers retain the previous local-computation fallback.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/congestion_inplace_geometry_ibm_all.jsonl uv
+> run evaluate src/main.py --all` produced **AVG 1.1412**, **17/17 VALID**,
+> zero overlaps, and all final hierarchy audits passing in **416.87s**. Every
+> per-design score, swap accept, rollback decision, and exact-score count is
+> unchanged. Physical/avoided region work remained **1,077,431 / 66,703**,
+> while attributed region-swap time fell **148.29s -> 146.98s** (1.32s,
+> 0.9%). Complete runtime was flat versus 416.74s because final evaluator
+> scoring and normal host variance dominate this small local gain.
+>
+> NG45 remained **AVG 0.7121**, 4/4 VALID, zero overlaps, and all hierarchy
+> audits passed in **79.43s**. Focused IBM12/IBM18 runs reproduced their exact
+> placements and work counts; the region phases were 8.675s and 12.412s.
+> Batch-tail tests cover tiny, ordinary, and 4,410-cell tie-heavy grids with
+> exact parity, and a monkeypatched schedule test proves the cached geometry is
+> reused. All **89** project tests passed. The independent synthetic suite was
+> not rerun for this allocation-only, exact-parity change; its preceding
+> accepted reference remains AVG 1.4193, 10/10 valid/truth-passing.
+>
+> **Status (2026-07-19 — accepted ranked-legality and soft-prefix refinement):**
+> Region swaps now rank and truncate hard-hard/hard-soft candidates before
+> evaluating their independent legality matrices, so only the 16/48 candidates
+> capable of reaching exact scoring pay that cost. Disabled graph-mask/delta
+> paths skip zero-valued mask and penalty construction. Winner-rank telemetry
+> calibrated the stable exact prefixes to 4 hard-hard, 8 hard-soft, and 12
+> soft-soft candidates; the untouched remainder and logical quota semantics are
+> unchanged.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/region_swap_ranked_legal_ibm_all.jsonl uv run
+> evaluate src/main.py --all` produced **AVG 1.1412**, **17/17 VALID**, zero
+> overlaps, and all final hierarchy audits passing in **416.74s**. Every
+> per-design score, accepted swap count, and rollback decision is identical to
+> the preceding accepted sweep. Logical region work remained 1,049,095 scores;
+> physical work fell `1,085,314 -> 1,077,431`, avoided suffix work increased
+> `58,820 -> 66,703`, and attributed region-swap time fell **150.68s ->
+> 148.29s**. The complete evaluator runtime was effectively flat versus
+> 416.10s because final exact reporting dominates run-to-run noise.
+>
+> NG45 remained **AVG 0.7121**, 4/4 VALID, zero overlaps, and all audits passed
+> in **81.42s**, with 10,068 swap evaluations avoided and explicit-tag
+> verification passing. Synthetic validation reached **AVG 1.4193**, 10/10
+> VALID, zero overlaps, and 10/10 truth-audit passes, with 2,578 evaluations
+> avoided. All **86** project tests passed, including exact-quota and CPU/GPU
+> legality parity coverage.
+>
+> **Status (2026-07-19 — accepted region-swap prefixes and late-lane stop):**
+> Region swaps retain their exact stable candidate order but first score a
+> four-candidate hard prefix or eight-candidate soft-involving prefix. When the
+> prefix contains the same first acceptable move, the untouched suffix cannot
+> affect the commit and is skipped; otherwise the suffix is exact-scored in its
+> original order. Logical quota accounting is unchanged, while telemetry now
+> distinguishes physical exact work from avoided suffix work. Strong and
+> medium late-soft repair record each congestion/density lane, audit every
+> changed lane, and stop all remaining rounds after audit restore or retained
+> gain `<=0.00005`.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/region_swap_late_lanes_ibm_all.jsonl uv run
+> evaluate src/main.py --all` produced **AVG 1.1412**, **17/17 VALID**, zero
+> overlaps, and all final hierarchy audits passing in **416.10s**. Every final
+> score is bit-identical to the preceding 433.09s deepest-child sweep and the
+> 398.57s quota reference. Region swaps avoided **58,820** exact evaluations
+> versus full per-source batches (`1,144,134 -> 1,085,314` physical scores) and
+> reduced attributed swap time **159.91s -> 150.68s**. The late-soft trace ran
+> 47 of 102 scheduled lanes; IBM12 correctly retained all six productive lanes.
+>
+> NG45 remained **AVG 0.7121**, 4/4 VALID, zero overlaps, and all audits passed
+> in **84.43s**; 10,061 swap evaluations were avoided and explicit-tag
+> verification passed. Synthetic validation reached **AVG 1.4192**, 10/10
+> VALID, zero overlaps, and 10/10 truth-audit passes; 2,418 swap evaluations
+> were avoided. Syn05 exercised the new lane checkpoint by restoring a
+> bridge-soft-distance violation immediately.
+>
+> Rejected alongside the accepted change: reusable full-grid scorer workspaces
+> did not improve an isolated swap benchmark; a fused density-grid/reduction
+> kernel was 8.9% slower; and first-accept source probes at 128, 256, and 384
+> regressed IBM12 to 1.3090 or 1.3073 because useful second-round congestion
+> moves occur deep in the ordered lane. Those experiments were fully removed.
+>
+> **Status (2026-07-19 — accepted deepest-child bounded relief):**
+> After whole-child search, every deepest retained child now receives an
+> immutable box around its current footprint plus a calibrated margin. The
+> margin blends normalized congestion heat, density heat, and inter-child graph
+> tension; hot boxes may expand toward cold connected components favored by
+> graph corridors, then are clipped to the retained parent. Individual hard and
+> owned-soft relocations and same-child hard swaps stay inside the member-inset
+> boxes. Graph tension ranks children and neighboring-child centroids guide
+> relocation targets. The full active/child/parent contract and exact proxy
+> remain the commit gates.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/deep_cluster_final_ibm_all.jsonl uv run
+> evaluate src/main.py --all` produced **AVG 1.1412**, **17/17 VALID**, zero
+> overlaps, and all final hierarchy audits passing in **433.09s**. The new
+> 48-score pass participated on 11 designs, exact-scored **528** states in
+> **2.93s**, retained none at the accepted `0.0005` gain floor, and reproduced
+> every preceding score exactly. An exploratory `0.0001` floor retained six
+> locally improving moves but regressed final AVG to **1.1453** after activating
+> tighter downstream multilevel limits; ibm18 alone regressed
+> `1.3773 -> 1.4361`. Focused reruns of ibm03/11/14/15/18 verified that the
+> accepted floor restores each reference trajectory exactly.
+>
+> NG45 remains **AVG 0.7121**, 4/4 VALID, zero overlaps; the lower-floor sweep
+> retained no deep moves there, so the stricter accepted floor is score-
+> equivalent. The independent synthetic sweep completed at **AVG 1.4193**,
+> 10/10 VALID, zero overlaps, and 10/10 truth-audit passes; the deep pass
+> exercised inferred children on the eligible synthetic designs without
+> accepting a move below its calibrated floor.
+>
+> **Status (2026-07-19 — accepted spatial/structural child inference):**
+> The non-recursive fallback child level now requires physical as well as
+> topological evidence. Low-fanout hard edges and shared-soft support
+> define the only eligible relations; initial hard/soft distance, a local
+> macro-area density estimate, and placed low-fanout wire demand reinforce
+> those relations. Geometry cannot create an edge. A fallback split must keep
+> raw structural cut ratio at or below `0.20`, improve within-child compactness
+> by at least `0.10`, and reach combined confidence `0.54`. Explicit path
+> ancestors and retained original connectivity parents remain authoritative.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/hier_spatial_ibm_all.jsonl uv run evaluate
+> src/main.py --all` produced **AVG 1.1412**, **17/17 VALID**, zero overlaps,
+> and all final hierarchy audits passing in **430.06s**. Every score is
+> bit-identical to the preceding accepted placement. The new fallback inferred
+> 23 parents / 46 children on 10 designs; including one retained connectivity
+> parent, the model exposed 24 parents / 54 children. The bounded pass saw 38
+> eligible children, exact-scored 24 complete states, retained none, and did
+> not perturb the established IBM trajectory. Mean per-design spatial
+> confidence among participating designs was `0.6042`.
+>
+> NG45 remained **AVG 0.7121**, 4/4 VALID, zero overlaps, and all audits passed
+> in **80.65s**. Explicit path hierarchy bypassed spatial fallback, and the
+> accepted `ariane136` child relocation remained intact. The synthetic suite
+> completed at **AVG 1.4195**, 10/10 VALID, zero overlaps, and 10/10 independent
+> truth-audit passes. All **81** project tests pass.
+>
+> **Status (2026-07-18 — accepted one-level parent/child hierarchy):**
+> `HierarchyModel` now retains exactly one non-recursive level beside the active
+> DREAMPlace partition. Explicit path clusters keep their nearest useful
+> ancestor; existing split connectivity leaves keep their original component;
+> otherwise an eligible active cluster receives one strict graph bisection.
+> The active placement groups remain unchanged.
+>
+> After active-cluster macro relief, the new bounded pass rigidly relocates a
+> child or exchanges sibling slots inside the parent region. Owned movable soft
+> macros co-move; blocked states may compact and legalize only the affected
+> child set. Active, child, and parent contracts run before exact mixed
+> hard/soft scoring. Multilevel limits become authoritative for later passes and
+> final rollback only after a child state is retained. The pass shares a
+> 24-state exact quota, a 4s guard, and a `0.0001` minimum local gain.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/subcluster_all_threshold.jsonl uv run evaluate
+> src/main.py --all` produced **AVG 1.1412**, **17/17 VALID**, zero overlaps,
+> and all final audits passing in **423.87s**. Every per-design score is
+> bit-identical to the accepted 398.57s reference. The pass formed 418
+> candidates, localized 150 blocked states, exact-scored 55, retained none, and
+> used 2.26s total; no 24-state quota exhausted.
+>
+> NG45 improved **AVG 0.7123 -> 0.7121** in **76.85s**, 4/4 VALID with zero
+> overlaps and all multilevel audits passing. `ariane136` retained one localized
+> child relocation (`0.7298 -> 0.7291`; local exact gain `0.00018899`). The
+> earlier `0.00005` gain floor was rejected after it accepted an ibm08 local
+> gain of only `0.00006816`, activated the tighter downstream contract, and
+> regressed the final design by `0.005303`; `0.0001` restores ibm08 exactly.
+>
+> The final synthetic sweep reached **AVG 1.4204**, 10/10 VALID, zero overlaps,
+> and 10/10 independent truth audits. All 77 project tests, source compilation,
+> the mixed hard/soft incremental-score verifier, and the NG45 path-tag verifier
+> pass.
+>
 > **Status (2026-07-16 — unused placer code removed):**
 > Removed the unused CUDA relocation-delta scorer, CUDA candidate-ranking and
 > swap pre-score paths, their runtime constants, the disabled post-swap
@@ -19,6 +319,17 @@ Target: beat RePlAce avg of 1.4578.
 > and all hierarchy audits passing in **492.98s**. `uv run pytest test/` passed
 > **52 tests**; source bytecode compilation, Ruff unused-import/variable checks,
 > Vulture (high-confidence), and `git diff --check` also passed.
+
+> **[REJECTED] (2026-07-17 - SYS_DETRIMENT checkpoint A/B):** A rollback-aware
+> local-search candidate kept vector-valid intermediate states while deferring
+> scalar hard-quality rollback to finalization, and moved the swap gate to the
+> completed sub-round boundary. The full sweep remained **17/17 VALID** with
+> zero overlaps, but produced **AVG 1.1564** in **514.27s**, versus the accepted
+> `AVG 1.1205 / 554.54s`. A broader vector-deferred variant reached
+> `AVG 1.1609 / 493.93s`; both variants are rejected for production because
+> the proxy regression exceeds the runtime saving. The retained telemetry
+> fields and analyzer correction are still useful independently of this search
+> schedule.
 >
 > **Prior cleanup context:**
 > The controlled full-suite sweep rejected and removed the CUDA exact-score
@@ -2813,3 +3124,29 @@ SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
 24. [~] **Fix 3 "DP as PRIMARY baseline_pos"** -- TESTED AND REJECTED 2026-05-21. Phase 1/2/3 cong-grad from DP placement converges to a different (worse) basin on ibm06 (+0.0105 regression on the 1.6684 win).
 25. [~] **Fix 3 variant: Phase 6 additive cong-grad from DP placement** -- TESTED AND REJECTED 2026-05-21. On ibm08, the 4-iter loop displaced budget that previously reached noise=6% (the 1.5251 winner), causing +0.017 regression. Marginal wins (ibm08 found 1.5419 on Phase 6 iter=1) don't outweigh budget displacement costs.
 26. [~] **DP-first ordering on Improvement #1** -- TESTED AND REJECTED 2026-05-21. Flipping to score DP before baseline on large benchmarks lets us return DP when baseline scoring would exceed threshold. But on ibm16, DP=1.5751 loses to baseline=1.5324 (+0.043 regression). Trusting DP unconditionally when baseline can't be scored is strictly worse than skipping DP. Baseline-first kept.
+
+27. [x] **Benchmark-size-aware late soft quotas** -- ACCEPTED 2026-07-18. Late soft-relocation candidate quotas scale to 50% for smaller designs and retain full quotas for larger designs. Full sweep: `AVG 1.1489`, `17/17 VALID`, `0 overlaps`, `470.43s`; restored no-quota run: `AVG 1.1488`, `581.20s`. The small score difference is within stochastic run variation; the runtime reduction is retained.
+28. [~] **Exact-scored seed portfolio cap** -- TESTED AND REJECTED 2026-07-18. Limiting non-mandatory candidates to the top four cheap hierarchy prescores produced `AVG 1.1500` and `708.83s` with all placements valid, versus the restored baseline; removed.
+29. [~] **Lower coldspot exact-gain threshold** -- TESTED AND REJECTED 2026-07-18. Lowering `HIER_COLDSPOT_MIN_GAIN` from `0.0001` to `0.00005` preserved `AVG 1.1489` and validity but increased runtime from `470.43s` to `538.96s` without additional accepted coldspot improvements; removed.
+30. [x] **Hot-component coldspot prioritization** -- ACCEPTED 2026-07-18. Limiting each coldspot round to its hottest opportunity-ranked component improved ibm10 `1.2067 -> 1.2040` and ibm12 `1.3076 -> 1.3060`. Full sweep: `AVG 1.1487`, `17/17 VALID`, `0 overlaps`, `433.42s` versus `AVG 1.1489` and `482.65s`.
+31. [~] **Adaptive region-swap neighbor quotas** -- TESTED AND REJECTED 2026-07-18. Scaling hard/soft swap counts below the production `16/48` using the existing 1200-macro reference and 50% floor produced `AVG 1.1489`, `17/17 VALID`, `0 overlaps`, `447.56s`, versus the accepted `AVG 1.1487`, `433.42s`; removed. The restored baseline reproduced `AVG 1.1487`.
+32. [x] **Incremental scorer pair-topology cache** -- ACCEPTED 2026-07-18. Repeated batched swap evaluations reuse bounded static route-topology packing without changing exact scores or acceptance decisions. Full sweep: `AVG 1.1487`, `17/17 VALID`, `0 overlaps`, `431.14s` versus `433.42s`.
+33. [x] **Selective fallback congestion expansion** -- ACCEPTED 2026-07-18. Fallback region widening now skips hot clusters whose adjacent fallback sides are not colder than the cluster, while component-guided expansion remains active. Full sweep reproduced `AVG 1.1487`, `17/17 VALID`, `0 overlaps`, and reduced evaluator-reported runtime to `409.72s` from `431.14s`.
+34. [x] **Legalized hierarchy-contract reference + structured calibration telemetry** -- ACCEPTED 2026-07-18. The immutable seed prefilter now legalizes `initial.plc` first, builds limits from that placement, and exact-scores the identical legalized coordinates as the ordinary initial candidate. Exact-scored seeds and the final placement emit structured vectors, limits, signed margins, violations, coverage, and provenance. The corrected-reference control improved to `AVG 1.1468`, `17/17 VALID`, `0 overlaps`, `404.09s`; all 17 final contract events passed.
+35. [x] **Dirty-worktree attribution and retained-yield analyzer fixes** -- ACCEPTED 2026-07-18. Schema-v2 telemetry now records a scoped dirty-worktree fingerprint in addition to `HEAD`, while the analyzer filters on that fingerprint, aggregates stage timings, and reports unscored pass efficiency as `n/a` instead of infinity. Retained/proposed rollback accounting is covered by forced-rollback tests; the change does not affect candidate ordering.
+36. [~] **Remove compound related-soft relocation** -- TESTED AND REJECTED 2026-07-18. Clean full-suite control and off runs both rounded to `AVG 1.1468`; off reduced runtime from `404.09s` to `397.43s` but regressed ibm12 `1.3060 -> 1.3065` and ibm16 `1.1637 -> 1.1641`. The bounded production pass remains enabled.
+37. [x] **Hard-relocation hierarchy containment prefilter** -- ACCEPTED 2026-07-18. Region hard-relocation candidates that already exceed the selected seed's inexpensive hard-containment limit are rejected before exact batch scoring; the complete six-component pass audit remains authoritative. Focused results improved ibm10 `1.2040 -> 1.1348`, ibm11 `1.0265 -> 1.0122`, and ibm17 `1.3884 -> 1.3804`. The full sweep reached `AVG 1.1412`, `17/17 VALID`, `0 overlaps`, all final audits passed, in `404.01s`, versus the `AVG 1.1468 / 404.09s` control. Telemetry recorded 654 prefilter rejections, 18,637 exact-scored relocation candidates, and zero relocation rollbacks across 34 pass records.
+38. [x] **NG45 legalized-reference/prefilter validation** -- ACCEPTED 2026-07-18. The same production revision completed the four commercial designs at `AVG 0.7123`, `4/4 VALID`, `0 overlaps`, all final contract audits passed, in `77.84s` (ariane133 `0.6839`, ariane136 `0.7298`, mempool_tile `0.7563`, nvdla `0.6790`). Structured telemetry recorded four passing final contract events, 85 hard-relocation prefilter rejections, 929 exact-scored relocation candidates, and no relocation rollback across eight pass records. The prior reference was `AVG 0.7252 / 232.41s`.
+39. [x] **Hierarchy-contract calibration and synthetic truth audit** -- ACCEPTED 2026-07-18. Added an offline component-headroom/slack-replay analyzer, stable NG45 telemetry names, and generator-truth hierarchy audits. All 31 IBM/NG45/synthetic inferred-contract finals pass the retained production profile; minimum component margins range from `0.00124` (bridge-soft distance, `ibm08`) to `0.00506` (owned-soft distance, `ibm03`). Tightening relative slack `0.15 -> 0.10` invalidates the accepted `ibm18` final and selected `ibm07` seed. Reducing every absolute allowance by 20% invalidates the accepted `ibm08`/`ibm11` finals and selected NG45 `nvdla` seed, so no production slack changed. The full synthetic suite was 10/10 valid with zero overlaps and nine truth-contract passes; `syn03_sram` fails truth worst spread/impurity because inference merges four groups into one (purity `0.375`, pair precision `0.271`, recall `1.000`). A freshly attributed NG45 rerun preserved every score at `AVG 0.7123`, 4/4 valid, zero overlaps, all audits passed, in `77.32s`.
+40. [x] **Deterministic exact-score work quotas** -- ACCEPTED 2026-07-18. Relocation, compound-relocation, and regional-swap kernels now stop before scoring beyond a deterministic per-pass quota; repeated region rounds accumulate against one limit, and hard-hard/hard-soft/soft-soft swaps share their 72,000-evaluation allowance. Telemetry records the limit, usage before/after, and exhaustion, while `scripts/analyze_plateau_telemetry.py --quotas` reports cohort distributions. Production ceilings are hard 2,600, soft 24,000, interleaved 4,096, swaps 72,000, graph fallback 100, plateau first/post 5,000/7,000, compound 60, and strong/medium 40,000/2,048. The IBM sweep preserved every accepted per-design score at `AVG 1.1412`, 17/17 valid, zero overlaps, all audits passed, in `398.57s` versus 404.01s. The NG45 sweep likewise preserved `AVG 0.7123`, 4/4 valid, in `75.90s`. An aggressive binding profile improved ibm10 `1.1348 -> 1.0990` but regressed ibm11 `1.0122 -> 1.0436`, so measured-max-plus-headroom ceilings remain production.
+41. [x] **Single-component hierarchy inference refinement** -- ACCEPTED 2026-07-18. Nearly all-covering flat hard components now use cosine-connected low-fanout hard-to-soft affinity, merge tiny fragments into their strongest positive-affinity group, and fall back to a strict partial hard-graph cut when affinity is inconclusive. Provenance remains inferred; multi-component bridge evidence and explicit NG45 path tags are unchanged. Legal raw seeds can anchor one immutable reference to avoid double slack, while illegal raw seeds use grouped DREAMPlace so random geometry cannot trap the portfolio. Full per-candidate vector guards apply only at 64 hard macros or fewer; larger designs retain pass checkpoints and final rollback. The synthetic sweep improved `AVG 1.4262 -> 1.4206`, completed 10/10 VALID with zero overlaps and 10/10 independent truth passes in 338.6s. `syn03_sram` improved `4.3964 -> 4.3257` and its inferred four groups now match truth exactly (purity/precision/recall `1.0`); `syn04_dense` also recovered 6/6 exactly. The change is structurally dormant on audited multi-component IBM graphs, and ibm10 reproduced `1.1348` VALID in two focused repeats (25.13s and 26.57s). The full IBM sweep then reproduced all 17 preceding accepted scores bit-for-bit at `AVG 1.1412`, 17/17 valid, zero overlaps, and all audits passing in 413.49s, versus the same placements in the 398.57s quota reference. This work also initialized deadline-skipped swap and strong-soft scheduler reports, fixing two latent `UnboundLocalError` paths exposed by synthetic validation.
+42. [x] **One-level parent/child hierarchy search** -- ACCEPTED 2026-07-18. The active partition now retains exactly one parent layer from explicit path ancestry, an original split component, or a single strict graph bisection. A 24-score pass relocates children or swaps sibling slots inside the parent, carries owned softs, and can legalize only affected children. Multilevel contracts activate downstream only after a retained move. The final IBM sweep reproduced every score at `AVG 1.1412`, 17/17 valid, zero overlaps, and all audits passing in 423.87s; 55 complete states were exact-scored in 2.26s. NG45 improved `AVG 0.7123 -> 0.7121` through one retained `ariane136` child move, with 4/4 valid in 76.85s. Synthetic validation reached `AVG 1.4204`, 10/10 valid, zero overlaps, and 10/10 truth passes. A 0.00005 gain-floor trial was rejected after a tiny ibm08 local win caused a 0.005303 final regression; the accepted 0.0001 floor restores the reference exactly.
+43. [x] **Spatial/structural one-level fallback inference** -- ACCEPTED 2026-07-19. Topology-only fallback bisection now uses direct low-fanout hard edges and shared-soft support as mandatory structure, then reinforces those relations with initial hard/soft proximity, local macro-area density, and placed low-fanout wire demand. Geometry cannot create an edge, and missing physical evidence declines fallback inference instead of reverting to topology alone. Raw cut `<=0.20`, compactness gain `>=0.10`, and combined confidence `>=0.54` gate the single non-recursive split; explicit path and retained connectivity parents still take precedence. The IBM sweep inferred 23 spatial parents / 46 children on ten designs, saw 38 eligible children, exact-scored 24 states, retained none, and reproduced every accepted score at `AVG 1.1412`, 17/17 valid, zero overlaps, all audits passed, in 430.06s. NG45 remained `AVG 0.7121`, 4/4 valid, zero overlaps, in 80.65s with explicit hierarchy precedence and the accepted `ariane136` child move intact. Synthetic validation reached `AVG 1.4195`, 10/10 valid, zero overlaps, and 10/10 truth passes; all 81 project tests passed.
+44. [x] **Deepest-child graph/field bounded relief** -- ACCEPTED 2026-07-19. Each deepest retained child now gets one immutable footprint-plus-margin box after whole-child search. Congestion/density heat and inter-child graph tension calibrate per-child room; cold connected components and graph corridors direct asymmetric expansion before parent clipping. Individual hard/owned-soft relocations and same-child hard swaps stay inside their member-inset boxes, while graph tension and neighbor centroids guide priority and targets. The pass has a 48-score ceiling, 3s guard, full multilevel pre-commit contract, and accepted 0.0005 local-gain floor. The IBM sweep exact-scored 528 states in 2.93s over 11 designs, retained none, and reproduced every score at `AVG 1.1412`, 17/17 valid, zero overlaps, all audits passed, in 433.09s. The rejected 0.0001 trial retained six local moves but regressed final AVG to 1.1453 after tighter downstream contracts displaced larger later gains; focused ibm03/11/14/15/18 reruns restored every reference score at the accepted floor. Synthetic validation reached `AVG 1.4193`, 10/10 valid, zero overlaps, and 10/10 truth-audit passes.
+45. [x] **Stable-prefix region swaps and audited late-lane stopping** -- ACCEPTED 2026-07-19. Hard-hard swap sources exact-score four stable candidates first; hard-soft and soft-soft sources exact-score eight. A prefix winner skips only the untouched suffix, while a miss scores the complete remainder in the original order. Telemetry separates logical quota usage, physical exact work, and avoided suffixes. Strong/medium soft repair now audits every changed lane, records proposed/retained gain per congestion/density lane, and stops the remaining pass on audit restore or retained gain `<=0.00005`. The IBM sweep preserved all 17 exact scores at `AVG 1.1412`, 17/17 valid, zero overlaps, and all audits passed in `416.10s`; 58,820 exact swap evaluations were avoided and attributed swap time fell `159.91s -> 150.68s`. NG45 remained `AVG 0.7121`, 4/4 valid, in 84.43s with 10,061 evaluations avoided and explicit tags passing. Synthetic reached `AVG 1.4192`, 10/10 valid, zero overlaps, and 10/10 truth passes. Reusable full-grid workspaces, a fused density reducer, and 128/256/384-source late-lane probes were rejected; the probes regressed IBM12 because profitable moves occur past source 384.
+46. [x] **Ranked-only swap legality and calibrated soft-soft prefix** -- ACCEPTED 2026-07-19. Hard-hard and hard-soft sources now rank/truncate to the 16/48 exact-candidate windows before constructing their independent overlap-legality matrices; disabled graph-mask/delta paths skip zero-valued arrays. Accepted-rank telemetry retained prefix 4 for hard-hard and 8 for hard-soft while raising only soft-soft to 12. Candidate order, complete suffix fallback, and logical quota accounting are unchanged. The IBM sweep reproduced every accepted score and audit decision at `AVG 1.1412`, 17/17 valid, zero overlaps, in `416.74s`; physical exact work fell `1,085,314 -> 1,077,431`, avoided suffixes rose `58,820 -> 66,703`, and attributed region time fell `150.68s -> 148.29s`. NG45 remained `AVG 0.7121`, 4/4 valid, in 81.42s with explicit tags passing. Synthetic reached `AVG 1.4193`, 10/10 valid, zero overlaps, and 10/10 truth passes; all 86 project tests passed.
+47. [x] **In-place congestion-tail reduction and schedule-scoped hard geometry** -- ACCEPTED 2026-07-19. Disposable float64 congestion batches now use in-place row partitioning, avoiding the second full-grid partition allocation. One immutable pair of hard separation matrices is computed for the complete region-swap schedule and reused by hard-hard/hard-soft legality across every field, adaptive round, and graph fallback. Exact reducer parity holds for tiny, ordinary, and 4,410-cell tie-heavy grids; cache reuse has a fail-on-recompute test. The IBM sweep reproduced every score, accept, audit decision, and physical/avoided count at `AVG 1.1412`, 17/17 valid, zero overlaps, in `416.87s`; attributed region time fell `148.29s -> 146.98s`. NG45 remained `AVG 0.7121`, 4/4 valid, in 79.43s; all 89 project tests passed.
+48. [x] **Global swap topology and sparse exact tails** -- ACCEPTED 2026-07-19. Batched hard-hard, hard-soft, and soft-soft swaps consume global net/pin topology directly, pack selected pin cells inside the compiled old/new loop, and preserve evaluator route order. Exact congestion merges changed route strips/blockage cells with the sorted unchanged baseline; exact density does the same for four rectangle deltas. Pair-specific routing builds/flattening and full congestion-value/density-result matrices are removed. The IBM sweep preserved every score, accept, rollback, and physical/avoided count at `AVG 1.1412`, 17/17 valid, zero overlaps, all audits passed, while attributed region time fell `146.98s -> 104.04s` and total runtime fell `416.87s -> 351.48s`. NG45 preserved `AVG 0.7121`, 4/4 valid, in 65.27s. All 89 tests and direct HH/HS/SS scalar-parity probes passed; a slower whole-net pin-cell cache variant was removed.
+49. [x] **Commit-scoped exact-tail baseline cache** -- ACCEPTED 2026-07-19. Region-swap congestion values/stable descending order and density occupancy/order/nonzero/sum now persist across rejected batches and rebuild only after a hard, soft, swap, or compound commit. The IBM sweep preserved every score, accept, rollback, and the exact 1,077,431 physical / 66,703 avoided counts at `AVG 1.1412`, 17/17 valid, zero overlaps, and all audits passed; attributed region time fell `104.04s -> 102.68s`. Focused region times improved IBM04 `4.527s -> 4.183s`, IBM12 `6.811s -> 6.178s`, and IBM18 `9.008s -> 8.508s`. The complete verification sweep took 371.82s under broader run/compile variance, so only the attributable phase reduction is accepted. NG45 preserved `AVG 0.7121`, 4/4 valid, with region time `15.406s -> 14.616s` (67.27s total); explicit tags passed. All 90 tests, including direct cache reuse/invalidation coverage, plus HH/HS/SS scalar parity and sequential commit parity passed. A fused single-candidate hard-blockage scratch was removed after regressing IBM04/12 to 4.220s/6.386s despite IBM18 reaching 8.428s. Candidate-row Numba parallelism was also removed: IBM18 hit the 20s phase guard after only 32,498 candidates and worsened its final proxy to 1.4038, versus the accepted serial path's 69,152 candidates in 8.508s and proxy 1.3773.
+50. [x] **Priority sweep: contract repair, batched soft prefilter, second swap prefix, role confidence, and API attribution** -- ACCEPTED 2026-07-19. A one-component seed repair with a 95% source-retention guard improved IBM09 `1.0122 -> 0.9978`; exact batched soft wirelength filtering rejected 100,831 proposals and reduced the main soft phases by 20.7–22.3%; a second stable swap prefix raised avoided exact work to 79,466 and reduced the trace-compatible region phase `104.04s -> 98.74s`; flat role evidence is medium/low and no longer forms compounds; and five exclusive phases reconcile at least 99.86% of every placer API call. The full IBM sweep reached `AVG 1.1404`, 17/17 valid, zero overlaps, all audits passing, in 318.55s. NG45 preserved `AVG 0.7121` in 64.80s, synthetic reached `AVG 1.4192` with 10/10 truth passes, and all 94 tests passed. A parity-correct sparse touched-cell reducer for ordinary soft moves was rejected and removed after focused runtime/quality regressions.
+51. [x] **Compiled swap pair unions, reusable exact-reducer scratch, and dense soft workspace fusion** -- ACCEPTED 2026-07-19. Sorted incident-net CSR rows are merged by a compiled ragged-union kernel, and the exact sparse swap reducers retain their grid-sized marks, touched/changed arrays, tail candidates, and smoothing prefixes for the scorer lifetime. The IBM sweep preserved all scores, audits, and the exact `1,048,385 logical / 1,066,186 physical / 79,466 avoided` work counts while attributed region-swap time fell `98.74s -> 94.37s`; focused IBM04/12/18 times were `4.11s / 6.28s / 8.03s`, so the smaller 4.4% aggregate improvement is claimed. Soft relocation keeps stable integer grid IDs through filtering and deduplication, then reuses dense route/density workspaces; its compiled scorer overwrites disposable H/V buffers with smoothed congestion and performs the exact tail reduction in the same call. Focused IBM04's two region-soft rounds totaled `1.61s` and IBM12 fell `2.62s -> 2.38s`. The complete IBM run reproduced `AVG 1.1404`, 17/17 valid, zero overlaps, and all audits in `330.75s`; NG45 reproduced `AVG 0.7121` in `60.51s`; synthetic reproduced `AVG 1.4192` with 10/10 validity/truth passes; and all 96 tests passed. A conservative congestion lower bound rejected only `317/26,556` IBM10 soft-soft rows (1.2%) and was removed with its overhead. Cross-source waves and net-optimal prefix ranking were not promoted because they could not yet preserve sequential first-winner semantics with a measured exact-safe reduction.

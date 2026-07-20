@@ -69,88 +69,177 @@ SUITE = [
     Cfg(
         name="syn01_wide",
         axis="Non-square canvas (2.6:1 aspect). IBM canvases are all square.",
-        canvas_w=65.0, canvas_h=25.0, grid_cols=62, grid_rows=24,
-        n_hard=280, n_soft=1000, hard_util=0.40, soft_util=0.36, n_nets=14000,
+        canvas_w=65.0,
+        canvas_h=25.0,
+        grid_cols=62,
+        grid_rows=24,
+        n_hard=280,
+        n_soft=1000,
+        hard_util=0.40,
+        soft_util=0.36,
+        n_nets=14000,
         rng_seed=101,
     ),
     Cfg(
         name="syn02_fixed",
         axis="Pre-placed fixed macros (corners + center). IBM has zero fixed "
-             "macros, so fixed-macro handling is never exercised.",
-        canvas_w=42.0, canvas_h=42.0, grid_cols=42, grid_rows=42,
-        n_hard=266, n_soft=950, hard_util=0.45, soft_util=0.30, n_nets=13000,
-        n_fixed=6, n_clusters=5, rng_seed=102,
+        "macros, so fixed-macro handling is never exercised.",
+        canvas_w=42.0,
+        canvas_h=42.0,
+        grid_cols=42,
+        grid_rows=42,
+        n_hard=266,
+        n_soft=950,
+        hard_util=0.45,
+        soft_util=0.30,
+        n_nets=13000,
+        n_fixed=6,
+        n_clusters=5,
+        rng_seed=102,
     ),
     Cfg(
         name="syn03_sram",
         axis="Commercial-style: few large uniform SRAM macros + low routing "
-             "capacity (bp_quad-like 12.5/13.5). IBM has hundreds of small "
-             "macros and fixed 66/107 capacity.",
-        canvas_w=55.0, canvas_h=55.0, grid_cols=36, grid_rows=36,
-        n_hard=40, n_soft=550, hard_util=0.42, soft_util=0.26, n_nets=16000,
+        "capacity (bp_quad-like 12.5/13.5). IBM has hundreds of small "
+        "macros and fixed 66/107 capacity.",
+        canvas_w=55.0,
+        canvas_h=55.0,
+        grid_cols=36,
+        grid_rows=36,
+        n_hard=40,
+        n_soft=550,
+        hard_util=0.42,
+        soft_util=0.26,
+        n_nets=16000,
         hard_shapes=((1.0, 0.62), (0.78, 0.78), (1.25, 0.5)),
-        n_clusters=4, p_intra=0.75, n_ports=120,
-        routes_h=12.5, routes_v=13.5, macro_routes_h=5.5, macro_routes_v=6.5,
+        n_clusters=4,
+        p_intra=0.75,
+        n_ports=120,
+        routes_h=12.5,
+        routes_v=13.5,
+        macro_routes_h=5.5,
+        macro_routes_v=6.5,
         rng_seed=103,
     ),
     Cfg(
         name="syn04_dense",
         axis="High utilization (~0.90 total): little whitespace for "
-             "legalization. IBM sits near 0.80.",
-        canvas_w=38.0, canvas_h=38.0, grid_cols=40, grid_rows=40,
-        n_hard=300, n_soft=1100, hard_util=0.52, soft_util=0.38, n_nets=15000,
+        "legalization. IBM sits near 0.80.",
+        canvas_w=38.0,
+        canvas_h=38.0,
+        grid_cols=40,
+        grid_rows=40,
+        n_hard=300,
+        n_soft=1100,
+        hard_util=0.52,
+        soft_util=0.38,
+        n_nets=15000,
         rng_seed=104,
     ),
     Cfg(
         name="syn05_sparse",
         axis="Low utilization (~0.33 total): congestion driven by net "
-             "topology, not packing pressure.",
-        canvas_w=62.0, canvas_h=62.0, grid_cols=40, grid_rows=40,
-        n_hard=190, n_soft=700, hard_util=0.17, soft_util=0.16, n_nets=11000,
-        n_clusters=5, n_ports=140, rng_seed=105,
+        "topology, not packing pressure.",
+        canvas_w=62.0,
+        canvas_h=62.0,
+        grid_cols=40,
+        grid_rows=40,
+        n_hard=190,
+        n_soft=700,
+        hard_util=0.17,
+        soft_util=0.16,
+        n_nets=11000,
+        n_clusters=5,
+        n_ports=140,
+        rng_seed=105,
     ),
     Cfg(
         name="syn06_cluster",
         axis="Strongly clustered Rent-style netlist (9 communities, 92% "
-             "intra-cluster nets): rewards community-aware placement, "
-             "punishes blind spreading.",
-        canvas_w=45.0, canvas_h=45.0, grid_cols=43, grid_rows=43,
-        n_hard=320, n_soft=1200, hard_util=0.38, soft_util=0.36, n_nets=16000,
-        n_clusters=9, p_intra=0.92, rng_seed=106,
+        "intra-cluster nets): rewards community-aware placement, "
+        "punishes blind spreading.",
+        canvas_w=45.0,
+        canvas_h=45.0,
+        grid_cols=43,
+        grid_rows=43,
+        n_hard=320,
+        n_soft=1200,
+        hard_util=0.38,
+        soft_util=0.36,
+        n_nets=16000,
+        n_clusters=9,
+        p_intra=0.92,
+        rng_seed=106,
     ),
     Cfg(
         name="syn07_ports",
         axis="I/O-heavy with 70% of ports on the LEFT edge: creates a "
-             "directional wirelength/congestion pull absent from IBM.",
-        canvas_w=40.0, canvas_h=40.0, grid_cols=41, grid_rows=41,
-        n_hard=250, n_soft=900, hard_util=0.40, soft_util=0.34, n_nets=13000,
-        n_ports=320, port_side_weights=(0.70, 0.10, 0.10, 0.10),
-        port_net_frac=0.25, rng_seed=107,
+        "directional wirelength/congestion pull absent from IBM.",
+        canvas_w=40.0,
+        canvas_h=40.0,
+        grid_cols=41,
+        grid_rows=41,
+        n_hard=250,
+        n_soft=900,
+        hard_util=0.40,
+        soft_util=0.34,
+        n_nets=13000,
+        n_ports=320,
+        port_side_weights=(0.70, 0.10, 0.10, 0.10),
+        port_net_frac=0.25,
+        rng_seed=107,
     ),
     Cfg(
         name="syn08_routes",
         axis="Inverted routing capacity (H=107 > V=66, macro routes swapped). "
-             "All IBM benchmarks share V-dominant 66/107.",
-        canvas_w=45.0, canvas_h=45.0, grid_cols=43, grid_rows=43,
-        n_hard=280, n_soft=1000, hard_util=0.40, soft_util=0.36, n_nets=14000,
-        routes_h=107.0, routes_v=66.0, macro_routes_h=71.3, macro_routes_v=30.3,
+        "All IBM benchmarks share V-dominant 66/107.",
+        canvas_w=45.0,
+        canvas_h=45.0,
+        grid_cols=43,
+        grid_rows=43,
+        n_hard=280,
+        n_soft=1000,
+        hard_util=0.40,
+        soft_util=0.36,
+        n_nets=14000,
+        routes_h=107.0,
+        routes_v=66.0,
+        macro_routes_h=71.3,
+        macro_routes_v=30.3,
         rng_seed=108,
     ),
     Cfg(
         name="syn09_seedless",
         axis="Random initial placement: no hand-tuned spread seed to lean on "
-             "(IBM initial.plc comes from a prior EDA flow).",
-        canvas_w=45.0, canvas_h=45.0, grid_cols=43, grid_rows=43,
-        n_hard=280, n_soft=1000, hard_util=0.40, soft_util=0.36, n_nets=14000,
-        seed_style="random", rng_seed=109,
+        "(IBM initial.plc comes from a prior EDA flow).",
+        canvas_w=45.0,
+        canvas_h=45.0,
+        grid_cols=43,
+        grid_rows=43,
+        n_hard=280,
+        n_soft=1000,
+        hard_util=0.40,
+        soft_util=0.36,
+        n_nets=14000,
+        seed_style="random",
+        rng_seed=109,
     ),
     Cfg(
         name="syn10_xl",
         axis="Scale stress: ~820 hard / 2000 soft macros, 50x50 grid, 26k "
-             "nets - beyond ibm17 in macro count and grid cells.",
-        canvas_w=80.0, canvas_h=80.0, grid_cols=50, grid_rows=50,
-        n_hard=820, n_soft=2000, hard_util=0.45, soft_util=0.28, n_nets=26000,
-        n_clusters=12, n_ports=300, rng_seed=110,
+        "nets - beyond ibm17 in macro count and grid cells.",
+        canvas_w=80.0,
+        canvas_h=80.0,
+        grid_cols=50,
+        grid_rows=50,
+        n_hard=820,
+        n_soft=2000,
+        hard_util=0.45,
+        soft_util=0.28,
+        n_nets=26000,
+        n_clusters=12,
+        n_ports=300,
+        rng_seed=110,
     ),
 ]
 
@@ -336,8 +425,9 @@ def sample_degree(rng):
     return int(rng.integers(13, 25))
 
 
-def build_nets(cfg, rng, hard_cluster, soft_cluster, port_cluster, hard_pins,
-               hard_xy, soft_xy, port_xy):
+def build_nets(
+    cfg, rng, hard_cluster, soft_cluster, port_cluster, hard_pins, hard_xy, soft_xy, port_xy
+):
     """Generate nets as driver->sinks endpoint name lists.
 
     Sink choice is spatially local (gaussian falloff around the driver) with a
@@ -465,21 +555,34 @@ def _node(name, inputs, attrs):
     return "\n".join(lines)
 
 
-def write_netlist(path, cfg, hard_sizes, hard_pos, fixed_mask, soft_sizes,
-                  soft_pos, port_pos, port_sides, hard_pins,
-                  port_inputs, hard_drv_inputs, soft_outputs):
-    blocks = [
-        _node("__metadata__", None, [("soft_macro_area_bloating_ratio", "f", 1.0)])
-    ]
+def write_netlist(
+    path,
+    cfg,
+    hard_sizes,
+    hard_pos,
+    fixed_mask,
+    soft_sizes,
+    soft_pos,
+    port_pos,
+    port_sides,
+    hard_pins,
+    port_inputs,
+    hard_drv_inputs,
+    soft_outputs,
+):
+    blocks = [_node("__metadata__", None, [("soft_macro_area_bloating_ratio", "f", 1.0)])]
     for p in range(cfg.n_ports):
         x, y = port_pos[p]
         blocks.append(
             _node(
                 f"p{p}",
                 port_inputs.get(p),
-                [("side", "placeholder", port_sides[p]),
-                 ("type", "placeholder", "PORT"),
-                 ("x", "f", x), ("y", "f", y)],
+                [
+                    ("side", "placeholder", port_sides[p]),
+                    ("type", "placeholder", "PORT"),
+                    ("x", "f", x),
+                    ("y", "f", y),
+                ],
             )
         )
     drv_by_macro = {}
@@ -490,10 +593,16 @@ def write_netlist(path, cfg, hard_sizes, hard_pos, fixed_mask, soft_sizes,
         cx, cy = hard_pos[m]
         blocks.append(
             _node(
-                f"a{m}", None,
-                [("height", "f", h), ("orientation", "placeholder", "N"),
-                 ("type", "placeholder", "MACRO"),
-                 ("width", "f", w), ("x", "f", cx), ("y", "f", cy)],
+                f"a{m}",
+                None,
+                [
+                    ("height", "f", h),
+                    ("orientation", "placeholder", "N"),
+                    ("type", "placeholder", "MACRO"),
+                    ("width", "f", w),
+                    ("x", "f", cx),
+                    ("y", "f", cy),
+                ],
             )
         )
         for k, (ox, oy) in enumerate(hard_pins[m]["off"]):
@@ -501,10 +610,14 @@ def write_netlist(path, cfg, hard_sizes, hard_pos, fixed_mask, soft_sizes,
                 _node(
                     f"a{m}/IP{k}",
                     drv_by_macro.get(m, {}).get(k),
-                    [("macro_name", "placeholder", f"a{m}"),
-                     ("type", "placeholder", "MACRO_PIN"),
-                     ("x", "f", cx + ox), ("x_offset", "f", ox),
-                     ("y", "f", cy + oy), ("y_offset", "f", oy)],
+                    [
+                        ("macro_name", "placeholder", f"a{m}"),
+                        ("type", "placeholder", "MACRO_PIN"),
+                        ("x", "f", cx + ox),
+                        ("x_offset", "f", ox),
+                        ("y", "f", cy + oy),
+                        ("y_offset", "f", oy),
+                    ],
                 )
             )
     for m in range(cfg.n_soft):
@@ -512,16 +625,24 @@ def write_netlist(path, cfg, hard_sizes, hard_pos, fixed_mask, soft_sizes,
         cx, cy = soft_pos[m]
         blocks.append(
             _node(
-                f"Grp_{m}", None,
-                [("height", "f", h), ("type", "placeholder", "macro"),
-                 ("width", "f", w), ("x", "f", cx), ("y", "f", cy)],
+                f"Grp_{m}",
+                None,
+                [
+                    ("height", "f", h),
+                    ("type", "placeholder", "macro"),
+                    ("width", "f", w),
+                    ("x", "f", cx),
+                    ("y", "f", cy),
+                ],
             )
         )
         pin_attrs = lambda: [  # noqa: E731 - soft pins sit at the macro center
             ("macro_name", "placeholder", f"Grp_{m}"),
             ("type", "placeholder", "macro_pin"),
-            ("x", "f", cx), ("x_offset", "f", 0.0),
-            ("y", "f", cy), ("y_offset", "f", 0.0),
+            ("x", "f", cx),
+            ("x_offset", "f", 0.0),
+            ("y", "f", cy),
+            ("y_offset", "f", 0.0),
         ]
         blocks.append(_node(f"Grp_{m}/Pinput", None, pin_attrs()))
         for j, sinks in enumerate(soft_outputs.get(m, [])):
@@ -611,22 +732,24 @@ def generate(cfg):
             clash = False
             for j in np.where(fixed_mask)[0]:
                 fx, fy = hard_pos[j]
-                if (abs(cx - fx) < (hard_sizes[i][0] + hard_sizes[j][0]) / 2
-                        and abs(cy - fy) < (hard_sizes[i][1] + hard_sizes[j][1]) / 2):
+                if (
+                    abs(cx - fx) < (hard_sizes[i][0] + hard_sizes[j][0]) / 2
+                    and abs(cy - fy) < (hard_sizes[i][1] + hard_sizes[j][1]) / 2
+                ):
                     clash = True
                     break
             if not clash:
                 break
-            hard_pos[i] = random_pos(
-                rng, hard_sizes[i], (0.0, 0.0, cfg.canvas_w, cfg.canvas_h)
-            )
+            hard_pos[i] = random_pos(rng, hard_sizes[i], (0.0, 0.0, cfg.canvas_w, cfg.canvas_h))
 
     soft_pos = {}
     for m in range(cfg.n_soft):
         x0, y0, w_r, h_r = regions[soft_cluster[m]]
         inset = (
-            x0 + soft_sizes[m][0] / 2, y0 + soft_sizes[m][1] / 2,
-            max(0.01, w_r - soft_sizes[m][0]), max(0.01, h_r - soft_sizes[m][1]),
+            x0 + soft_sizes[m][0] / 2,
+            y0 + soft_sizes[m][1] / 2,
+            max(0.01, w_r - soft_sizes[m][0]),
+            max(0.01, h_r - soft_sizes[m][1]),
         )
         soft_pos[m] = (
             rng.uniform(inset[0], inset[0] + inset[2]),
@@ -643,8 +766,15 @@ def generate(cfg):
     hard_xy = np.array([hard_pos[i] for i in range(cfg.n_hard)])
     soft_xy = np.array([soft_pos[i] for i in range(cfg.n_soft)])
     port_inputs, hard_drv_inputs, soft_outputs = build_nets(
-        cfg, rng, hard_cluster, soft_cluster, port_cluster, hard_pins,
-        hard_xy, soft_xy, port_pos,
+        cfg,
+        rng,
+        hard_cluster,
+        soft_cluster,
+        port_cluster,
+        hard_pins,
+        hard_xy,
+        soft_xy,
+        port_pos,
     )
 
     # nets were built against the coherent placement; for "random" seeds the
@@ -659,9 +789,19 @@ def generate(cfg):
 
     netlist_path = case_dir / "netlist.pb.txt"
     write_netlist(
-        netlist_path, cfg, hard_sizes, hard_pos, fixed_mask, soft_sizes,
-        soft_pos, port_pos, port_sides, hard_pins,
-        port_inputs, hard_drv_inputs, soft_outputs,
+        netlist_path,
+        cfg,
+        hard_sizes,
+        hard_pos,
+        fixed_mask,
+        soft_sizes,
+        soft_pos,
+        port_pos,
+        port_sides,
+        hard_pins,
+        port_inputs,
+        hard_drv_inputs,
+        soft_outputs,
     )
 
     # parse with the ground-truth evaluator to assign module indices, mark
@@ -673,8 +813,7 @@ def generate(cfg):
         if fixed_mask[local_i]:
             plc.modules_w_pins[idx].set_fix_flag(True)
     total_area = float(
-        (hard_sizes[:, 0] * hard_sizes[:, 1]).sum()
-        + (soft_sizes[:, 0] * soft_sizes[:, 1]).sum()
+        (hard_sizes[:, 0] * hard_sizes[:, 1]).sum() + (soft_sizes[:, 0] * soft_sizes[:, 1]).sum()
     )
     write_plc(case_dir / "initial.plc", cfg, plc, round(total_area, 4))
 
@@ -690,6 +829,10 @@ def generate(cfg):
     meta = asdict(cfg)
     meta["num_nets"] = int(plc2.net_cnt)
     meta["seed_overlaps"] = seed_overlap_count(hard_sizes, hard_pos, cfg.n_hard)
+    meta["hierarchy_truth"] = {
+        "hard_cluster": [int(value) for value in hard_cluster],
+        "soft_cluster": [int(value) for value in soft_cluster],
+    }
     (OUT / "metadata" / f"{cfg.name}.json").write_text(json.dumps(meta, indent=2) + "\n")
     return benchmark, meta
 

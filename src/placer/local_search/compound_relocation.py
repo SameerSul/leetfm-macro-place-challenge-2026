@@ -22,6 +22,7 @@ def _related_soft_groups(
     n: int,
     group_size: int,
     soft_bundles: Sequence[object] | None = None,
+    soft_role_evidence: Mapping[int, Mapping[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Build one compact hot soft group per owner or bridge signature."""
     raw_groups: list[tuple[str, object, np.ndarray]] = []
@@ -37,6 +38,16 @@ def _related_soft_groups(
 
     for cid, members in sorted(cluster_softs.items()):
         indices = np.asarray(members, dtype=np.int64) - int(n)
+        if soft_role_evidence is not None:
+            indices = np.asarray(
+                [
+                    index
+                    for index in indices
+                    if str(soft_role_evidence.get(int(index), {}).get("confidence", "low"))
+                    == "high"
+                ],
+                dtype=np.int64,
+            )
         if explicit_members:
             indices = indices[~np.isin(indices, np.fromiter(explicit_members, dtype=np.int64))]
         raw_groups.append(("owned", int(cid), indices))
@@ -48,6 +59,16 @@ def _related_soft_groups(
             bridge_by_signature.setdefault(signature, []).append(int(soft_k))
     for signature, members in sorted(bridge_by_signature.items()):
         indices = np.asarray(members, dtype=np.int64)
+        if soft_role_evidence is not None:
+            indices = np.asarray(
+                [
+                    index
+                    for index in indices
+                    if str(soft_role_evidence.get(int(index), {}).get("confidence", "low"))
+                    == "high"
+                ],
+                dtype=np.int64,
+            )
         if explicit_members:
             indices = indices[~np.isin(indices, np.fromiter(explicit_members, dtype=np.int64))]
         raw_groups.append(("bridge", signature, indices))
@@ -92,6 +113,7 @@ def _compound_soft_relocation(
     cluster_softs: Mapping[int, np.ndarray],
     bridge_softs: Mapping[int, np.ndarray] | None = None,
     soft_bundles: Sequence[object] | None = None,
+    soft_role_evidence: Mapping[int, Mapping[str, object]] | None = None,
     soft_movable: np.ndarray | None = None,
     region_bbox: np.ndarray | None = None,
     candidate_allowed: Callable[[np.ndarray], bool] | None = None,
@@ -105,6 +127,7 @@ def _compound_soft_relocation(
     shift_fractions: Sequence[float] = (0.5, 1.0),
     min_field_drop: float = 0.02,
     min_gain: float = 0.00005,
+    max_scored: int | None = None,
 ) -> tuple[np.ndarray, int, float]:
     """Co-move a related soft group and exact-score only the completed move."""
     stats = {
@@ -115,6 +138,8 @@ def _compound_soft_relocation(
         "scored": 0,
         "accepts": 0,
         "best_candidate_gain": 0.0,
+        "score_limit": None if max_scored is None else max(0, int(max_scored)),
+        "quota_exhausted": bool(max_scored is not None and int(max_scored) <= 0),
     }
     _compound_soft_relocation.last_stats = stats
     num_soft = int(soft_pos.shape[0])
@@ -148,6 +173,7 @@ def _compound_soft_relocation(
         n,
         group_size,
         soft_bundles=soft_bundles,
+        soft_role_evidence=soft_role_evidence,
     )[: max(1, int(top_groups))]
     stats["groups"] = int(len(groups))
     if not groups:
@@ -172,8 +198,11 @@ def _compound_soft_relocation(
     best_targets = None
     canvas2 = max(float(cw) ** 2 + float(ch) ** 2, 1.0)
     fractions = sorted({float(value) for value in shift_fractions if 0.0 < float(value) <= 1.0})
+    score_limit = None if max_scored is None else max(0, int(max_scored))
 
     for group in groups:
+        if score_limit is not None and int(stats["scored"]) >= score_limit:
+            break
         if deadline is not None and time.monotonic() >= deadline:
             break
         relation_indices = np.asarray(group["indices"], dtype=np.int64)
@@ -208,6 +237,8 @@ def _compound_soft_relocation(
                     dtype=np.float64,
                 )
                 for fraction in fractions:
+                    if score_limit is not None and int(stats["scored"]) >= score_limit:
+                        break
                     if deadline is not None and time.monotonic() >= deadline:
                         break
                     shift = fraction * delta
@@ -257,6 +288,8 @@ def _compound_soft_relocation(
         incremental_scorer.commit_move_soft_group(best_indices, best_targets)
         soft_pos[best_indices] = best_targets
         stats["accepts"] = 1
+
+    stats["quota_exhausted"] = bool(score_limit is not None and int(stats["scored"]) >= score_limit)
 
     _compound_soft_relocation.last_stats = stats
     return soft_pos, int(stats["accepts"]), float(best_score)

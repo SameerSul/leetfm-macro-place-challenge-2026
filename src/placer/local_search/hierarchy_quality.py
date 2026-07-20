@@ -20,6 +20,17 @@ HIERARCHY_VECTOR_METRICS = (
 )
 
 
+def hierarchy_coverage_scope(vector: Mapping[str, float]) -> str:
+    """Classify hierarchy evidence coverage without changing acceptance gates."""
+    hard_fraction = float(vector.get("clustered_hard_fraction", 0.0))
+    soft_fraction = float(vector.get("soft_coverage", 0.0))
+    if hard_fraction >= 0.75 and soft_fraction >= 0.25:
+        return "high"
+    if hard_fraction >= 0.25 and soft_fraction >= 0.10:
+        return "partial"
+    return "low"
+
+
 def hierarchy_vector_limits(
     reference: Mapping[str, float],
     absolute_slack: Mapping[str, float],
@@ -48,6 +59,16 @@ def hierarchy_vector_contract(
         if excess > float(tolerance):
             violations[key] = excess
     return not violations, violations
+
+
+def hierarchy_vector_margins(
+    candidate: Mapping[str, float],
+    limits: Mapping[str, float],
+) -> dict[str, float]:
+    """Return signed per-component headroom; negative values are violations."""
+    return {
+        key: float(limits[key]) - float(candidate.get(key, 0.0)) for key in HIERARCHY_VECTOR_METRICS
+    }
 
 
 def _edge_values(edge) -> tuple[int, int, float]:
@@ -279,9 +300,7 @@ def hierarchy_quality_vector(
         "bridge_soft_distance": float(const.HIER_VECTOR_BRIDGE_SOFT_WEIGHT),
     }
     weight_sum = max(sum(max(value, 0.0) for value in weights.values()), 1.0e-12)
-    composite = sum(
-        max(weights[key], 0.0) * values[key] for key in weights
-    ) / weight_sum
+    composite = sum(max(weights[key], 0.0) * values[key] for key in weights) / weight_sum
     return {
         "composite": float(composite),
         "hard_containment": hard_quality,

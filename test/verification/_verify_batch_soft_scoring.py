@@ -111,7 +111,8 @@ def run(bench_name):
         passed = delta < 1e-12 and state_exact
         print(
             f"  swap soft={soft_a}: max score delta={delta:.2e}, "
-            f"state_exact={int(state_exact)} {'PASS' if passed else 'FAIL'}"
+            f"state_exact={int(state_exact)} "
+            f"{'PASS' if passed else 'FAIL'}"
         )
         ok = ok and passed
     return ok

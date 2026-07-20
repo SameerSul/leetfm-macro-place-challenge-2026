@@ -22,18 +22,29 @@ from placer.local_search.region_rules import accepts_region_score
 
 
 def _new_stats() -> dict:
-    return {
+    stats = {
         "hh_scores": 0,
+        "hh_exact_scores": 0,
+        "hh_avoided_scores": 0,
         "hh_accepts": 0,
         "hh_escape_accepts": 0,
         "hs_scores": 0,
+        "hs_exact_scores": 0,
+        "hs_avoided_scores": 0,
         "hs_accepts": 0,
         "hs_escape_accepts": 0,
         "ss_scores": 0,
+        "ss_exact_scores": 0,
+        "ss_avoided_scores": 0,
         "ss_accepts": 0,
         "ss_escape_accepts": 0,
         "proxy_gain": 0.0,
     }
+    for kind in ("hh", "hs", "ss"):
+        stats[f"{kind}_accept_rank_sum"] = 0
+        for bound in (4, 8, 12, 16, 24, 32, 48):
+            stats[f"{kind}_accept_rank_lt_{bound}"] = 0
+    return stats
 
 
 def _accept_swap(score, best_score, outside_region, escape_min, min_gain) -> bool:
@@ -47,6 +58,34 @@ def _record_accept(stats, kind: str, outside_region: bool, old_score: float, new
     if outside_region:
         stats[f"{kind}_escape_accepts"] += 1
     stats["proxy_gain"] += max(0.0, float(old_score) - float(new_score))
+
+
+def _record_accept_rank(stats: dict, kind: str, rank: int) -> None:
+    """Record the stable zero-based rank of an accepted exact candidate."""
+    rank = int(rank)
+    stats[f"{kind}_accept_rank_sum"] += rank
+    for bound in (4, 8, 12, 16, 24, 32, 48):
+        if rank < bound:
+            stats[f"{kind}_accept_rank_lt_{bound}"] += 1
+
+
+def _score_count(stats: dict) -> int:
+    return int(stats["hh_scores"] + stats["hs_scores"] + stats["ss_scores"])
+
+
+def _stable_exact_prefixes(scored: list, prefix: int):
+    """Yield two short stable prefixes followed by the untouched remainder."""
+    if not scored:
+        return
+    prefix = max(1, int(prefix))
+    if len(scored) <= prefix:
+        yield scored
+        return
+    yield scored[:prefix]
+    second = min(2 * prefix, len(scored))
+    yield scored[prefix:second]
+    if second < len(scored):
+        yield scored[second:]
 
 
 def _cell_values(pos: np.ndarray, field: np.ndarray, cw: float, ch: float) -> np.ndarray:
@@ -624,6 +663,8 @@ def _try_hard_hard(
     graph_delta_weight: float = 0.0,
     graph_delta_samples: int = 9,
     graph_mask_penalty_weight: float = 0.0,
+    max_scored: "int | None" = None,
+    hard_separation: "tuple[np.ndarray, np.ndarray] | None" = None,
 ) -> tuple[int, float]:
     accepts = 0
     n = h_pos.shape[0]
@@ -633,7 +674,9 @@ def _try_hard_hard(
     movable_idx = np.where(movable_h)[0]
     if movable_idx.size < 2:
         return 0, best_score
-    sep_x_mat, sep_y_mat = separation_matrices(sizes)
+    sep_x_mat, sep_y_mat = (
+        separation_matrices(sizes) if hard_separation is None else hard_separation
+    )
     span = max(float(field.max()), 1e-12)
     priority = (
         np.asarray(hard_priority, dtype=np.float64)
@@ -643,6 +686,8 @@ def _try_hard_hard(
     source_rank = local + max(0.0, float(priority_weight)) * span * priority
     hot = movable_idx[np.argsort(-source_rank[movable_idx])][: min(128, movable_idx.size)]
     for i_raw in hot:
+        if max_scored is not None and _score_count(stats) >= int(max_scored):
+            break
         if deadline is not None and time.monotonic() > deadline:
             break
         i = int(i_raw)
@@ -650,18 +695,6 @@ def _try_hard_hard(
         cand = cand[(local[i] - local[cand]) > min_field_relief * span]
         if cand.size == 0:
             continue
-        legal_mask = _legal_hard_hard_candidates(
-            h_pos,
-            sep_x_mat,
-            sep_y_mat,
-            hw,
-            hh,
-            cw,
-            ch,
-            i,
-            cand,
-            1e-6,
-        )
         outside = _outside_region_mask(
             hard_region,
             np.full(cand.size, i, dtype=np.int64),
@@ -669,20 +702,20 @@ def _try_hard_hard(
             h_pos[cand, 1],
         )
         outside_bbox = outside.copy()
-        outside_mask = _outside_region_cell_mask(
-            region_mask,
-            h_pos[cand, 0],
-            h_pos[cand, 1],
-            cw=cw,
-            ch=ch,
-        ) | _outside_region_cell_mask(
-            region_mask,
-            np.full(cand.size, h_pos[i, 0], dtype=np.float64),
-            np.full(cand.size, h_pos[i, 1], dtype=np.float64),
-            cw=cw,
-            ch=ch,
-        )
         if bool(region_mask_enabled):
+            outside_mask = _outside_region_cell_mask(
+                region_mask,
+                h_pos[cand, 0],
+                h_pos[cand, 1],
+                cw=cw,
+                ch=ch,
+            ) | _outside_region_cell_mask(
+                region_mask,
+                np.full(cand.size, h_pos[i, 0], dtype=np.float64),
+                np.full(cand.size, h_pos[i, 1], dtype=np.float64),
+                cw=cw,
+                ch=ch,
+            )
             outside = outside_bbox | outside_mask
         else:
             outside = outside_bbox
@@ -700,13 +733,16 @@ def _try_hard_hard(
         )
         if cand.size != cand_before.size:
             keep = np.isin(cand_before, cand)
-            legal_mask = legal_mask[keep]
             outside_bbox = outside_bbox_before[keep]
             outside_mask = outside_mask_before[keep]
-        graph_mask_penalty = (
-            max(0.0, float(graph_mask_penalty_weight)) * span * outside_mask.astype(np.float64)
+        rank = (
+            local[cand]
+            + region_bias * span * outside.astype(np.float64)
+            + max(0.0, float(priority_weight)) * span * priority[cand]
         )
-        graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
+        graph_mask_weight = max(0.0, float(graph_mask_penalty_weight))
+        if graph_mask_weight > 0.0:
+            rank = rank + graph_mask_weight * span * outside_mask.astype(np.float64)
         if (
             float(graph_delta_weight) > 0.0
             and graph_clusters is not None
@@ -714,6 +750,7 @@ def _try_hard_hard(
             and graph_labels is not None
             and graph_labels.size == h_pos.shape[0]
         ):
+            graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
             raw_weight = max(0.0, float(graph_delta_weight))
             for pos, j in enumerate(cand):
                 trial = h_pos.copy()
@@ -737,40 +774,65 @@ def _try_hard_hard(
                     samples=graph_delta_samples,
                 )
                 graph_delta_penalty[pos] = delta
-        rank = (
-            local[cand]
-            + region_bias * span * outside.astype(np.float64)
-            + max(0.0, float(priority_weight)) * span * priority[cand]
-            + graph_mask_penalty
-            + graph_delta_penalty
-        )
+            rank = rank + graph_delta_penalty
         ranked_idx = np.argsort(rank)[:k_neighbors]
         ranked = cand[ranked_idx]
-        ranked_legal = legal_mask[ranked_idx]
+        ranked_legal = _legal_hard_hard_candidates(
+            h_pos,
+            sep_x_mat,
+            sep_y_mat,
+            hw,
+            hh,
+            cw,
+            ch,
+            i,
+            ranked,
+            1e-6,
+        )
         ranked_outside = outside[ranked_idx]
         scored = [
             (int(j), bool(outside_move))
             for j, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside)
             if bool(is_legal)
         ]
-        scores = (
-            scorer.score_swap_hard_hard_many(i, np.asarray([j for j, _ in scored], dtype=np.int64))
-            if scored
-            else np.empty(0, dtype=np.float64)
-        )
-        for (j, outside_move), score in zip(scored, scores):
-            stats["hh_scores"] += 1
-            if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
-                cand_h = h_pos.copy()
-                cand_h[[i, j]] = cand_h[[j, i]]
-                if not _hard_quality_ok(cand_h, hierarchy_quality_fn, hierarchy_quality_limit):
-                    continue
-                scorer.commit_swap_hard_hard(i, j)
-                h_pos[[i, j]] = h_pos[[j, i]]
-                _record_accept(stats, "hh", outside_move, best_score, score)
-                best_score = float(score)
-                accepts += 1
+        if max_scored is not None:
+            scored = scored[: max(0, int(max_scored) - _score_count(stats))]
+        accepted = False
+        exact_before = int(stats["hh_exact_scores"])
+        rank_offset = 0
+        for exact_rows in _stable_exact_prefixes(
+            scored,
+            int(const.HIER_SWAP_HARD_EXACT_PREFIX),
+        ):
+            scores = scorer.score_swap_hard_hard_many(
+                i,
+                np.asarray([j for j, _ in exact_rows], dtype=np.int64),
+            )
+            stats["hh_exact_scores"] += len(exact_rows)
+            for row_rank, ((j, outside_move), score) in enumerate(zip(exact_rows, scores)):
+                stats["hh_scores"] += 1
+                if _accept_swap(score, best_score, outside_move, escape_min, min_gain):
+                    cand_h = h_pos.copy()
+                    cand_h[[i, j]] = cand_h[[j, i]]
+                    if not _hard_quality_ok(
+                        cand_h,
+                        hierarchy_quality_fn,
+                        hierarchy_quality_limit,
+                    ):
+                        continue
+                    scorer.commit_swap_hard_hard(i, j)
+                    h_pos[[i, j]] = h_pos[[j, i]]
+                    _record_accept(stats, "hh", outside_move, best_score, score)
+                    _record_accept_rank(stats, "hh", rank_offset + row_rank)
+                    best_score = float(score)
+                    accepts += 1
+                    accepted = True
+                    break
+            if accepted:
+                exact_used = int(stats["hh_exact_scores"]) - exact_before
+                stats["hh_avoided_scores"] += len(scored) - exact_used
                 break
+            rank_offset += len(exact_rows)
     return accepts, best_score
 
 
@@ -805,6 +867,7 @@ def _try_soft_soft(
     graph_delta_weight: float = 0.0,
     graph_delta_samples: int = 9,
     graph_mask_penalty_weight: float = 0.0,
+    max_scored: "int | None" = None,
 ) -> tuple[int, float]:
     accepts = 0
     n_soft = s_pos.shape[0]
@@ -820,6 +883,8 @@ def _try_soft_soft(
     span = max(float(field.max()), 1e-12)
     hot = movable_idx[np.argsort(-local[movable_idx])][: min(256, movable_idx.size)]
     for a_raw in hot:
+        if max_scored is not None and _score_count(stats) >= int(max_scored):
+            break
         if deadline is not None and time.monotonic() > deadline:
             break
         a = int(a_raw)
@@ -834,20 +899,20 @@ def _try_soft_soft(
             s_pos[cand, 1],
         )
         outside_bbox = outside.copy()
-        outside_mask = _outside_region_cell_mask(
-            region_mask,
-            s_pos[cand, 0],
-            s_pos[cand, 1],
-            cw=cw,
-            ch=ch,
-        ) | _outside_region_cell_mask(
-            region_mask,
-            np.full(cand.size, s_pos[a, 0], dtype=np.float64),
-            np.full(cand.size, s_pos[a, 1], dtype=np.float64),
-            cw=cw,
-            ch=ch,
-        )
         if bool(region_mask_enabled):
+            outside_mask = _outside_region_cell_mask(
+                region_mask,
+                s_pos[cand, 0],
+                s_pos[cand, 1],
+                cw=cw,
+                ch=ch,
+            ) | _outside_region_cell_mask(
+                region_mask,
+                np.full(cand.size, s_pos[a, 0], dtype=np.float64),
+                np.full(cand.size, s_pos[a, 1], dtype=np.float64),
+                cw=cw,
+                ch=ch,
+            )
             outside = outside_bbox | outside_mask
         else:
             outside = outside_bbox
@@ -867,12 +932,10 @@ def _try_soft_soft(
             keep = np.isin(cand_before, cand)
             outside_bbox = outside_bbox_before[keep]
             outside_mask = outside_mask_before[keep]
-        graph_mask_penalty = (
-            max(0.0, float(graph_mask_penalty_weight)) * span * outside_mask.astype(np.float64)
-        )
-        graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
         rank = local[cand] + region_bias * span * outside.astype(np.float64)
-        rank = rank + graph_mask_penalty + graph_delta_penalty
+        graph_mask_weight = max(0.0, float(graph_mask_penalty_weight))
+        if graph_mask_weight > 0.0:
+            rank = rank + graph_mask_weight * span * outside_mask.astype(np.float64)
         ranked_idx = np.argsort(rank)[:k_neighbors]
         ranked = cand[ranked_idx]
         ranked_outside = outside[ranked_idx]
@@ -886,21 +949,35 @@ def _try_soft_soft(
             if not _in_bounds(bx, by, soft_hw[b], soft_hh[b], cw, ch):
                 continue
             scored.append((b, bool(outside_move)))
-        scores = (
-            scorer.score_swap_soft_soft_many(a, np.asarray([b for b, _ in scored], dtype=np.int64))
-            if scored
-            else np.empty(0, dtype=np.float64)
-        )
-        for (b, outside_move), score in zip(scored, scores):
-            stats["ss_scores"] += 1
+        if max_scored is not None:
+            scored = scored[: max(0, int(max_scored) - _score_count(stats))]
+        accepted = False
+        exact_before = int(stats["ss_exact_scores"])
+        rank_offset = 0
+        for exact_rows in _stable_exact_prefixes(
+            scored,
+            int(const.HIER_SWAP_SOFT_SOFT_EXACT_PREFIX),
+        ):
+            exact_candidates = np.asarray([b for b, _ in exact_rows], dtype=np.int64)
             required_gain = max(min_gain, soft_barrier_gain)
-            if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
-                scorer.commit_swap_soft_soft(a, b)
-                s_pos[[a, b]] = s_pos[[b, a]]
-                _record_accept(stats, "ss", outside_move, best_score, score)
-                best_score = float(score)
-                accepts += 1
+            scores = scorer.score_swap_soft_soft_many(a, exact_candidates)
+            stats["ss_exact_scores"] += len(exact_rows)
+            for row_rank, ((b, outside_move), score) in enumerate(zip(exact_rows, scores)):
+                stats["ss_scores"] += 1
+                if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
+                    scorer.commit_swap_soft_soft(a, b)
+                    s_pos[[a, b]] = s_pos[[b, a]]
+                    _record_accept(stats, "ss", outside_move, best_score, score)
+                    _record_accept_rank(stats, "ss", rank_offset + row_rank)
+                    best_score = float(score)
+                    accepts += 1
+                    accepted = True
+                    break
+            if accepted:
+                exact_used = int(stats["ss_exact_scores"]) - exact_before
+                stats["ss_avoided_scores"] += len(scored) - exact_used
                 break
+            rank_offset += len(exact_rows)
     return accepts, best_score
 
 
@@ -945,6 +1022,8 @@ def _try_hard_soft(
     graph_delta_weight: float = 0.0,
     graph_delta_samples: int = 9,
     graph_mask_penalty_weight: float = 0.0,
+    max_scored: "int | None" = None,
+    hard_separation: "tuple[np.ndarray, np.ndarray] | None" = None,
 ) -> tuple[int, float]:
     accepts = 0
     if h_pos.shape[0] == 0 or s_pos.shape[0] == 0:
@@ -958,7 +1037,9 @@ def _try_hard_soft(
         soft_idx = soft_idx[sm[soft_idx]]
     if hard_idx.size == 0 or soft_idx.size == 0:
         return 0, best_score
-    sep_x_mat, sep_y_mat = separation_matrices(sizes)
+    sep_x_mat, sep_y_mat = (
+        separation_matrices(sizes) if hard_separation is None else hard_separation
+    )
     span = max(float(field.max()), 1e-12)
     priority = (
         np.asarray(hard_priority, dtype=np.float64)
@@ -968,6 +1049,8 @@ def _try_hard_soft(
     source_rank = hard_local + max(0.0, float(priority_weight)) * span * priority
     hot = hard_idx[np.argsort(-source_rank[hard_idx])][: min(128, hard_idx.size)]
     for i_raw in hot:
+        if max_scored is not None and _score_count(stats) >= int(max_scored):
+            break
         if deadline is not None and time.monotonic() > deadline:
             break
         i = int(i_raw)
@@ -981,20 +1064,20 @@ def _try_hard_soft(
             s_pos[cand, 1],
         )
         outside_bbox = outside.copy()
-        outside_mask = _outside_region_cell_mask(
-            region_mask,
-            s_pos[cand, 0],
-            s_pos[cand, 1],
-            cw=cw,
-            ch=ch,
-        ) | _outside_region_cell_mask(
-            region_mask,
-            np.full(cand.size, h_pos[i, 0], dtype=np.float64),
-            np.full(cand.size, h_pos[i, 1], dtype=np.float64),
-            cw=cw,
-            ch=ch,
-        )
         if bool(region_mask_enabled):
+            outside_mask = _outside_region_cell_mask(
+                region_mask,
+                s_pos[cand, 0],
+                s_pos[cand, 1],
+                cw=cw,
+                ch=ch,
+            ) | _outside_region_cell_mask(
+                region_mask,
+                np.full(cand.size, h_pos[i, 0], dtype=np.float64),
+                np.full(cand.size, h_pos[i, 1], dtype=np.float64),
+                cw=cw,
+                ch=ch,
+            )
             outside = outside_bbox | outside_mask
         else:
             outside = outside_bbox
@@ -1014,10 +1097,10 @@ def _try_hard_soft(
             keep = np.isin(cand_before, cand)
             outside_bbox = outside_bbox_before[keep]
             outside_mask = outside_mask_before[keep]
-        graph_mask_penalty = (
-            max(0.0, float(graph_mask_penalty_weight)) * span * outside_mask.astype(np.float64)
-        )
-        graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
+        rank = soft_local[cand] + region_bias * span * outside.astype(np.float64)
+        graph_mask_weight = max(0.0, float(graph_mask_penalty_weight))
+        if graph_mask_weight > 0.0:
+            rank = rank + graph_mask_weight * span * outside_mask.astype(np.float64)
         if (
             float(graph_delta_weight) > 0.0
             and graph_clusters is not None
@@ -1025,6 +1108,7 @@ def _try_hard_soft(
             and graph_labels is not None
             and graph_labels.size == h_pos.shape[0]
         ):
+            graph_delta_penalty = np.zeros(cand.size, dtype=np.float64)
             raw_weight = max(0.0, float(graph_delta_weight))
             for pos, k in enumerate(cand):
                 trial = h_pos.copy()
@@ -1047,9 +1131,11 @@ def _try_hard_soft(
                     samples=graph_delta_samples,
                 )
                 graph_delta_penalty[pos] = delta
-        rank = soft_local[cand] + region_bias * span * outside.astype(np.float64)
-        rank = rank + graph_mask_penalty + graph_delta_penalty
-        legal_mask = _legal_hard_soft_candidates(
+            rank = rank + graph_delta_penalty
+        ranked_idx = np.argsort(rank)[:k_neighbors]
+        ranked = cand[ranked_idx]
+        ranked_outside = outside[ranked_idx]
+        ranked_legal = _legal_hard_soft_candidates(
             h_pos,
             s_pos,
             sep_x_mat,
@@ -1061,13 +1147,9 @@ def _try_hard_soft(
             cw,
             ch,
             i,
-            cand,
+            ranked,
             1e-6,
         )
-        ranked_idx = np.argsort(rank)[:k_neighbors]
-        ranked = cand[ranked_idx]
-        ranked_outside = outside[ranked_idx]
-        ranked_legal = legal_mask[ranked_idx]
         scored = []
         for k_raw, is_legal, outside_move in zip(ranked, ranked_legal, ranked_outside):
             if not bool(is_legal):
@@ -1080,26 +1162,48 @@ def _try_hard_soft(
             if not _in_bounds(sx, sy, soft_hw[k], soft_hh[k], cw, ch):
                 continue
             scored.append((k, hx, hy, sx, sy, bool(outside_move)))
-        scores = (
-            scorer.score_swap_hard_soft_many(i, np.asarray([k for k, *_ in scored], dtype=np.int64))
-            if scored
-            else np.empty(0, dtype=np.float64)
-        )
-        for (k, hx, hy, sx, sy, outside_move), score in zip(scored, scores):
-            stats["hs_scores"] += 1
-            required_gain = max(min_gain, soft_barrier_gain)
-            if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
-                cand_h = h_pos.copy()
-                cand_h[i, 0], cand_h[i, 1] = hx, hy
-                if not _hard_quality_ok(cand_h, hierarchy_quality_fn, hierarchy_quality_limit):
-                    continue
-                scorer.commit_swap_hard_soft(i, k)
-                h_pos[i, 0], h_pos[i, 1] = hx, hy
-                s_pos[k, 0], s_pos[k, 1] = sx, sy
-                _record_accept(stats, "hs", outside_move, best_score, score)
-                best_score = float(score)
-                accepts += 1
+        if max_scored is not None:
+            scored = scored[: max(0, int(max_scored) - _score_count(stats))]
+        accepted = False
+        exact_before = int(stats["hs_exact_scores"])
+        rank_offset = 0
+        for exact_rows in _stable_exact_prefixes(
+            scored,
+            int(const.HIER_SWAP_HARD_SOFT_EXACT_PREFIX),
+        ):
+            scores = scorer.score_swap_hard_soft_many(
+                i,
+                np.asarray([k for k, *_ in exact_rows], dtype=np.int64),
+            )
+            stats["hs_exact_scores"] += len(exact_rows)
+            for row_rank, ((k, hx, hy, sx, sy, outside_move), score) in enumerate(
+                zip(exact_rows, scores)
+            ):
+                stats["hs_scores"] += 1
+                required_gain = max(min_gain, soft_barrier_gain)
+                if _accept_swap(score, best_score, outside_move, escape_min, required_gain):
+                    cand_h = h_pos.copy()
+                    cand_h[i, 0], cand_h[i, 1] = hx, hy
+                    if not _hard_quality_ok(
+                        cand_h,
+                        hierarchy_quality_fn,
+                        hierarchy_quality_limit,
+                    ):
+                        continue
+                    scorer.commit_swap_hard_soft(i, k)
+                    h_pos[i, 0], h_pos[i, 1] = hx, hy
+                    s_pos[k, 0], s_pos[k, 1] = sx, sy
+                    _record_accept(stats, "hs", outside_move, best_score, score)
+                    _record_accept_rank(stats, "hs", rank_offset + row_rank)
+                    best_score = float(score)
+                    accepts += 1
+                    accepted = True
+                    break
+            if accepted:
+                exact_used = int(stats["hs_exact_scores"]) - exact_before
+                stats["hs_avoided_scores"] += len(scored) - exact_used
                 break
+            rank_offset += len(exact_rows)
     return accepts, best_score
 
 
@@ -1146,6 +1250,8 @@ def _region_bounded_swap_relief(
     graph_delta_weight: float = 0.0,
     graph_delta_samples: int = 9,
     graph_mask_penalty_weight: float = 0.0,
+    max_scored: "int | None" = None,
+    hard_separation: "tuple[np.ndarray, np.ndarray] | None" = None,
 ) -> tuple[np.ndarray, np.ndarray, int, float, dict]:
     """Run bounded hierarchy-preserving swap relief."""
     nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
@@ -1209,6 +1315,8 @@ def _region_bounded_swap_relief(
                 graph_delta_weight,
                 graph_delta_samples,
                 graph_mask_penalty_weight,
+                max_scored,
+                hard_separation,
             )
             accepts += got
         if enable_hs:
@@ -1253,6 +1361,8 @@ def _region_bounded_swap_relief(
                 graph_delta_weight,
                 graph_delta_samples,
                 graph_mask_penalty_weight,
+                max_scored,
+                hard_separation,
             )
             accepts += got
         if enable_ss:
@@ -1287,6 +1397,7 @@ def _region_bounded_swap_relief(
                 graph_delta_weight,
                 graph_delta_samples,
                 graph_mask_penalty_weight,
+                max_scored,
             )
             accepts += got
 

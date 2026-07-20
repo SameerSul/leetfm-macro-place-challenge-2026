@@ -23,7 +23,22 @@ Challenge](https://github.com/partcleda/macro-place-challenge-2026), built on
 the ICCAD04 benchmark suite and the TILOS exact proxy evaluator. We treat
 hierarchy preservation as the primary design objective rather than a side
 effect of cost minimization. The placer infers a hierarchy model directly
-from netlist connectivity, places it with a hierarchy-aware global solver
+from netlist connectivity, conservatively refining a nearly all-covering flat
+component from shared hard-to-soft affinity when ordinary connectivity hides
+its boundaries. It also retains one non-recursive parent/child level. When no
+explicit or retained connectivity parent exists, direct/shared-soft structural
+relations are reinforced by initial placement proximity, local macro density,
+and placed wire pressure; proximity alone cannot declare an IP. Active leaf
+clusters can then relocate or exchange slots inside a larger parent region
+without changing the global DREAMPlace partition. Each deepest child also gets
+a footprint-plus-margin relief box whose margin and cold-side expansion blend
+congestion, density, and hierarchy-graph pressure. Individual members can
+relocate or swap only inside that box. Region swaps exact-score two stable
+prefixes and skip an untouched suffix only when either prefix already contains
+the same first acceptable move. Disposable batched congestion grids are reduced
+in place, and static hard-macro separation geometry is shared by every field
+and round in one swap schedule. The model is placed with a
+hierarchy-aware global solver
 (DREAMPlace, seeded with synthetic clique nets per cluster), legalizes hard
 macros in cluster-consecutive order, and then runs a sequence of
 exact-proxy-gated local search passes, region-locked relocation, cluster
@@ -37,11 +52,43 @@ Current full-suite result:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.1205  17/17 VALID  0 overlaps  all hierarchy audits passed  (554.54s)
+AVG 1.1404  17/17 VALID  0 overlaps  all hierarchy audits passed  (318.55s)
 
 uv run evaluate src/main.py --ng45
-AVG 0.7252  4/4 VALID  0 overlaps  all hierarchy audits passed  (232.41s)
+AVG 0.7121  4/4 VALID  0 overlaps  all hierarchy audits passed  (64.80s)
 ```
+
+Sixteen IBM scores remain bit-identical to the accepted reference. A
+contract-preserving near-miss repair retained 99.61% of the IBM09 constraint-
+graph seed displacement and improved that design from `1.0122` to `0.9978`.
+Stable-prefix swap scoring, ranked-only hard legality, and disabled-graph
+allocation removal now avoid 66,703 exact evaluations and reduce attributed
+region-swap time from 159.91s to 148.29s. In-place congestion-tail reduction
+and schedule-scoped hard-geometry reuse reduce it again to 146.98s while
+preserving all placements and exact-score counts. Direct global-topology swap
+routing then removes pair-specific topology construction, while exact sparse
+congestion/density reducers merge only changed cells with the cached baseline
+tail. Attributed region-swap time falls again to 104.04s with the same
+1,077,431 physical and 66,703 avoided exact scores; complete IBM runtime falls
+to 351.48s.
+A commit-scoped cache now reuses the sorted congestion/density baseline and
+density summary across rejected swap batches, rebuilding it only after a
+committed scorer-state change. The verification sweep preserved every IBM
+placement/count and reduced attributed region-swap time again from 104.04s to
+102.68s; focused IBM04/12/18 reductions were 7.6%, 9.3%, and 5.5%. NG45 kept
+AVG 0.7121 while its region phase fell from 15.41s to 14.62s. Candidate-row
+parallelism and a fused hard-blockage scratch were benchmarked and reverted
+because they were slower.
+The current swap scheduler tests a second same-sized stable prefix before the
+untouched suffix, increasing avoided exact evaluations from 66,703 to 79,466
+and reducing trace-compatible region-swap time from 104.04s to 98.74s. Batched
+soft wirelength prefiltering rejects 100,831 proposals before congestion and
+density scoring, cutting the four main soft-relocation phases by 20.7–22.3%.
+Mutually exclusive telemetry accounts for at least 99.86% of every IBM placer
+call: 297.33s was inside `MacroPlacer.place()` and the remaining 21.22s of the
+318.55s command was evaluator loading/final scoring.
+The independent synthetic hierarchy suite is 10/10 valid with zero overlaps,
+10/10 truth-audit passes, and `AVG 1.4192`.
 
 ## Setup
 
@@ -67,6 +114,14 @@ uv run evaluate src/main.py --all
 # NG45 commercial designs (OpenROAD inputs)
 uv run evaluate src/main.py --ng45
 
+# Contract headroom and counterfactual slack calibration
+uv run python scripts/analyze_hierarchy_contract.py \
+  ml_data/plateau_telemetry/plateau_telemetry.jsonl
+
+# Reconcile exclusive placer phases against the API boundary
+uv run python scripts/analyze_plateau_telemetry.py \
+  ml_data/plateau_telemetry/plateau_telemetry.jsonl --coverage
+
 # Visualize a placement
 uv run evaluate src/main.py -b ibm10 --vis
 
@@ -80,7 +135,7 @@ uv run python src/place_design.py \
 
 ```mermaid
 flowchart TD
-    A[Benchmark netlist] --> B[Infer hierarchy<br/>hard clusters, owned/bridge soft roles]
+    A[Benchmark netlist] --> B[Infer hierarchy<br/>hard clusters, owned/bridge soft roles,<br/>one spatial/structural parent/child level]
     B --> C[Grouped DREAMPlace global placement<br/>synthetic clique nets per cluster]
     C --> D[Cluster-consecutive hard legalization]
 
@@ -98,13 +153,16 @@ flowchart TD
     S3 --> E
     S4 --> E
     S5 --> E
-    S6 --> E
+    S6 --> S7[Repair one-component mandatory near miss<br/>only when at least 95% source displacement remains]
+    S7 --> E
 
     E --> F[Congestion-expanded hierarchy regions]
-    F --> G[Region-locked relocation + soft cleanup]
-    G --> H[Exact-gated cluster decompression]
-    H --> I[Region-bounded hard/soft swaps]
-    I --> I2[Compound related-soft relocation<br/>final-state exact acceptance]
+    F --> G[Region-locked relocation + soft cleanup<br/>hard containment prefilter before exact scoring]
+    G --> G2[Parent-bounded child relocation<br/>and sibling slot swaps]
+    G2 --> G3[Deepest-child footprint + graph/field margin boxes<br/>bounded internal relocation and hard swaps]
+    G3 --> H[Exact-gated cluster decompression]
+    H --> I[Region-bounded hard/soft swaps<br/>two stable exact prefixes]
+    I --> I2[Explicit high-confidence soft-bundle relocation<br/>final-state exact acceptance]
     I2 --> J[Coldspot tightening<br/>congestion-driven local relief]
     J --> L{Final legality,<br/>bounds, and<br/>hierarchy audit}
     L -->|pass| M[Macro center coordinates]
@@ -116,8 +174,8 @@ flowchart TD
     classDef search fill:#fff3e0,stroke:#ef6c00,color:#e65100
     classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     class A,B,C,D,P,E seed
-    class S0,S1,S2,S3,S4,S5,S6 cand
-    class F,G,H,I,I2,J search
+    class S0,S1,S2,S3,S4,S5,S6,S7 cand
+    class F,G,G2,G3,H,I,I2,J search
     class L,M,N audit
 ```
 
@@ -125,14 +183,25 @@ Blue nodes build the hierarchy-aware seed; the lighter blue row is the seed
 portfolio — grouped DREAMPlace sits next to
 the legalized `initial.plc`, two DP/initial blends, a radial expansion of
 the DP basin, a synthetic-clearance push-apart of the DP basin, and a
-constraint-graph legalization of `initial.plc`. Every
-candidate is exact-scored, checked component-by-component against legalized
-`initial.plc`, and only the lowest-proxy eligible one advances. The six-part
+constraint-graph legalization of `initial.plc`. A mandatory lower-proxy seed
+that misses exactly one component may be projected toward the passing reference;
+the repaired state advances to exact scoring only when it is legal and retains
+at least 95% of the source displacement. Production legalizes
+`initial.plc` before it builds the reference limits. Non-mandatory candidates
+that already fail immutable hard components are removed before exact scoring;
+the remaining candidates are checked component-by-component and only the
+lowest-proxy eligible one advances. The six-part
 hard/soft/graph hierarchy vector covers cluster compactness, worst spread,
 nearest-neighbor impurity, hierarchy-edge stretch, owned-soft distance, and
 bridge-soft corridor distance. An experimental
 hierarchy-first selector is available through `HIER_SEED_HIERARCHY_SELECT=1`,
 but remains default-off because focused validation materially regressed proxy.
+For single-component affinity refinement, an already legal raw `initial.plc`
+can remain the immutable reference when its legalized form satisfies the raw
+limits, preventing double slack. If the raw hard placement is illegal, grouped
+DREAMPlace is the reference instead. This keeps seedless/random input from
+defining false hierarchy geometry while preserving the exact contract and
+final rollback gates.
 Orange
 nodes are the exact-proxy-gated local search passes; green nodes are the
 final audit and the rollback to the best audit-passing checkpoint if either
@@ -150,14 +219,19 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
              expansion of DP basin, synthetic-clearance push-apart,
              constraint-graph legalized initial.plc
           -> exact-score all candidates, apply the per-component hierarchy
-             contract relative to legalized initial.plc, and advance the
-             lowest-proxy eligible seed
+             contract relative to the topology-appropriate legal reference,
+             and advance the lowest-proxy eligible seed
           -> congestion-expanded hierarchy regions
-          -> region-locked relocation + soft cleanup
+          -> region-locked relocation + soft cleanup; reject hard candidates
+             above the selected seed's containment limit before exact scoring
+          -> parent-bounded child relocation and sibling slot swaps
+          -> build immutable deepest-child footprint-plus-margin boxes from
+             congestion, density, and graph pressure; run bounded internal
+             hard/owned-soft relocation and hard-hard swaps
           -> exact-gated cluster decompression
-          -> region-bounded hard/soft swaps
-          -> hierarchy-bounded compound related-soft relocation; exact-score
-             only after the complete group move is formed
+          -> region-bounded hard/soft swaps with two stable exact prefixes
+          -> hierarchy-bounded explicit high-confidence soft-bundle relocation;
+             exact-score only after the complete group move is formed
           -> coldspot tightening (congestion-driven local relief)
           -> final legality, bounds, hard-cluster audit, and per-component
              hierarchy-vector audit
