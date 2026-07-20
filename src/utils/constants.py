@@ -33,6 +33,19 @@ HIER_OVERSIZE_CLUSTER_MIN_BRIDGE_SOFTS = 5
 HIER_OVERSIZE_CLUSTER_MIN_SIZE = 6
 # Maximum cut/total edge-weight ratio accepted for oversized hierarchy bisection.
 HIER_OVERSIZE_CLUSTER_MAX_CUT_RATIO = 0.45
+# A flat netlist can collapse into one component, making bridge-soft evidence
+# impossible because every soft has only one possible hard-cluster owner. In
+# that narrow case, allow only strongly separated graph cuts and keep partial
+# refinement even when recursion cannot reach the ordinary target leaf size.
+HIER_SINGLE_COMPONENT_SPLIT_MIN_COVERAGE = 0.90
+HIER_SINGLE_COMPONENT_SPLIT_MIN_SIZE = 4
+HIER_SINGLE_COMPONENT_SPLIT_MAX_CUT_RATIO = 0.20
+# Minimum cosine similarity between hard-to-soft low-fanout affinity vectors.
+# This signal is used only by the single-flat-component refinement fallback.
+HIER_SINGLE_COMPONENT_SOFT_COSINE = 0.25
+# Exact per-candidate rich-vector checks are reserved for small refined graphs;
+# larger designs retain the normal pass checkpoint and final rollback audits.
+HIER_SINGLE_COMPONENT_CANDIDATE_GUARD_MAX_HARD = 64
 
 # DREAMPlace group attraction weight for cluster grouping constraints.
 HIER_GROUP_WEIGHT = 8
@@ -62,6 +75,10 @@ HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
 HIER_SEED_HIERARCHY_SELECT = False
 HIER_SEED_HIERARCHY_ABS_SLACK = 0.002
 HIER_SEED_HIERARCHY_REL_SLACK = 0.15
+# Repair only a single-component near miss that can retain almost all of the
+# lower-proxy candidate. Broader interpolation changed downstream search basins
+# even when the repaired seed itself had a lower exact proxy.
+HIER_SEED_CONTRACT_REPAIR_MIN_FRACTION = 0.95
 # Complete-placement hierarchy vector weights. Lower is better.
 HIER_VECTOR_COMPACTNESS_WEIGHT = 0.25
 HIER_VECTOR_WORST_SPREAD_WEIGHT = 0.15
@@ -91,6 +108,75 @@ HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN = 0.08
 
 # Minimum exact-proxy gain required to accept hard propose-all relocation.
 HIER_RELOC_PROPOSE_MIN_GAIN = 0.0005
+
+# One retained parent layer above the active leaf partition. The child operator
+# rigidly translates one complete leaf (including owned softs) inside its parent
+# footprint and exact-scores only contract-passing, hard-legal final states.
+HIER_SUBCLUSTER_RELOCATION_BUDGET_S = 4.0
+HIER_SUBCLUSTER_RELOCATION_MIN_SPARE_S = 12.0
+# Each eligible production cluster receives at most one strict graph bisection.
+HIER_SUBCLUSTER_MIN_PARENT_HARD = 12
+HIER_SUBCLUSTER_MIN_CHILD_HARD = 4
+HIER_SUBCLUSTER_MAX_CUT_RATIO = 0.20
+# One-level flat-name inference strengthens low-fanout hard connectivity with
+# shared-soft affinity, initial-placement proximity, local macro-area density,
+# and a gridless routing-pressure estimate. Geometry cannot create an edge by
+# itself; it can only reinforce already connected hard/soft structure.
+HIER_SUBCLUSTER_SHARED_SOFT_WEIGHT = 0.75
+HIER_SUBCLUSTER_SPATIAL_PROXIMITY_WEIGHT = 1.0
+HIER_SUBCLUSTER_SPATIAL_PRESSURE_WEIGHT = 0.50
+HIER_SUBCLUSTER_SPATIAL_NEIGHBORS = 8
+HIER_SUBCLUSTER_SPATIAL_MAX_SOFT_DEGREE = 24
+HIER_SUBCLUSTER_SPATIAL_MIN_COMPACTNESS_GAIN = 0.10
+HIER_SUBCLUSTER_SPATIAL_MIN_CONFIDENCE = 0.54
+HIER_SUBCLUSTER_RELOCATION_TOP_CHILDREN = 4
+HIER_SUBCLUSTER_RELOCATION_TOP_SWAPS = 4
+HIER_SUBCLUSTER_RELOCATION_MAX_HARD = 64
+HIER_SUBCLUSTER_RELOCATION_MAX_SOFT = 32
+# Fallback target compaction before affected-only legalization. Rigid motion is
+# always tried first.
+HIER_SUBCLUSTER_RELOCATION_COMPACT_SCALE = 0.90
+HIER_SUBCLUSTER_RELOCATION_COLD_PCT = 35.0
+HIER_SUBCLUSTER_RELOCATION_MAX_COMPONENTS = 4
+HIER_SUBCLUSTER_RELOCATION_MIN_COMPONENT_CELLS = 4
+HIER_SUBCLUSTER_RELOCATION_ANCHORS = 2
+HIER_SUBCLUSTER_RELOCATION_SHIFT_FRACTIONS = (0.5, 1.0)
+HIER_SUBCLUSTER_RELOCATION_MIN_FIELD_DROP = 0.02
+# A retained child move activates the multilevel contract for every later pass,
+# so require more headroom than an ordinary leaf-local plateau move.  The
+# 0.00005 plateau threshold accepted a 0.000068 ibm08 move whose tighter later
+# contract cost 0.0053 at finalization; 0.0001 rejects that trajectory while
+# retaining the independently beneficial NG45 move.
+HIER_SUBCLUSTER_RELOCATION_MIN_GAIN = 0.0001
+
+# Deepest-child relief keeps each member inside a box equal to the child's
+# current footprint plus a graph/field-calibrated margin. Congestion and density
+# heat supply most of the margin signal; inter-child graph tension supplies the
+# structural term and target-anchor bias. The boxes are built once after rigid
+# child motion and remain immutable during the internal pass.
+HIER_DEEP_CLUSTER_BUDGET_S = 3.0
+HIER_DEEP_CLUSTER_MIN_SPARE_S = 8.0
+HIER_DEEP_CLUSTER_BASE_MARGIN = 0.01
+HIER_DEEP_CLUSTER_EXTRA_MARGIN = 0.025
+HIER_DEEP_CLUSTER_CONGESTION_WEIGHT = 0.45
+HIER_DEEP_CLUSTER_DENSITY_WEIGHT = 0.35
+HIER_DEEP_CLUSTER_GRAPH_WEIGHT = 0.20
+HIER_DEEP_CLUSTER_DIRECTIONAL_EXPAND_FRAC = 0.01
+HIER_DEEP_CLUSTER_EXPAND_HOT_PCT = 60.0
+HIER_DEEP_CLUSTER_GRAPH_COMPONENT_WEIGHT = 0.25
+HIER_DEEP_CLUSTER_TOP_CHILDREN = 4
+HIER_DEEP_CLUSTER_HARD_TARGETS = 4
+HIER_DEEP_CLUSTER_SOFT_TARGETS = 4
+HIER_DEEP_CLUSTER_RELOCATION_TARGETS = 3
+HIER_DEEP_CLUSTER_SWAP_K = 4
+HIER_DEEP_CLUSTER_GRAPH_ANCHOR_BLEND = 0.15
+HIER_DEEP_CLUSTER_GRAPH_DELTA_WEIGHT = 0.10
+# A deep move activates child/parent limits for every later pass. The first full
+# sweep showed that 0.00010--0.00039 local gains can displace much larger later
+# improvements, so require enough immediate headroom to pay for that tighter
+# downstream trajectory.
+HIER_DEEP_CLUSTER_MIN_GAIN = 0.0005
+HIER_DEEP_CLUSTER_MAX_SCORED_PER_CALL = 8
 
 # Final-only exact scoring for compound moves of related soft macros. Candidate
 # members preserve their relative layout and must remain inside their individual
@@ -140,7 +226,15 @@ HIER_STRONG_SOFT_REPAIR_ROUNDS = 2
 HIER_STRONG_SOFT_REPAIR_TOP_K = 512
 HIER_STRONG_SOFT_REPAIR_TARGETS = 12
 HIER_STRONG_SOFT_REPAIR_MIN_GAIN = 0.00005
+# Do not start another late lane after the audited retained gain from the current
+# lane falls below this deterministic floor. In particular, a weak density lane
+# cannot reopen another congestion/density round.
+HIER_STRONG_SOFT_CONTINUE_MIN_GAIN = 0.00005
 HIER_STRONG_SOFT_REPAIR_WL_PREFILTER = 0.0005
+# Scale late soft-relocation candidate quotas for smaller designs. Larger
+# designs retain the existing quotas; exact acceptance gates are unchanged.
+HIER_SOFT_QUOTA_REFERENCE_MACROS = 1200
+HIER_SOFT_QUOTA_MIN_SCALE = 0.50
 # Extra soft-only continuation for medium/large congestion cases where the
 # normal strong-soft pass is still producing exact proxy gain. This is
 # structural, not benchmark-name gated.
@@ -157,6 +251,7 @@ HIER_MEDIUM_SOFT_ROUNDS = 2
 HIER_MEDIUM_SOFT_TOP_K = 768
 HIER_MEDIUM_SOFT_TARGETS = 14
 HIER_MEDIUM_SOFT_MIN_GAIN = 0.00005
+HIER_MEDIUM_SOFT_CONTINUE_MIN_GAIN = 0.00005
 # Soft-only repair interleaved before hard/soft swap search.
 HIER_INTERLEAVED_SOFT_REPAIR_BUDGET_S = 3.0
 HIER_INTERLEAVED_SOFT_REPAIR_MIN_SPARE_S = 12.0
@@ -321,6 +416,13 @@ HIER_REGION_SWAP_BUDGET_S = 20.0
 HIER_HARD_SWAP_K = 16
 # Number of soft candidates considered per soft swap source.
 HIER_SOFT_SWAP_K = 48
+# Exact-score a short stable prefix first. When that prefix contains the first
+# acceptable candidate, the untouched suffix cannot affect the committed move
+# and is skipped. Logical score accounting remains candidate-order compatible
+# with the deterministic pass quotas.
+HIER_SWAP_HARD_EXACT_PREFIX = 4
+HIER_SWAP_HARD_SOFT_EXACT_PREFIX = 8
+HIER_SWAP_SOFT_SOFT_EXACT_PREFIX = 12
 # Minimum exact-proxy gain required for a swap move.
 HIER_SWAP_MIN_GAIN = 0.00001
 # Optional soft-macro barrier for soft relocation and soft-involving swaps.
@@ -387,7 +489,8 @@ HIER_COLDSPOT_OPPORTUNITY_MIN_COLD_CELLS = 1
 # Stop coldspot tightening after this many generated-but-uncommitted rounds.
 HIER_COLDSPOT_MAX_DRY_ROUNDS = 2
 # Number of opportunity-ranked clusters tried in one coldspot round.
-HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS = 2
+# Prioritize the hottest component and avoid duplicate exact work per round.
+HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS = 1
 # Number of coldspot tightening rounds to attempt.
 HIER_COLDSPOT_ROUNDS = 8
 # Wall-clock budget for coldspot tightening.

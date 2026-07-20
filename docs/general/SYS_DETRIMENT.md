@@ -88,6 +88,14 @@ the current state has already exceeded a hierarchy limit.
 Action: enforce the complete vector at completed subpass boundaries and stop or
 restore before more exact-scored work is generated.
 
+Review validation (2026-07-17) found that deferring vector rollback across
+sub-rounds improved `ibm10` in isolation but regressed the full suite. The
+vector-safe variant reached `AVG 1.1564`, 17/17 VALID, zero overlaps, in
+`514.27s`, versus the accepted `AVG 1.1205` in `554.54s`. The `+0.0359` proxy
+regression is not accepted; the faster runtime does not compensate for the
+quality loss. The broad vector-deferred variant (`AVG 1.1609 / 493.93s`) was
+also rejected.
+
 ### 4. Hierarchy pass/fail does not communicate evidence coverage
 
 **Status: Optimize accuracy reporting and inference.**

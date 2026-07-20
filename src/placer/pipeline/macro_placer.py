@@ -1,6 +1,7 @@
 """Macro placer entrypoint with hierarchy-only execution."""
 
 import random
+import time
 from typing import List, Optional
 
 import numpy as np
@@ -8,6 +9,7 @@ import torch
 from macro_place.benchmark import Benchmark
 
 from placer.pipeline.hierarchy_floorplan import run_hierarchy_floorplan
+from placer.local_search.plateau_telemetry import log_plateau_event
 from utils import constants as const
 from utils.config import _GPU_BACKEND, _GPU_DEVICE_NAME, _log
 
@@ -84,7 +86,20 @@ class MacroPlacer:
         return run_hierarchy_floorplan(benchmark)
 
     def place(self, benchmark: Benchmark) -> torch.Tensor:
-        return self._clamp_in_bounds(self._place_impl(benchmark), benchmark)
+        api_t0 = time.perf_counter()
+        succeeded = False
+        try:
+            result = self._clamp_in_bounds(self._place_impl(benchmark), benchmark)
+            succeeded = True
+            return result
+        finally:
+            log_plateau_event(
+                "hier_stage_timing",
+                benchmark=str(getattr(benchmark, "_hierarchy_trace_name", str(benchmark.name))),
+                stage="placer_api_total",
+                elapsed_s=float(time.perf_counter() - api_t0),
+                succeeded=bool(succeeded),
+            )
 
     def _place_impl(self, benchmark: Benchmark) -> torch.Tensor:
         np.random.seed(self.seed)
