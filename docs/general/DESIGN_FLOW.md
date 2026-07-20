@@ -87,6 +87,20 @@ remain eligible.
 The independent synthetic sweep completed at `AVG 1.4192`, 10/10 VALID, zero
 overlaps, and 10/10 truth-audit passes with the deep boxes enabled.
 
+The latest exact-equivalent follow-up prepares source-invariant swap topology,
+endpoint rows, candidate coordinates, and the position snapshot once for
+schedules spanning multiple exact prefixes. Stable slices feed the unchanged
+4/8/12 prefix dispatches. IBM logical/physical/avoided work remained
+1,048,385 / 1,066,186 / 79,466 and attributed region-swap time was `94.37s ->
+94.29s`. Soft relocation now performs grid conversion, clipping, region-mask
+filtering, symbolic-key construction, and stable stamp deduplication in cached
+Numba kernels; the rich hierarchy callback remains ordered and scalar.
+Identical soft workloads reduced the five measured phases `74.039s ->
+73.400s`, including region-soft relocation `38.431s -> 37.916s`. Four
+cache/delta/transaction alternatives regressed their attributed phases and are
+absent from production; their measurements are in
+[PROGRESS.md](PROGRESS.md).
+
 The same revision passes `uv run evaluate src/main.py --ng45` at `AVG 0.7121`,
 4/4 VALID, zero overlaps, all hierarchy audits passed, in 64.80s. A localized
 child relocation on `ariane136` improved that design from `0.7298` to `0.7291`.
@@ -277,7 +291,9 @@ work-allocation mechanism.
 Coldspot opportunity ranking now prioritizes the hottest component per round,
 while retaining the same exact and hierarchy-contract acceptance gates.
 Repeated batched swap evaluations reuse static pair-topology packing inside the
-incremental scorer; exact score values and acceptance decisions are unchanged.
+incremental scorer; schedules that reach a second prefix prepare that source's
+complete ragged pair topology and coordinate snapshots once, then take stable
+prefix views. Exact score values and acceptance decisions are unchanged.
 Fallback congestion expansion skips ineffective minimum-floor widening when no
 adjacent fallback side is colder than the hot cluster.
 Region hard relocation applies the selected seed's inexpensive hard-
@@ -508,11 +524,11 @@ the kernel reproduces expanding-ring and lexicographic tie behavior. The
 synthetic-clearance seed's quadratic pair-push accumulation uses a separate
 cached JIT with a reusable delta buffer.
 
-Soft relocation keeps proposals as integer grid-cell IDs while applying
-vectorized bounds and region-mask filters, stable generation-stamped
-deduplication, and the hierarchy callback in the original order. Only surviving
-IDs are converted to coordinates, then the unchanged wirelength threshold is
-applied with one compiled exact delta batch.
+Soft relocation keeps proposals as integer grid-cell IDs while one cached
+Numba filter converts/clips centers, applies the region mask, constructs exact
+symbolic keys, and performs stable generation-stamped deduplication. The rich
+hierarchy callback still runs in the original order. The unchanged wirelength
+threshold is then applied with one compiled exact delta batch.
 Surviving sets are field-scored on CPU once at least two targets are present.
 Capacity-grown raw H/V, bbox, wirelength, congestion, and density workspaces
 are reused across sources. Per-target routing, touched-bbox smoothing,

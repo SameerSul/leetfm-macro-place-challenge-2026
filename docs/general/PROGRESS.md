@@ -6,6 +6,40 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-07-19 — accepted prepared swap sources and compiled soft-target
+> filtering):** Six exact-equivalent hierarchy-search throughput changes were
+> implemented one at a time and each was followed by `uv run evaluate
+> src/main.py --all`. Every sweep reproduced **AVG 1.1404**, **17/17 VALID**,
+> zero overlaps, every per-design score, and all final hierarchy audits. Only
+> the two attributable improvements remain in production.
+>
+> Region-swap schedules that span more than one stable prefix now prepare the
+> source endpoint, candidate modules/coordinates, position cache, and ragged
+> incident-net union once. Prefix scorers take stable slices of that prepared
+> data, preserving the original 4/8/12 boundaries, first-winner semantics,
+> logical quotas, and **1,048,385 logical / 1,066,186 physical / 79,466
+> avoided** work. Attributed region-swap time was non-regressive at **94.37s ->
+> 94.29s**; direct HH/HS/SS prepared-versus-ordinary parity is bit-identical and
+> committed scorer state is unchanged.
+>
+> Soft target preparation now fuses grid-ID conversion, center clipping,
+> symbolic-key construction, region-mask filtering, and stable generation-
+> stamped deduplication in cached Numba kernels. The scalar hierarchy callback
+> remains in original order. Across identical candidate and exact-score counts,
+> the five measured soft-relocation phases fell **74.039s -> 73.400s** (0.639s,
+> 0.86%); region-soft relocation alone fell **38.431s -> 37.916s**. The accepted
+> full sweep took **349.27s**, which includes evaluator/JIT/host variance and is
+> not claimed as an end-to-end improvement. All **96** project tests, bytecode
+> compilation, and direct HH/HS/SS scalar/prepared parity checks pass.
+>
+> Four implementations regressed and were removed immediately. A revision-
+> scoped swap exact-score cache found 16,265 hits but changed the phase to
+> 95.51s. Compact route/blockage delta grids changed it to 95.52s. A soft exact-
+> score cache found 15,094 hits but increased the five relocation phases
+> **74.039s -> 78.349s** and region-soft time **38.431s -> 40.706s**. Wrapping
+> soft prepare/score/revert as one scorer transaction increased the same five
+> phases **73.400s -> 75.117s**. None of those four code paths remains active.
+>
 > **Status (2026-07-19 — exact hierarchy-search scorer acceleration):** Swap
 > pair preparation now merges the two sorted incident-net CSR rows in one
 > compiled ragged-union kernel. The exact sparse congestion and density
