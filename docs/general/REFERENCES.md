@@ -205,8 +205,10 @@ related-work results are not confused with VivaPlace's measured results.
     [NVIDIA publication page](https://research.nvidia.com/publication/2020-02_abcdplace-accelerated-batch-based-concurrent-detailed-placement-multi-threaded).
     Its concurrent independent-set matching, global-swap, and local-reordering
     formulation motivated evaluating larger batches. VivaPlace's accepted CSR
-    pair-net union and sparse exact reducers are independent CPU
-    implementations that retain sequential first-winner commits. ABCDPlace's
+    pair-net union, prepared multi-prefix source reuse, and sparse exact reducers
+    are independent CPU implementations that retain sequential first-winner
+    commits. A revision-scoped result cache was measured and rejected; it is
+    not an ABCDPlace implementation. ABCDPlace's
     reported 2–5× CPU and over 10× GPU results belong to its ISPD and
     industrial experiments and are not VivaPlace performance projections.
 
@@ -243,9 +245,11 @@ related-work results are not confused with VivaPlace's measured results.
     [author PDF](https://liulixinkerry.github.io/src/dac22_xplace.pdf).
     Xplace motivated examining fused GPU-oriented placement operations at a
     systems level. It is a global analytical placer, not a source for
-    VivaPlace's detailed incremental scorer. Its roughly 2× DREAMPlace result
-    is specific to the paper's experiments and is not evidence for, or a
-    forecast of, the accepted CPU buffer-reuse work. VivaPlace does not use
+    VivaPlace's detailed incremental scorer. VivaPlace's accepted compiled
+    soft-target filter and rejected fused transaction wrapper are independent
+    CPU systems experiments. Xplace's roughly 2× DREAMPlace result is specific
+    to the paper's experiments and is not evidence for, or a forecast of,
+    VivaPlace's measured 0.86% soft-phase reduction. VivaPlace does not use
     Xplace's Fourier neural network extension.
 
 25. **FastDP — future reference; optimal-region ranking was not promoted.**

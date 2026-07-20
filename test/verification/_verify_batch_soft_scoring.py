@@ -93,6 +93,14 @@ def run(bench_name):
             swap_scorer.plc._last_pos_cache.copy(),
         )
         batch = swap_scorer.score_swap_soft_soft_many(soft_a, candidates)
+        prepared = swap_scorer.prepare_swap_soft_soft_source(soft_a, candidates)
+        split = min(12, candidates.size)
+        prepared_scores = np.concatenate(
+            [
+                swap_scorer.score_prepared_swap_soft_soft(prepared, 0, split),
+                swap_scorer.score_prepared_swap_soft_soft(prepared, split, candidates.size),
+            ]
+        )
         state_after_batch = (
             swap_scorer.H_flat,
             swap_scorer.V_flat,
@@ -108,9 +116,11 @@ def run(bench_name):
             [swap_scorer.score_swap_soft_soft(soft_a, int(soft_b)) for soft_b in candidates]
         )
         delta = float(np.max(np.abs(batch - scalar), initial=0.0))
-        passed = delta < 1e-12 and state_exact
+        prepared_delta = float(np.max(np.abs(batch - prepared_scores), initial=0.0))
+        passed = delta < 1e-12 and prepared_delta == 0.0 and state_exact
         print(
             f"  swap soft={soft_a}: max score delta={delta:.2e}, "
+            f"prepared delta={prepared_delta:.2e}, "
             f"state_exact={int(state_exact)} "
             f"{'PASS' if passed else 'FAIL'}"
         )

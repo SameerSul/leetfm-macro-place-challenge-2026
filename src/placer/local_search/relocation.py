@@ -57,6 +57,89 @@ def _dedupe_targets_xy(targets) -> np.ndarray:
     return arr[np.sort(keep)]
 
 
+if HAS_NUMBA:
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _soft_grid_target_candidates_jit(
+        ids,
+        half_w,
+        half_h,
+        cw,
+        ch,
+        nr,
+        nc,
+        mask,
+        mask_rows,
+        mask_cols,
+        mask_enabled,
+    ):
+        """Convert grid IDs, clip centers, and apply a region mask in one pass."""
+        count = ids.shape[0]
+        x = np.empty(count, dtype=np.float64)
+        y = np.empty(count, dtype=np.float64)
+        keys = np.empty(count, dtype=np.int64)
+        keep = np.ones(count, dtype=np.bool_)
+        cell_w = cw / nc
+        cell_h = ch / nr
+        x_lo = half_w
+        x_hi = cw - half_w
+        y_lo = half_h
+        y_hi = ch - half_h
+        mask_cell_w = cw / mask_cols if mask_enabled else 1.0
+        mask_cell_h = ch / mask_rows if mask_enabled else 1.0
+        for index in range(count):
+            grid_id = ids[index]
+            col = grid_id % nc
+            row = grid_id // nc
+            raw_x = (col + 0.5) * cell_w
+            raw_y = (row + 0.5) * cell_h
+            clipped_x = min(max(raw_x, x_lo), x_hi)
+            clipped_y = min(max(raw_y, y_lo), y_hi)
+            x[index] = clipped_x
+            y[index] = clipped_y
+
+            if x_lo >= x_hi:
+                x_key = 0
+            elif raw_x <= x_lo:
+                x_key = 0
+            elif raw_x >= x_hi:
+                x_key = nc + 1
+            else:
+                x_key = col + 1
+            if y_lo >= y_hi:
+                y_key = 0
+            elif raw_y <= y_lo:
+                y_key = 0
+            elif raw_y >= y_hi:
+                y_key = nr + 1
+            else:
+                y_key = row + 1
+            keys[index] = y_key * (nc + 2) + x_key
+
+            if mask_enabled:
+                mask_col = min(max(int(clipped_x / mask_cell_w), 0), mask_cols - 1)
+                mask_row = min(max(int(clipped_y / mask_cell_h), 0), mask_rows - 1)
+                keep[index] = mask[mask_row, mask_col]
+        return x, y, keys, keep
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _stamp_unique_soft_targets_jit(keys, keep, stamps, generation):
+        """Apply stable first-winner target deduplication in place."""
+        before = 0
+        retained = 0
+        for index in range(keys.shape[0]):
+            if not keep[index]:
+                continue
+            before += 1
+            key = keys[index]
+            if stamps[key] == generation:
+                keep[index] = False
+            else:
+                stamps[key] = generation
+                retained += 1
+        return before - retained
+
+
 def _soft_targets_from_grid_ids(
     grid_ids: np.ndarray,
     *,
@@ -75,41 +158,60 @@ def _soft_targets_from_grid_ids(
     ids = np.asarray(grid_ids, dtype=np.int64).reshape(-1)
     if ids.size == 0:
         return np.empty((0, 2), dtype=np.float64), 0, 0
-    cell_w = float(cw) / int(nc)
-    cell_h = float(ch) / int(nr)
-    cols = ids % int(nc)
-    rows = ids // int(nc)
-    raw_x = (cols.astype(np.float64) + 0.5) * cell_w
-    raw_y = (rows.astype(np.float64) + 0.5) * cell_h
-    x_lo = float(half_w)
-    x_hi = float(cw) - float(half_w)
-    y_lo = float(half_h)
-    y_hi = float(ch) - float(half_h)
-    x = np.clip(raw_x, x_lo, x_hi)
-    y = np.clip(raw_y, y_lo, y_hi)
-
-    # A clipped coordinate has one of nc+2 / nr+2 exact symbolic values:
-    # lower edge, an unchanged cell center, or upper edge. These keys avoid
-    # coordinate tuples and preserve np.unique(axis=0)'s first-winner order.
-    if x_lo >= x_hi:
-        x_key = np.zeros(ids.size, dtype=np.int64)
+    mask = np.asarray(region_mask, dtype=np.bool_) if region_mask is not None else None
+    mask_enabled = bool(mask is not None and mask.ndim == 2 and mask.size)
+    if HAS_NUMBA:
+        if mask_enabled:
+            mask_rows, mask_cols = mask.shape
+            mask_arg = np.ascontiguousarray(mask)
+        else:
+            mask_rows = mask_cols = 1
+            mask_arg = np.ones((1, 1), dtype=np.bool_)
+        x, y, keys, keep = _soft_grid_target_candidates_jit(
+            ids,
+            float(half_w),
+            float(half_h),
+            float(cw),
+            float(ch),
+            int(nr),
+            int(nc),
+            mask_arg,
+            int(mask_rows),
+            int(mask_cols),
+            bool(mask_enabled),
+        )
     else:
-        x_key = cols + 1
-        x_key[raw_x <= x_lo] = 0
-        x_key[raw_x >= x_hi] = int(nc) + 1
-    if y_lo >= y_hi:
-        y_key = np.zeros(ids.size, dtype=np.int64)
-    else:
-        y_key = rows + 1
-        y_key[raw_y <= y_lo] = 0
-        y_key[raw_y >= y_hi] = int(nr) + 1
-    keys = y_key * (int(nc) + 2) + x_key
+        cell_w = float(cw) / int(nc)
+        cell_h = float(ch) / int(nr)
+        cols = ids % int(nc)
+        rows = ids // int(nc)
+        raw_x = (cols.astype(np.float64) + 0.5) * cell_w
+        raw_y = (rows.astype(np.float64) + 0.5) * cell_h
+        x_lo = float(half_w)
+        x_hi = float(cw) - float(half_w)
+        y_lo = float(half_h)
+        y_hi = float(ch) - float(half_h)
+        x = np.clip(raw_x, x_lo, x_hi)
+        y = np.clip(raw_y, y_lo, y_hi)
 
-    keep = np.ones(ids.size, dtype=np.bool_)
-
-    if region_mask is not None and keep.any():
-        mask = np.asarray(region_mask, dtype=bool)
-        if mask.ndim == 2 and mask.size:
+        # A clipped coordinate has one of nc+2 / nr+2 exact symbolic values:
+        # lower edge, an unchanged cell center, or upper edge. These keys avoid
+        # coordinate tuples and preserve np.unique(axis=0)'s first-winner order.
+        if x_lo >= x_hi:
+            x_key = np.zeros(ids.size, dtype=np.int64)
+        else:
+            x_key = cols + 1
+            x_key[raw_x <= x_lo] = 0
+            x_key[raw_x >= x_hi] = int(nc) + 1
+        if y_lo >= y_hi:
+            y_key = np.zeros(ids.size, dtype=np.int64)
+        else:
+            y_key = rows + 1
+            y_key[raw_y <= y_lo] = 0
+            y_key[raw_y >= y_hi] = int(nr) + 1
+        keys = y_key * (int(nc) + 2) + x_key
+        keep = np.ones(ids.size, dtype=np.bool_)
+        if mask_enabled:
             mask_rows, mask_cols = mask.shape
             target_cols = np.clip((x / (float(cw) / mask_cols)).astype(np.int64), 0, mask_cols - 1)
             target_rows = np.clip((y / (float(ch) / mask_rows)).astype(np.int64), 0, mask_rows - 1)
@@ -121,14 +223,17 @@ def _soft_targets_from_grid_ids(
             if not bool(candidate_allowed(float(x[idx]), float(y[idx]))):
                 keep[idx] = False
                 hierarchy_rejects += 1
-    before_dedup = int(np.count_nonzero(keep))
-    for idx in np.flatnonzero(keep):
-        key = int(keys[idx])
-        if stamps[key] == int(generation):
-            keep[idx] = False
-        else:
-            stamps[key] = int(generation)
-    dedup_rejects = before_dedup - int(np.count_nonzero(keep))
+    if HAS_NUMBA:
+        dedup_rejects = int(_stamp_unique_soft_targets_jit(keys, keep, stamps, int(generation)))
+    else:
+        before_dedup = int(np.count_nonzero(keep))
+        for idx in np.flatnonzero(keep):
+            key = int(keys[idx])
+            if stamps[key] == int(generation):
+                keep[idx] = False
+            else:
+                stamps[key] = int(generation)
+        dedup_rejects = before_dedup - int(np.count_nonzero(keep))
     return np.column_stack([x[keep], y[keep]]), hierarchy_rejects, dedup_rejects
 
 
