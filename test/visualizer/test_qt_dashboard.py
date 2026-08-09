@@ -10,6 +10,7 @@ pytest.importorskip("pyqtgraph")
 from pyqtgraph.Qt import QtWidgets
 
 from visualizer.events import SCHEMA_VERSION
+from visualizer.main import parse_args
 from visualizer.qt_dashboard import Dashboard
 
 
@@ -69,6 +70,19 @@ def test_offscreen_layers_sidebar_and_replay_controls(tmp_path):
         },
     ]
     trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    args = parse_args(
+        [
+            "--replay",
+            str(trace),
+            "--export-mp4",
+            str(tmp_path / "cli-demo.mp4"),
+            "--export-speed",
+            "0.02",
+        ]
+    )
+    assert args.export_speed == 0.02
+    newest = parse_args(["--replay", str(tmp_path)])
+    assert newest.replay == trace
     window = Dashboard(replay=trace)
     window.timeline.setValue(2)
     window._render_current()
@@ -80,7 +94,52 @@ def test_offscreen_layers_sidebar_and_replay_controls(tmp_path):
     assert window.timeline.value() == 1
     window._next()
     assert window.timeline.value() == 2
+    slow_10x = window.speed.findData(0.1)
+    slow_50x = window.speed.findData(0.02)
+    assert slow_10x >= 0
+    assert slow_50x >= 0
+    window.speed.setCurrentIndex(slow_50x)
+    assert window.replay_speed == 0.02
+    window._toggle_pause()
+    assert not window.paused
+    assert window.timeline.value() == 0
+    for _ in range(49):
+        window._tick()
+    assert window.timeline.value() == 0
+    window._tick()
+    assert window.timeline.value() == 1
+    window._toggle_pause()
+    assert window.paused
+    assert window.export_button.isEnabled()
+
+    encoded = []
+
+    class FakeWriter:
+        def __init__(self, path, fps):
+            assert fps == 3
+            path.touch()
+
+        def append_data(self, frame):
+            encoded.append(frame.copy())
+
+        def close(self):
+            pass
+
+    window._capture_video_frame = lambda: __import__("numpy").zeros((12, 14, 3), dtype="uint8")
+    output, written = window.export_video(tmp_path / "demo", speed=0.1, writer_factory=FakeWriter)
+    assert output == tmp_path / "demo.mp4"
+    assert output.is_file()
+    assert written == 2
+    assert len(encoded) == 2
     window._select(1)
     assert window.selected == 1
     window.close()
     app.processEvents()
+
+
+def test_replay_placeholder_has_actionable_error(tmp_path, capsys):
+    with pytest.raises(SystemExit, match="2"):
+        parse_args(["--replay", str(tmp_path / "TRACE.jsonl")])
+    error = capsys.readouterr().err
+    assert "example placeholder" in error
+    assert "--replay ml_data/visualizer/ibm10" in error
