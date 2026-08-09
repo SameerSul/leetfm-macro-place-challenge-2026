@@ -40,6 +40,7 @@ ensure_source() {
         "$SOURCE_DIR/dreamplace/ops/utility/src/utils_cub.cuh"; then
         git -C "$SOURCE_DIR" apply "$ROOT/scripts/dreamplace/cuda12-cub.patch"
     fi
+    "${PYTHON:-python3}" "$ROOT/scripts/dreamplace/apply_visualizer_patch.py"
     git -C "$SOURCE_DIR" submodule update --init --recursive
 }
 
@@ -91,6 +92,7 @@ build_dreamplace() {
     "$TOOLCHAIN/bin/cmake" --build "$BUILD_DIR" --parallel "${DREAMPLACE_BUILD_JOBS:-3}"
     "$TOOLCHAIN/bin/cmake" --install "$BUILD_DIR"
     "$python" "$ROOT/scripts/patch_dreamplace_install.py"
+    "$python" "$ROOT/scripts/dreamplace/apply_visualizer_patch.py"
 }
 
 run_preflight() {

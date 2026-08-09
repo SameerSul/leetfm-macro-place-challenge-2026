@@ -205,6 +205,9 @@ def _subcluster_relocation(
     max_scored: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int, float]:
     """Rigidly move one child cluster inside its retained parent region."""
+    sink = getattr(incremental_scorer, "event_sink", None)
+    if sink is not None and hasattr(sink, "activate"):
+        sink.activate("subcluster", "Parent-bounded child relocation")
     score_limit = None if max_scored is None else max(0, int(max_scored))
     stats = {
         "parents": int(len(parent_clusters)),
@@ -852,6 +855,9 @@ def _deep_cluster_internal_relief(
     max_scored: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int, float]:
     """Relocate and swap members inside immutable deepest-child boxes."""
+    sink = getattr(incremental_scorer, "event_sink", None)
+    if sink is not None and hasattr(sink, "activate"):
+        sink.activate("deep_cluster", "Deep-cluster internal relief")
     score_limit = None if max_scored is None else max(0, int(max_scored))
     stats = {
         "eligible_children": 0,

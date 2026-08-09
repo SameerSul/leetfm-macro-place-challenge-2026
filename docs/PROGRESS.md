@@ -6,6 +6,30 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-08-09 — accepted opt-in live visualizer):** Added the
+> dependency-free schema-v1 event/trace path, tracked ten-iteration DREAMPlace
+> progress protocol, spawned PyQtGraph/PySide6 dashboard, net/hierarchy layers,
+> and replay controls under `src/visualizer`. The production default remains
+> `event_sink=None`; normal DREAMPlace cache/subprocess behavior is unchanged.
+> A normal post-change `uv run evaluate src/main.py -b ibm10` reproduced
+> **proxy 1.1348, VALID** in 42.30s.
+>
+> The `syn01_wide` live-path integration captured 956 accepted scorer commits,
+> 30 genuine DREAMPlace frames at iterations 10, 20, 30, ..., balanced
+> algorithm scopes, and 14,000 extracted real nets. It wrote/replayed the JSONL
+> trace and reconstructed
+> a final frame exactly equal to the returned
+> completion placement. All **13 visualizer tests** pass, including offscreen
+> Qt, exact scorer metrics/output indices, disabled-sink state equivalence,
+> truncated replay, deterministic net filtering, and bootstrap protocol checks;
+> focused existing scorer tests and bytecode compilation also pass. The complete
+> project suite is **108 passed, 2 GPU-only skipped**. Live-run
+> timing is diagnostic overhead and is not a production runtime claim.
+> The requested `ibm10` live acceptance then completed with **1,546 accepted
+> move events**, 60 sampled DREAMPlace frames, one audit rollback event, 28,272
+> extracted real nets, fixed-macro coordinates unchanged, and terminal exact
+> proxy **1.1347866** (reported evaluator value 1.1348).
+>
 > **Status (2026-07-19 — accepted prepared swap sources and compiled soft-target
 > filtering):** Six exact-equivalent hierarchy-search throughput changes were
 > implemented one at a time and each was followed by `uv run evaluate
