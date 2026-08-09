@@ -58,6 +58,11 @@ uv run evaluate src/main.py --ng45
 AVG 0.7121  4/4 VALID  0 overlaps  all hierarchy audits passed  (64.80s)
 ```
 
+Focused 2026-08-09 validation of the hierarchy-safe micro-shift candidate
+improved IBM10 `1.1348 -> 1.0590`, VALID, with no audit rollback. Full
+IBM/NG45/synthetic validation is pending, so the suite references above remain
+authoritative.
+
 Sixteen IBM scores remain bit-identical to the accepted reference. A
 contract-preserving near-miss repair retained 99.61% of the IBM09 constraint-
 graph seed displacement and improved that design from `1.0122` to `0.9978`.

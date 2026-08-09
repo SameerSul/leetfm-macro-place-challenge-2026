@@ -1,6 +1,7 @@
 """Incremental proxy scorer used by local-search moves."""
 
 import time
+from collections.abc import Mapping
 
 import numpy as np
 from macro_place.benchmark import Benchmark
@@ -1866,9 +1867,14 @@ class IncrementalScorer:
             "proxy": wirelength + 0.5 * density + 0.5 * congestion,
         }
         if self.hierarchy_metric is not None:
-            metrics["hierarchy"] = float(
-                self.hierarchy_metric(self.committed_hard_pos, self.committed_soft_pos)
+            hierarchy = self.hierarchy_metric(
+                self.committed_hard_pos,
+                self.committed_soft_pos,
             )
+            if isinstance(hierarchy, Mapping):
+                metrics.update({str(key): float(value) for key, value in hierarchy.items()})
+            else:
+                metrics["hierarchy"] = float(hierarchy)
         return metrics
 
     def _emit_commit(self, kind: str, indices, old_positions, new_positions) -> None:

@@ -203,7 +203,7 @@ class HierarchyModel:
             n,
             n_soft,
             labels,
-            max_fanout=max_fanout,
+            max_fanout=max(max_fanout, int(const.HIER_SOFT_ROLE_MAX_FANOUT)),
             bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
         )
         soft_role_evidence = derive_soft_cluster_role_evidence(
@@ -211,7 +211,7 @@ class HierarchyModel:
             n,
             n_soft,
             labels,
-            max_fanout=max_fanout,
+            max_fanout=max(max_fanout, int(const.HIER_SOFT_ROLE_MAX_FANOUT)),
             bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
         )
         soft_bundles = derive_path_soft_bundles(
@@ -261,7 +261,7 @@ class HierarchyModel:
                 n,
                 n_soft,
                 subcluster_labels,
-                max_fanout=max_fanout,
+                max_fanout=max(max_fanout, int(const.HIER_SOFT_ROLE_MAX_FANOUT)),
                 bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
             )
             subcluster_edges, subcluster_confidence = _cluster_graph(
@@ -285,7 +285,7 @@ class HierarchyModel:
                 n,
                 n_soft,
                 parent_labels,
-                max_fanout=max_fanout,
+                max_fanout=max(max_fanout, int(const.HIER_SOFT_ROLE_MAX_FANOUT)),
                 bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
             )
             parent_edges, parent_confidence = _cluster_graph(

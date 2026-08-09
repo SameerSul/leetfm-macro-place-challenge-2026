@@ -103,6 +103,59 @@ def test_seed_selector_uses_proxy_within_best_hierarchy_band():
     assert hierarchy["name"] == "balanced"
 
 
+def test_seed_selector_prefers_contract_headroom_inside_proxy_band():
+    limits = {key: 1.0 for key in HIERARCHY_VECTOR_METRICS}
+    tight = {key: 0.95 for key in HIERARCHY_VECTOR_METRICS}
+    roomy = {key: 0.60 for key in HIERARCHY_VECTOR_METRICS}
+    rows = [
+        {
+            "name": "tight",
+            "score": 1.00,
+            "hierarchy_composite": 0.30,
+            "hierarchy_vector": tight,
+        },
+        {
+            "name": "roomy",
+            "score": 1.03,
+            "hierarchy_composite": 0.20,
+            "hierarchy_vector": roomy,
+        },
+    ]
+
+    selected = select_seed_candidate(
+        rows,
+        hierarchy_first=False,
+        absolute_slack=0.0,
+        relative_slack=0.0,
+        component_absolute_slack=limits,
+        component_relative_slack=0.0,
+        component_reference_name="tight",
+        component_reference_vector={key: 0.0 for key in HIERARCHY_VECTOR_METRICS},
+        headroom_aware=True,
+        proxy_band_relative=0.05,
+    )
+
+    assert selected["name"] == "roomy"
+
+
+def test_seed_selector_does_not_buy_headroom_outside_proxy_band():
+    rows = [
+        {"name": "proxy", "score": 1.00, "hierarchy_composite": 0.30},
+        {"name": "hierarchy", "score": 1.20, "hierarchy_composite": 0.10},
+    ]
+
+    selected = select_seed_candidate(
+        rows,
+        hierarchy_first=False,
+        absolute_slack=0.0,
+        relative_slack=0.0,
+        headroom_aware=True,
+        proxy_band_relative=0.05,
+    )
+
+    assert selected["name"] == "proxy"
+
+
 def test_component_contract_rejects_one_dimension_regression():
     reference = _vector(
         [[20, 20], [24, 20], [70, 20], [74, 20]],

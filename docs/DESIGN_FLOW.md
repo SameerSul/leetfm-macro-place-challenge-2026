@@ -229,10 +229,12 @@ flowchart TD
     G --> H[Soft relocation cleanup]
     H --> R[Congestion-expanded hard/soft regions]
     R --> J[Region-locked hard relocation + soft cleanup<br/>hard-containment prefilter before exact scoring]
-    J --> A1[In-region micro-shift polish]
-    A1 --> A2[Parent-bounded child relocation<br/>or sibling slot swap; owned softs co-move]
-    A2 --> A3[Freeze deepest-child footprint + graph/field margin boxes<br/>bounded hard/owned-soft relocation + hard swaps]
-    A3 --> V[Exact-gated cluster decompression + graph-tension ordering]
+    J --> A1[In-region micro-shift polish<br/>exact-improving winner must preserve complete contract]
+    A1 --> A2{Inferred child confidence >= 0.65<br/>or explicit/retained parent?}
+    A2 -->|Yes| A3[Parent-bounded child relocation<br/>or sibling slot swap; owned softs co-move]
+    A2 -->|No| V
+    A3 --> A4[Freeze deepest-child footprint + graph/field margin boxes<br/>bounded hard/owned-soft relocation + hard swaps]
+    A4 --> V[Exact-gated cluster decompression + graph-tension ordering]
     V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps<br/>two stable exact prefixes, untouched suffix on demand]
     T --> T1[Per-round micro-shift replay + audit checkpoint]
     T1 --> X[Post-swap micro-shift replay; telemetry skips duplicate ordinary post-swap soft pass]
@@ -264,8 +266,9 @@ hard-cluster compactness and worst spread, nearest-neighbor cluster impurity,
 weighted hierarchy-edge stretch, owned-soft distance, and bridge-soft corridor
 distance. Each component is independently constrained relative to legalized
 `initial.plc`. Non-mandatory alternatives whose immutable hard components fail
-are removed before exact scoring, and production advances the lowest exact-
-proxy eligible scored seed.
+are removed before exact scoring. Production forms a `max(0.02, 5%)` band from
+the lowest exact proxy, then prefers the eligible seed with the most minimum
+normalized component headroom inside that band.
 A mandatory lower-proxy candidate that fails exactly one component may be
 interpolated toward the authoritative passing reference. Each deterministic
 trial is legalized and the passing boundary is bisected; a repair enters exact
@@ -276,9 +279,17 @@ For the refined single-component topology, a legal raw `initial.plc` can remain
 the immutable reference when its legalized form still passes the raw limits;
 this prevents a second layer of slack. An illegal raw hard placement instead
 uses grouped DREAMPlace as the reference, avoiding a legalized random seed as
-the hierarchy baseline. Refined graphs with at most 64 hard macros also apply
-the full vector contract to individual micro-shift and relocation candidates;
-larger graphs retain pass-level checkpoints and final rollback.
+the hierarchy baseline. Every micro-shift lane applies the complete active
+contract only to each exact-improving winner. Rejected winners fall through to
+the next exact-ranked target, so the committed trajectory remains the best
+valid sequential prefix without evaluating the full vector for every generated
+proposal. Bulk hard and soft relocation retain their existing cheap prefilters
+and pass checkpoints.
+
+Soft-role inference accepts direct hard-cluster affinity through nets up to
+fanout 16 while hard-cluster construction remains capped at fanout 8. The wider
+role evidence must still contain an anchored hard cluster; geometry and
+unanchored soft-only communities cannot assign ownership.
 
 `HierarchyModel` keeps exactly one additional level beside the active
 DREAMPlace partition. Explicit paths retain their nearest useful ancestor;
@@ -289,7 +300,9 @@ mandatory; initial hard/soft proximity, local macro-area density, and placed
 low-fanout wire demand may only reinforce those structural relations. The split
 must pass raw-cut (`<=0.20`), compactness-gain (`>=0.10`), and confidence
 (`>=0.54`) gates. There is no recursive descent. After active-cluster macro relief,
-the child pass tests rigid child translations and sibling slot swaps within
+inferred child/deep search requires mean confidence `>=0.65`; explicit and
+retained connectivity parents bypass that scheduling gate. The child pass then
+tests rigid child translations and sibling slot swaps within
 the parent region. Owned soft macros move with their child, while bridge softs
 remain independent. Blocked group states may compact and legalize only the
 affected children against fixed outside macros. Child and parent contracts are

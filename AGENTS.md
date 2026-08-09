@@ -23,6 +23,13 @@ Current verified result with normal BB/cache behavior:
 overlaps, all final hierarchy audits passed, **318.55s**. Sixteen per-design
 scores are unchanged; a contract-preserving repair of the IBM09 constraint-
 graph seed improved that design from **1.0122 to 0.9978**.
+The 2026-08-09 video-driven candidate is focused-verified on IBM10 only:
+exact-improving micro-shift winners now pass the complete contract, direct
+soft-role fanout is 16, seed selection prefers hierarchy headroom within a
+5%/0.02 proxy band, and inferred child/deep search requires confidence 0.65.
+IBM10 improved **1.1348 -> 1.0590**, VALID, with no audit rollback. Treat the
+full-suite numbers above as authoritative until IBM/NG45/synthetic validation
+accepts this candidate.
 Region swaps now exact-score short stable prefixes before their untouched
 suffix. When a prefix contains the first acceptable candidate, the suffix is
 provably irrelevant and skipped. Hard-hard and hard-soft prefixes remain 4 and

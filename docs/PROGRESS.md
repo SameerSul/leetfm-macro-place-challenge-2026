@@ -6,6 +6,39 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-08-09 — focused IBM10 hierarchy-safe prefix candidate; full
+> suite pending):** Video/trace analysis showed IBM10 twice reaching proxy
+> `1.1192` before a lane-level hard-containment rollback restored `1.1348`.
+> Micro-shift acceptance now checks only exact-improving winners against the
+> complete active hierarchy contract, preserving the best valid sequential
+> prefix in the ordinary and post-coldspot lanes. The first implementation
+> incorrectly applied full-vector checks to millions of bulk soft proposals;
+> it exhausted the search deadline and regressed IBM10 to `1.2360`, so that
+> placement was removed. The corrected path leaves bulk relocation unchanged.
+>
+> Soft ownership now admits direct hard affinity through nets of fanout at most
+> 16 while retaining the hard-cluster fanout-8 rule. IBM10 coverage increased
+> `784/1982 (39.56%) -> 799/1982 (40.31%)`: 13 new owned and two new bridge
+> soft macros. No geometry or unanchored soft-only community creates a role.
+> Default seed selection keeps candidates within `max(0.02, 5%)` of the best
+> exact proxy and maximizes minimum normalized six-component headroom inside
+> that band; IBM10 correctly retained the `1.3367` constraint-graph seed.
+> Inferred child/deep search now requires mean confidence `>=0.65`; IBM10's
+> `0.6218` one-parent/two-child fallback skipped 55 previously zero-yield exact
+> scores. Visualizer exact events expose hard containment plus all six component
+> values, limits, and signed headroom.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/vivaplace-ibm10-all-fixes-v2.jsonl uv run
+> evaluate src/main.py -b ibm10` produced **proxy 1.0590** (`wl=0.076`,
+> `density=0.527`, `congestion=1.439`), **VALID**, in **30.46s**. The final
+> hard quality was `6.11996 / 6.27396` with no rollback; the complete vector
+> passed with zero violations. This improves the video baseline by `0.0758`
+> (6.68%) and also beats the older `1.0641` IBM10 result. Focused hierarchy,
+> soft-evidence, subcluster, trace, and Qt tests pass (**35 passed**). This is a
+> focused candidate result, not yet a replacement for the verified full-suite
+> `AVG 1.1404` reference. The complete project suite passes **113 tests** with
+> **2 GPU-only skips**; source bytecode compilation and `git diff --check` pass.
+>
 > **Status (2026-08-09 — accepted opt-in live visualizer):** Added the
 > dependency-free schema-v1 event/trace path, tracked ten-iteration DREAMPlace
 > progress protocol, spawned PyQtGraph/PySide6 dashboard, net/hierarchy layers,
