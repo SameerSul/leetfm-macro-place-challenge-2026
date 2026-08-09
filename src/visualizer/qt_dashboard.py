@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import queue as queue_module
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -242,6 +244,7 @@ class Dashboard(QtWidgets.QMainWindow):
         self.current_positions: np.ndarray | None = None
         self.selected: int | None = None
         self.is_replay = replay is not None
+        self.replay_path = Path(replay) if replay is not None else None
         self.paused = replay is not None
         self.replay_speed = 1.0
         self._replay_accum = 0.0
@@ -311,7 +314,7 @@ class Dashboard(QtWidgets.QMainWindow):
         controls = QtWidgets.QHBoxLayout()
         for text, callback in (
             ("◀", self._previous),
-            ("Pause", self._pause),
+            ("Play / Pause", self._toggle_pause),
             ("Live", self._live),
             ("▶", self._next),
         ):
@@ -324,13 +327,23 @@ class Dashboard(QtWidgets.QMainWindow):
         self.timeline.sliderMoved.connect(self._scrub)
         panel.addWidget(self.timeline)
         self.speed = QtWidgets.QComboBox()
-        for value in (0.25, 0.5, 1, 2, 4, 8):
-            self.speed.addItem(f"{value:g}×", value)
+        for value in (0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8):
+            label = f"{value:g}×"
+            if value < 1:
+                label += f" ({1 / value:g}× slower)"
+            self.speed.addItem(label, value)
         self.speed.setCurrentText("1×")
-        self.speed.currentIndexChanged.connect(
-            lambda: setattr(self, "replay_speed", float(self.speed.currentData()))
-        )
+        self.speed.currentIndexChanged.connect(self._set_replay_speed)
         panel.addWidget(self.speed)
+        self.export_button = QtWidgets.QPushButton("Export MP4…")
+        self.export_button.setEnabled(self.is_replay)
+        self.export_button.setToolTip(
+            "Export this replay using the selected speed"
+            if self.is_replay
+            else "Finish the run and reopen its trace with --replay before exporting"
+        )
+        self.export_button.clicked.connect(self._export_video_dialog)
+        panel.addWidget(self.export_button)
         panel.addStretch(1)
         side.setMaximumWidth(360)
         layout.addWidget(side)
@@ -356,6 +369,10 @@ class Dashboard(QtWidgets.QMainWindow):
                 if self.timeline.value() < len(self.events) - 1:
                     self.timeline.setValue(self.timeline.value() + 1)
                     self._render_index(self.timeline.value())
+                else:
+                    self.paused = True
+                    self._replay_accum = 0.0
+                    break
 
     def _append_event(self, event, *, positions=None, write=True):
         event = dict(event)
@@ -489,8 +506,147 @@ class Dashboard(QtWidgets.QMainWindow):
         canvas = self.metadata.get("canvas", (1, 1))
         self.plot.setRange(xRange=(0, canvas[0]), yRange=(0, canvas[1]), padding=0.03)
 
-    def _pause(self):
+    def _set_replay_speed(self):
+        self.replay_speed = float(self.speed.currentData())
+        self._replay_accum = 0.0
+
+    def _capture_video_frame(self):
+        image = self.grab().toImage().convertToFormat(QtGui.QImage.Format.Format_RGB888)
+        height = image.height()
+        width = image.width()
+        row_bytes = image.bytesPerLine()
+        pixels = np.frombuffer(image.constBits(), dtype=np.uint8, count=image.sizeInBytes())
+        frame = pixels.reshape(height, row_bytes)[:, : width * 3].reshape(height, width, 3)
+        return frame[: height - height % 2, : width - width % 2].copy()
+
+    @staticmethod
+    def _video_writer(path, fps):
+        import imageio.v2 as imageio
+
+        return imageio.get_writer(
+            path,
+            format="FFMPEG",
+            mode="I",
+            fps=fps,
+            codec="libx264",
+            quality=8,
+            macro_block_size=2,
+            output_params=["-movflags", "+faststart"],
+        )
+
+    def export_video(self, path, *, fps=30, speed=None, writer_factory=None, progress=None):
+        """Render the loaded replay to an atomic H.264 MP4 file."""
+        if not self.is_replay:
+            raise ValueError("video export requires a trace opened with --replay")
+        if fps <= 0:
+            raise ValueError("video FPS must be positive")
+        speed = self.replay_speed if speed is None else float(speed)
+        if speed <= 0:
+            raise ValueError("video replay speed must be positive")
+        renderable = [index for index, frame in enumerate(self.frames) if frame is not None]
+        if not renderable:
+            raise ValueError("trace has no renderable placement frames")
+
+        if speed <= 1:
+            repeats = 1
+            source_indices = renderable
+            encoding_fps = float(fps) * speed
+        else:
+            repeats = 1
+            encoding_fps = float(fps)
+            step = max(1, round(speed))
+            source_indices = renderable[::step]
+            if source_indices[-1] != renderable[-1]:
+                source_indices.append(renderable[-1])
+        total_frames = len(source_indices) * repeats
+
+        output = Path(path)
+        if output.suffix.casefold() != ".mp4":
+            output = output.with_suffix(".mp4")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{output.stem}-", suffix=".mp4", dir=output.parent
+        )
+        os.close(temporary_fd)
+        temporary = Path(temporary_name)
+        temporary.unlink()
+        writer_factory = writer_factory or self._video_writer
+        writer = None
+        previous_index = self.timeline.value()
+        previous_paused = self.paused
+        timer_active = self.timer.isActive()
+        self.timer.stop()
         self.paused = True
+        written = 0
+        try:
+            writer = writer_factory(temporary, encoding_fps)
+            for index in source_indices:
+                self.timeline.setValue(index)
+                self._render_index(index)
+                QtWidgets.QApplication.processEvents()
+                frame = self._capture_video_frame()
+                for _ in range(repeats):
+                    writer.append_data(frame)
+                    written += 1
+                if progress is not None and progress(written, total_frames) is False:
+                    raise RuntimeError("video export cancelled")
+            writer.close()
+            writer = None
+            temporary.replace(output)
+        finally:
+            if writer is not None:
+                writer.close()
+            temporary.unlink(missing_ok=True)
+            self.timeline.setValue(previous_index)
+            self._render_current()
+            self.paused = previous_paused
+            if timer_active:
+                self.timer.start(33)
+        return output, written
+
+    def _export_video_dialog(self):
+        suggested = (self.replay_path or Path("vivaplace-demo.jsonl")).with_suffix(".mp4")
+        path, _selected = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export VivaPlace replay", str(suggested), "MP4 video (*.mp4)"
+        )
+        if not path:
+            return
+        if not path.casefold().endswith(".mp4"):
+            path += ".mp4"
+        if self.replay_speed <= 0.02:
+            frames = sum(frame is not None for frame in self.frames)
+            minutes = frames / (30 * self.replay_speed) / 60
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Export 50× slower video?",
+                f"The resulting video will be about {minutes:.1f} minutes long. Continue?",
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        progress = QtWidgets.QProgressDialog("Encoding MP4…", "Cancel", 0, 100, self)
+        progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+
+        def update(done, total):
+            progress.setValue(round(100 * done / total))
+            QtWidgets.QApplication.processEvents()
+            return not progress.wasCanceled()
+
+        try:
+            output, frames = self.export_video(path, progress=update)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Video export failed", str(exc))
+        else:
+            QtWidgets.QMessageBox.information(
+                self, "Video export complete", f"Saved {frames:,} frames to:\n{output}"
+            )
+        finally:
+            progress.close()
+
+    def _toggle_pause(self):
+        if self.is_replay and self.paused and self.timeline.value() >= len(self.events) - 1:
+            self.timeline.setValue(0)
+            self._render_current()
+        self.paused = not self.paused
 
     def _live(self):
         self.paused = False

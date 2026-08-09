@@ -6,6 +6,7 @@ import argparse
 import multiprocessing as mp
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,21 +63,58 @@ def _default_trace(benchmark: str) -> Path:
     return ROOT / "ml_data/visualizer" / benchmark / f"{run_id}.jsonl"
 
 
+def _resolve_replay_path(path: Path) -> Path:
+    if path.is_dir():
+        traces = [candidate for candidate in path.glob("*.jsonl") if candidate.is_file()]
+        if not traces:
+            raise ValueError(f"replay directory contains no JSONL traces: {path}")
+        return max(traces, key=lambda candidate: (candidate.stat().st_mtime_ns, candidate.name))
+    if path.is_file():
+        return path
+    if path.name == "TRACE.jsonl":
+        raise ValueError(
+            "TRACE.jsonl is an example placeholder; pass an existing trace file or directory, "
+            "for example --replay ml_data/visualizer/ibm10"
+        )
+    raise ValueError(f"replay trace does not exist: {path}")
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--benchmark", help="IBM or NG45 benchmark name")
     source.add_argument("--benchmark-dir", type=Path, help="directory containing netlist.pb.txt")
-    source.add_argument("--replay", type=Path, help="completed or partial JSONL trace")
+    source.add_argument(
+        "--replay", type=Path, help="JSONL trace or directory whose newest trace should be used"
+    )
     parser.add_argument("--trace", type=Path, help="output JSONL path")
     parser.add_argument("--dreamplace-sample-every", type=int, default=10)
-    return parser.parse_args(argv)
+    parser.add_argument("--export-mp4", type=Path, help="export --replay and exit")
+    parser.add_argument("--export-fps", type=int, default=30)
+    parser.add_argument(
+        "--export-speed",
+        type=float,
+        choices=(0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8),
+        default=1,
+        help="trace events per video frame relative to normal replay",
+    )
+    args = parser.parse_args(argv)
+    if args.export_mp4 and not args.replay:
+        parser.error("--export-mp4 requires --replay")
+    if args.export_fps <= 0:
+        parser.error("--export-fps must be positive")
+    if args.replay:
+        try:
+            args.replay = _resolve_replay_path(args.replay)
+        except ValueError as exc:
+            parser.error(str(exc))
+    return args
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
     os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
-    from pyqtgraph.Qt import QtWidgets
+    from pyqtgraph.Qt import QtCore, QtWidgets
     from visualizer.qt_dashboard import Dashboard
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
@@ -97,6 +135,41 @@ def main(argv=None) -> int:
         process.start()
         window = Dashboard(event_queue=event_queue, trace_path=trace)
     window.show()
+    if args.export_mp4:
+
+        def export_and_exit():
+            started = time.monotonic()
+            next_report = 0
+
+            def report(done, total):
+                nonlocal next_report
+                percent = int(100 * done / total)
+                if percent >= next_report or done == total:
+                    elapsed = max(time.monotonic() - started, 1e-6)
+                    remaining = (total - done) * elapsed / max(done, 1)
+                    print(
+                        f"Encoding: {done:,}/{total:,} frames ({percent}%) "
+                        f"· ETA {remaining:.0f}s",
+                        flush=True,
+                    )
+                    next_report = percent + 5
+                return True
+
+            try:
+                output, frames = window.export_video(
+                    args.export_mp4,
+                    fps=args.export_fps,
+                    speed=args.export_speed,
+                    progress=report,
+                )
+            except Exception as exc:
+                print(f"Video export failed: {exc}", file=sys.stderr)
+                app.exit(1)
+            else:
+                print(f"Exported {frames} frames to {output}")
+                app.exit(0)
+
+        QtCore.QTimer.singleShot(0, export_and_exit)
     code = app.exec()
     if process is not None and process.is_alive():
         process.terminate()

@@ -19,13 +19,23 @@ uv run --extra visualizer python src/visualizer/main.py \
 uv run --extra visualizer python src/visualizer/main.py --benchmark ibm10 \
   --trace ml_data/visualizer/manual.jsonl --dreamplace-sample-every 20
 
-# Completed or partially-written trace
-uv run --extra visualizer python src/visualizer/main.py --replay TRACE.jsonl
+# Completed or partially-written trace file, or a directory to select its newest trace
+uv run --extra visualizer python src/visualizer/main.py \
+  --replay ml_data/visualizer/ibm10
+
+# Headless-friendly H.264 MP4 export; 0.1 is 10× slower and 0.02 is 50× slower
+QT_QPA_PLATFORM=offscreen uv run --extra visualizer python src/visualizer/main.py \
+  --replay ml_data/visualizer/ibm10 --export-mp4 demo.mp4 --export-speed 0.1
 ```
 
 Live traces default to
 `ml_data/visualizer/<benchmark>/<UTC-run-id>.jsonl`. Normal `uv sync` remains
-Qt-free; only `--extra visualizer` installs PyQtGraph 0.14 and PySide6.
+Qt-free; only `--extra visualizer` installs PyQtGraph 0.14, PySide6, ImageIO,
+and its packaged FFmpeg encoder.
+Passing a directory to `--replay` selects its newest `.jsonl` trace by
+modification time. A nonexistent path is rejected by argument validation with
+a concise error instead of a Python traceback; `TRACE.jsonl` in examples means
+an actual trace path, not a literal bundled file.
 The selected upstream documentation is recorded in
 [`docs/REFERENCES.md`](../../docs/REFERENCES.md#direct-python-and-build-dependencies).
 
@@ -45,9 +55,26 @@ The selected upstream documentation is recorded in
   are independent toggles. Real wiring uses macro pin offsets and fixed I/O
   endpoints where the input exposes them, and the slider controls the stable
   low-fanout/high-weight prefix (250 by default).
-- **Pause** stops rendering only; placement and trace recording continue.
-  **Live** jumps to the newest event. Arrow buttons and the timeline step or
-  scrub recorded events. Replay speed ranges from 0.25× to 8×.
+- **Play / Pause** starts or stops trace playback from the selected timeline
+  position; starting at the end restarts the trace. **Live** jumps to the
+  newest event. Arrow buttons and the timeline step or scrub recorded events.
+  Pausing never stops placement or trace recording. Replay speed ranges from
+  0.02× (50× slower) to 8×.
+- **Export MP4…** saves a replay using the current window size, visible wiring
+  layers, real-net limit, selection, and replay speed. Export is available only
+  after opening a trace with `--replay`, so encoding cannot block a live
+  placement's event queue. H.264 MP4 is used instead of GIF because long,
+  line-heavy placement demos remain much smaller and retain full colour.
+
+The command-line exporter accepts `--export-fps` (default 30) and
+`--export-speed` values from 0.02× through 8×. It writes through a temporary
+file and replaces the requested output only after encoding succeeds. Cancelling
+an in-app export removes the partial temporary file. Slow exports encode each
+recorded state once at a proportionally lower stream frame rate instead of
+duplicating identical images; this preserves playback duration without
+inflating the file. The CLI reports frame progress and an estimated time
+remaining. Qt may print `This plugin does not support propagateSizeHints()` in
+offscreen mode; that platform warning is harmless and encoding continues.
 
 The sidebar shows the current algorithm, round, and lane; exact or stale
 status; all five lower-is-better metrics; signed change from the exact initial
