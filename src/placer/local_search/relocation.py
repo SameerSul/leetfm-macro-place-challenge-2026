@@ -721,10 +721,6 @@ def _micro_shift_polish(
                 if hard_region is not None:
                     if not point_in_region(hard_region, i, nx, ny):
                         continue
-                if hard_candidate_allowed is not None and not bool(
-                    hard_candidate_allowed(i, nx, ny)
-                ):
-                    continue
                 targets.append((nx, ny))
             targets = _dedupe_targets_xy(targets)
             if targets.size:
@@ -735,10 +731,18 @@ def _micro_shift_polish(
                     incremental_scorer._revert_prep(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
-            for (nx, ny), score in zip(targets, scores):
-                if float(score) < best_score - float(min_gain):
-                    best_score = float(score)
-                    best_xy = (nx, ny)
+            for target_index in np.argsort(scores, kind="stable"):
+                score = float(scores[target_index])
+                if score >= best_score - float(min_gain):
+                    break
+                nx, ny = targets[target_index]
+                if hard_candidate_allowed is not None and not bool(
+                    hard_candidate_allowed(i, float(nx), float(ny))
+                ):
+                    continue
+                best_score = score
+                best_xy = (float(nx), float(ny))
+                break
             if best_xy is not None:
                 prep = incremental_scorer._prepare_move(i)
                 incremental_scorer._commit_after_prep(prep, best_xy)
@@ -769,10 +773,6 @@ def _micro_shift_polish(
                 ny = float(np.clip(soft_pos[k, 1] + dy, soft_hh[k], ch - soft_hh[k]))
                 if soft_region is not None and not point_in_region(soft_region, k, nx, ny):
                     continue
-                if soft_candidate_allowed is not None and not bool(
-                    soft_candidate_allowed(k, nx, ny)
-                ):
-                    continue
                 targets.append((nx, ny))
             targets = _dedupe_targets_xy(targets)
             if targets.size:
@@ -783,10 +783,18 @@ def _micro_shift_polish(
                     incremental_scorer._revert_prep_soft(prep)
             else:
                 scores = np.empty(0, dtype=np.float64)
-            for (nx, ny), score in zip(targets, scores):
-                if float(score) < best_score - float(min_gain):
-                    best_score = float(score)
-                    best_xy = (nx, ny)
+            for target_index in np.argsort(scores, kind="stable"):
+                score = float(scores[target_index])
+                if score >= best_score - float(min_gain):
+                    break
+                nx, ny = targets[target_index]
+                if soft_candidate_allowed is not None and not bool(
+                    soft_candidate_allowed(k, float(nx), float(ny))
+                ):
+                    continue
+                best_score = score
+                best_xy = (float(nx), float(ny))
+                break
             if best_xy is not None:
                 prep = incremental_scorer._prepare_move_soft(k)
                 incremental_scorer._commit_after_prep_soft(prep, best_xy)

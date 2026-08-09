@@ -789,6 +789,11 @@ def run_hierarchy_floorplan(
     inferred_parent_compactness = [
         float(evidence.get("compactness_gain", 0.0)) for evidence in inferred_parent_evidence
     ]
+    child_search_confident = bool(
+        not inferred_parent_confidence
+        or float(np.mean(inferred_parent_confidence))
+        >= float(const.HIER_INFERRED_CHILD_SEARCH_MIN_CONFIDENCE)
+    )
     log_plateau_event(
         "hier_subhierarchy_model",
         benchmark=pass_context.benchmark_name,
@@ -1264,7 +1269,6 @@ def run_hierarchy_floorplan(
     h_pos = legal.copy()
     full = np.vstack([h_pos, s_pos]).astype(np.float64)
     r_score = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
-    rscorer = IncrementalScorer(plc, benchmark, full.copy())
     best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
     audit_budget = max(
         0.0,
@@ -1273,6 +1277,35 @@ def run_hierarchy_floorplan(
     audit_limit = float(seed_hierarchy_quality) + audit_budget
     audit_h, audit_s, audit_score = h_pos.copy(), s_pos.copy(), float(r_score)
     audit_quality = float(seed_hierarchy_quality)
+
+    if event_sink is not None:
+
+        def _visualizer_hierarchy_metrics(hard_xy, soft_xy):
+            vector = hierarchy_quality_vector(
+                hard_xy,
+                soft_xy,
+                clusters,
+                csofts,
+                bridge_softs,
+                hierarchy.edges,
+                cw,
+                ch,
+            )
+            details = {
+                "hierarchy": float(vector["composite"]),
+                "hierarchy_hard_containment": float(vector["hard_containment"]),
+                "hierarchy_hard_limit": float(audit_limit),
+                "hierarchy_hard_headroom": float(audit_limit - vector["hard_containment"]),
+            }
+            for key, limit in seed_hierarchy_vector_limits.items():
+                details[f"hierarchy_{key}"] = float(vector[key])
+                details[f"hierarchy_{key}_limit"] = float(limit)
+                details[f"hierarchy_{key}_headroom"] = float(limit - vector[key])
+            return details
+
+        setattr(benchmark, "_visualizer_hierarchy_metric", _visualizer_hierarchy_metrics)
+
+    rscorer = IncrementalScorer(plc, benchmark, full.copy())
 
     def _hierarchy_vector(hard_xy, soft_xy):
         return hierarchy_quality_vector(
@@ -1368,8 +1401,6 @@ def run_hierarchy_floorplan(
     )
 
     def _hard_micro_candidate_allowed(index: int, x: float, y: float) -> bool:
-        if not strict_single_component_contract:
-            return True
         old_x, old_y = float(h_pos[index, 0]), float(h_pos[index, 1])
         h_pos[index, 0], h_pos[index, 1] = float(x), float(y)
         try:
@@ -1380,14 +1411,17 @@ def run_hierarchy_floorplan(
             h_pos[index, 0], h_pos[index, 1] = old_x, old_y
 
     def _soft_micro_candidate_allowed(index: int, x: float, y: float) -> bool:
-        if not strict_single_component_contract:
-            return True
         old_x, old_y = float(s_pos[index, 0]), float(s_pos[index, 1])
         s_pos[index, 0], s_pos[index, 1] = float(x), float(y)
         try:
             return bool(_vector_contract(h_pos, s_pos)[0])
         finally:
             s_pos[index, 0], s_pos[index, 1] = old_x, old_y
+
+    def _placement_contract_allowed(hard_xy: np.ndarray, soft_xy: np.ndarray) -> bool:
+        if hierarchy_quality_metric(hard_xy, clusters) > audit_limit + 1.0e-12:
+            return False
+        return bool(_vector_contract(hard_xy, soft_xy)[0])
 
     def _hard_relocation_candidate_allowed(index: int, x: float, y: float) -> bool:
         """Reject hard moves that already exceed the cheap containment audit."""
@@ -1402,10 +1436,13 @@ def run_hierarchy_floorplan(
         finally:
             h_pos[index, 0], h_pos[index, 1] = old_x, old_y
 
-    hard_micro_candidate_allowed = (
-        _hard_micro_candidate_allowed if strict_single_component_contract else None
-    )
-    soft_micro_candidate_allowed = (
+    # Micro-shifts are accepted sequentially, so validate each proposed state
+    # against the complete active contract. This preserves the best valid
+    # prefix instead of accepting a long proxy-improving lane and rolling the
+    # whole lane back after one accumulated hierarchy breach.
+    hard_micro_candidate_allowed = _hard_micro_candidate_allowed
+    soft_micro_candidate_allowed = _soft_micro_candidate_allowed
+    soft_bulk_candidate_allowed = (
         _soft_micro_candidate_allowed if strict_single_component_contract else None
     )
 
@@ -1688,7 +1725,7 @@ def run_hierarchy_floorplan(
                     region_bias=bias,
                     region_escape_min=escape_min,
                     accept_min_gain=hier_soft_barrier_gain,
-                    candidate_allowed=soft_micro_candidate_allowed,
+                    candidate_allowed=soft_bulk_candidate_allowed,
                     max_scored=_pass_budget_remaining(
                         "region_soft_relocation",
                         "exact",
@@ -1742,6 +1779,7 @@ def run_hierarchy_floorplan(
     if (
         hierarchy.parent_clusters
         and parent_region is not None
+        and child_search_confident
         and _has_spare(
             rdeadline,
             float(const.HIER_SUBCLUSTER_RELOCATION_MIN_SPARE_S),
@@ -1861,6 +1899,7 @@ def run_hierarchy_floorplan(
         spatial_confidence_mean=(
             float(np.mean(inferred_parent_confidence)) if inferred_parent_confidence else 0.0
         ),
+        confidence_scheduled=bool(child_search_confident),
     )
 
     deep_before = float(r_score)
@@ -1885,6 +1924,7 @@ def run_hierarchy_floorplan(
     if (
         hierarchy.subclusters
         and parent_region is not None
+        and child_search_confident
         and _has_spare(
             rdeadline,
             float(const.HIER_DEEP_CLUSTER_MIN_SPARE_S),
@@ -2125,6 +2165,7 @@ def run_hierarchy_floorplan(
         margin_mean=(float(np.mean(list(deep_margins.values()))) if deep_margins else 0.0),
         margin_max=(float(np.max(list(deep_margins.values()))) if deep_margins else 0.0),
         multilevel_contract_active=bool(subhierarchy_contract_active),
+        confidence_scheduled=bool(child_search_confident),
         subhierarchy_source=hierarchy.subhierarchy_source,
     )
     pre_decomp_score = r_score
@@ -2309,7 +2350,7 @@ def run_hierarchy_floorplan(
                     hier_soft_barrier_gain,
                 ),
                 wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
-                candidate_allowed=soft_micro_candidate_allowed,
+                candidate_allowed=soft_bulk_candidate_allowed,
                 max_scored=_pass_budget_remaining(
                     "interleaved_soft_repair",
                     "exact",
@@ -2752,7 +2793,7 @@ def run_hierarchy_floorplan(
                         float(plateau_escape_min_gain),
                         hier_soft_barrier_gain,
                     ),
-                    candidate_allowed=soft_micro_candidate_allowed,
+                    candidate_allowed=soft_bulk_candidate_allowed,
                     max_scored=_pass_budget_remaining(
                         "plateau_escape_soft_relocation",
                         "exact",
@@ -3022,7 +3063,7 @@ def run_hierarchy_floorplan(
                         float(plateau_escape_min_gain),
                         hier_soft_barrier_gain,
                     ),
-                    candidate_allowed=soft_micro_candidate_allowed,
+                    candidate_allowed=soft_bulk_candidate_allowed,
                     max_scored=_pass_budget_remaining(
                         "plateau_escape_post_soft_relocation",
                         "exact",
@@ -3207,7 +3248,7 @@ def run_hierarchy_floorplan(
                             hier_soft_barrier_gain,
                         ),
                         wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
-                        candidate_allowed=soft_micro_candidate_allowed,
+                        candidate_allowed=soft_bulk_candidate_allowed,
                         max_scored=_pass_budget_remaining(
                             "strong_soft_repair",
                             "exact",
@@ -3378,7 +3419,7 @@ def run_hierarchy_floorplan(
                             hier_soft_barrier_gain,
                         ),
                         wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
-                        candidate_allowed=soft_micro_candidate_allowed,
+                        candidate_allowed=soft_bulk_candidate_allowed,
                         max_scored=_pass_budget_remaining(
                             "medium_soft_continuation",
                             "exact",
@@ -3557,6 +3598,7 @@ def run_hierarchy_floorplan(
         graph_edges=hierarchy.edges,
         seed_hard_xy=seed_hard_for_tension,
         graph_confidence=hierarchy.cluster_confidence,
+        placement_contract_allowed=_placement_contract_allowed,
     )
     _log_stage_timing(
         "coldspot_total",

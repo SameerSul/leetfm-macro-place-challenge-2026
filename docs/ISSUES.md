@@ -51,6 +51,15 @@ The learned-ranking stack has been removed. Candidate ordering is deterministic;
 exact proxy, hard legality, bounds, fixed-macro immobility, hierarchy regions,
 and hierarchy-quality gates remain authoritative.
 
+The 2026-08-09 video-driven candidate addresses IBM10's repeated whole-lane
+rollback. Complete hierarchy checks now run on exact-improving micro-shift
+winners, preserving the valid sequential prefix; direct soft-role fanout rises
+from 8 to 16, proxy-banded seed selection prefers contract headroom, and weak
+inferred child/deep search requires confidence 0.65. Focused IBM10 improved
+`1.1348 -> 1.0590`, remained VALID, passed every audit with no rollback, and
+raised soft coverage `39.56% -> 40.31%`. A full IBM/NG45/synthetic sweep is
+still required before replacing the established suite references above.
+
 ## Open Work
 
 ### 1. Production hierarchy contract calibration (complete)

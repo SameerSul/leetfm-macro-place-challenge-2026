@@ -75,6 +75,13 @@ HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
 HIER_SEED_HIERARCHY_SELECT = False
 HIER_SEED_HIERARCHY_ABS_SLACK = 0.002
 HIER_SEED_HIERARCHY_REL_SLACK = 0.15
+# Default seed selection first keeps candidates inside a tight proxy band, then
+# prefers hierarchy headroom inside that band. This prevents a large proxy
+# sacrifice while avoiding a needlessly boundary-tight seed when an equivalent
+# alternative exists.
+HIER_SEED_HEADROOM_SELECT = True
+HIER_SEED_PROXY_BAND_ABS = 0.02
+HIER_SEED_PROXY_BAND_REL = 0.05
 # Repair only a single-component near miss that can retain almost all of the
 # lower-proxy candidate. Broader interpolation changed downstream search basins
 # even when the repaired seed itself had a lower exact proxy.
@@ -98,6 +105,15 @@ HIER_VECTOR_CONTRACT_ABS_SLACK = {
     "owned_soft_distance": 0.015,
     "bridge_soft_distance": 0.015,
 }
+
+# Soft ownership may use slightly wider direct hard-affinity nets than hard
+# cluster construction. It remains direct structural evidence: no geometry or
+# unanchored soft-only community can manufacture an owner.
+HIER_SOFT_ROLE_MAX_FANOUT = 16
+
+# Weak inferred parent models have produced no retained IBM moves. Skip their
+# rigid/deep exact search while retaining explicit and strong inferred models.
+HIER_INFERRED_CHILD_SEARCH_MIN_CONFIDENCE = 0.65
 # Congestion-heavy proposal ranking. Exact proxy remains the accept gate.
 HIER_PROPOSAL_CONGESTION_WEIGHT = 2.5
 HIER_PROPOSAL_DENSITY_WEIGHT = 1.0

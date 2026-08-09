@@ -47,6 +47,8 @@ benchmark input
         eligible exact proxy enters relief)
   -> congestion-expanded hard/soft hierarchy regions
   -> exact-gated local micro-shift polish
+       - check the complete contract only for exact-improving winners
+       - retain the best valid sequential prefix instead of rolling back a whole lane
   -> region-locked hard relocation + soft cleanup
        - reject hard candidates that exceed the selected seed's inexpensive
          hard-containment limit before exact batch scoring
@@ -55,6 +57,7 @@ benchmark input
          and soft candidates that fail the complete contract before exact scoring
   -> parent-bounded child-cluster search
        - keep the production DREAMPlace/leaf partition unchanged
+       - require confidence >=0.65 for inferred child/deep search; explicit parents bypass the gate
        - rigidly translate hot child groups toward cold space inside the parent
        - co-move every leaf-owned movable soft macro; bridge softs stay independent
        - test sibling slot swaps inside the same parent
@@ -520,7 +523,10 @@ not an explicit IP tag, and multi-component designs retain the bridge-evidence
 rule. Soft macros are classified as
 **owned** (one cluster dominates their connectivity, so they move with that
 cluster) or **bridge** (comparable affinity to multiple clusters, so they get
-a region spanning the clusters they connect). When soft names themselves carry
+a region spanning the clusters they connect). Direct soft-role evidence accepts
+fanout up to 16 even though hard-cluster construction remains at fanout 8. The
+wider role net must still contain an anchored hard cluster; geometry and
+unanchored soft-only connectivity cannot assign an owner. When soft names themselves carry
 useful slash-separated RTL paths, the deepest useful shared prefix creates a
 high-confidence soft bundle. Explicit bundles take precedence over owner or
 bridge-signature evidence during compound soft relocation; flat `Grp_*`
@@ -553,6 +559,10 @@ its raw structural cut is at most 0.20, within-child mean distance improves by
 at least 10%, and combined confidence is at least 0.54. No child is recursively
 split. Parent and child layers each receive their own labels, hard/soft roles,
 cluster graph, confidence, regions, reference vector, and six-component limits.
+Inferred child relocation and deepest-child relief require mean confidence at
+least 0.65; lower-confidence discovered structure remains audited and visible
+but does not spend exact-search work. Explicit and retained connectivity parents
+bypass this scheduling threshold.
 
 After ordinary active-cluster relocation, the child pass ranks hot eligible
 children and tests rigid translations toward cold connected components and
@@ -621,8 +631,12 @@ nearest-neighbor cluster impurity, weighted inter-cluster edge stretch,
 owned-soft distance, and bridge-soft corridor distance. Each vector component
 must remain within its independent absolute-or-relative slack from the
 legalized reference. Non-mandatory alternatives whose immutable hard
-components already fail are rejected before exact scoring; the lowest-proxy
-eligible scored seed enters hierarchy relief. The selected seed becomes
+components already fail are rejected before exact scoring. The lowest-proxy
+candidate defines a tight `max(0.02, 5%)` proxy band. Production maximizes the
+minimum normalized component headroom inside that band, then uses hierarchy
+composite and proxy as deterministic tie-breaks. This avoids buying hierarchy
+with a large proxy regression while preferring a less boundary-tight equivalent
+seed. The selected seed becomes
 the reference for the same six-component contract at pass checkpoints and
 final rollback. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
 secondary choice inside the best hierarchy-quality band. That policy remains
