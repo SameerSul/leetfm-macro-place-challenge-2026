@@ -20,8 +20,11 @@ integration in the main loop, and ML ranker defaults.
 The live visualizer is an opt-in observation path, not a production flow
 branch. `MacroPlacer(event_sink=None)` remains the evaluator behavior. The
 launcher supplies a sink, records the initial state, hierarchy construction,
-seed selection, accepted local moves, coldspot replacement checkpoint, audit
-rollbacks, and final state, then forwards those records to the Qt process.
+every exact-scored seed candidate and selection, accepted local moves, coldspot
+replacement checkpoint, audit rollbacks, and final state, then forwards those
+records to the Qt process. DREAMPlace-only frames update coordinates every ten
+optimizer iterations by default while retaining the last exact metrics under a
+stale badge.
 Visualization runs disable wall-clock diagnostic guards so serialization time
 cannot truncate a lane; deterministic exact-score quotas remain unchanged.
 Consequently visualizer timings are diagnostic overhead measurements and must

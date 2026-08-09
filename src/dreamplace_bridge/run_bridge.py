@@ -132,6 +132,8 @@ def _decode_progress_payload(line: str) -> tuple[int, np.ndarray]:
     if not line.startswith("VIVAPLACE_PROGRESS "):
         raise ValueError("not a DREAMPlace progress record")
     payload = json.loads(line.split(" ", 1)[1])
+    if int(payload.get("protocol", 1)) != 1:
+        raise ValueError("unsupported DREAMPlace progress protocol")
     if payload.get("dtype") != "float32":
         raise ValueError("unsupported DREAMPlace progress dtype")
     raw = base64.b64decode(payload["coordinates"], validate=True)

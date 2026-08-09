@@ -11,7 +11,8 @@ MAMBA_ROOT="$BUILD_ROOT/mamba"
 TOOLCHAIN="$MAMBA_ROOT/envs/dptool"
 UPSTREAM="https://github.com/limbo018/DREAMPlace.git"
 UPSTREAM_COMMIT="37214b40fe3837cc7d392c7d6092ccd6ff04a02c"
-LOCAL_PATCH_COMMIT="b1d1f4bdae57c78f9eb4b4c3a3974adc6f44ccb6"
+LEGACY_LOCAL_PATCH_COMMIT="b1d1f4bdae57c78f9eb4b4c3a3974adc6f44ccb6"
+LOCAL_PATCH_COMMIT="4c64c3f49eca86ccf5d5a050c92e030352cc8d62"
 ACTION="${1:-all}"
 
 ensure_source() {
@@ -30,9 +31,12 @@ ensure_source() {
         git -C "$SOURCE_DIR" checkout --detach "$UPSTREAM_COMMIT"
         head="$UPSTREAM_COMMIT"
     fi
-    if [[ "$head" != "$UPSTREAM_COMMIT" && "$head" != "$LOCAL_PATCH_COMMIT" ]]; then
+    if [[ "$head" != "$UPSTREAM_COMMIT" \
+        && "$head" != "$LEGACY_LOCAL_PATCH_COMMIT" \
+        && "$head" != "$LOCAL_PATCH_COMMIT" ]]; then
         echo "Unexpected DREAMPlace revision: $head" >&2
-        echo "Expected $UPSTREAM_COMMIT (upstream) or $LOCAL_PATCH_COMMIT (local patched tree)." >&2
+        echo "Expected $UPSTREAM_COMMIT (upstream), $LEGACY_LOCAL_PATCH_COMMIT (legacy local)," >&2
+        echo "or $LOCAL_PATCH_COMMIT (current local patched tree)." >&2
         exit 2
     fi
 
@@ -96,6 +100,7 @@ build_dreamplace() {
 }
 
 run_preflight() {
+    "${PYTHON:-python3}" "$ROOT/scripts/dreamplace/apply_visualizer_patch.py" --check
     "${PYTHON:-python3}" "$ROOT/scripts/dreamplace/preflight.py"
 }
 
