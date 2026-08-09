@@ -134,7 +134,25 @@ coalesces rapid updates. Traces start with metadata and a full placement, store
 accepted moves as deltas, add full keyframes at algorithm-stage and explicit
 pipeline boundaries and every 250 moves, and tolerate a truncated final line
 during replay. Pausing or scrubbing affects only rendering; the queue continues
-to drain and every event continues to be recorded.
+to drain and every event continues to be recorded. Trace playback supports
+0.02× through 8× speed, including explicit 10× and 50× slower modes, and can
+resume from any selected timeline event.
+
+Completed or partial traces can be exported to H.264 MP4 either from the replay
+window or with `--export-mp4`. Frames capture the full dashboard and its current
+layer configuration at the selected replay speed. Encoding is deliberately
+replay-only: it cannot stall the live consumer and back-pressure the bounded
+worker queue. ImageIO streams frames to its packaged FFmpeg executable, and an
+atomic temporary-file replacement prevents a failed or cancelled export from
+overwriting an existing demo.
+For speeds below 1×, the exporter lowers the encoded stream frame rate rather
+than duplicating identical images. Each recorded placement state is rendered
+once, the requested slow duration is preserved, and CLI exports report frame
+progress plus an estimated completion time.
+The launcher accepts either an explicit trace or a trace directory, selecting
+the directory's newest JSONL file deterministically by modification time and
+filename. Replay paths are validated before Qt starts, avoiding GUI tracebacks
+for placeholders, missing files, or empty directories.
 
 In visualizer mode only, `run_dreamplace()` bypasses final-position cache reads
 and writes and consumes `VIVAPLACE_PROGRESS` records from `Popen`. The tracked

@@ -134,7 +134,12 @@ uv run --extra visualizer python src/visualizer/main.py \
 
 # Replay a completed or partially written live trace
 uv run --extra visualizer python src/visualizer/main.py \
-  --replay ml_data/visualizer/ibm10/<run-id>.jsonl
+  --replay ml_data/visualizer/ibm10
+
+# Export that replay as a shareable H.264 MP4 at 10× slower speed
+uv run --extra visualizer python src/visualizer/main.py \
+  --replay ml_data/visualizer/ibm10 \
+  --export-mp4 vivaplace-ibm10.mp4 --export-speed 0.1
 
 # Run the standard EDA flow (LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR out)
 uv run python src/place_design.py \
@@ -146,7 +151,7 @@ Live visualization is a research diagnostic, not a runtime benchmark. It
 bypasses the DREAMPlace final-position cache so optimizer motion is observable;
 ordinary evaluator commands retain the production cache and Qt-free execution
 path. See the [visualizer guide](src/visualizer/README.md) for controls, trace
-semantics, custom output paths, and overhead details.
+semantics, MP4 export, custom output paths, and overhead details.
 
 ## How It Works
 

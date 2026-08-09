@@ -29,6 +29,14 @@ Visualization runs disable wall-clock diagnostic guards so serialization time
 cannot truncate a lane; deterministic exact-score quotas remain unchanged.
 Consequently visualizer timings are diagnostic overhead measurements and must
 not be compared with evaluator runtimes.
+Trace replay is independent of the worker and can run from 0.02× through 8×;
+pausing, stepping, or scrubbing never pauses an active placement process.
+MP4 export is likewise restricted to replay mode and renders recorded states
+without rerunning or communicating with the placer.
+Slow export changes the encoded frame rate rather than duplicating placement
+states, preserving timing with less encoder and storage overhead.
+Replay input may be a specific JSONL file or a benchmark trace directory; the
+directory form selects its newest trace before the dashboard is constructed.
 
 Current verification after adding exact-prescored seed portfolio selection,
 hierarchy-aware congestion-weighted proposal ranking, plateau telemetry,
