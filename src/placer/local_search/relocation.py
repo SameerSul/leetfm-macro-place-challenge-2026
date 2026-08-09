@@ -640,6 +640,10 @@ def _micro_shift_polish(
     soft_candidate_allowed: "Callable[[int, float, float], bool] | None" = None,
 ) -> "tuple[np.ndarray, np.ndarray, int, float]":
     """Try exact-gated one/two-cell moves for hot macros inside their regions."""
+    sink = getattr(incremental_scorer, "event_sink", None)
+    if sink is not None and hasattr(sink, "activate"):
+        lane = "density" if use_density else "congestion"
+        sink.activate("micro_shift", f"Micro-shift polish · {lane} lane", lane=lane)
     nr, nc = int(benchmark.grid_rows), int(benchmark.grid_cols)
     field = (
         _density_field(incremental_scorer, nr, nc)
@@ -1121,6 +1125,10 @@ def _relocation_moves(
     can still exit when in-region cold cells run out). Bit-identical when
     `region_bbox is None`.
     """
+    sink = getattr(incremental_scorer, "event_sink", None)
+    if sink is not None and hasattr(sink, "activate"):
+        lane = "combined" if use_combined else ("density" if use_density else "congestion")
+        sink.activate("hard_relocation", f"Hard relocation · {lane} lane", lane=lane)
     _relocation_moves.last_stats = {
         "candidates": 0,
         "legal": 0,
@@ -1389,6 +1397,10 @@ def _soft_relocation_moves(
     max_scored: "int | None" = None,
 ) -> "tuple[np.ndarray, int, float]":
     """Move hot soft macros to colder cells."""
+    sink = getattr(incremental_scorer, "event_sink", None)
+    if sink is not None and hasattr(sink, "activate"):
+        lane = "density" if use_density else "congestion"
+        sink.activate("soft_relocation", f"Soft relocation · {lane} lane", lane=lane)
     _soft_relocation_moves.last_stats = {
         "candidates": 0,
         "legal": 0,

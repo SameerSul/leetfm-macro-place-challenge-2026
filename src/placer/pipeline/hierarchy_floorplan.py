@@ -12,7 +12,11 @@ from utils.config import _log
 from placer.scoring.exact import _exact_proxy
 
 
-def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
+def run_hierarchy_floorplan(
+    benchmark: Benchmark,
+    event_sink=None,
+    dreamplace_sample_every: int = 10,
+) -> "torch.Tensor | None":
     """Non-proxy hierarchy-preserving placement.
 
     Grouped DREAMPlace derives a hierarchical global placement, cluster-
@@ -280,6 +284,106 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     clusters = hierarchy.clusters
     csofts = hierarchy.cluster_softs
     bridge_softs = hierarchy.bridge_softs
+    if event_sink is not None:
+        from visualizer.events import emit_event
+
+        initial_positions = benchmark.macro_positions.detach().cpu().numpy().astype(np.float64)
+        initial_hard = initial_positions[:n]
+        initial_soft = initial_positions[n : n + n_soft]
+        initial_metrics = _proxy_components(initial_hard, initial_soft)
+        initial_metrics["proxy"] = (
+            initial_metrics["wirelength"]
+            + 0.5 * initial_metrics["density"]
+            + 0.5 * initial_metrics["congestion"]
+        )
+        initial_metrics["hierarchy"] = float(
+            hierarchy_quality_vector(
+                initial_hard,
+                initial_soft,
+                clusters,
+                csofts,
+                bridge_softs,
+                hierarchy.edges,
+                cw,
+                ch,
+            )["composite"]
+        )
+        wl_topology = _build_wl_cache(plc)
+        output_by_module = {
+            int(module): int(output)
+            for output, module in enumerate(
+                list(benchmark.hard_macro_indices) + list(benchmark.soft_macro_indices)
+            )
+        }
+        output_by_module.update(
+            {
+                int(module): int(benchmark.num_macros + port)
+                for port, module in enumerate(plc.port_indices)
+            }
+        )
+        visual_nets = []
+        visual_weights = []
+        for net_index, start in enumerate(wl_topology["net_starts"]):
+            length = int(wl_topology["net_lengths"][net_index])
+            nodes = [
+                output_by_module[int(module)]
+                for module in wl_topology["ref_idx"][int(start) : int(start) + length]
+                if int(module) in output_by_module
+            ]
+            if len(nodes) >= 2:
+                visual_nets.append(nodes)
+                visual_weights.append(float(wl_topology["net_weights"][net_index]))
+
+        setattr(
+            benchmark,
+            "_visualizer_hierarchy_metric",
+            lambda hard_xy, soft_xy: float(
+                hierarchy_quality_vector(
+                    hard_xy,
+                    soft_xy,
+                    clusters,
+                    csofts,
+                    bridge_softs,
+                    hierarchy.edges,
+                    cw,
+                    ch,
+                )["composite"]
+            ),
+        )
+        emit_event(
+            event_sink,
+            "checkpoint",
+            reason="hierarchy_construction",
+            positions=initial_positions.tolist(),
+            hierarchy={
+                "leaf_labels": np.asarray(labels, dtype=np.int64).tolist(),
+                "leaf_clusters": {
+                    str(k): np.asarray(v, dtype=np.int64).tolist() for k, v in clusters.items()
+                },
+                "parent_clusters": {
+                    str(k): np.asarray(v, dtype=np.int64).tolist()
+                    for k, v in hierarchy.parent_clusters.items()
+                },
+                "cluster_softs": {
+                    str(k): np.asarray(v, dtype=np.int64).tolist() for k, v in csofts.items()
+                },
+                "bridge_softs": {
+                    str(k): np.asarray(v, dtype=np.int64).tolist() for k, v in bridge_softs.items()
+                },
+                "edges": [
+                    [int(edge.src), int(edge.dst), float(edge.weight)] for edge in hierarchy.edges
+                ],
+            },
+            metadata_update={
+                "net_nodes": visual_nets,
+                "net_weights": visual_weights,
+                "group_weight": int(gw),
+            },
+            metrics=initial_metrics,
+            metrics_stale=False,
+        )
+        if hasattr(event_sink, "activate"):
+            event_sink.activate("seed_portfolio", "Grouped DREAMPlace seed portfolio")
 
     plateau_records: list[PlateauTelemetry] = []
 
@@ -521,7 +625,18 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             ch=ch,
             const=const,
             logger=_log,
-            run_dreamplace=run_dreamplace,
+            run_dreamplace=(
+                lambda *args, **kwargs: (
+                    run_dreamplace(
+                        *args,
+                        **kwargs,
+                        event_sink=event_sink,
+                        sample_every=dreamplace_sample_every,
+                    )
+                    if event_sink is not None
+                    else run_dreamplace(*args, **kwargs)
+                )
+            ),
             will_legalize=_will_legalize,
             exact_proxy_fn=_exact_proxy,
             soft_relocation_fn=_soft_relocation_moves,
@@ -545,6 +660,29 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         succeeded=True,
         candidates=int(len(seed_rows)),
     )
+    if event_sink is not None:
+        from visualizer.events import emit_event
+
+        for row in seed_rows:
+            seed_hard = np.asarray(row["hard"], dtype=np.float64)
+            seed_soft = np.asarray(row["soft"], dtype=np.float64)
+            components = _proxy_components(seed_hard, seed_soft)
+            components["proxy"] = (
+                components["wirelength"]
+                + 0.5 * components["density"]
+                + 0.5 * components["congestion"]
+            )
+            components["hierarchy"] = float(row.get("hierarchy_composite", 0.0))
+            emit_event(
+                event_sink,
+                "checkpoint",
+                reason="seed_candidate",
+                candidate=str(row["name"]),
+                selected=bool(row.get("selected", False)),
+                positions=np.vstack([seed_hard, seed_soft]).tolist(),
+                metrics=components,
+                metrics_stale=False,
+            )
     search_t0 = time.perf_counter()
     selected_seed_name = str(seed_rows[0].get("name", "dreamplace")) if seed_rows else "dreamplace"
 
@@ -554,6 +692,20 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
     state = PlacementState(legal.copy(), s_pos.copy(), float(s_score))
     pos = state.full()
     scorer = IncrementalScorer(plc, benchmark, pos.copy())
+    if event_sink is not None:
+        from visualizer.events import emit_event
+
+        if hasattr(event_sink, "activate"):
+            event_sink.activate("hierarchy_relief", "Hierarchy-local relief")
+        emit_event(
+            event_sink,
+            "checkpoint",
+            reason="seed_selection",
+            candidate=selected_seed_name,
+            positions=pos.tolist(),
+            metrics=scorer.visualizer_metrics(),
+            metrics_stale=False,
+        )
     soft_mov = movable[n : n + n_soft]
     seed_hierarchy_quality = hierarchy_quality_metric(legal, clusters)
     selected_seed_row = seed_rows[0] if seed_rows else {}
@@ -1334,6 +1486,18 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
             np.vstack([h_pos, s_pos]).astype(np.float64),
         )
         rebuild_elapsed_s = time.perf_counter() - start
+        if event_sink is not None:
+            from visualizer.events import emit_event
+
+            emit_event(
+                event_sink,
+                "rollback",
+                reason=reason,
+                label=label,
+                positions=full_restore.tolist(),
+                metrics=rscorer.visualizer_metrics(),
+                metrics_stale=False,
+            )
         _log(
             f"  [hier] audit checkpoint restore after {label}: "
             f"hard_quality={old_quality:.5f}/{audit_limit:.5f}, "
@@ -3357,6 +3521,8 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         proxy_after=float(best_score),
     )
     coldspot_t0 = time.perf_counter()
+    if event_sink is not None and hasattr(event_sink, "activate"):
+        event_sink.activate("coldspot", "Coldspot tightening")
     legal, s_pos, cur_proxy, _ = run_coldspot_tightening(
         benchmark=benchmark,
         plc=plc,
@@ -3398,8 +3564,24 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         proxy_after=float(cur_proxy),
     )
     _maybe_update_audit_checkpoint(legal, s_pos, cur_proxy)
+    if event_sink is not None:
+        from visualizer.events import emit_event
+
+        coldspot_scorer = IncrementalScorer(
+            plc, benchmark, np.vstack([legal, s_pos]).astype(np.float64)
+        )
+        emit_event(
+            event_sink,
+            "checkpoint",
+            reason="bulk_coldspot_replacements",
+            positions=np.vstack([legal, s_pos]).tolist(),
+            metrics=coldspot_scorer.visualizer_metrics(),
+            metrics_stale=False,
+        )
 
     post_coldspot_t0 = time.perf_counter()
+    if event_sink is not None and hasattr(event_sink, "activate"):
+        event_sink.activate("post_coldspot", "Post-coldspot finalization")
     result = run_post_coldspot_finalize(
         benchmark=benchmark,
         plc=plc,
@@ -3455,4 +3637,19 @@ def run_hierarchy_floorplan(benchmark: Benchmark) -> "torch.Tensor | None":
         "hierarchy_floorplan_total",
         time.perf_counter() - floorplan_t0,
     )
+    if event_sink is not None:
+        from visualizer.events import emit_event
+
+        final_np = result.detach().cpu().numpy().astype(np.float64)
+        final_scorer = IncrementalScorer(plc, benchmark, final_np)
+        final_metrics = final_scorer.visualizer_metrics()
+        setattr(benchmark, "_visualizer_last_metrics", final_metrics)
+        emit_event(
+            event_sink,
+            "checkpoint",
+            reason="final_placement",
+            positions=final_np.tolist(),
+            metrics=final_metrics,
+            metrics_stale=False,
+        )
     return result
