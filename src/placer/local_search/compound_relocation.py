@@ -130,6 +130,9 @@ def _compound_soft_relocation(
     max_scored: int | None = None,
 ) -> tuple[np.ndarray, int, float]:
     """Co-move a related soft group and exact-score only the completed move."""
+    sink = getattr(incremental_scorer, "event_sink", None)
+    if sink is not None and hasattr(sink, "activate"):
+        sink.activate("compound_soft", "Compound soft-bundle relocation")
     stats = {
         "groups": 0,
         "candidates": 0,

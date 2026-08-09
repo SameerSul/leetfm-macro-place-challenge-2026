@@ -125,11 +125,33 @@ uv run python scripts/analyze_plateau_telemetry.py \
 # Visualize a placement
 uv run evaluate src/main.py -b ibm10 --vis
 
+# Live accepted-move dashboard (optional Qt dependencies)
+uv run --extra visualizer python src/visualizer/main.py --benchmark ibm10
+
+# Generated/custom design directory; initial.plc is optional
+uv run --extra visualizer python src/visualizer/main.py \
+  --benchmark-dir test/benchmarks/testcases/syn01_wide
+
+# Replay a completed or partially written live trace
+uv run --extra visualizer python src/visualizer/main.py \
+  --replay ml_data/visualizer/ibm10
+
+# Export that replay as a shareable H.264 MP4 at 10× slower speed
+uv run --extra visualizer python src/visualizer/main.py \
+  --replay ml_data/visualizer/ibm10 \
+  --export-mp4 vivaplace-ibm10.mp4 --export-speed 0.1
+
 # Run the standard EDA flow (LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR out)
 uv run python src/place_design.py \
   --lef tech.lef --lef macros.lef --def floorplan.def \
   --out-def placed.def --out-tcl place_macros.tcl --report qor.rpt
 ```
+
+Live visualization is a research diagnostic, not a runtime benchmark. It
+bypasses the DREAMPlace final-position cache so optimizer motion is observable;
+ordinary evaluator commands retain the production cache and Qt-free execution
+path. See the [visualizer guide](src/visualizer/README.md) for controls, trace
+semantics, MP4 export, custom output paths, and overhead details.
 
 ## How It Works
 
@@ -241,8 +263,8 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
 Every pass after the initial seed is gated by the exact proxy and, where
 relevant, a hierarchy-quality budget: a candidate move is only accepted if it
 improves the score without drifting too far from the placement's inferred
-hierarchy. See [`docs/general/ARCHITECTURE.md`](docs/general/ARCHITECTURE.md)
-for the full pipeline and [`docs/general/OBJECTIVES.md`](docs/general/OBJECTIVES.md)
+hierarchy. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+for the full pipeline and [`docs/OBJECTIVES.md`](docs/OBJECTIVES.md)
 for the structural objectives behind it.
 
 ## Source Layout
@@ -259,14 +281,16 @@ src/dreamplace_bridge/     pb.txt <-> Bookshelf bridge and DREAMPlace launcher
 src/eda_io/                LEF/DEF/Verilog/SDC/Liberty I/O layer
 test/verification/         correctness checks
 test/benchmarks/           synthetic anti-overfitting suite
-docs/general/              architecture, design flow, objectives, issues, experiment ledger
+docs/                      architecture, design flow, objectives, issues, experiment ledger
+src/visualizer/            opt-in live dashboard, event schema, traces, and replay
 ```
 
 ## Documentation
 
-- [`docs/general/ARCHITECTURE.md`](docs/general/ARCHITECTURE.md) - current pipeline and module reference
-- [`docs/general/DESIGN_FLOW.md`](docs/general/DESIGN_FLOW.md) - flow diagram
-- [`docs/general/OBJECTIVES.md`](docs/general/OBJECTIVES.md) - the structural objectives that motivate the design
-- [`docs/general/REFERENCES.md`](docs/general/REFERENCES.md) - research papers, technical sources, and external dependency links
-- [`docs/general/ISSUES.md`](docs/general/ISSUES.md) - current unresolved work
-- [`docs/general/PROGRESS.md`](docs/general/PROGRESS.md) - chronological experiment ledger; only its first status entry describes current production
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - current pipeline and module reference
+- [`docs/DESIGN_FLOW.md`](docs/DESIGN_FLOW.md) - flow diagram
+- [`docs/OBJECTIVES.md`](docs/OBJECTIVES.md) - the structural objectives that motivate the design
+- [`docs/REFERENCES.md`](docs/REFERENCES.md) - research papers, technical sources, and external dependency links
+- [`docs/ISSUES.md`](docs/ISSUES.md) - current unresolved work
+- [`docs/PROGRESS.md`](docs/PROGRESS.md) - chronological experiment ledger; only its first status entry describes current production
+- [`src/visualizer/README.md`](src/visualizer/README.md) - live dashboard commands, controls, events, and trace format
