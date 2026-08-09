@@ -11,6 +11,10 @@ Target: beat RePlAce avg of 1.4578.
 > progress protocol, spawned PyQtGraph/PySide6 dashboard, net/hierarchy layers,
 > and replay controls under `src/visualizer`. The production default remains
 > `event_sink=None`; normal DREAMPlace cache/subprocess behavior is unchanged.
+> The tracked patcher now owns and validates protocol v1 in both the source and
+> installed DREAMPlace copies, supports the current local DREAMPlace revision
+> (`4c64c3f49eca86ccf5d5a050c92e030352cc8d62`), and is checked by bootstrap
+> preflight before native imports.
 > A normal post-change `uv run evaluate src/main.py -b ibm10` reproduced
 > **proxy 1.1348, VALID** in 42.30s.
 >
@@ -19,11 +23,12 @@ Target: beat RePlAce avg of 1.4578.
 > algorithm scopes, and 14,000 extracted real nets. It wrote/replayed the JSONL
 > trace and reconstructed
 > a final frame exactly equal to the returned
-> completion placement. All **13 visualizer tests** pass, including offscreen
+> completion placement. All **15 visualizer tests** pass, including offscreen
 > Qt, exact scorer metrics/output indices, disabled-sink state equivalence,
-> truncated replay, deterministic net filtering, and bootstrap protocol checks;
+> truncated replay, deterministic net filtering, protocol-version rejection,
+> current-source patching/idempotence, and bootstrap preflight checks;
 > focused existing scorer tests and bytecode compilation also pass. The complete
-> project suite is **108 passed, 2 GPU-only skipped**. Live-run
+> project suite is **109 passed, 2 GPU-only skipped**. Live-run
 > timing is diagnostic overhead and is not a production runtime claim.
 > The requested `ibm10` live acceptance then completed with **1,546 accepted
 > move events**, 60 sampled DREAMPlace frames, one audit rollback event, 28,272

@@ -128,6 +128,10 @@ uv run evaluate src/main.py -b ibm10 --vis
 # Live accepted-move dashboard (optional Qt dependencies)
 uv run --extra visualizer python src/visualizer/main.py --benchmark ibm10
 
+# Generated/custom design directory; initial.plc is optional
+uv run --extra visualizer python src/visualizer/main.py \
+  --benchmark-dir test/benchmarks/testcases/syn01_wide
+
 # Replay a completed or partially written live trace
 uv run --extra visualizer python src/visualizer/main.py \
   --replay ml_data/visualizer/ibm10/<run-id>.jsonl
@@ -137,6 +141,12 @@ uv run python src/place_design.py \
   --lef tech.lef --lef macros.lef --def floorplan.def \
   --out-def placed.def --out-tcl place_macros.tcl --report qor.rpt
 ```
+
+Live visualization is a research diagnostic, not a runtime benchmark. It
+bypasses the DREAMPlace final-position cache so optimizer motion is observable;
+ordinary evaluator commands retain the production cache and Qt-free execution
+path. See the [visualizer guide](src/visualizer/README.md) for controls, trace
+semantics, custom output paths, and overhead details.
 
 ## How It Works
 

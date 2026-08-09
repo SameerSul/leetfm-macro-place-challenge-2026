@@ -13,7 +13,7 @@ uv run --extra visualizer python src/visualizer/main.py --benchmark nvdla
 
 # Any generated/source directory containing netlist.pb.txt; initial.plc is optional
 uv run --extra visualizer python src/visualizer/main.py \
-  --benchmark-dir test/benchmarks/generated/syn01
+  --benchmark-dir test/benchmarks/testcases/syn01_wide
 
 # Explicit output and DREAMPlace cadence
 uv run --extra visualizer python src/visualizer/main.py --benchmark ibm10 \
@@ -40,15 +40,18 @@ The selected upstream documentation is recorded in
 - A moved macro glows temporarily and its old-to-new vector is drawn. Parent
   groups use translucent related outlines.
 - Synthetic grouping nets are enabled by default and collapse the repeated
-  DREAMPlace copies into one dashed centroid/spoke hyperedge. Real nets and
-  hierarchy-graph centroid edges are independent toggles; the real-net slider
-  controls the stable low-fanout/high-weight prefix (250 by default).
+  DREAMPlace copies into one dashed centroid/spoke hyperedge; line thickness
+  reflects `HIER_GROUP_WEIGHT`. Real nets and hierarchy-graph centroid edges
+  are independent toggles. Real wiring uses macro pin offsets and fixed I/O
+  endpoints where the input exposes them, and the slider controls the stable
+  low-fanout/high-weight prefix (250 by default).
 - **Pause** stops rendering only; placement and trace recording continue.
   **Live** jumps to the newest event. Arrow buttons and the timeline step or
   scrub recorded events. Replay speed ranges from 0.25× to 8×.
 
-The sidebar shows the current algorithm/stage, exact or stale status, all five
-lower-is-better metrics, signed change from the first exact state, and trends:
+The sidebar shows the current algorithm, round, and lane; exact or stale
+status; all five lower-is-better metrics; signed change from the exact initial
+placement; and trends:
 
 ```text
 proxy = wirelength + 0.5 * density + 0.5 * congestion
@@ -63,9 +66,11 @@ are `run_metadata`, `algorithm_start`, `algorithm_end`, `accepted_move`,
 `checkpoint`, `dreamplace_progress`, `rollback`, `completion`, and `error`.
 Accepted moves contain output-tensor `indices`, `old_positions`,
 `new_positions`, `move_kind`, and exact metrics. DREAMPlace frames contain
-changed indices/centers and `metrics_stale=true`. Checkpoints contain full
-positions at pipeline boundaries and every 250 accepted moves. Replay ignores
-one truncated trailing JSON line but rejects unknown schema versions.
+changed indices/centers and `metrics_stale=true`; the sidebar retains the most
+recent exact values under its stale badge until the next exact checkpoint.
+Checkpoints contain full positions at algorithm-stage boundaries, explicit
+pipeline boundaries, and every 250 accepted moves. Replay ignores one
+truncated trailing JSON line but rejects unknown schema versions.
 
 ## Runtime and cache behavior
 
@@ -76,3 +81,24 @@ final-position cache so genuine optimizer motion is observable; ordinary
 evaluator runs retain the existing cache and `subprocess.run` path. Event
 instrumentation is guarded by `event_sink is not None` and does not change the
 normal evaluator execution path or optional dependencies.
+
+The tracked bootstrap patch emits protocol-v1 compact base64 float32
+lower-left coordinates at the requested optimizer cadence. The bridge converts
+Bookshelf names, scales, and sizes back to VivaPlace output indices and center
+coordinates. A malformed or unsupported progress record disables subsequent
+DREAMPlace frames for that subprocess but does not invalidate an otherwise
+successful placement. Bootstrap accepts the pinned upstream revision and both
+known local revisions and applies the patch before building and after
+installing. Verify both copies without changing them with:
+
+```bash
+uv run python scripts/dreamplace/apply_visualizer_patch.py --check
+```
+
+## First-version scope
+
+The dashboard records and renders committed states, audit rollbacks, bulk
+checkpoints, and raw DREAMPlace movement. Rejected candidate trials and live
+congestion/density heatmap grids are intentionally outside this version. The
+hierarchy value is the production six-component composite; it is not a new
+acceptance objective.

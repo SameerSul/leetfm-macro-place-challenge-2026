@@ -131,8 +131,10 @@ benchmark input
 context. A bounded queue transports plain dictionaries to the main Qt process.
 The consumer writes every event to schema-v1 JSONL before its 30 FPS renderer
 coalesces rapid updates. Traces start with metadata and a full placement, store
-accepted moves as deltas, add full keyframes at stage boundaries and every 250
-moves, and tolerate a truncated final line during replay.
+accepted moves as deltas, add full keyframes at algorithm-stage and explicit
+pipeline boundaries and every 250 moves, and tolerate a truncated final line
+during replay. Pausing or scrubbing affects only rendering; the queue continues
+to drain and every event continues to be recorded.
 
 In visualizer mode only, `run_dreamplace()` bypasses final-position cache reads
 and writes and consumes `VIVAPLACE_PROGRESS` records from `Popen`. The tracked
@@ -142,6 +144,21 @@ back to VivaPlace output indices and centers. These frames retain the previous
 metrics with a visible stale badge; the next exact scorer checkpoint refreshes
 them. A malformed frame disables subsequent progress decoding without turning
 an otherwise successful DREAMPlace process into a placement failure.
+
+The tracked patcher owns protocol version 1 and normalizes both
+`dreamplace_src/dreamplace/NonLinearPlace.py` and the installed copy. Bootstrap
+applies it before compilation and after installation and recognizes the pinned
+upstream commit plus the legacy and current local patch commits. Bootstrap
+`preflight` runs the patcher's `--check` mode before native import checks, so
+stale, partial, duplicated, or unsupported insertion state is reported without
+writing files.
+
+Real-net metadata is extracted from the scorer's global pin/net arrays after
+the PLC is loaded. The dashboard stable-ranks low-fanout/high-weight nets, adds
+all nets incident to the selected macro, and uses macro pin offsets and fixed
+I/O endpoints when available. Repeated synthetic grouping nets collapse into a
+single dashed centroid/spoke hyperedge per leaf cluster. Hierarchy-model edges
+remain a separate, default-off centroid layer.
 
 Passes advance on gain, not fixed repeat counts: each stage keeps running
 while its most recent exact-proxy improvement exceeds
