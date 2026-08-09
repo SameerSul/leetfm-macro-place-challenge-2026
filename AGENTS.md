@@ -127,9 +127,9 @@ congestion/density lane and stops the entire remaining pass after an audited
 lane has no retained gain. Do not truncate a lane's ordered hot-source tail:
 IBM12 improvements begin beyond source 384. A final hierarchy-quality audit rolls back to
 the best saved audit-passing checkpoint if the post-search state drifts too
-far from the selected hierarchy seed. See `docs/general/ARCHITECTURE.md` for
-the full pipeline, `docs/general/ISSUES.md` for current gaps, and
-`docs/general/PROGRESS.md` for rejected or superseded experiments.
+far from the selected hierarchy seed. See `docs/ARCHITECTURE.md` for
+the full pipeline, `docs/ISSUES.md` for current gaps, and
+`docs/PROGRESS.md` for rejected or superseded experiments.
 
 Soft hierarchy inference is deliberately confidence-calibrated. Useful shared
 slash-separated soft instance paths are high-confidence bundles and can move as
@@ -215,7 +215,7 @@ utilization and exhaustion, and use
 slack replay; current production limits were retained after calibration on 31
 IBM, NG45, and synthetic final rows.
 
-For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/general/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/general/OBJECTIVES.md). Do not duplicate that content here.
+For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/OBJECTIVES.md). Do not duplicate that content here.
 
 ## Common commands
 
@@ -347,7 +347,7 @@ proxy_cost = 1.0 × wirelength + 0.5 × density + 0.5 × congestion
 
 After normalization, **wirelength ≈ 0.06**, **congestion ≈ 1.3–2.7**. Congestion dominates by ~30×. This is why the proxy path preferred spread placements and why compact hierarchy-preserving placements cost more proxy by design.
 
-Historical `--all` scores in `docs/general/PROGRESS.md` are retained as
+Historical `--all` scores in `docs/PROGRESS.md` are retained as
 experiment history for the deleted proxy path. Do not treat them as the current
 hierarchy output.
 
@@ -360,7 +360,7 @@ src/utils/         Runtime config, logging shim, and accepted placement constant
 src/dreamplace_bridge/  pb.txt <-> Bookshelf converters + DREAMPlace launcher.
 src/eda_io/        Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR-report out.
 src/place_design.py CLI tying eda_io together - see src/eda_io/README.md.
-docs/general/      Current architecture/flow/issues plus the PROGRESS experiment ledger.
+docs/              Current architecture/flow/issues plus the PROGRESS experiment ledger.
 test/benchmarks/   Synthetic anti-overfitting suite: generator, runner, impact analyzer.
 test/diagnostic/   Maintained smoke tests plus current profiling/recall probes.
 test/eda_io/       eda_io pytest suite + LEF/DEF/Verilog/SDC/Liberty fixture design.
@@ -408,23 +408,23 @@ scripts/                  Comparison + benchmark-conversion utilities.
 
 - Iterate on one benchmark (`-b ibm10` is the current hierarchy smoke) until the change is sound; run `--all` only when you need a full benchmark sweep.
 - When a change alters hierarchy quality or proxy cost, verify it on more than one benchmark before treating it as a system improvement.
-- Record concrete numbers in `docs/general/PROGRESS.md` when a change becomes a new accepted system result - that file is the source of truth for "what works", not commit messages.
+- Record concrete numbers in `docs/PROGRESS.md` when a change becomes a new accepted system result - that file is the source of truth for "what works", not commit messages.
 - When a paper, technical article, or external method informs implementation or
   an experiment, add or update its numbered entry in
-  `docs/general/REFERENCES.md`. Verify title, authors, venue/year, pages, and DOI
+  `docs/REFERENCES.md`. Verify title, authors, venue/year, pages, and DOI
   or primary-author/publisher link; state whether the method is production,
   independently adapted, research-only, rejected, or future work; and link the
   relevant design/experiment document back to that entry. Keep results reported
   by the source explicitly separate from VivaPlace measurements and forecasts.
-- Documentation updates are part of every system modification. If a change alters placement flow, operator order, acceptance gates, constants, default behavior, diagnostics, structural hooks, verification status, or user-facing commands, update `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and all other relevant docs in the same turn. Relevant docs may include `README.md`, `docs/general/ISSUES.md`, `docs/general/PROGRESS.md`, or test/diagnostic READMEs. If no documentation needs an update, explicitly note why in the final response.
-- Once a change has been accepted and verified as a new system result, record concrete numbers in `docs/general/PROGRESS.md` and make sure `docs/general/ARCHITECTURE.md`, `docs/general/DESIGN_FLOW.md`, and any related subsystem docs describe the accepted behavior instead of stale experiment behavior.
+- Documentation updates are part of every system modification. If a change alters placement flow, operator order, acceptance gates, constants, default behavior, diagnostics, structural hooks, verification status, or user-facing commands, update `docs/ARCHITECTURE.md`, `docs/DESIGN_FLOW.md`, and all other relevant docs in the same turn. Relevant docs may include `README.md`, `docs/ISSUES.md`, `docs/PROGRESS.md`, or test/diagnostic READMEs. If no documentation needs an update, explicitly note why in the final response.
+- Once a change has been accepted and verified as a new system result, record concrete numbers in `docs/PROGRESS.md` and make sure `docs/ARCHITECTURE.md`, `docs/DESIGN_FLOW.md`, and any related subsystem docs describe the accepted behavior instead of stale experiment behavior.
 - **All v2-specific tests, diagnostics, and probes live under `test/`** (current subdirs: `benchmarks/`, `diagnostic/`, `eda_io/`, `verification/`). Never create v2 test files in the repo-root `test/` directory (that's read-only per the file-modification-scope rule above and is reserved for the project-level smoke tests). When the user asks an agent to write a verification script, perf probe, or one-off diagnostic for v2 work, put it inside `test/` under the matching subdirectory - and when executing tests for v2 code, point pytest / direct script invocations at that path, not `test/`. The repo-root `test/` exists for the smoke tests only; the v2 slot owns its own test tree.
 - Never commit unless asked.
 - Do not push, force-push, or create PRs unless asked.
 
 ## When in doubt
 
-- For current work, start with `docs/general/DESIGN_FLOW.md` and `docs/general/ARCHITECTURE.md`; they describe the hierarchy system.
+- For current work, start with `docs/DESIGN_FLOW.md` and `docs/ARCHITECTURE.md`; they describe the hierarchy system.
 - The deleted learned-GNN and proxy-path research must not be reintroduced
   unless the user explicitly changes direction.
 - Do not reintroduce deleted proxy-only code unless the user explicitly asks to restore the proxy path.

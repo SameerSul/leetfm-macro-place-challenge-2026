@@ -1644,9 +1644,26 @@ def _batch_density_costs(
 class IncrementalScorer:
     """Fast proxy scorer for small local-search moves."""
 
-    def __init__(self, plc, benchmark: Benchmark, current_placement_np: np.ndarray):
+    def __init__(
+        self,
+        plc,
+        benchmark: Benchmark,
+        current_placement_np: np.ndarray,
+        event_sink=None,
+        hierarchy_metric=None,
+    ):
         self.plc = plc
         self.benchmark = benchmark
+        self.event_sink = (
+            event_sink
+            if event_sink is not None
+            else getattr(benchmark, "_visualizer_event_sink", None)
+        )
+        self.hierarchy_metric = (
+            hierarchy_metric
+            if hierarchy_metric is not None
+            else getattr(benchmark, "_visualizer_hierarchy_metric", None)
+        )
         self.n_hard = benchmark.num_hard_macros
         self.hard_indices = list(benchmark.hard_macro_indices)
 
@@ -1828,7 +1845,6 @@ class IncrementalScorer:
             "density_reduction_seconds": 0.0,
             "dependency_invalidations": 0,
         }
-
         # Dense soft-relocation workspaces grow to the largest requested batch
         # and are then sliced for smaller sources.
         self._soft_workspace_capacity = 0
@@ -1837,6 +1853,39 @@ class IncrementalScorer:
         self._soft_congestion_prefix_h = np.empty(self.grid_row + 1, dtype=np.float64)
         self._soft_congestion_prefix_v = np.empty(self.grid_col + 1, dtype=np.float64)
         self._soft_density_packed = np.empty(self.dens_n_cells, dtype=np.float64)
+
+    def visualizer_metrics(self) -> dict[str, float]:
+        """Return exact metrics for the currently committed scorer state."""
+        wirelength = float(self.total_wl_raw / self.wl_normalizer)
+        density = float(self._compute_density_cost())
+        congestion = float(self._compute_cong_cost())
+        metrics = {
+            "wirelength": wirelength,
+            "density": density,
+            "congestion": congestion,
+            "proxy": wirelength + 0.5 * density + 0.5 * congestion,
+        }
+        if self.hierarchy_metric is not None:
+            metrics["hierarchy"] = float(
+                self.hierarchy_metric(self.committed_hard_pos, self.committed_soft_pos)
+            )
+        return metrics
+
+    def _emit_commit(self, kind: str, indices, old_positions, new_positions) -> None:
+        if self.event_sink is None:
+            return
+        from visualizer.events import emit_event
+
+        emit_event(
+            self.event_sink,
+            "accepted_move",
+            move_kind=kind,
+            indices=[int(i) for i in indices],
+            old_positions=np.asarray(old_positions, dtype=np.float64).reshape((-1, 2)).tolist(),
+            new_positions=np.asarray(new_positions, dtype=np.float64).reshape((-1, 2)).tolist(),
+            metrics=self.visualizer_metrics(),
+            metrics_stale=False,
+        )
 
     def _macro_occ(self, module_idx: int, cx: float, cy: float):
         """Return cells and occupied area for one macro."""
@@ -2478,6 +2527,7 @@ class IncrementalScorer:
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
         self._invalidate_swap_tail_baseline()
+        self._emit_commit("hard_move", [i_hard], [[old_ix, old_iy]], [[new_ix, new_iy]])
 
     def score_move_soft(self, soft_k: int, new_xy) -> float:
         """Score a soft relocation, then restore the old state."""
@@ -2574,6 +2624,12 @@ class IncrementalScorer:
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
         self._invalidate_swap_tail_baseline()
+        self._emit_commit(
+            "soft_move",
+            [self.n_hard + int(soft_k)],
+            [[old_x, old_y]],
+            [[new_x, new_y]],
+        )
 
     def score_move_soft_group(self, soft_indices, new_xy) -> float:
         """Exact-score one completed multi-soft relocation without committing it."""
@@ -2604,6 +2660,7 @@ class IncrementalScorer:
             [],
             {},
             {int(k): tuple(xy) for k, xy in zip(indices, targets)},
+            move_kind="soft_group",
         )
 
     def score_move_group(
@@ -2678,6 +2735,7 @@ class IncrementalScorer:
             self._hard_slot_array(*hard_indices),
             {int(i): tuple(xy) for i, xy in zip(hard_indices, hard_targets)},
             {int(k): tuple(xy) for k, xy in zip(soft_indices, soft_targets)},
+            move_kind="compound_move",
         )
 
     def _score_multi_move(self, modules, old_xy, new_xy, hard_slots) -> float:
@@ -2759,7 +2817,16 @@ class IncrementalScorer:
             self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
         return score
 
-    def _commit_multi_move(self, modules, old_xy, new_xy, hard_slots, hard_updates, soft_updates):
+    def _commit_multi_move(
+        self,
+        modules,
+        old_xy,
+        new_xy,
+        hard_slots,
+        hard_updates,
+        soft_updates,
+        move_kind="compound_move",
+    ):
         """Commit a small multi-macro move."""
         modules = [int(m) for m in modules]
         old_xy = [(float(x), float(y)) for x, y in old_xy]
@@ -2808,6 +2875,24 @@ class IncrementalScorer:
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
         self._invalidate_swap_tail_baseline()
+        changed = list(hard_updates)
+        changed.extend(self.n_hard + int(k) for k in soft_updates)
+        old_by_module = {int(m): xy for m, xy in zip(modules, old_xy)}
+        new_by_module = {int(m): xy for m, xy in zip(modules, new_xy)}
+        output_modules = [
+            (
+                int(self.hard_indices[i])
+                if i < self.n_hard
+                else int(self.soft_indices[i - self.n_hard])
+            )
+            for i in changed
+        ]
+        self._emit_commit(
+            move_kind,
+            changed,
+            [old_by_module[m] for m in output_modules],
+            [new_by_module[m] for m in output_modules],
+        )
 
     def _hard_slot_array(self, *i_hard) -> np.ndarray:
         slots = []
@@ -2881,6 +2966,7 @@ class IncrementalScorer:
             self._hard_slot_array(i_hard, j_hard),
             {i_hard: j_xy, j_hard: i_xy},
             {},
+            move_kind="hard_hard_swap",
         )
 
     def score_swap_soft_soft(self, soft_a: int, soft_b: int) -> float:
@@ -3336,6 +3422,7 @@ class IncrementalScorer:
             [],
             {},
             {soft_a: b_xy, soft_b: a_xy},
+            move_kind="soft_soft_swap",
         )
 
     def score_swap_hard_soft(self, i_hard: int, soft_k: int) -> float:
@@ -3402,6 +3489,7 @@ class IncrementalScorer:
             self._hard_slot_array(i_hard),
             {i_hard: s_xy},
             {soft_k: h_xy},
+            move_kind="hard_soft_swap",
         )
 
     # Relocation prep removes the old macro once, then trials many targets.
@@ -3549,6 +3637,12 @@ class IncrementalScorer:
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
         self._invalidate_swap_tail_baseline()
+        self._emit_commit(
+            "hard_move",
+            [int(i_hard)],
+            [[float(prep["old_ix"]), float(prep["old_iy"])]],
+            [[new_ix, new_iy]],
+        )
 
     def _revert_prep(self, prep: dict) -> None:
         """Undo `_prepare_move` when no target wins."""
@@ -3798,6 +3892,12 @@ class IncrementalScorer:
             self.per_net_hpwl[touched] = new_per_net
             self.total_wl_raw += delta
         self._invalidate_swap_tail_baseline()
+        self._emit_commit(
+            "soft_move",
+            [self.n_hard + int(soft_k)],
+            [[float(prep["old_x"]), float(prep["old_y"])]],
+            [[new_x, new_y]],
+        )
 
     def _revert_prep_soft(self, prep: dict) -> None:
         """Undo `_prepare_move_soft` when no target wins."""

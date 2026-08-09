@@ -17,6 +17,16 @@ The deleted proxy path included random candidate restarts, R2/2-opt/swap/cycle
 search, generic LSMC exploration, generic cluster kicks, CUDA propose-all
 integration in the main loop, and ML ranker defaults.
 
+The live visualizer is an opt-in observation path, not a production flow
+branch. `MacroPlacer(event_sink=None)` remains the evaluator behavior. The
+launcher supplies a sink, records the initial state, hierarchy construction,
+seed selection, accepted local moves, coldspot replacement checkpoint, audit
+rollbacks, and final state, then forwards those records to the Qt process.
+Visualization runs disable wall-clock diagnostic guards so serialization time
+cannot truncate a lane; deterministic exact-score quotas remain unchanged.
+Consequently visualizer timings are diagnostic overhead measurements and must
+not be compared with evaluator runtimes.
+
 Current verification after adding exact-prescored seed portfolio selection,
 hierarchy-aware congestion-weighted proposal ranking, plateau telemetry,
 budget-aware pass scheduling, strong soft repair, swap-round micro-shift replay,

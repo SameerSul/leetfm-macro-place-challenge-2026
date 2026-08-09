@@ -6,6 +6,16 @@
 `src/placer/pipeline/macro_placer.py`. There is no proxy-only fallback path:
 the placer raises if grouped DREAMPlace is unavailable.
 
+The optional live visualizer adds a dependency-free schema-v1 event sink at
+the placer/scorer boundary. With no sink (the evaluator default), no events,
+Qt imports, trace writes, DREAMPlace progress output, or cache changes occur.
+With a sink, accepted scorer commits emit only changed output-tensor indices,
+old/new centers, and exact committed wirelength/density/congestion/proxy values;
+the pipeline adds the production hierarchy composite and stage/checkpoint
+events. Audit restoration emits a full rollback state. The GUI runs outside the
+placer in the parent process and therefore cannot participate in candidate
+ordering or acceptance.
+
 ```text
 benchmark input
   -> build HierarchyModel
@@ -114,6 +124,24 @@ benchmark input
   -> final legality and bounds checks
   -> return center coordinates for hard and soft macros
 ```
+
+## Live diagnostics architecture
+
+`src/visualizer/main.py` starts the placer with the multiprocessing `spawn`
+context. A bounded queue transports plain dictionaries to the main Qt process.
+The consumer writes every event to schema-v1 JSONL before its 30 FPS renderer
+coalesces rapid updates. Traces start with metadata and a full placement, store
+accepted moves as deltas, add full keyframes at stage boundaries and every 250
+moves, and tolerate a truncated final line during replay.
+
+In visualizer mode only, `run_dreamplace()` bypasses final-position cache reads
+and writes and consumes `VIVAPLACE_PROGRESS` records from `Popen`. The tracked
+bootstrap patch samples float32 lower-left movable-node coordinates every ten
+optimizer updates by default. The bridge converts Bookshelf order/scale/size
+back to VivaPlace output indices and centers. These frames retain the previous
+metrics with a visible stale badge; the next exact scorer checkpoint refreshes
+them. A malformed frame disables subsequent progress decoding without turning
+an otherwise successful DREAMPlace process into a placement failure.
 
 Passes advance on gain, not fixed repeat counts: each stage keeps running
 while its most recent exact-proxy improvement exceeds

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import base64
 import os
 import subprocess
+import threading
 import sys
 import time
 from pathlib import Path
@@ -118,6 +120,25 @@ _DP_BUILD_PYTHON = REPO_ROOT / "dreamplace_build" / "dpenv" / "bin" / "python"
 _REPO_VENV_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
 VENV_PYTHON = _DP_BUILD_PYTHON if _DP_BUILD_PYTHON.exists() else _REPO_VENV_PYTHON
 _AVAILABILITY_CACHE: Optional[tuple[bool, str]] = None
+
+
+def _use_final_cache(event_sink) -> bool:
+    """Visualizer runs must execute the optimizer; production retains its cache."""
+    return event_sink is None
+
+
+def _decode_progress_payload(line: str) -> tuple[int, np.ndarray]:
+    """Validate and decode one compact DREAMPlace progress record."""
+    if not line.startswith("VIVAPLACE_PROGRESS "):
+        raise ValueError("not a DREAMPlace progress record")
+    payload = json.loads(line.split(" ", 1)[1])
+    if payload.get("dtype") != "float32":
+        raise ValueError("unsupported DREAMPlace progress dtype")
+    raw = base64.b64decode(payload["coordinates"], validate=True)
+    lower_left = np.frombuffer(raw, dtype=np.float32).reshape((-1, 2))
+    if lower_left.shape[0] != int(payload["count"]):
+        raise ValueError("DREAMPlace progress count mismatch")
+    return int(payload["iteration"]), lower_left
 
 
 def _probe_install(timeout_s: float = 30.0) -> tuple[bool, str]:
@@ -249,6 +270,8 @@ def run_dreamplace(
     cluster_groups: "Optional[list]" = None,
     group_weight: int = 0,
     return_full: bool = False,
+    event_sink=None,
+    sample_every: int = 10,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Run DREAMPlace and return hard-macro center positions."""
     if not is_available():
@@ -269,7 +292,7 @@ def run_dreamplace(
         random_center_init,
         group_sig=_group_sig(cluster_groups, group_weight),
     )
-    cached = _try_load_cache(work_dir, cache_key)
+    cached = _try_load_cache(work_dir, cache_key) if _use_final_cache(event_sink) else None
     if cached is not None:
         hard_pos, soft_pos = cached
         print(
@@ -319,18 +342,109 @@ def run_dreamplace(
     env["OPENBLAS_NUM_THREADS"] = nt
     env["NUMEXPR_NUM_THREADS"] = nt
 
+    def emit_progress(line: str) -> None:
+        """Decode one DREAMPlace lower-left frame into VivaPlace centers."""
+        from visualizer.events import emit_event
+        from .bookshelf_to_pb import _read_node_sizes
+        from .pb_to_bookshelf import _sanitize
+
+        iteration, lower_left = _decode_progress_payload(line)
+        nodes = []
+        with (work_dir / f"{design}.nodes").open() as stream:
+            for raw_line in stream:
+                parts = raw_line.split()
+                if len(parts) >= 3 and parts[0] not in {"UCLA", "NumNodes", "NumTerminals"}:
+                    is_terminal = len(parts) >= 4 and parts[3].lower().startswith("terminal")
+                    if not is_terminal:
+                        nodes.append(parts[0])
+        if len(nodes) != lower_left.shape[0]:
+            raise ValueError("DREAMPlace movable-node ordering mismatch")
+        scale = float((work_dir / f"{design}.scale").read_text().strip())
+        sizes = _read_node_sizes(work_dir / f"{design}.nodes")
+        output_by_name = {}
+        if plc is not None:
+            for out_idx, module_idx in enumerate(
+                list(plc.hard_macro_indices) + list(plc.soft_macro_indices)
+            ):
+                output_by_name[_sanitize(plc.modules_w_pins[module_idx].get_name())] = out_idx
+        indices = []
+        centers = []
+        for name, xy in zip(nodes, lower_left):
+            if name not in output_by_name or name not in sizes:
+                continue
+            size = sizes[name]
+            indices.append(int(output_by_name[name]))
+            centers.append(
+                [
+                    (float(xy[0]) + size.width / 2.0) / scale,
+                    (float(xy[1]) + size.height / 2.0) / scale,
+                ]
+            )
+        emit_event(
+            event_sink,
+            "dreamplace_progress",
+            iteration=iteration,
+            indices=indices,
+            new_positions=centers,
+            metrics_stale=True,
+        )
+
     log_target = (work_dir / "dreamplace.log").open("w") if keep_log else subprocess.DEVNULL
     t0 = time.time()
     try:
-        subprocess.run(
-            [str(VENV_PYTHON), str(DREAMPLACE_PLACER), str(cfg_path)],
-            cwd=str(DREAMPLACE_INSTALL),
-            env=env,
-            stdout=log_target,
-            stderr=subprocess.STDOUT,
-            check=True,
-            timeout=timeout_s,
-        )
+        if event_sink is None:
+            subprocess.run(
+                [str(VENV_PYTHON), str(DREAMPLACE_PLACER), str(cfg_path)],
+                cwd=str(DREAMPLACE_INSTALL),
+                env=env,
+                stdout=log_target,
+                stderr=subprocess.STDOUT,
+                check=True,
+                timeout=timeout_s,
+            )
+        else:
+            env["VIVAPLACE_PROGRESS_EVERY"] = str(max(1, int(sample_every)))
+            proc = subprocess.Popen(
+                [str(VENV_PYTHON), str(DREAMPLACE_PLACER), str(cfg_path)],
+                cwd=str(DREAMPLACE_INSTALL),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            progress_enabled = True
+            timed_out = False
+
+            def kill_on_timeout():
+                nonlocal timed_out
+                timed_out = True
+                proc.kill()
+
+            timeout_timer = threading.Timer(float(timeout_s), kill_on_timeout)
+            timeout_timer.daemon = True
+            timeout_timer.start()
+            try:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    if keep_log and hasattr(log_target, "write"):
+                        log_target.write(line)
+                    if progress_enabled and line.startswith("VIVAPLACE_PROGRESS "):
+                        try:
+                            emit_progress(line)
+                        except Exception:
+                            progress_enabled = False
+                return_code = proc.wait()
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
+            finally:
+                timeout_timer.cancel()
+            if timed_out:
+                raise subprocess.TimeoutExpired(proc.args, timeout_s)
+            if return_code:
+                raise subprocess.CalledProcessError(return_code, proc.args)
     finally:
         if hasattr(log_target, "close"):
             log_target.close()
@@ -346,7 +460,8 @@ def run_dreamplace(
     # Cache hard and soft positions; return only hard positions.
     try:
         hard_pos, soft_pos = read_dreamplace_positions_full(plc, str(work_dir), design)
-        _write_cache(work_dir, cache_key, hard_pos, soft_pos)
+        if _use_final_cache(event_sink):
+            _write_cache(work_dir, cache_key, hard_pos, soft_pos)
         if return_full:
             print(
                 f"  [dreamplace] {design}: {hard_pos.shape[0]} hard macros placed "

@@ -49,6 +49,10 @@ baselines = [
     "torch-geometric>=2.3.0",
     "scipy>=1.10.0",
 ]
+visualizer = [
+    "pyqtgraph==0.14.0",
+    "PySide6>=6.8,<7",
+]
 
 [project.scripts]
 evaluate = "macro_place.evaluate:main"

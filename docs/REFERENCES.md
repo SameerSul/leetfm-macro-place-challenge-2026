@@ -309,6 +309,7 @@ hashes are authoritative in `pyproject.toml`, `uv.lock`,
 | --- | --- |
 | Runtime | [Python](https://www.python.org/), [PyTorch](https://pytorch.org/), [NumPy](https://numpy.org/), [Numba](https://numba.pydata.org/), [Matplotlib](https://matplotlib.org/), [tqdm](https://tqdm.github.io/), [Abseil Python](https://github.com/abseil/abseil-py) |
 | Optional ML and baselines | [XGBoost](https://xgboost.readthedocs.io/), [scikit-learn](https://scikit-learn.org/), [PyTorch Geometric](https://pytorch-geometric.readthedocs.io/), [SciPy](https://scipy.org/) |
+| Optional live visualization | [PyQtGraph 0.14 documentation](https://pyqtgraph.readthedocs.io/en/latest/), [PySide6 package metadata](https://pypi.org/project/PySide6/) |
 | Test and style | [pytest](https://pytest.org/), [pytest-cov](https://pytest-cov.readthedocs.io/), [Black](https://black.readthedocs.io/), [Flake8](https://flake8.pycqa.org/) |
 | Environment and native build | [uv](https://docs.astral.sh/uv/), [micromamba](https://mamba.readthedocs.io/), [CMake](https://cmake.org/), [GCC](https://gcc.gnu.org/), [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) |
 

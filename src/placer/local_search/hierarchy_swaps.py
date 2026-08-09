@@ -1305,7 +1305,7 @@ def _region_bounded_swap_relief(
     rounds = max(1, int(rounds))
     stats = _new_stats()
 
-    for _ in range(rounds):
+    for round_index in range(rounds):
         if deadline is not None and time.monotonic() > deadline:
             break
         weighted_rank = not use_density
@@ -1324,6 +1324,14 @@ def _region_bounded_swap_relief(
         field_name = (
             "density" if use_density else ("weighted_congestion" if weighted_rank else "congestion")
         )
+        sink = getattr(incremental_scorer, "event_sink", None)
+        if sink is not None and hasattr(sink, "activate"):
+            sink.activate(
+                "region_swaps",
+                f"Region swaps · round {round_index + 1} · {field_name} lane",
+                round=round_index + 1,
+                lane=field_name,
+            )
         if enable_hh:
             got, best_score = _try_hard_hard(
                 hard_pos,
