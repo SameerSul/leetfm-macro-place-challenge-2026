@@ -228,11 +228,15 @@ flowchart TD
     E2 --> G[Default-order safety legalization]
     G --> H[Soft relocation cleanup]
     H --> R[Congestion-expanded hard/soft regions]
-    R --> J[Region-locked hard relocation + soft cleanup<br/>hard-containment prefilter before exact scoring]
-    J --> A1[In-region micro-shift polish]
-    A1 --> A2[Parent-bounded child relocation<br/>or sibling slot swap; owned softs co-move]
-    A2 --> A3[Freeze deepest-child footprint + graph/field margin boxes<br/>bounded hard/owned-soft relocation + hard swaps]
-    A3 --> V[Exact-gated cluster decompression + graph-tension ordering]
+    R --> S0[Small-leaf seed assembly<br/>compact hard/owned-soft groups + whole-leaf slot exchanges]
+    S0 --> J[Region-locked hard relocation + soft cleanup<br/>hard-containment prefilter before exact scoring]
+    J --> A1[In-region micro-shift polish<br/>exact-improving winner must preserve complete contract]
+    A1 --> S1[Small-leaf assembly replay after ordinary relief]
+    S1 --> A2{Inferred child confidence >= 0.65<br/>or explicit/retained parent?}
+    A2 -->|Yes| A3[Parent-bounded child relocation<br/>or sibling slot swap; owned softs co-move]
+    A2 -->|No| V
+    A3 --> A4[Freeze deepest-child footprint + graph/field margin boxes<br/>bounded hard/owned-soft relocation + hard swaps]
+    A4 --> V[Exact-gated cluster decompression + graph-tension ordering]
     V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps<br/>two stable exact prefixes, untouched suffix on demand]
     T --> T1[Per-round micro-shift replay + audit checkpoint]
     T1 --> X[Post-swap micro-shift replay; telemetry skips duplicate ordinary post-swap soft pass]
@@ -246,8 +250,10 @@ flowchart TD
     L --> Z[Post-coldspot micro-shift replay]
     Z --> Z2{Small-design polish gated?}
     Z2 -->|Yes| Z3[Low-confidence hierarchy release + exact polish]
-    Z2 -->|No| M
-    Z3 --> M[Final hard + rich-vector hierarchy audit + rollback checkpoint]
+    Z2 -->|No| Z4
+    Z3 --> Z4[Topology-aware internal leaf survivor]
+    Z4 --> Z5[Capacity-safe whole-leaf relocation into large-macro voids<br/>graph-directed + exact gated]
+    Z5 --> M[Final hard + rich-vector hierarchy audit + rollback checkpoint]
     M --> N[Return macro centers]
 ```
 
@@ -255,6 +261,13 @@ Every return path passes through a final in-bounds clamp for movable macros.
 `PlacementState` carries hard/soft coordinates and exact proxy through the
 pipeline; each pass returns a `PassResult` summary used by the deterministic
 scheduler and buffered plateau telemetry.
+
+The final void pass does not infer or merge hierarchy. It detects rectangular
+capacity between opposing edges of large hard macros, then tests rigid movement
+of an existing small leaf and its directly owned soft macros. A weighted
+inter-leaf graph centroid chooses the external-facing anchor inside the void.
+Projected density, hard legality, the complete colour-island contract, exact
+proxy gain, and the independent final audit are all mandatory gates.
 
 The seed portfolio legalizes `initial.plc` before it constructs the immutable
 component limits, and uses those same legalized coordinates for the scored
@@ -264,8 +277,8 @@ hard-cluster compactness and worst spread, nearest-neighbor cluster impurity,
 weighted hierarchy-edge stretch, owned-soft distance, and bridge-soft corridor
 distance. Each component is independently constrained relative to legalized
 `initial.plc`. Non-mandatory alternatives whose immutable hard components fail
-are removed before exact scoring, and production advances the lowest exact-
-proxy eligible scored seed.
+are removed before exact scoring. Production keeps the best eligible hierarchy-
+composite band and uses exact proxy as the deterministic tie-break inside it.
 A mandatory lower-proxy candidate that fails exactly one component may be
 interpolated toward the authoritative passing reference. Each deterministic
 trial is legalized and the passing boundary is bisected; a repair enters exact
@@ -276,9 +289,67 @@ For the refined single-component topology, a legal raw `initial.plc` can remain
 the immutable reference when its legalized form still passes the raw limits;
 this prevents a second layer of slack. An illegal raw hard placement instead
 uses grouped DREAMPlace as the reference, avoiding a legalized random seed as
-the hierarchy baseline. Refined graphs with at most 64 hard macros also apply
-the full vector contract to individual micro-shift and relocation candidates;
-larger graphs retain pass-level checkpoints and final rollback.
+the hierarchy baseline. Every micro-shift lane applies the complete active
+contract only to each exact-improving winner. Rejected winners fall through to
+the next exact-ranked target, so the committed trajectory remains the best
+valid sequential prefix without evaluating the full vector for every generated
+proposal. Bulk hard and soft relocation retain their existing cheap prefilters
+and pass checkpoints.
+
+Ordinary 2-8-hard leaf clusters do not depend on the optional retained parent
+model for collective motion. A bounded seed-stage assembly pass and one
+post-relief replay compact a leaf's hard members, pull its directly owned
+movable soft macros toward the new hard centroid, and test whole-leaf slot
+exchanges for interleaved cluster ordering. Candidates are affected-set
+legalized and retained only when hierarchy composite, the complete active
+contract, and exact proxy all improve. IBM10 retains one seed-stage assembly;
+the replay and slot-exchange lane are currently diagnostic zero-yield there.
+
+After the main congestion search and small-design survivor polish, an
+independent topology-aware pass examines eligible 2-16-hard leaves without
+changing any hierarchy label or parent/child relation. It builds each leaf's weighted induced graph from
+low-fanout evaluator nets. Spectral coordinates place strongly connected hard
+macros near one another, while the ratio of external to total demand identifies
+boundary macros. Each boundary macro is assigned to the side facing its
+weighted external connection centroid, with a small routing-channel inset.
+The candidate portfolio tests multiple utilization levels and deterministic
+axis transforms, and directly owned soft macros follow hard-affinity
+barycentres inside the already frozen island boxes. Only complete,
+affected-set-legalized hard/soft states that pass the active hierarchy/island
+contract and improve the exact proxy are committed. The late survivor schedule
+prevents a small local improvement from replacing a stronger downstream swap
+trajectory. The
+pass therefore optimizes adjacency and port placement inside a leaf without
+repartitioning or weakening the existing hierarchy.
+
+Immediately after seed assembly, production freezes a confidence-calibrated
+island contract for every supported colour. Explicit path-tag leaves and
+inferred leaves with confidence at least `0.65` are strict; medium-confidence
+leaves receive wider limits and low-confidence evidence remains advisory.
+Strict leaves intersect their existing congestion-expanded hard and directly
+owned-soft regions with boxes rebuilt from the assembled footprint. Later
+collective candidates and checkpoints must satisfy per-leaf maximum spread,
+bounding span, and nearest-neighbour colour impurity limits, so compact leaves
+cannot hide one scattered colour through global averaging. Fragmentation,
+owned-soft p90 distance, and foreign-colour intrusion are emitted per leaf for
+diagnosis; direct owned softs are spatially controlled by their frozen island
+boxes, while bridge softs retain their multi-cluster corridor role.
+
+Soft-role inference first accepts direct hard-cluster affinity through nets up
+to fanout 16 while hard-cluster construction remains capped at fanout 8. Those
+direct, unambiguous owners seed two synchronous soft-graph rounds. Each inferred
+role needs repeated support and hop-specific dominance (0.60 then 0.67).
+Comparable multi-cluster evidence becomes a bridge and never seeds another
+round, and hop two is terminal, preventing label flooding through hubs.
+
+After those anchored roles are fixed, the residual graph may form soft-only
+hierarchy groups. A group needs repeated mutually strong edges, unchanged
+membership under 0.60 and 0.75 edge-ratio thresholds, 2-16 members, and a
+repeated-edge boundary cut no larger than 0.35. Such a group is added to grouped
+DREAMPlace and the compound soft-relocation pool, but remains separate from
+hard ownership: it cannot change a hard label, hard region, or parent/child
+relation. Geometry and one-off soft nets cannot create either an owner or a
+soft-only group.
 
 `HierarchyModel` keeps exactly one additional level beside the active
 DREAMPlace partition. Explicit paths retain their nearest useful ancestor;
@@ -289,7 +360,9 @@ mandatory; initial hard/soft proximity, local macro-area density, and placed
 low-fanout wire demand may only reinforce those structural relations. The split
 must pass raw-cut (`<=0.20`), compactness-gain (`>=0.10`), and confidence
 (`>=0.54`) gates. There is no recursive descent. After active-cluster macro relief,
-the child pass tests rigid child translations and sibling slot swaps within
+inferred child/deep search requires mean confidence `>=0.65`; explicit and
+retained connectivity parents bypass that scheduling gate. The child pass then
+tests rigid child translations and sibling slot swaps within
 the parent region. Owned soft macros move with their child, while bridge softs
 remain independent. Blocked group states may compact and legalize only the
 affected children against fixed outside macros. Child and parent contracts are
@@ -322,10 +395,9 @@ containment limit before exact batch scoring. The full six-component audit
 remains authoritative after the pass; prefilter rejections are recorded as
 `hierarchy_rejects` in plateau telemetry.
 The selected seed then anchors the same component limits during relief and the
-final rollback audit. The
-`HIER_SEED_HIERARCHY_SELECT=1` experiment instead uses proxy only within the
-best hierarchy-quality band; it is default-off after the ibm10 hierarchy win
-caused a large proxy regression.
+final rollback audit. `HIER_SEED_HIERARCHY_SELECT=1` is now production: proxy
+is used only within the best hierarchy-quality band. The measured structural
+improvement and proxy regression are both recorded in `PROGRESS.md`.
 Seed selection fails closed if its reference candidate does not satisfy the
 component contract; the selector never establishes an invalid fallback seed as
 the hierarchy baseline.

@@ -284,6 +284,9 @@ class Dashboard(QtWidgets.QMainWindow):
             label = QtWidgets.QLabel(f"{key}: —")
             self.metric_labels[key] = label
             panel.addWidget(label)
+        self.contract_metrics = QtWidgets.QLabel("hierarchy contract: —")
+        self.contract_metrics.setWordWrap(True)
+        panel.addWidget(self.contract_metrics)
         self.trend = pg.PlotWidget()
         self.trend.setMaximumHeight(180)
         self.trend.addLegend()
@@ -454,6 +457,32 @@ class Dashboard(QtWidgets.QMainWindow):
                 continue
             delta = float(metrics[key]) - float(initial.get(key, metrics[key]))
             label.setText(f"{key}: {float(metrics[key]):.6f}  ({delta:+.6f})")
+        contract_rows = []
+        contract_fields = (
+            ("hard_containment", "hard"),
+            ("cluster_compactness", "compact"),
+            ("worst_cluster_spread", "spread"),
+            ("neighbor_impurity", "impurity"),
+            ("edge_stretch", "edges"),
+            ("owned_soft_distance", "owned soft"),
+            ("bridge_soft_distance", "bridge soft"),
+        )
+        for field, label_text in contract_fields:
+            value_key = f"hierarchy_{field}"
+            limit_key = f"hierarchy_{field.replace('hard_containment', 'hard')}_limit"
+            headroom_key = f"hierarchy_{field.replace('hard_containment', 'hard')}_headroom"
+            if value_key not in metrics or limit_key not in metrics:
+                continue
+            contract_rows.append(
+                f"{label_text}: {float(metrics[value_key]):.5f} / "
+                f"{float(metrics[limit_key]):.5f}  "
+                f"headroom {float(metrics.get(headroom_key, 0.0)):+.5f}"
+            )
+        self.contract_metrics.setText(
+            "hierarchy contract:\n" + "\n".join(contract_rows)
+            if contract_rows
+            else "hierarchy contract: —"
+        )
         self.trend.clear()
         colors = {
             "wirelength": "c",

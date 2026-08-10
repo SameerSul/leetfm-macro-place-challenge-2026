@@ -6,6 +6,165 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-08-10 — graph-directed inter-macro void relocation, fully IBM
+> verified):** A final survivor pass now detects rectangular gaps bounded by
+> opposing edges of large hard macros. It tests existing 2-12-hard hierarchy
+> leaves as rigid groups, co-moves up to 32 directly owned soft macros, projects
+> the weighted inter-cluster graph centroid into each void, and rejects targets
+> above 78% projected density utilization. Outside-hard legality and the full
+> hierarchy/island contract run before exact scoring; at most 48 states are
+> scored and only one gain of at least 0.0001 may commit.
+>
+> The complete sweep reached `AVG 1.2835`, 17/17 VALID, zero overlaps, and all
+> hierarchy/island audits passing in 592.64s. IBM10 retained `1.7205 -> 1.7165`
+> (density `1.101 -> 1.098`, congestion `2.226 -> 2.221`) and IBM13 retained
+> `1.1055 -> 1.1054`, for 0.0041 attributable exact gain. IBM18 tentatively
+> improved `1.7056 -> 1.7051`, but the independent final audit restored the
+> prior checkpoint. The displayed `1.2833 -> 1.2835` suite delta is earlier-pass
+> deadline variance on IBM13/14/17; the final operator itself never retained a
+> worsening state. Full details are in
+> `ml_data/cluster_void_relocation/20260810-results.md`.
+>
+> **Status (2026-08-10 — complete soft-hierarchy confidence tiers, fully IBM
+> verified):** The existing hard colour partition and one parent/child level
+> remain unchanged. Direct hard-affinity roles now seed at most two synchronous
+> soft-graph rounds. Hop 1/2 require repeated low-fanout support and 0.60/0.67
+> dominance; only unambiguous owned results seed the next round, while bridges
+> never propagate. Residual soft-only groups require repeated mutually strong
+> connectivity, exact membership stability at edge ratios 0.60 and 0.75, size
+> 2-16, and repeated-edge cut ratio `<=0.35`. They become grouped-DREAMPlace
+> and compound-relocation units without acquiring a hard-cluster owner.
+>
+> Three full sweeps measured every tier. Direct-only Tier 1 reached `AVG
+> 1.2948`, assigned 5,364/21,538 soft macros (24.90%), and mean final hard
+> hierarchy quality 1.003219. Tier 2 assigned 8,044 hop-one and 5,222 hop-two
+> roles, raising coverage to 18,630/21,538 (86.50%), improving hierarchy
+> quality to 0.951700 and proxy to `AVG 1.2875`. Tier 3 retained 8 residual
+> groups / 29 macros on six designs, raising total hierarchy coverage to
+> 18,659/21,538 (86.63%), improving hierarchy quality to 0.918007, congestion
+> `1.678471 -> 1.672588`, density `0.747294 -> 0.744529`, and proxy to `AVG
+> 1.2833`. Every sweep was 17/17 VALID with zero overlaps and all hierarchy/
+> island audits passing. The per-design and component ledger is
+> `ml_data/soft_hierarchy_tiers/20260810-results.md`; the adjacent JSON is
+> machine-readable.
+>
+> **Prior status (2026-08-09 — topology-aware internal leaf survivor, fully
+> IBM verified):** The hierarchy-first colour partition and parent/child levels
+> remain unchanged. Eligible leaves derive weighted internal and external demand from
+> low-fanout nets. Deterministic spectral layouts keep strongly connected hard
+> macros adjacent; high external-demand macros move to the side facing their
+> weighted external centroid with a routing-channel inset; directly owned soft
+> macros follow hard-affinity barycentres. Multiple utilization/orientation
+> candidates are affected-set legalized, complete-contract checked, and exact-
+> proxy gated inside the immutable island boxes after the main congestion
+> search.
+>
+> A complete pre-freeze scheduling trial was rejected at `AVG 1.2977` versus
+> the `1.2951` hierarchy-first baseline. Although 11 retained layouts summed to
+> `0.00639` immediate exact gain, IBM02's `0.000415` local win changed its later
+> swap/soft trajectory and regressed the final design `1.2303 -> 1.3304`.
+> Moving the unchanged operator to the final survivor stage exactly restores
+> IBM02 to `1.2303` and additively improves IBM10 `1.7511 -> 1.7494`. The
+> promoted full result is `AVG 1.2949`, 17/17 VALID, zero overlaps, and all
+> hierarchy/island audits passing in 487.54s. Three retained final layouts on
+> IBM08, IBM10, and IBM18 sum to `0.002001` attributable exact gain across 268
+> scored states; 41 additional states were rejected by the complete hierarchy
+> contract before scoring. Relative to the `1.2951` hierarchy-first baseline,
+> fragmented protected leaves improve `194 -> 193`, foreign intrusions improve
+> `9,130 -> 9,105`, and mean hierarchy composite is effectively flat
+> (`0.140344 -> 0.140363`). The final average proxy contributions are
+> congestion `0.8392`, density `0.3836`, and wirelength `0.0721`; congestion
+> remains the dominant target.
+>
+> A subsequent exact-tail diagnostic reran the accepted flow at `AVG 1.2950`,
+> 17/17 VALID and zero overlaps; the `0.0001` difference is deadline variance.
+> It reconstructed the evaluator's top-5% directional congestion and top-10%
+> density cells, then exactly routed implicated nets through each connected
+> hotspot. Worst-component route demand is 70.18% unassigned-soft/IO, 25.03%
+> internal-cluster, and 4.79% cross-cluster; worst density regions are 83.61%
+> soft area. IBM10/12/14/16/17/18 contribute 46.0% of total congestion and
+> 48.0% of total density. Full spatial boxes and attribution are recorded in
+> `ml_data/hotspot_analysis/20260809T215011-findings.md` and its adjacent JSON.
+> A role-coverage audit then classified all 21,538 soft macros: 5,364 assigned;
+> of 16,174 unassigned, 14,842 (91.76%) never share a multi-pin net with a hard
+> macro, 1,291 (7.98%) see only unclustered hard macros, and only 41 (0.25%) are
+> blocked solely by the fanout-16 ceiling. No qualifying soft is dropped by the
+> classifier. Future soft routing cohorts must therefore use soft-only evidence
+> without promoting it to hierarchy ownership.
+>
+> **Status (2026-08-09 — hierarchy-first colour-island candidate, fully IBM
+> verified):** High-confidence inferred leaves and explicit path leaves now
+> receive post-assembly hard/owned-soft island boxes plus independent spread,
+> bounding-span, and nearest-neighbour colour-impurity limits. Medium-confidence
+> leaves receive wider limits and low-confidence evidence remains advisory.
+> Final telemetry records per-leaf fragmentation, owned-soft p90 distance, and
+> foreign intrusion. Seed selection is hierarchy-first, establishing the islands
+> from the grouped-DREAMPlace basin when it satisfies the immutable contract.
+>
+> Two complete IBM sweeps quantify the tradeoff. The proxy-first island control
+> reached `AVG 1.1975`, 17/17 VALID, zero overlaps, all 17 audits passing, in
+> `484.21s`. The final hierarchy-first configuration reached `AVG 1.2951`,
+> 17/17 VALID, zero overlaps, all 17 audits passing, in `456.05s`. Across the
+> 298 protected leaf instances, hierarchy-first reduced fragmented leaves
+> `229 -> 194`, foreign intrusions `18,841 -> 9,130`, and mean hard hierarchy
+> quality `1.24789 -> 0.99651`, but worsened proxy `1.1975 -> 1.2951` because
+> the evaluator penalizes the denser grouped placement. IBM10 illustrates the
+> same conflict: proxy `1.0996 -> 1.7511`, hard hierarchy quality `6.0801 ->
+> 2.2443`, fragmented leaves `73 -> 52`, and intrusions `12,692 -> 3,031`.
+> The accepted proxy reference remains `AVG 1.1404`; this stricter candidate is
+> retained because hierarchy-first colour cohesion was explicitly requested,
+> not because it is a proxy improvement. All 117 project tests pass (two GPU
+> tests skipped), with 20/20 focused hierarchy/preflight tests passing after the
+> final seed-policy change.
+>
+> **Status (2026-08-09 — focused IBM10 hierarchy assembly candidate; full
+> suite pending):** Video/trace analysis showed IBM10 twice reaching proxy
+> `1.1192` before a lane-level hard-containment rollback restored `1.1348`.
+> Micro-shift acceptance now checks only exact-improving winners against the
+> complete active hierarchy contract, preserving the best valid sequential
+> prefix in the ordinary and post-coldspot lanes. The first implementation
+> incorrectly applied full-vector checks to millions of bulk soft proposals;
+> it exhausted the search deadline and regressed IBM10 to `1.2360`, so that
+> placement was removed. The corrected path leaves bulk relocation unchanged.
+>
+> Soft ownership now admits direct hard affinity through nets of fanout at most
+> 16 while retaining the hard-cluster fanout-8 rule. IBM10 coverage increased
+> `784/1982 (39.56%) -> 799/1982 (40.31%)`: 13 new owned and two new bridge
+> soft macros. No geometry or unanchored soft-only community creates a role.
+> Default seed selection keeps candidates within `max(0.02, 5%)` of the best
+> exact proxy and maximizes minimum normalized six-component headroom inside
+> that band; IBM10 correctly retained the `1.3367` constraint-graph seed.
+> Inferred child/deep search now requires mean confidence `>=0.65`; IBM10's
+> `0.6218` one-parent/two-child fallback skipped 55 previously zero-yield exact
+> scores. Visualizer exact events expose hard containment plus all six component
+> values, limits, and signed headroom.
+>
+> Ordinary leaf clusters now receive a bounded collective assembly operator,
+> independent of the retained parent/child fallback. At the selected seed it
+> ranks 2-8-hard leaves by internal hard spread, owned-soft distance, and
+> adjacent-leaf pull; tests compact hard members, pull directly owned movable
+> softs inward, and exchange whole small-leaf slots. Affected hard sets are
+> legalized together. Every retained state must improve hierarchy composite,
+> pass hard legality and the complete active hierarchy contract, and improve
+> exact proxy. The pass exact-scores at most 64 seed-stage states and replays
+> once after ordinary leaf relief. IBM10 has 48 eligible small leaves; the
+> seed stage retained one compaction, while the relief-stage replay retained
+> none. The slot lane scored legal hierarchy-improving exchanges but retained
+> none on IBM10.
+>
+> `HIER_PLATEAU_TRACE_PATH=/tmp/vivaplace-ibm10-assembly-final.jsonl uv run
+> evaluate src/main.py -b ibm10` produced **proxy 1.0600**, **VALID**. Final
+> hard quality improved `6.11996 -> 4.84244` (20.9%) against the unchanged
+> `6.27396` limit, and hierarchy composite improved `0.29896 -> 0.29555` with
+> no rollback or vector violation. The cost of preserving this assembled basin
+> is `+0.00101` proxy (+0.096%) versus the unconsolidated 1.0590 focused run;
+> it still improves the video baseline by `0.0748` (6.59%) and beats the older
+> `1.0641` IBM10 result. Focused hierarchy,
+> soft-evidence, subcluster, trace, and Qt tests pass (**35 passed**). This is a
+> focused candidate result, not yet a replacement for the verified full-suite
+> `AVG 1.1404` reference. The complete project suite passes **115 tests** with
+> **2 GPU-only skips**; source bytecode compilation and `git diff --check` pass.
+>
 > **Status (2026-08-09 — accepted opt-in live visualizer):** Added the
 > dependency-free schema-v1 event/trace path, tracked ten-iteration DREAMPlace
 > progress protocol, spawned PyQtGraph/PySide6 dashboard, net/hierarchy layers,

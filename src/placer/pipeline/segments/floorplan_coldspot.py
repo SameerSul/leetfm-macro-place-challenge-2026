@@ -70,6 +70,7 @@ def run_coldspot_tightening(
     graph_edges=None,
     seed_hard_xy: np.ndarray | None = None,
     graph_confidence: dict[int, float] | None = None,
+    placement_contract_allowed: Callable[[np.ndarray, np.ndarray], bool] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
     """Run coldspot tightening and return the post-coldspot placement."""
 
@@ -964,6 +965,27 @@ def run_coldspot_tightening(
         pre_post_ck_micro_score = cur_proxy
         full = np.vstack([legal, s_pos]).astype(np.float64)
         ck_scorer = IncrementalScorer(plc, benchmark, full.copy())
+
+        def _hard_candidate_allowed(index: int, x: float, y: float) -> bool:
+            if placement_contract_allowed is None:
+                return True
+            old = legal[index].copy()
+            legal[index] = (float(x), float(y))
+            try:
+                return bool(placement_contract_allowed(legal, s_pos))
+            finally:
+                legal[index] = old
+
+        def _soft_candidate_allowed(index: int, x: float, y: float) -> bool:
+            if placement_contract_allowed is None:
+                return True
+            old = s_pos[index].copy()
+            s_pos[index] = (float(x), float(y))
+            try:
+                return bool(placement_contract_allowed(legal, s_pos))
+            finally:
+                s_pos[index] = old
+
         for use_density in (False, True):
             pre_ck_micro = float(cur_proxy)
             legal, s_pos, got, cur_proxy = _micro_shift_polish(
@@ -990,6 +1012,8 @@ def run_coldspot_tightening(
                 top_hot=hier_micro_shift_top,
                 min_gain=hier_micro_shift_min_gain,
                 use_density=use_density,
+                hard_candidate_allowed=_hard_candidate_allowed,
+                soft_candidate_allowed=_soft_candidate_allowed,
             )
             post_ck_micro_acc += got
             if pre_ck_micro - float(cur_proxy) <= adaptive_min_gain:
