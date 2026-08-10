@@ -7,6 +7,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from placer.local_search.hierarchy_quality import (
+    hierarchy_island_contract,
+    hierarchy_island_limits,
+    hierarchy_island_metrics,
     HIERARCHY_VECTOR_METRICS,
     _neighbor_impurity,
     _neighbor_impurity_reference,
@@ -15,6 +18,49 @@ from placer.local_search.hierarchy_quality import (
     hierarchy_vector_limits,
     hierarchy_vector_margins,
 )
+
+
+def test_island_contract_catches_one_scattered_cluster_hidden_by_averages():
+    hard = np.asarray([[1.0, 1.0], [2.0, 1.0], [8.0, 8.0], [9.0, 8.0]])
+    soft = np.asarray([[1.5, 1.5]])
+    sizes = np.ones((4, 2))
+    clusters = {0: np.asarray([0, 1]), 1: np.asarray([2, 3])}
+    cluster_softs = {0: np.asarray([4])}
+    reference = hierarchy_island_metrics(hard, soft, clusters, cluster_softs, sizes, 10.0, 10.0)
+    limits = hierarchy_island_limits(
+        reference,
+        {0: 1.0, 1: 1.0},
+        "hierarchy_path_tags",
+        distance_absolute_slack=0.0,
+    )
+
+    scattered = hard.copy()
+    scattered[1] = [6.0, 1.0]
+    candidate = hierarchy_island_metrics(
+        scattered, soft, clusters, cluster_softs, sizes, 10.0, 10.0
+    )
+    passed, violations = hierarchy_island_contract(candidate, limits)
+
+    assert not passed
+    assert "island_0_spread" in violations
+
+
+def test_island_contract_is_confidence_calibrated():
+    hard = np.asarray([[1.0, 1.0], [2.0, 1.0], [8.0, 8.0], [9.0, 8.0]])
+    sizes = np.ones((4, 2))
+    clusters = {0: np.asarray([0, 1]), 1: np.asarray([2, 3])}
+    reference = hierarchy_island_metrics(
+        hard, np.zeros((0, 2)), clusters, {}, sizes, 10.0, 10.0
+    )
+    limits = hierarchy_island_limits(
+        reference,
+        {0: 0.9, 1: 0.1},
+        "hierarchy_oversized_connectivity",
+        strict_confidence=0.65,
+    )
+
+    assert limits[0]["tier"] == 2.0
+    assert 1 not in limits
 from placer.pipeline.segments.floorplan_seed import (
     _hard_placement_is_legal,
     repair_seed_to_contract,
