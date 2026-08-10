@@ -64,6 +64,12 @@ def test_offscreen_layers_sidebar_and_replay_controls(tmp_path):
                 "density": 2,
                 "congestion": 3,
                 "hierarchy": 3.9,
+                "hierarchy_hard_containment": 0.90,
+                "hierarchy_hard_limit": 1.00,
+                "hierarchy_hard_headroom": 0.10,
+                "hierarchy_cluster_compactness": 0.20,
+                "hierarchy_cluster_compactness_limit": 0.25,
+                "hierarchy_cluster_compactness_headroom": 0.05,
                 "proxy": 3.4,
             },
             "metrics_stale": False,
@@ -88,6 +94,8 @@ def test_offscreen_layers_sidebar_and_replay_controls(tmp_path):
     window._render_current()
     assert window.badge.text() == "EXACT"
     assert "proxy: 3.400000" in window.metric_labels["proxy"].text()
+    assert "hard: 0.90000 / 1.00000" in window.contract_metrics.text()
+    assert "compact: 0.20000 / 0.25000" in window.contract_metrics.text()
     window.real_toggle.setChecked(True)
     window.hierarchy_toggle.setChecked(True)
     window._previous()

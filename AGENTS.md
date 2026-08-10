@@ -18,11 +18,62 @@ available. The old proxy path has been deleted: candidate restarts, R2/2-opt,
 hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
-Current verified result with normal BB/cache behavior:
-`uv run evaluate src/main.py --all` = **AVG 1.1404**, 17/17 VALID, 0
-overlaps, all final hierarchy audits passed, **318.55s**. Sixteen per-design
-scores are unchanged; a contract-preserving repair of the IBM09 constraint-
-graph seed improved that design from **1.0122 to 0.9978**.
+Current hierarchy-first result with normal BB/cache behavior:
+`uv run evaluate src/main.py --all` = **AVG 1.2835**, 17/17 VALID, 0
+overlaps, all final hierarchy/island audits passed, **592.64s**. The 2026-08-10
+flow includes all three soft-confidence tiers: direct hard affinity, bounded
+synchronous hop-one/hop-two propagation, and stable residual soft-only groups.
+It preserves all hard labels and the retained parent/child level. Soft
+hierarchy coverage is 18,659/21,538 (86.63%), mean final hard hierarchy quality
+is 0.918007, density is 0.744529, and congestion is 1.672588. The lower-proxy
+pre-hierarchy reference remains **AVG 1.1404 / 318.55s**; see
+`ml_data/soft_hierarchy_tiers/20260810-results.md` for all tier deltas.
+The final survivor now also relocates one existing small hierarchy leaf and its
+owned soft macros into a capacity-safe gap between large hard macros, guided by
+the inter-cluster graph. It retained IBM10 `1.7205 -> 1.7165` and IBM13
+`1.1055 -> 1.1054` for 0.0041 attributable exact gain. The raw average is 0.0002
+above the preceding sweep because earlier deadline-sensitive passes varied on
+IBM13/14/17; void relocation itself is exact non-worsening and final-audited.
+The 2026-08-09 video-driven candidate is now fully IBM-verified:
+exact-improving micro-shift winners now pass the complete contract, direct
+soft-role fanout is 16, seed selection is hierarchy-first with proxy as a
+within-band tie-break, and inferred child/deep search requires confidence 0.65.
+Ordinary 2-8-hard leaves now receive bounded joint hard/owned-soft compaction
+and whole-leaf slot candidates before relief, plus one post-relief replay; all
+retained states must improve hierarchy composite and exact proxy. IBM10
+retained one seed assembly. The follow-up hierarchy-first colour-island policy
+freezes confidence-calibrated hard/owned-soft boxes and applies per-leaf spread,
+bbox-span, and colour-impurity limits. Its IBM sweep is **AVG 1.2951**, 17/17
+VALID, zero overlaps, all audits passing, in **456.05s**. Against the proxy-first
+island control, fragmented leaves improved **229 -> 194**, foreign intrusions
+**18,841 -> 9,130**, and mean hard hierarchy quality **1.24789 -> 0.99651**, but
+proxy worsened **1.1975 -> 1.2951**. The accepted **AVG 1.1404** result above
+remains the proxy baseline; the working tree intentionally retains the stricter
+hierarchy-first behavior requested by the user.
+The final topology-aware leaf survivor pass keeps that partition immutable and
+uses low-fanout internal/external demand to test spectral hard adjacency,
+external-facing boundary ports with routing-channel insets, and owned-soft
+hard-affinity barycentres. Its accepted late schedule reached **AVG 1.2949**,
+17/17 VALID, zero overlaps, and all hierarchy/island audits passing in
+**487.54s**. It retained three exact layouts for **0.002001** attributable
+proxy gain; fragmented protected leaves improved **194 -> 193** and foreign
+intrusions **9,130 -> 9,105**. The rejected pre-freeze schedule was AVG 1.2977
+because a small IBM02 local win displaced larger downstream swap/soft gains.
+The exact-tail follow-up diagnostic reran all IBM designs at AVG **1.2950**,
+17/17 VALID and zero overlaps. Across the worst congestion component per
+design, exact implicated route demand is **70.18% unassigned-soft/IO**, **25.03%
+internal-cluster**, and only **4.79% cross-cluster**; worst density components
+are **83.61% soft area**. IBM10/12/14/16/17/18 account for 46.0% of suite
+congestion and 48.0% of suite density. Use
+`test/diagnostic/analyze_final_hotspots.py` and the full report under
+`ml_data/hotspot_analysis/20260809T215011*` for spatial boxes and exact net,
+macro, cluster, direction, and blockage attribution.
+The companion soft-role audit classifies all 16,174 unassigned soft macros:
+14,842 (91.76%) have no hard macro on any multi-pin net, 1,291 (7.98%) connect
+only to unclustered hard macros, and only 41 (0.25%) are excluded solely by the
+fanout-16 cap. There are no qualifying-but-unassigned cases. Do not raise the
+fanout cap as the primary fix; introduce routing-only soft cohorts without
+claiming hierarchy ownership.
 Region swaps now exact-score short stable prefixes before their untouched
 suffix. When a prefix contains the first acceptable candidate, the suffix is
 provably irrelevant and skipped. Hard-hard and hard-soft prefixes remain 4 and

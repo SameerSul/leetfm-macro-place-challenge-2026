@@ -78,7 +78,9 @@ offscreen mode; that platform warning is harmless and encoding continues.
 
 The sidebar shows the current algorithm, round, and lane; exact or stale
 status; all five lower-is-better metrics; signed change from the exact initial
-placement; and trends:
+placement; and trends. After seed selection it also shows hard containment and
+all six contract-component values beside their limits and signed headroom, so a
+single composite cannot hide the component responsible for a rollback:
 
 ```text
 proxy = wirelength + 0.5 * density + 0.5 * congestion

@@ -19,6 +19,193 @@ HIERARCHY_VECTOR_METRICS = (
     "bridge_soft_distance",
 )
 
+HIERARCHY_ISLAND_METRICS = (
+    "spread",
+    "bbox_span",
+    "neighbor_impurity",
+)
+
+
+def hierarchy_island_metrics(
+    hard_xy: np.ndarray,
+    soft_xy: np.ndarray,
+    clusters: Mapping[int, Sequence[int]],
+    cluster_softs: Mapping[int, Sequence[int]] | None,
+    hard_sizes: np.ndarray,
+    canvas_width: float,
+    canvas_height: float,
+    cluster_ids: Sequence[int] | None = None,
+) -> dict[int, dict[str, float]]:
+    """Return independent spatial-cohesion metrics for every hierarchy leaf.
+
+    Unlike :func:`hierarchy_quality_vector`, these values are never averaged
+    across colours.  That prevents compact leaves from hiding one scattered or
+    interleaved leaf in the complete-placement contract.
+    """
+    hard = np.asarray(hard_xy, dtype=np.float64)
+    soft = np.asarray(soft_xy, dtype=np.float64)
+    sizes = np.asarray(hard_sizes, dtype=np.float64)
+    diag = max(float(np.hypot(canvas_width, canvas_height)), 1.0e-12)
+    labels = np.full(hard.shape[0], -1, dtype=np.int64)
+    valid: dict[int, np.ndarray] = {}
+    for cid_raw, members_raw in clusters.items():
+        members = np.asarray(members_raw, dtype=np.int64).reshape(-1)
+        members = members[(members >= 0) & (members < hard.shape[0])]
+        if members.size:
+            cid = int(cid_raw)
+            valid[cid] = members
+            labels[members] = cid
+
+    clustered = np.flatnonzero(labels >= 0)
+    result: dict[int, dict[str, float]] = {}
+    n_hard = hard.shape[0]
+    selected = None if cluster_ids is None else {int(cid) for cid in cluster_ids}
+    for cid, members in valid.items():
+        if selected is not None and cid not in selected:
+            continue
+        points = hard[members]
+        center = np.mean(points, axis=0)
+        distances = np.linalg.norm(points - center, axis=1)
+        spread = float(np.max(distances)) / diag if distances.size else 0.0
+
+        lo = np.min(points - 0.5 * sizes[members], axis=0)
+        hi = np.max(points + 0.5 * sizes[members], axis=0)
+        bbox_span = float(np.linalg.norm(hi - lo)) / diag
+
+        impurity = 0.0
+        if members.size > 1 and clustered.size > 1:
+            mismatch = []
+            for macro in members:
+                delta = hard[clustered] - hard[int(macro)]
+                distance2 = np.sum(delta * delta, axis=1)
+                distance2[clustered == int(macro)] = np.inf
+                k = min(4, int(members.size) - 1, int(clustered.size) - 1)
+                nearest = np.argsort(distance2, kind="stable")[:k]
+                mismatch.append(float(np.mean(labels[clustered[nearest]] != cid)))
+            impurity = float(np.max(mismatch)) if mismatch else 0.0
+
+        owned_distances = []
+        for full_index in np.asarray((cluster_softs or {}).get(cid, ()), dtype=np.int64):
+            soft_index = int(full_index) - n_hard
+            if 0 <= soft_index < soft.shape[0]:
+                owned_distances.append(float(np.linalg.norm(soft[soft_index] - center)) / diag)
+        owned_soft_p90 = (
+            float(np.percentile(np.asarray(owned_distances), 90.0))
+            if owned_distances
+            else 0.0
+        )
+
+        # Same-colour rectangles form one component when their edge-to-edge
+        # gaps are within a small routing-channel allowance.  This is a spatial
+        # island test, not a netlist connectivity test.
+        components = int(members.size)
+        if members.size > 1:
+            parent = np.arange(members.size, dtype=np.int64)
+
+            def find(index: int) -> int:
+                while int(parent[index]) != index:
+                    parent[index] = parent[int(parent[index])]
+                    index = int(parent[index])
+                return index
+
+            gap_allowance = 0.01 * diag
+            for left in range(members.size):
+                for right in range(left + 1, members.size):
+                    a, b = int(members[left]), int(members[right])
+                    gap = np.maximum(
+                        np.abs(hard[a] - hard[b]) - 0.5 * (sizes[a] + sizes[b]),
+                        0.0,
+                    )
+                    if float(np.linalg.norm(gap)) <= gap_allowance:
+                        ra, rb = find(left), find(right)
+                        if ra != rb:
+                            parent[rb] = ra
+            components = len({find(index) for index in range(members.size)})
+        fragmentation = float(max(0, components - 1))
+
+        foreign = np.flatnonzero((labels >= 0) & (labels != cid))
+        if foreign.size:
+            inside = np.all((hard[foreign] >= lo) & (hard[foreign] <= hi), axis=1)
+            foreign_intrusion = float(np.count_nonzero(inside))
+        else:
+            foreign_intrusion = 0.0
+
+        result[cid] = {
+            "spread": spread,
+            "bbox_span": bbox_span,
+            "neighbor_impurity": impurity,
+            "owned_soft_p90": owned_soft_p90,
+            "fragmentation": fragmentation,
+            "foreign_intrusion": foreign_intrusion,
+        }
+    return result
+
+
+def hierarchy_island_limits(
+    reference: Mapping[int, Mapping[str, float]],
+    cluster_confidence: Mapping[int, float] | None,
+    cluster_source: str,
+    *,
+    strict_confidence: float = 0.65,
+    strict_relative_slack: float = 0.05,
+    medium_relative_slack: float = 0.10,
+    distance_absolute_slack: float = 0.001,
+    impurity_absolute_slack: float = 0.25,
+) -> dict[int, dict[str, float]]:
+    """Build confidence-calibrated, per-colour upper limits.
+
+    Explicit hierarchy tags and high-confidence inferred leaves are immutable
+    islands.  Medium-confidence leaves retain modest geometric slack, while
+    low-confidence evidence remains advisory and receives no hard limit.
+    """
+    explicit = str(cluster_source) == "hierarchy_path_tags"
+    confidence = cluster_confidence or {}
+    limits: dict[int, dict[str, float]] = {}
+    for cid_raw, metrics in reference.items():
+        cid = int(cid_raw)
+        score = float(confidence.get(cid, 1.0 if explicit else 0.0))
+        strict = bool(explicit or score >= float(strict_confidence))
+        medium = bool(strict or score >= 0.5 * float(strict_confidence))
+        if not medium:
+            continue
+        rel = (
+            max(0.0, float(strict_relative_slack))
+            if strict
+            else max(0.0, float(medium_relative_slack))
+        )
+        row = {"tier": 2.0 if strict else 1.0}
+        for key in HIERARCHY_ISLAND_METRICS:
+            value = float(metrics.get(key, 0.0))
+            if key in {"fragmentation", "foreign_intrusion"}:
+                row[key] = value
+            else:
+                absolute = (
+                    float(impurity_absolute_slack)
+                    if key == "neighbor_impurity"
+                    else float(distance_absolute_slack)
+                )
+                row[key] = value + max(absolute, abs(value) * rel)
+        limits[cid] = row
+    return limits
+
+
+def hierarchy_island_contract(
+    candidate: Mapping[int, Mapping[str, float]],
+    limits: Mapping[int, Mapping[str, float]],
+    *,
+    tolerance: float = 1.0e-12,
+) -> tuple[bool, dict[str, float]]:
+    """Check every protected colour independently against its island limits."""
+    violations: dict[str, float] = {}
+    for cid_raw, row_limits in limits.items():
+        cid = int(cid_raw)
+        row = candidate.get(cid, {})
+        for key in HIERARCHY_ISLAND_METRICS:
+            excess = float(row.get(key, np.inf)) - float(row_limits[key])
+            if excess > float(tolerance):
+                violations[f"island_{cid}_{key}"] = excess
+    return not violations, violations
+
 
 def hierarchy_coverage_scope(vector: Mapping[str, float]) -> str:
     """Classify hierarchy evidence coverage without changing acceptance gates."""

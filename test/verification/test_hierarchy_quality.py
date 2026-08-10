@@ -7,6 +7,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from placer.local_search.hierarchy_quality import (
+    hierarchy_island_contract,
+    hierarchy_island_limits,
+    hierarchy_island_metrics,
     HIERARCHY_VECTOR_METRICS,
     _neighbor_impurity,
     _neighbor_impurity_reference,
@@ -15,6 +18,49 @@ from placer.local_search.hierarchy_quality import (
     hierarchy_vector_limits,
     hierarchy_vector_margins,
 )
+
+
+def test_island_contract_catches_one_scattered_cluster_hidden_by_averages():
+    hard = np.asarray([[1.0, 1.0], [2.0, 1.0], [8.0, 8.0], [9.0, 8.0]])
+    soft = np.asarray([[1.5, 1.5]])
+    sizes = np.ones((4, 2))
+    clusters = {0: np.asarray([0, 1]), 1: np.asarray([2, 3])}
+    cluster_softs = {0: np.asarray([4])}
+    reference = hierarchy_island_metrics(hard, soft, clusters, cluster_softs, sizes, 10.0, 10.0)
+    limits = hierarchy_island_limits(
+        reference,
+        {0: 1.0, 1: 1.0},
+        "hierarchy_path_tags",
+        distance_absolute_slack=0.0,
+    )
+
+    scattered = hard.copy()
+    scattered[1] = [6.0, 1.0]
+    candidate = hierarchy_island_metrics(
+        scattered, soft, clusters, cluster_softs, sizes, 10.0, 10.0
+    )
+    passed, violations = hierarchy_island_contract(candidate, limits)
+
+    assert not passed
+    assert "island_0_spread" in violations
+
+
+def test_island_contract_is_confidence_calibrated():
+    hard = np.asarray([[1.0, 1.0], [2.0, 1.0], [8.0, 8.0], [9.0, 8.0]])
+    sizes = np.ones((4, 2))
+    clusters = {0: np.asarray([0, 1]), 1: np.asarray([2, 3])}
+    reference = hierarchy_island_metrics(
+        hard, np.zeros((0, 2)), clusters, {}, sizes, 10.0, 10.0
+    )
+    limits = hierarchy_island_limits(
+        reference,
+        {0: 0.9, 1: 0.1},
+        "hierarchy_oversized_connectivity",
+        strict_confidence=0.65,
+    )
+
+    assert limits[0]["tier"] == 2.0
+    assert 1 not in limits
 from placer.pipeline.segments.floorplan_seed import (
     _hard_placement_is_legal,
     repair_seed_to_contract,
@@ -101,6 +147,59 @@ def test_seed_selector_uses_proxy_within_best_hierarchy_band():
 
     assert proxy["name"] == "proxy_only"
     assert hierarchy["name"] == "balanced"
+
+
+def test_seed_selector_prefers_contract_headroom_inside_proxy_band():
+    limits = {key: 1.0 for key in HIERARCHY_VECTOR_METRICS}
+    tight = {key: 0.95 for key in HIERARCHY_VECTOR_METRICS}
+    roomy = {key: 0.60 for key in HIERARCHY_VECTOR_METRICS}
+    rows = [
+        {
+            "name": "tight",
+            "score": 1.00,
+            "hierarchy_composite": 0.30,
+            "hierarchy_vector": tight,
+        },
+        {
+            "name": "roomy",
+            "score": 1.03,
+            "hierarchy_composite": 0.20,
+            "hierarchy_vector": roomy,
+        },
+    ]
+
+    selected = select_seed_candidate(
+        rows,
+        hierarchy_first=False,
+        absolute_slack=0.0,
+        relative_slack=0.0,
+        component_absolute_slack=limits,
+        component_relative_slack=0.0,
+        component_reference_name="tight",
+        component_reference_vector={key: 0.0 for key in HIERARCHY_VECTOR_METRICS},
+        headroom_aware=True,
+        proxy_band_relative=0.05,
+    )
+
+    assert selected["name"] == "roomy"
+
+
+def test_seed_selector_does_not_buy_headroom_outside_proxy_band():
+    rows = [
+        {"name": "proxy", "score": 1.00, "hierarchy_composite": 0.30},
+        {"name": "hierarchy", "score": 1.20, "hierarchy_composite": 0.10},
+    ]
+
+    selected = select_seed_candidate(
+        rows,
+        hierarchy_first=False,
+        absolute_slack=0.0,
+        relative_slack=0.0,
+        headroom_aware=True,
+        proxy_band_relative=0.05,
+    )
+
+    assert selected["name"] == "proxy"
 
 
 def test_component_contract_rejects_one_dimension_regression():

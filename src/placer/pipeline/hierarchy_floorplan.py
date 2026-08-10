@@ -34,6 +34,7 @@ def run_hierarchy_floorplan(
         _cluster_decompression_relief,
         hierarchy_quality_metric,
     )
+    from placer.local_search.cluster_consolidation import _small_cluster_consolidation
     from placer.local_search.compound_relocation import _compound_soft_relocation
     from placer.local_search.fields import _congestion_field, _density_field
     from placer.local_search.plateau_telemetry import log_plateau_event
@@ -44,6 +45,9 @@ def run_hierarchy_floorplan(
     from placer.local_search.hierarchy_swaps import _region_bounded_swap_relief
     from placer.local_search.hierarchy_model import HierarchyModel
     from placer.local_search.hierarchy_quality import (
+        hierarchy_island_contract,
+        hierarchy_island_limits,
+        hierarchy_island_metrics,
         hierarchy_quality_vector,
         hierarchy_vector_contract,
         hierarchy_vector_limits,
@@ -144,6 +148,18 @@ def run_hierarchy_floorplan(
         defaults = {
             "region_hard_relocation": {"exact": 2600, "candidates": 0},
             "region_soft_relocation": {"exact": 24000, "candidates": 0},
+            "small_cluster_consolidation": {
+                "exact": int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SCORED),
+                "candidates": 0,
+            },
+            "small_cluster_seed_assembly": {
+                "exact": int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SCORED),
+                "candidates": 0,
+            },
+            "internal_cluster_floorplan": {
+                "exact": int(const.HIER_INTERNAL_FLOORPLAN_MAX_SCORED),
+                "candidates": 0,
+            },
             "subcluster_relocation": {"exact": 24, "candidates": 0},
             "deep_cluster_internal": {"exact": 48, "candidates": 0},
             "interleaved_soft_repair": {"exact": 4096, "candidates": 0},
@@ -598,7 +614,19 @@ def run_hierarchy_floorplan(
         soft_roles_low=sum(
             row.get("confidence") == "low" for row in hierarchy.soft_role_evidence.values()
         ),
+        soft_roles_direct=sum(
+            row.get("source") == "flat_low_fanout_hard_affinity"
+            for row in hierarchy.soft_role_evidence.values()
+        ),
+        soft_roles_hop1=sum(
+            row.get("source") == "soft_hop_1" for row in hierarchy.soft_role_evidence.values()
+        ),
+        soft_roles_hop2=sum(
+            row.get("source") == "soft_hop_2" for row in hierarchy.soft_role_evidence.values()
+        ),
         active_soft_bundles=int(len(hierarchy.active_soft_bundles)),
+        soft_only_groups=int(len(hierarchy.soft_only_bundles)),
+        soft_only_members=int(sum(len(bundle.members) for bundle in hierarchy.soft_only_bundles)),
     )
     seed_portfolio_t0 = time.perf_counter()
     try:
@@ -740,6 +768,25 @@ def run_hierarchy_floorplan(
         const.HIER_VECTOR_CONTRACT_ABS_SLACK,
         float(const.HIER_VECTOR_CONTRACT_REL_SLACK),
     )
+    seed_island_metrics = hierarchy_island_metrics(
+        legal,
+        s_pos,
+        clusters,
+        csofts,
+        sizes[:n],
+        cw,
+        ch,
+    )
+    seed_island_limits = hierarchy_island_limits(
+        seed_island_metrics,
+        hierarchy.cluster_confidence,
+        hierarchy.cluster_source,
+        strict_confidence=float(const.HIER_ISLAND_STRICT_CONFIDENCE),
+        strict_relative_slack=float(const.HIER_ISLAND_STRICT_RELATIVE_SLACK),
+        medium_relative_slack=float(const.HIER_ISLAND_MEDIUM_RELATIVE_SLACK),
+        distance_absolute_slack=float(const.HIER_ISLAND_DISTANCE_ABSOLUTE_SLACK),
+        impurity_absolute_slack=float(const.HIER_ISLAND_IMPURITY_ABSOLUTE_SLACK),
+    )
     if hierarchy.subclusters:
         seed_subcluster_hierarchy_vector = hierarchy_quality_vector(
             legal,
@@ -789,6 +836,11 @@ def run_hierarchy_floorplan(
     inferred_parent_compactness = [
         float(evidence.get("compactness_gain", 0.0)) for evidence in inferred_parent_evidence
     ]
+    child_search_confident = bool(
+        not inferred_parent_confidence
+        or float(np.mean(inferred_parent_confidence))
+        >= float(const.HIER_INFERRED_CHILD_SEARCH_MIN_CONFIDENCE)
+    )
     log_plateau_event(
         "hier_subhierarchy_model",
         benchmark=pass_context.benchmark_name,
@@ -1264,7 +1316,6 @@ def run_hierarchy_floorplan(
     h_pos = legal.copy()
     full = np.vstack([h_pos, s_pos]).astype(np.float64)
     r_score = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
-    rscorer = IncrementalScorer(plc, benchmark, full.copy())
     best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
     audit_budget = max(
         0.0,
@@ -1273,6 +1324,35 @@ def run_hierarchy_floorplan(
     audit_limit = float(seed_hierarchy_quality) + audit_budget
     audit_h, audit_s, audit_score = h_pos.copy(), s_pos.copy(), float(r_score)
     audit_quality = float(seed_hierarchy_quality)
+
+    if event_sink is not None:
+
+        def _visualizer_hierarchy_metrics(hard_xy, soft_xy):
+            vector = hierarchy_quality_vector(
+                hard_xy,
+                soft_xy,
+                clusters,
+                csofts,
+                bridge_softs,
+                hierarchy.edges,
+                cw,
+                ch,
+            )
+            details = {
+                "hierarchy": float(vector["composite"]),
+                "hierarchy_hard_containment": float(vector["hard_containment"]),
+                "hierarchy_hard_limit": float(audit_limit),
+                "hierarchy_hard_headroom": float(audit_limit - vector["hard_containment"]),
+            }
+            for key, limit in seed_hierarchy_vector_limits.items():
+                details[f"hierarchy_{key}"] = float(vector[key])
+                details[f"hierarchy_{key}_limit"] = float(limit)
+                details[f"hierarchy_{key}_headroom"] = float(limit - vector[key])
+            return details
+
+        setattr(benchmark, "_visualizer_hierarchy_metric", _visualizer_hierarchy_metrics)
+
+    rscorer = IncrementalScorer(plc, benchmark, full.copy())
 
     def _hierarchy_vector(hard_xy, soft_xy):
         return hierarchy_quality_vector(
@@ -1316,13 +1396,38 @@ def run_hierarchy_floorplan(
 
     subhierarchy_contract_active = False
 
-    def _leaf_vector_contract(hard_xy, soft_xy):
+    def _leaf_vector_contract(hard_xy, soft_xy, island_cluster_ids=None):
         vector = _hierarchy_vector(hard_xy, soft_xy)
         passed, violations = hierarchy_vector_contract(vector, seed_hierarchy_vector_limits)
+        island_metrics = hierarchy_island_metrics(
+            hard_xy,
+            soft_xy,
+            clusters,
+            csofts,
+            sizes[:n],
+            cw,
+            ch,
+            cluster_ids=island_cluster_ids,
+        )
+        island_limits = seed_island_limits
+        if island_cluster_ids is not None:
+            island_limits = {
+                int(cid): seed_island_limits[int(cid)]
+                for cid in island_cluster_ids
+                if int(cid) in seed_island_limits
+            }
+        island_passed, island_violations = hierarchy_island_contract(
+            island_metrics,
+            island_limits,
+        )
+        passed = bool(passed and island_passed)
+        violations.update(island_violations)
         return bool(passed), vector, violations
 
-    def _multilevel_vector_contract(hard_xy, soft_xy):
-        passed, vector, violations = _leaf_vector_contract(hard_xy, soft_xy)
+    def _multilevel_vector_contract(hard_xy, soft_xy, island_cluster_ids=None):
+        passed, vector, violations = _leaf_vector_contract(
+            hard_xy, soft_xy, island_cluster_ids=island_cluster_ids
+        )
         combined_vector = dict(vector)
         combined_violations = dict(violations)
         if hierarchy.subclusters:
@@ -1351,10 +1456,32 @@ def run_hierarchy_floorplan(
             )
         return bool(passed), combined_vector, combined_violations
 
-    def _vector_contract(hard_xy, soft_xy):
+    def _vector_contract(hard_xy, soft_xy, island_cluster_ids=None):
         if not subhierarchy_contract_active:
-            return _leaf_vector_contract(hard_xy, soft_xy)
-        return _multilevel_vector_contract(hard_xy, soft_xy)
+            return _leaf_vector_contract(hard_xy, soft_xy, island_cluster_ids=island_cluster_ids)
+        return _multilevel_vector_contract(hard_xy, soft_xy, island_cluster_ids=island_cluster_ids)
+
+    soft_owner_cluster: dict[int, int] = {}
+    for owner_cid, full_indices in csofts.items():
+        for full_index in np.asarray(full_indices, dtype=np.int64):
+            soft_owner_cluster[int(full_index) - int(n)] = int(owner_cid)
+
+    def _island_contract_for(hard_xy, soft_xy, cluster_ids) -> bool:
+        protected = tuple(int(cid) for cid in cluster_ids if int(cid) in seed_island_limits)
+        if not protected:
+            return True
+        metrics = hierarchy_island_metrics(
+            hard_xy,
+            soft_xy,
+            clusters,
+            csofts,
+            sizes[:n],
+            cw,
+            ch,
+            cluster_ids=protected,
+        )
+        limits = {cid: seed_island_limits[cid] for cid in protected}
+        return bool(hierarchy_island_contract(metrics, limits)[0])
 
     split_child_ids = {
         int(child) for children in hierarchy.split_parents.values() for child in children
@@ -1368,26 +1495,42 @@ def run_hierarchy_floorplan(
     )
 
     def _hard_micro_candidate_allowed(index: int, x: float, y: float) -> bool:
-        if not strict_single_component_contract:
-            return True
         old_x, old_y = float(h_pos[index, 0]), float(h_pos[index, 1])
         h_pos[index, 0], h_pos[index, 1] = float(x), float(y)
         try:
             if hierarchy_quality_metric(h_pos, clusters) > audit_limit + 1.0e-12:
                 return False
-            return bool(_vector_contract(h_pos, s_pos)[0])
+            cid = int(labels[index])
+            island_ids = (cid,) if cid in seed_island_limits else ()
+            return bool(_vector_contract(h_pos, s_pos, island_cluster_ids=island_ids)[0])
         finally:
             h_pos[index, 0], h_pos[index, 1] = old_x, old_y
 
     def _soft_micro_candidate_allowed(index: int, x: float, y: float) -> bool:
-        if not strict_single_component_contract:
+        old_x, old_y = float(s_pos[index, 0]), float(s_pos[index, 1])
+        s_pos[index, 0], s_pos[index, 1] = float(x), float(y)
+        try:
+            cid = soft_owner_cluster.get(int(index))
+            island_ids = (cid,) if cid in seed_island_limits else ()
+            return bool(_vector_contract(h_pos, s_pos, island_cluster_ids=island_ids)[0])
+        finally:
+            s_pos[index, 0], s_pos[index, 1] = old_x, old_y
+
+    def _soft_island_candidate_allowed(index: int, x: float, y: float) -> bool:
+        cid = soft_owner_cluster.get(int(index))
+        if cid not in seed_island_limits:
             return True
         old_x, old_y = float(s_pos[index, 0]), float(s_pos[index, 1])
         s_pos[index, 0], s_pos[index, 1] = float(x), float(y)
         try:
-            return bool(_vector_contract(h_pos, s_pos)[0])
+            return _island_contract_for(h_pos, s_pos, (cid,))
         finally:
             s_pos[index, 0], s_pos[index, 1] = old_x, old_y
+
+    def _placement_contract_allowed(hard_xy: np.ndarray, soft_xy: np.ndarray) -> bool:
+        if hierarchy_quality_metric(hard_xy, clusters) > audit_limit + 1.0e-12:
+            return False
+        return bool(_vector_contract(hard_xy, soft_xy)[0])
 
     def _hard_relocation_candidate_allowed(index: int, x: float, y: float) -> bool:
         """Reject hard moves that already exceed the cheap containment audit."""
@@ -1397,16 +1540,19 @@ def run_hierarchy_floorplan(
             if hierarchy_quality_metric(h_pos, clusters) > audit_limit + 1.0e-12:
                 return False
             if strict_single_component_contract:
-                return bool(_vector_contract(h_pos, s_pos)[0])
+                return bool(_vector_contract(h_pos, s_pos, island_cluster_ids=())[0])
             return True
         finally:
             h_pos[index, 0], h_pos[index, 1] = old_x, old_y
 
-    hard_micro_candidate_allowed = (
-        _hard_micro_candidate_allowed if strict_single_component_contract else None
-    )
-    soft_micro_candidate_allowed = (
-        _soft_micro_candidate_allowed if strict_single_component_contract else None
+    # Micro-shifts are accepted sequentially, so validate each proposed state
+    # against the complete active contract. This preserves the best valid
+    # prefix instead of accepting a long proxy-improving lane and rolling the
+    # whole lane back after one accumulated hierarchy breach.
+    hard_micro_candidate_allowed = _hard_micro_candidate_allowed
+    soft_micro_candidate_allowed = _soft_micro_candidate_allowed
+    soft_bulk_candidate_allowed = (
+        _soft_island_candidate_allowed if strict_single_component_contract else None
     )
 
     def _hard_valid(hard_xy):
@@ -1532,6 +1678,149 @@ def run_hierarchy_floorplan(
             "proxy_before": float("nan"),
             "proxy_after": float("nan"),
         }
+
+    seed_assembly_before = float(r_score)
+    seed_assembly_t0 = time.monotonic()
+
+    def _leaf_structural_score(trial_hard, trial_soft):
+        return float(_hierarchy_vector(trial_hard, trial_soft)["composite"])
+
+    h_pos, s_pos, seed_assembly_acc, r_score = _small_cluster_consolidation(
+        h_pos,
+        s_pos,
+        hw,
+        hh,
+        soft_hw,
+        soft_hh,
+        cw,
+        ch,
+        n,
+        rscorer,
+        r_score,
+        clusters=clusters,
+        cluster_softs=csofts,
+        edges=hierarchy.edges,
+        movable_h=movable[:n],
+        movable_soft=soft_mov,
+        hard_region=region,
+        soft_region=soft_region,
+        candidate_allowed=_placement_contract_allowed,
+        structural_score_fn=_leaf_structural_score,
+        deadline=_deadline(float(const.HIER_SMALL_CLUSTER_CONSOLIDATION_BUDGET_S), rdeadline),
+        min_hard=max(1, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MIN_HARD)),
+        max_hard=max(1, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_HARD)),
+        max_soft=max(0, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SOFT)),
+        top_clusters=max(0, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_TOP)),
+        top_slot_clusters=max(0, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_SLOT_TOP)),
+        compact_scales=const.HIER_SMALL_CLUSTER_CONSOLIDATION_SCALES,
+        neighbor_shift_fractions=const.HIER_SMALL_CLUSTER_CONSOLIDATION_SHIFT_FRACTIONS,
+        soft_scales=const.HIER_SMALL_CLUSTER_CONSOLIDATION_SOFT_SCALES,
+        min_structural_gain=float(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MIN_STRUCTURAL_GAIN),
+        min_proxy_gain=float(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MIN_PROXY_GAIN),
+        max_scored=_pass_budget_remaining("small_cluster_seed_assembly", "exact"),
+    )
+    seed_assembly_stats = getattr(_small_cluster_consolidation, "last_stats", {})
+    seed_assembly_enforce = _enforce_audit_checkpoint(
+        "small_cluster_seed_assembly", return_report=True
+    )
+    if seed_assembly_enforce.get("restored"):
+        r_score = float(seed_assembly_enforce["proxy_after"])
+    if _hard_valid(h_pos) and r_score < best_score - 1.0e-9:
+        best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), float(r_score)
+    _log(
+        f"  [hier] seed small-cluster assembly: {seed_assembly_acc} accepts, "
+        f"eligible={int(seed_assembly_stats.get('eligible_clusters', 0))}, "
+        f"scored={int(seed_assembly_stats.get('scored', 0))}, "
+        f"proxy {seed_assembly_before:.4f}->{float(r_score):.4f}"
+    )
+    _record_plateau(
+        "small_cluster_seed_assembly",
+        seed_assembly_before,
+        float(r_score),
+        int(seed_assembly_acc),
+        time.monotonic() - seed_assembly_t0,
+        candidates=int(seed_assembly_stats.get("candidates", 0)),
+        legal=int(seed_assembly_stats.get("legal", 0)),
+        scored=int(seed_assembly_stats.get("scored", 0)),
+        hierarchy_rejects=int(seed_assembly_stats.get("hierarchy_rejects", 0)),
+        rollback_report=seed_assembly_enforce,
+        eligible_clusters=int(seed_assembly_stats.get("eligible_clusters", 0)),
+        selected_clusters=int(seed_assembly_stats.get("selected_clusters", 0)),
+        structural_rejects=int(seed_assembly_stats.get("structural_rejects", 0)),
+        legalized_candidates=int(seed_assembly_stats.get("legalized_candidates", 0)),
+        slot_candidates=int(seed_assembly_stats.get("slot_candidates", 0)),
+        slot_scored=int(seed_assembly_stats.get("slot_scored", 0)),
+        slot_accepts=int(seed_assembly_stats.get("slot_accepts", 0)),
+        best_structural_gain=float(seed_assembly_stats.get("best_structural_gain", 0.0)),
+        best_proxy_gain=float(seed_assembly_stats.get("best_proxy_gain", 0.0)),
+    )
+
+    # Freeze the best attained high-confidence leaf geometry after collective
+    # seed assembly. Later per-macro relief may use only the intersection of
+    # the old congestion-expanded region and this compact island footprint.
+    assembled_island_metrics = hierarchy_island_metrics(
+        h_pos,
+        s_pos,
+        clusters,
+        csofts,
+        sizes[:n],
+        cw,
+        ch,
+    )
+    assembled_island_limits = hierarchy_island_limits(
+        assembled_island_metrics,
+        hierarchy.cluster_confidence,
+        hierarchy.cluster_source,
+        strict_confidence=float(const.HIER_ISLAND_STRICT_CONFIDENCE),
+        strict_relative_slack=float(const.HIER_ISLAND_STRICT_RELATIVE_SLACK),
+        medium_relative_slack=float(const.HIER_ISLAND_MEDIUM_RELATIVE_SLACK),
+        distance_absolute_slack=float(const.HIER_ISLAND_DISTANCE_ABSOLUTE_SLACK),
+        impurity_absolute_slack=float(const.HIER_ISLAND_IMPURITY_ABSOLUTE_SLACK),
+    )
+    for cid, row in assembled_island_limits.items():
+        if cid not in seed_island_limits:
+            seed_island_limits[cid] = dict(row)
+            continue
+        for key, value in row.items():
+            if key != "tier":
+                seed_island_limits[cid][key] = min(
+                    float(seed_island_limits[cid][key]),
+                    float(value),
+                )
+    tight_region = hierarchy.hard_regions(h_pos, sizes[:n], hw, hh, cw, ch, n)
+    tight_soft_region = hierarchy.soft_regions(
+        h_pos,
+        s_pos,
+        sizes[:n],
+        hw,
+        hh,
+        soft_hw,
+        soft_hh,
+        cw,
+        ch,
+        n,
+    )
+    strict_islands = {
+        int(cid) for cid, limits in seed_island_limits.items() if float(limits["tier"]) >= 2.0
+    }
+    for cid in strict_islands:
+        members = np.asarray(clusters.get(cid, ()), dtype=np.int64)
+        if members.size:
+            region[members, 0:2] = np.maximum(region[members, 0:2], tight_region[members, 0:2])
+            region[members, 2:4] = np.minimum(region[members, 2:4], tight_region[members, 2:4])
+        owned = np.asarray(csofts.get(cid, ()), dtype=np.int64) - int(n)
+        owned = owned[(owned >= 0) & (owned < n_soft)]
+        if owned.size:
+            soft_region[owned, 0:2] = np.maximum(
+                soft_region[owned, 0:2], tight_soft_region[owned, 0:2]
+            )
+            soft_region[owned, 2:4] = np.minimum(
+                soft_region[owned, 2:4], tight_soft_region[owned, 2:4]
+            )
+    _log(
+        f"  [hier] hierarchy islands frozen: strict={len(strict_islands)}, "
+        f"protected={len(seed_island_limits)}"
+    )
 
     for round_idx in range(rounds):
         if rdeadline is not None and time.monotonic() >= rdeadline:
@@ -1688,7 +1977,7 @@ def run_hierarchy_floorplan(
                     region_bias=bias,
                     region_escape_min=escape_min,
                     accept_min_gain=hier_soft_barrier_gain,
-                    candidate_allowed=soft_micro_candidate_allowed,
+                    candidate_allowed=soft_bulk_candidate_allowed,
                     max_scored=_pass_budget_remaining(
                         "region_soft_relocation",
                         "exact",
@@ -1733,6 +2022,79 @@ def run_hierarchy_floorplan(
             best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), r_score
         _enforce_audit_checkpoint("region_round")
 
+    consolidation_before = float(r_score)
+    consolidation_t0 = time.monotonic()
+
+    h_pos, s_pos, consolidation_acc, r_score = _small_cluster_consolidation(
+        h_pos,
+        s_pos,
+        hw,
+        hh,
+        soft_hw,
+        soft_hh,
+        cw,
+        ch,
+        n,
+        rscorer,
+        r_score,
+        clusters=clusters,
+        cluster_softs=csofts,
+        edges=hierarchy.edges,
+        movable_h=movable[:n],
+        movable_soft=soft_mov,
+        hard_region=region,
+        soft_region=soft_region,
+        candidate_allowed=_placement_contract_allowed,
+        structural_score_fn=_leaf_structural_score,
+        deadline=_deadline(float(const.HIER_SMALL_CLUSTER_CONSOLIDATION_BUDGET_S), rdeadline),
+        min_hard=max(1, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MIN_HARD)),
+        max_hard=max(1, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_HARD)),
+        max_soft=max(0, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SOFT)),
+        top_clusters=max(0, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_TOP)),
+        top_slot_clusters=max(0, int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_SLOT_TOP)),
+        compact_scales=const.HIER_SMALL_CLUSTER_CONSOLIDATION_SCALES,
+        neighbor_shift_fractions=const.HIER_SMALL_CLUSTER_CONSOLIDATION_SHIFT_FRACTIONS,
+        soft_scales=const.HIER_SMALL_CLUSTER_CONSOLIDATION_SOFT_SCALES,
+        min_structural_gain=float(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MIN_STRUCTURAL_GAIN),
+        min_proxy_gain=float(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MIN_PROXY_GAIN),
+        max_scored=_pass_budget_remaining("small_cluster_consolidation", "exact"),
+    )
+    consolidation_stats = getattr(_small_cluster_consolidation, "last_stats", {})
+    consolidation_enforce = _enforce_audit_checkpoint(
+        "small_cluster_consolidation", return_report=True
+    )
+    if consolidation_enforce.get("restored"):
+        r_score = float(consolidation_enforce["proxy_after"])
+    if _hard_valid(h_pos) and r_score < best_score - 1.0e-9:
+        best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), float(r_score)
+    _log(
+        f"  [hier] small-cluster consolidation: {consolidation_acc} accepts, "
+        f"eligible={int(consolidation_stats.get('eligible_clusters', 0))}, "
+        f"scored={int(consolidation_stats.get('scored', 0))}, "
+        f"proxy {consolidation_before:.4f}->{float(r_score):.4f}"
+    )
+    _record_plateau(
+        "small_cluster_consolidation",
+        consolidation_before,
+        float(r_score),
+        int(consolidation_acc),
+        time.monotonic() - consolidation_t0,
+        candidates=int(consolidation_stats.get("candidates", 0)),
+        legal=int(consolidation_stats.get("legal", 0)),
+        scored=int(consolidation_stats.get("scored", 0)),
+        hierarchy_rejects=int(consolidation_stats.get("hierarchy_rejects", 0)),
+        rollback_report=consolidation_enforce,
+        eligible_clusters=int(consolidation_stats.get("eligible_clusters", 0)),
+        selected_clusters=int(consolidation_stats.get("selected_clusters", 0)),
+        structural_rejects=int(consolidation_stats.get("structural_rejects", 0)),
+        legalized_candidates=int(consolidation_stats.get("legalized_candidates", 0)),
+        slot_candidates=int(consolidation_stats.get("slot_candidates", 0)),
+        slot_scored=int(consolidation_stats.get("slot_scored", 0)),
+        slot_accepts=int(consolidation_stats.get("slot_accepts", 0)),
+        best_structural_gain=float(consolidation_stats.get("best_structural_gain", 0.0)),
+        best_proxy_gain=float(consolidation_stats.get("best_proxy_gain", 0.0)),
+    )
+
     subcluster_before = float(r_score)
     subcluster_t0 = time.monotonic()
     subcluster_acc = 0
@@ -1742,6 +2104,7 @@ def run_hierarchy_floorplan(
     if (
         hierarchy.parent_clusters
         and parent_region is not None
+        and child_search_confident
         and _has_spare(
             rdeadline,
             float(const.HIER_SUBCLUSTER_RELOCATION_MIN_SPARE_S),
@@ -1861,6 +2224,7 @@ def run_hierarchy_floorplan(
         spatial_confidence_mean=(
             float(np.mean(inferred_parent_confidence)) if inferred_parent_confidence else 0.0
         ),
+        confidence_scheduled=bool(child_search_confident),
     )
 
     deep_before = float(r_score)
@@ -1885,6 +2249,7 @@ def run_hierarchy_floorplan(
     if (
         hierarchy.subclusters
         and parent_region is not None
+        and child_search_confident
         and _has_spare(
             rdeadline,
             float(const.HIER_DEEP_CLUSTER_MIN_SPARE_S),
@@ -2125,6 +2490,7 @@ def run_hierarchy_floorplan(
         margin_mean=(float(np.mean(list(deep_margins.values()))) if deep_margins else 0.0),
         margin_max=(float(np.max(list(deep_margins.values()))) if deep_margins else 0.0),
         multilevel_contract_active=bool(subhierarchy_contract_active),
+        confidence_scheduled=bool(child_search_confident),
         subhierarchy_source=hierarchy.subhierarchy_source,
     )
     pre_decomp_score = r_score
@@ -2309,7 +2675,7 @@ def run_hierarchy_floorplan(
                     hier_soft_barrier_gain,
                 ),
                 wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
-                candidate_allowed=soft_micro_candidate_allowed,
+                candidate_allowed=soft_bulk_candidate_allowed,
                 max_scored=_pass_budget_remaining(
                     "interleaved_soft_repair",
                     "exact",
@@ -2752,7 +3118,7 @@ def run_hierarchy_floorplan(
                         float(plateau_escape_min_gain),
                         hier_soft_barrier_gain,
                     ),
-                    candidate_allowed=soft_micro_candidate_allowed,
+                    candidate_allowed=soft_bulk_candidate_allowed,
                     max_scored=_pass_budget_remaining(
                         "plateau_escape_soft_relocation",
                         "exact",
@@ -3022,7 +3388,7 @@ def run_hierarchy_floorplan(
                         float(plateau_escape_min_gain),
                         hier_soft_barrier_gain,
                     ),
-                    candidate_allowed=soft_micro_candidate_allowed,
+                    candidate_allowed=soft_bulk_candidate_allowed,
                     max_scored=_pass_budget_remaining(
                         "plateau_escape_post_soft_relocation",
                         "exact",
@@ -3207,7 +3573,7 @@ def run_hierarchy_floorplan(
                             hier_soft_barrier_gain,
                         ),
                         wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
-                        candidate_allowed=soft_micro_candidate_allowed,
+                        candidate_allowed=soft_bulk_candidate_allowed,
                         max_scored=_pass_budget_remaining(
                             "strong_soft_repair",
                             "exact",
@@ -3378,7 +3744,7 @@ def run_hierarchy_floorplan(
                             hier_soft_barrier_gain,
                         ),
                         wl_prefilter=float(const.HIER_STRONG_SOFT_REPAIR_WL_PREFILTER),
-                        candidate_allowed=soft_micro_candidate_allowed,
+                        candidate_allowed=soft_bulk_candidate_allowed,
                         max_scored=_pass_budget_remaining(
                             "medium_soft_continuation",
                             "exact",
@@ -3557,6 +3923,7 @@ def run_hierarchy_floorplan(
         graph_edges=hierarchy.edges,
         seed_hard_xy=seed_hard_for_tension,
         graph_confidence=hierarchy.cluster_confidence,
+        placement_contract_allowed=_placement_contract_allowed,
     )
     _log_stage_timing(
         "coldspot_total",
@@ -3596,6 +3963,7 @@ def run_hierarchy_floorplan(
         seed_hierarchy_vector=seed_hierarchy_vector,
         seed_subcluster_hierarchy_vector=seed_subcluster_hierarchy_vector,
         seed_parent_hierarchy_vector=seed_parent_hierarchy_vector,
+        seed_island_limits=seed_island_limits,
         subhierarchy_contract_active=bool(subhierarchy_contract_active),
         legal=legal,
         s_pos=s_pos,

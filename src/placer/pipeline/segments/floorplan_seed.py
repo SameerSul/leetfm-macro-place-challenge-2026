@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from placer.local_search.hierarchy_quality import (
+    HIERARCHY_VECTOR_METRICS,
     hierarchy_quality_vector,
     hierarchy_vector_contract,
     hierarchy_vector_limits,
@@ -101,8 +102,11 @@ def select_seed_candidate(
     component_relative_slack: float = 0.0,
     component_reference_name: str = "initial",
     component_reference_vector: Mapping[str, float] | None = None,
+    headroom_aware: bool = False,
+    proxy_band_absolute: float = 0.0,
+    proxy_band_relative: float = 0.0,
 ) -> dict[str, object]:
-    """Select the lowest proxy seed inside the active hierarchy contract."""
+    """Select a proxy-competitive seed with optional hierarchy headroom."""
     if not rows:
         raise ValueError("seed portfolio is empty")
     eligible = rows
@@ -147,6 +151,39 @@ def select_seed_candidate(
                     f"reference violations: {reference_violations}"
                 )
             eligible = [reference]
+    if not hierarchy_first and headroom_aware:
+        best_proxy = min(float(row["score"]) for row in eligible)
+        proxy_slack = max(
+            float(proxy_band_absolute),
+            abs(best_proxy) * float(proxy_band_relative),
+        )
+        proxy_band = [row for row in eligible if float(row["score"]) <= best_proxy + proxy_slack]
+
+        def _headroom_key(row: Mapping[str, object]):
+            vector = row.get("hierarchy_vector")
+            limits = row.get("hierarchy_contract_limits")
+            if not isinstance(vector, Mapping) or not isinstance(limits, Mapping):
+                return (
+                    0.0,
+                    float(row["hierarchy_composite"]),
+                    float(row["score"]),
+                    str(row["name"]),
+                )
+            normalized = [
+                (float(limits[key]) - float(vector.get(key, 0.0)))
+                / max(abs(float(limits[key])), 1.0e-12)
+                for key in HIERARCHY_VECTOR_METRICS
+                if key in limits
+            ]
+            minimum = min(normalized) if normalized else 0.0
+            return (
+                -float(minimum),
+                float(row["hierarchy_composite"]),
+                float(row["score"]),
+                str(row["name"]),
+            )
+
+        return min(proxy_band, key=_headroom_key)
     if not hierarchy_first:
         return min(eligible, key=lambda row: (float(row["score"]), str(row["name"])))
     best_quality = min(float(row["hierarchy_composite"]) for row in eligible)
@@ -824,6 +861,9 @@ def run_seed_portfolio(
             component_relative_slack=float(const.HIER_VECTOR_CONTRACT_REL_SLACK),
             component_reference_name=seed_reference_name,
             component_reference_vector=seed_reference_vector,
+            headroom_aware=bool(const.HIER_SEED_HEADROOM_SELECT),
+            proxy_band_absolute=float(const.HIER_SEED_PROXY_BAND_ABS),
+            proxy_band_relative=float(const.HIER_SEED_PROXY_BAND_REL),
         )
         repair_reference_hard = initial_legal_hard
         repair_reference_soft = initial_legal_soft
@@ -937,6 +977,9 @@ def run_seed_portfolio(
                 component_relative_slack=float(const.HIER_VECTOR_CONTRACT_REL_SLACK),
                 component_reference_name=seed_reference_name,
                 component_reference_vector=seed_reference_vector,
+                headroom_aware=bool(const.HIER_SEED_HEADROOM_SELECT),
+                proxy_band_absolute=float(const.HIER_SEED_PROXY_BAND_ABS),
+                proxy_band_relative=float(const.HIER_SEED_PROXY_BAND_REL),
             )
         rows.sort(
             key=lambda row: (

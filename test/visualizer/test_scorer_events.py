@@ -69,3 +69,25 @@ def test_disabled_sink_leaves_committed_state_unchanged(ibm01_dir):
     np.testing.assert_array_equal(scorer_a.committed_hard_pos, scorer_b.committed_hard_pos)
     np.testing.assert_array_equal(scorer_a.committed_soft_pos, scorer_b.committed_soft_pos)
     assert scorer_a.total_wl_raw == scorer_b.total_wl_raw
+
+
+def test_visualizer_metrics_accept_hierarchy_contract_mapping(ibm01_dir):
+    benchmark, plc, positions = _load(ibm01_dir)
+    scorer = IncrementalScorer(
+        plc,
+        benchmark,
+        positions,
+        hierarchy_metric=lambda _hard, _soft: {
+            "hierarchy": 0.25,
+            "hierarchy_hard_containment": 0.50,
+            "hierarchy_hard_limit": 0.60,
+            "hierarchy_hard_headroom": 0.10,
+        },
+    )
+
+    metrics = scorer.visualizer_metrics()
+
+    assert metrics["hierarchy"] == 0.25
+    assert metrics["hierarchy_hard_containment"] == 0.50
+    assert metrics["hierarchy_hard_limit"] == 0.60
+    assert metrics["hierarchy_hard_headroom"] == 0.10

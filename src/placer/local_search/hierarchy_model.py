@@ -16,6 +16,7 @@ from placer.local_search.clusters import (
     derive_one_level_hard_subclusters,
     derive_oversized_hard_clusters,
     derive_path_tag_hard_clusters,
+    propagate_soft_cluster_roles,
     derive_soft_cluster_role_evidence,
     derive_soft_cluster_roles,
     hier_region_density,
@@ -27,6 +28,7 @@ from placer.local_search.soft_hierarchy import (
     combine_soft_bundle_evidence,
     derive_connectivity_soft_bundles,
     derive_path_soft_bundles,
+    derive_stable_residual_soft_bundles,
     label_soft_bundles,
     select_high_confidence_soft_bundles,
 )
@@ -61,6 +63,7 @@ class HierarchyModel:
     soft_connectivity_bundles: tuple[SoftBundle, ...]
     soft_bundle_evidence: tuple[SoftBundle, ...]
     active_soft_bundles: tuple[SoftBundle, ...]
+    soft_only_bundles: tuple[SoftBundle, ...]
     edges: list[HierarchyEdge]
     cluster_confidence: dict[int, float]
     split_parents: dict[int, list[int]]
@@ -203,7 +206,7 @@ class HierarchyModel:
             n,
             n_soft,
             labels,
-            max_fanout=max_fanout,
+            max_fanout=max(max_fanout, int(const.HIER_SOFT_ROLE_MAX_FANOUT)),
             bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
         )
         soft_role_evidence = derive_soft_cluster_role_evidence(
@@ -211,7 +214,20 @@ class HierarchyModel:
             n,
             n_soft,
             labels,
-            max_fanout=max_fanout,
+            max_fanout=max(max_fanout, int(const.HIER_SOFT_ROLE_MAX_FANOUT)),
+            bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
+        )
+        cluster_softs, bridge_softs, soft_role_evidence = propagate_soft_cluster_roles(
+            plc,
+            n,
+            n_soft,
+            cluster_softs,
+            bridge_softs,
+            soft_role_evidence,
+            max_fanout=int(const.HIER_SOFT_ROLE_MAX_FANOUT),
+            max_hops=int(const.HIER_SOFT_PROPAGATION_MAX_HOPS),
+            min_support=tuple(const.HIER_SOFT_PROPAGATION_MIN_SUPPORT),
+            min_dominance=tuple(const.HIER_SOFT_PROPAGATION_MIN_DOMINANCE),
             bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
         )
         soft_bundles = derive_path_soft_bundles(
@@ -245,6 +261,23 @@ class HierarchyModel:
             high_threshold=float(const.HIER_SOFT_BUNDLE_HIGH_CONFIDENCE),
             medium_threshold=float(const.HIER_SOFT_BUNDLE_MEDIUM_CONFIDENCE),
         )
+        assigned_softs = set(int(soft) for soft in bridge_softs)
+        for members in cluster_softs.values():
+            assigned_softs.update(
+                int(member) - int(n) for member in np.asarray(members, dtype=np.int64)
+            )
+        soft_only_bundles = derive_stable_residual_soft_bundles(
+            plc,
+            n_soft,
+            assigned_softs,
+            max_fanout=int(const.HIER_SOFT_ONLY_MAX_FANOUT),
+            min_shared_nets=int(const.HIER_SOFT_ONLY_MIN_SHARED_NETS),
+            edge_ratio=float(const.HIER_SOFT_ONLY_EDGE_RATIO),
+            stability_edge_ratio=float(const.HIER_SOFT_ONLY_STABILITY_EDGE_RATIO),
+            max_cut_ratio=float(const.HIER_SOFT_ONLY_MAX_CUT_RATIO),
+            max_size=int(const.HIER_SOFT_ONLY_MAX_SIZE),
+        )
+        active_soft_bundles = tuple(active_soft_bundles) + tuple(soft_only_bundles)
         edges, confidence = _cluster_graph(
             plc,
             labels,
@@ -261,7 +294,7 @@ class HierarchyModel:
                 n,
                 n_soft,
                 subcluster_labels,
-                max_fanout=max_fanout,
+                max_fanout=max(max_fanout, int(const.HIER_SOFT_ROLE_MAX_FANOUT)),
                 bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
             )
             subcluster_edges, subcluster_confidence = _cluster_graph(
@@ -285,7 +318,7 @@ class HierarchyModel:
                 n,
                 n_soft,
                 parent_labels,
-                max_fanout=max_fanout,
+                max_fanout=max(max_fanout, int(const.HIER_SOFT_ROLE_MAX_FANOUT)),
                 bridge_ratio=float(const.HIER_BRIDGE_SOFT_RATIO),
             )
             parent_edges, parent_confidence = _cluster_graph(
@@ -310,6 +343,7 @@ class HierarchyModel:
             soft_connectivity_bundles=soft_connectivity_bundles,
             soft_bundle_evidence=soft_bundle_evidence,
             active_soft_bundles=active_soft_bundles,
+            soft_only_bundles=soft_only_bundles,
             edges=edges,
             cluster_confidence=confidence,
             split_parents=split_parents,
@@ -343,6 +377,13 @@ class HierarchyModel:
             for p in self.cluster_softs.get(cid, []):
                 names.append(plc.modules_w_pins[smi[int(p) - n]].get_name())
             groups.append(names)
+        for bundle in self.soft_only_bundles:
+            names = [
+                plc.modules_w_pins[smi[int(soft)]].get_name()
+                for soft in np.asarray(bundle.members, dtype=np.int64)
+            ]
+            if len(names) >= 2:
+                groups.append(names)
         return groups
 
     def hard_regions(
