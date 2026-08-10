@@ -1056,6 +1056,176 @@ def derive_soft_cluster_roles(
     return owned_out, bridge
 
 
+def infer_propagated_soft_roles(
+    n_soft: int,
+    soft_nets,
+    seed_owners,
+    *,
+    excluded=(),
+    max_hops: int = 2,
+    min_support=(2, 2),
+    min_dominance=(0.60, 0.67),
+    bridge_ratio: float = 0.6,
+):
+    """Infer bounded soft roles from direct, unambiguous hard-cluster owners.
+
+    Rounds are synchronous: hop one sees only direct owners, while hop two sees
+    direct and accepted hop-one owners. Bridges and hop-two results never seed
+    another round. Repeated pair support or support from multiple owned
+    neighbors is required, so one incidental soft edge cannot manufacture a
+    hierarchy association.
+    """
+    n_soft = max(0, int(n_soft))
+    max_hops = min(max(0, int(max_hops)), 2)
+    owners = {int(soft): int(cid) for soft, cid in seed_owners.items() if 0 <= int(soft) < n_soft}
+    unavailable = {int(soft) for soft in excluded}
+    unavailable.update(owners)
+
+    adjacency: list[dict[int, int]] = [dict() for _ in range(n_soft)]
+    for net in soft_nets:
+        members = sorted({int(soft) for soft in net if 0 <= int(soft) < n_soft})
+        for left_i, left in enumerate(members):
+            for right in members[left_i + 1 :]:
+                adjacency[left][right] = adjacency[left].get(right, 0) + 1
+                adjacency[right][left] = adjacency[right].get(left, 0) + 1
+
+    inferred_owned: dict[int, list[int]] = {}
+    inferred_bridge: dict[int, np.ndarray] = {}
+    evidence: dict[int, dict[str, object]] = {}
+    active_owners = dict(owners)
+    for hop in range(1, max_hops + 1):
+        support_floor = int(min_support[min(hop - 1, len(min_support) - 1)])
+        dominance_floor = float(min_dominance[min(hop - 1, len(min_dominance) - 1)])
+        accepted_this_round: dict[int, int] = {}
+        for soft in range(n_soft):
+            if soft in unavailable:
+                continue
+            affinities: dict[int, int] = {}
+            for neighbor, weight in adjacency[soft].items():
+                cid = active_owners.get(int(neighbor))
+                if cid is not None:
+                    affinities[cid] = affinities.get(cid, 0) + int(weight)
+            if not affinities:
+                continue
+            values = sorted(affinities.items(), key=lambda item: (-item[1], item[0]))
+            best_cid, best_count = values[0]
+            total = int(sum(count for _cid, count in values))
+            dominance = float(best_count) / max(float(total), 1.0)
+            comparable = tuple(
+                int(cid)
+                for cid, count in values
+                if count >= max(1.0, float(bridge_ratio) * float(best_count))
+            )
+            role = "bridge" if len(comparable) >= 2 else "owned"
+            top_coverage = float(
+                sum(count for cid, count in values if int(cid) in comparable)
+            ) / max(float(total), 1.0)
+            if int(best_count) < support_floor or (role == "owned" and dominance < dominance_floor):
+                continue
+            if role == "bridge" and top_coverage < dominance_floor:
+                continue
+            repeated = min(float(best_count) / max(float(support_floor + 1), 1.0), 1.0)
+            score = 0.52 + 0.14 * dominance + 0.14 * repeated - 0.08 * (hop - 1)
+            score = float(min(score, float(const.HIER_SOFT_BUNDLE_HIGH_CONFIDENCE) - 0.01))
+            row = {
+                "role": role,
+                "clusters": comparable if role == "bridge" else (int(best_cid),),
+                "best_count": int(best_count),
+                "second_count": int(values[1][1]) if len(values) > 1 else 0,
+                "affinity_share": dominance,
+                "repeat_support": repeated,
+                "score": score,
+                "confidence": (
+                    "medium" if score >= float(const.HIER_SOFT_BUNDLE_MEDIUM_CONFIDENCE) else "low"
+                ),
+                "source": f"soft_hop_{hop}",
+                "hop": int(hop),
+            }
+            evidence[int(soft)] = row
+            unavailable.add(int(soft))
+            if role == "bridge":
+                inferred_bridge[int(soft)] = np.asarray(comparable, dtype=np.int64)
+            else:
+                inferred_owned.setdefault(int(best_cid), []).append(int(soft))
+                accepted_this_round[int(soft)] = int(best_cid)
+        active_owners.update(accepted_this_round)
+
+    return (
+        {
+            cid: np.asarray(sorted(members), dtype=np.int64)
+            for cid, members in inferred_owned.items()
+        },
+        inferred_bridge,
+        evidence,
+    )
+
+
+def propagate_soft_cluster_roles(
+    plc,
+    n: int,
+    n_soft: int,
+    cluster_softs,
+    bridge_softs,
+    soft_role_evidence,
+    *,
+    max_fanout: int = 16,
+    max_hops: int = 2,
+    min_support=(2, 2),
+    min_dominance=(0.60, 0.67),
+    bridge_ratio: float = 0.6,
+):
+    """Merge bounded one/two-hop soft roles into direct hard affinity roles."""
+    seed_owners: dict[int, int] = {}
+    for cid, members in cluster_softs.items():
+        for placement_index in np.asarray(members, dtype=np.int64):
+            seed_owners[int(placement_index) - int(n)] = int(cid)
+
+    cache = _build_wl_cache(plc)
+    ref_idx = cache["ref_idx"]
+    net_starts = cache["net_starts"]
+    net_lengths = cache["net_lengths"]
+    sb2s = {int(ref): soft for soft, ref in enumerate(plc.soft_macro_indices)}
+    soft_nets = []
+    for net_i, start in enumerate(net_starts):
+        length = int(net_lengths[net_i])
+        if length < 2 or length > int(max_fanout):
+            continue
+        members = [
+            sb2s[int(ref)] for ref in ref_idx[int(start) : int(start) + length] if int(ref) in sb2s
+        ]
+        if len(set(members)) >= 2:
+            soft_nets.append(members)
+
+    inferred_owned, inferred_bridge, inferred_evidence = infer_propagated_soft_roles(
+        n_soft,
+        soft_nets,
+        seed_owners,
+        excluded=bridge_softs,
+        max_hops=max_hops,
+        min_support=min_support,
+        min_dominance=min_dominance,
+        bridge_ratio=bridge_ratio,
+    )
+    merged_owned = {
+        int(cid): np.asarray(members, dtype=np.int64).copy()
+        for cid, members in cluster_softs.items()
+    }
+    for cid, members in inferred_owned.items():
+        placement_members = np.asarray(members, dtype=np.int64) + int(n)
+        merged_owned[int(cid)] = np.unique(
+            np.concatenate(
+                (merged_owned.get(int(cid), np.empty(0, dtype=np.int64)), placement_members)
+            )
+        ).astype(np.int64)
+    merged_bridge = {
+        int(soft): np.asarray(cids, dtype=np.int64).copy() for soft, cids in bridge_softs.items()
+    }
+    merged_bridge.update(inferred_bridge)
+    merged_evidence = {int(soft): dict(row) for soft, row in soft_role_evidence.items()}
+    merged_evidence.update(inferred_evidence)
+    return merged_owned, merged_bridge, merged_evidence
+
+
 def classify_soft_role_evidence(
     affinities,
     *,

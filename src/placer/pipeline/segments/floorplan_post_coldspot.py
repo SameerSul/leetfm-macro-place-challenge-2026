@@ -12,7 +12,13 @@ from placer.local_search.fields import (
     cold_connected_component_target_pool,
     weighted_congestion_field,
 )
+from placer.local_search.cluster_internal_floorplan import (
+    _topology_aware_cluster_floorplan,
+)
+from placer.local_search.cluster_void_relocation import _void_cluster_relocation
 from placer.local_search.hierarchy_quality import (
+    hierarchy_island_contract,
+    hierarchy_island_metrics,
     hierarchy_quality_vector,
     hierarchy_coverage_scope,
     hierarchy_vector_contract,
@@ -46,6 +52,7 @@ def run_post_coldspot_finalize(
     seed_hierarchy_vector: dict[str, float],
     seed_subcluster_hierarchy_vector: dict[str, float],
     seed_parent_hierarchy_vector: dict[str, float],
+    seed_island_limits: dict[int, dict[str, float]],
     subhierarchy_contract_active: bool,
     legal: np.ndarray,
     s_pos: np.ndarray,
@@ -328,6 +335,21 @@ def run_post_coldspot_finalize(
         )
         violations = dict(leaf_violations)
         passed = bool(leaf_passed)
+        island_metrics = hierarchy_island_metrics(
+            hard_xy,
+            soft_xy,
+            clusters,
+            csofts,
+            sizes[:n],
+            cw,
+            ch,
+        )
+        island_passed, island_violations = hierarchy_island_contract(
+            island_metrics,
+            seed_island_limits,
+        )
+        passed = bool(passed and island_passed)
+        violations.update(island_violations)
         if not subhierarchy_contract_active:
             return passed, violations
         if hierarchy.subclusters:
@@ -926,6 +948,151 @@ def run_post_coldspot_finalize(
             num_macros=int(n) + int(n_soft),
         )
 
+    # Run topology-aware leaf organization as a survivor pass. Earlier
+    # scheduling produced small exact local gains but perturbed the much larger
+    # region-swap trajectory (notably on IBM02). At this point the hierarchy
+    # and island boxes are immutable, so every retained layout is an additive
+    # final improvement rather than a replacement search trajectory.
+    internal_t0 = time.monotonic()
+    internal_before = float(cur_proxy)
+    internal_scorer = IncrementalScorer(
+        plc,
+        benchmark,
+        np.vstack([legal, s_pos]).astype(np.float64),
+    )
+    legal, s_pos, internal_acc, cur_proxy = _topology_aware_cluster_floorplan(
+        plc,
+        legal,
+        s_pos,
+        hw,
+        hh,
+        cw,
+        ch,
+        n,
+        internal_scorer,
+        cur_proxy,
+        labels=hierarchy.labels,
+        clusters=clusters,
+        cluster_softs=csofts,
+        movable_h=movable[:n],
+        movable_soft=soft_mov,
+        hard_region=region,
+        soft_region=soft_region,
+        candidate_allowed=_vector_contract,
+        deadline=_deadline(float(const.HIER_INTERNAL_FLOORPLAN_BUDGET_S), None),
+        min_hard=max(2, int(const.HIER_INTERNAL_FLOORPLAN_MIN_HARD)),
+        max_hard=max(2, int(const.HIER_INTERNAL_FLOORPLAN_MAX_HARD)),
+        max_soft=max(0, int(const.HIER_INTERNAL_FLOORPLAN_MAX_SOFT)),
+        top_clusters=max(0, int(const.HIER_INTERNAL_FLOORPLAN_TOP)),
+        max_fanout=max(2, int(const.HIER_INTERNAL_FLOORPLAN_MAX_FANOUT)),
+        utilization_variants=const.HIER_INTERNAL_FLOORPLAN_UTILIZATIONS,
+        transforms=const.HIER_INTERNAL_FLOORPLAN_TRANSFORMS,
+        boundary_threshold=float(const.HIER_INTERNAL_FLOORPLAN_BOUNDARY_RATIO),
+        boundary_channel_frac=float(const.HIER_INTERNAL_FLOORPLAN_CHANNEL_FRAC),
+        min_proxy_gain=float(const.HIER_INTERNAL_FLOORPLAN_MIN_PROXY_GAIN),
+        max_scored=max(0, int(const.HIER_INTERNAL_FLOORPLAN_MAX_SCORED)),
+    )
+    internal_stats = getattr(_topology_aware_cluster_floorplan, "last_stats", {})
+    _update_audit_checkpoint(legal, s_pos, float(cur_proxy))
+    if float(cur_proxy) < float(best_score) - 1.0e-9:
+        best_h, best_s, best_score = legal.copy(), s_pos.copy(), float(cur_proxy)
+    _log(
+        f"  [hier] final internal topology floorplan: {internal_acc} accepts, "
+        f"eligible={int(internal_stats.get('eligible_clusters', 0))}, "
+        f"boundary={int(internal_stats.get('boundary_macros', 0))}, "
+        f"scored={int(internal_stats.get('scored', 0))}, "
+        f"proxy {internal_before:.4f}->{float(cur_proxy):.4f}"
+    )
+    _record_plateau(
+        "internal_cluster_floorplan",
+        internal_before,
+        float(cur_proxy),
+        int(internal_acc),
+        time.monotonic() - internal_t0,
+        candidates=int(internal_stats.get("candidates", 0)),
+        legal=int(internal_stats.get("legal", 0)),
+        scored=int(internal_stats.get("scored", 0)),
+        hierarchy_rejects=int(internal_stats.get("hierarchy_rejects", 0)),
+        eligible_clusters=int(internal_stats.get("eligible_clusters", 0)),
+        selected_clusters=int(internal_stats.get("selected_clusters", 0)),
+        boundary_macros=int(internal_stats.get("boundary_macros", 0)),
+        legalized_candidates=int(internal_stats.get("legalized_candidates", 0)),
+        best_proxy_gain=float(internal_stats.get("best_proxy_gain", 0.0)),
+    )
+
+    # Use capacity in corridors bounded by large hard macros only after the
+    # ordinary search trajectory and internal leaf organization are complete.
+    # Whole-leaf movement preserves every label; the rich vector/island gate
+    # decides whether the graph-directed translation remains hierarchical.
+    void_t0 = time.monotonic()
+    void_before = float(cur_proxy)
+    void_scorer = IncrementalScorer(
+        plc,
+        benchmark,
+        np.vstack([legal, s_pos]).astype(np.float64),
+    )
+    legal, s_pos, void_acc, cur_proxy = _void_cluster_relocation(
+        legal,
+        s_pos,
+        hw,
+        hh,
+        soft_hw,
+        soft_hh,
+        cw,
+        ch,
+        n,
+        benchmark,
+        void_scorer,
+        cur_proxy,
+        clusters=clusters,
+        cluster_softs=csofts,
+        edges=hierarchy.edges,
+        movable_h=movable[:n],
+        movable_soft=soft_mov,
+        candidate_allowed=_vector_contract,
+        deadline=_deadline(float(const.HIER_VOID_RELOCATION_BUDGET_S), None),
+        large_area_percentile=float(const.HIER_VOID_RELOCATION_LARGE_AREA_PCT),
+        min_gap_cells=max(1, int(const.HIER_VOID_RELOCATION_MIN_GAP_CELLS)),
+        max_voids=max(0, int(const.HIER_VOID_RELOCATION_MAX_VOIDS)),
+        max_cluster_hard=max(2, int(const.HIER_VOID_RELOCATION_MAX_HARD)),
+        max_cluster_soft=max(0, int(const.HIER_VOID_RELOCATION_MAX_SOFT)),
+        top_clusters=max(0, int(const.HIER_VOID_RELOCATION_TOP_CLUSTERS)),
+        max_utilization=float(const.HIER_VOID_RELOCATION_MAX_UTILIZATION),
+        soft_compact_scale=float(const.HIER_VOID_RELOCATION_SOFT_COMPACT_SCALE),
+        min_field_drop=float(const.HIER_VOID_RELOCATION_MIN_FIELD_DROP),
+        min_gain=float(const.HIER_VOID_RELOCATION_MIN_GAIN),
+        max_scored=max(0, int(const.HIER_VOID_RELOCATION_MAX_SCORED)),
+    )
+    void_stats = getattr(_void_cluster_relocation, "last_stats", {})
+    _update_audit_checkpoint(legal, s_pos, float(cur_proxy))
+    if float(cur_proxy) < float(best_score) - 1.0e-9:
+        best_h, best_s, best_score = legal.copy(), s_pos.copy(), float(cur_proxy)
+    _log(
+        f"  [hier] final inter-macro void relocation: {void_acc} accepts, "
+        f"voids={int(void_stats.get('voids', 0))}, "
+        f"eligible={int(void_stats.get('eligible_clusters', 0))}, "
+        f"scored={int(void_stats.get('scored', 0))}, "
+        f"proxy {void_before:.4f}->{float(cur_proxy):.4f}"
+    )
+    _record_plateau(
+        "cluster_void_relocation",
+        void_before,
+        float(cur_proxy),
+        int(void_acc),
+        time.monotonic() - void_t0,
+        candidates=int(void_stats.get("candidates", 0)),
+        legal=int(void_stats.get("legal", 0)),
+        scored=int(void_stats.get("scored", 0)),
+        hierarchy_rejects=int(void_stats.get("hierarchy_rejects", 0)),
+        voids=int(void_stats.get("voids", 0)),
+        eligible_clusters=int(void_stats.get("eligible_clusters", 0)),
+        capacity_rejects=int(void_stats.get("capacity_rejects", 0)),
+        field_rejects=int(void_stats.get("field_rejects", 0)),
+        accepted_cluster=int(void_stats.get("accepted_cluster", -1)),
+        accepted_kind=str(void_stats.get("accepted_kind", "none")),
+        best_proxy_gain=float(void_stats.get("best_proxy_gain", 0.0)),
+    )
+
     exact_t0 = time.perf_counter()
     full = np.vstack([legal, s_pos]).astype(np.float32)
     full_proxy = float(_exact_proxy(torch.tensor(full, dtype=torch.float32), benchmark, plc))
@@ -941,6 +1108,15 @@ def run_post_coldspot_finalize(
     final_vector = _placement_hierarchy_vector(legal, s_pos)
     final_subcluster_vector = _placement_subcluster_hierarchy_vector(legal, s_pos)
     final_parent_vector = _placement_parent_hierarchy_vector(legal, s_pos)
+    final_island_metrics = hierarchy_island_metrics(
+        legal,
+        s_pos,
+        clusters,
+        csofts,
+        sizes[:n],
+        cw,
+        ch,
+    )
     final_coverage = _hierarchy_coverage(final_vector)
     final_quality = hierarchy_quality_metric_fn(legal, clusters)
     vector_audit_passed = _vector_contract(legal, s_pos)
@@ -974,6 +1150,15 @@ def run_post_coldspot_finalize(
                 final_vector = _placement_hierarchy_vector(legal, s_pos)
                 final_subcluster_vector = _placement_subcluster_hierarchy_vector(legal, s_pos)
                 final_parent_vector = _placement_parent_hierarchy_vector(legal, s_pos)
+                final_island_metrics = hierarchy_island_metrics(
+                    legal,
+                    s_pos,
+                    clusters,
+                    csofts,
+                    sizes[:n],
+                    cw,
+                    ch,
+                )
                 final_coverage = _hierarchy_coverage(final_vector)
                 _, final_contract_violations = _vector_contract_with_violations(legal, s_pos)
                 final_contract_violation_count = len(final_contract_violations)
@@ -1046,6 +1231,18 @@ def run_post_coldspot_finalize(
         hard_quality=float(final_quality),
         hard_quality_limit=float(audit_limit),
         legality_margin=legality_margin,
+        island_metrics=final_island_metrics,
+        island_limits=seed_island_limits,
+        island_protected_count=int(len(seed_island_limits)),
+        island_strict_count=int(
+            sum(1 for row in seed_island_limits.values() if float(row.get("tier", 0.0)) >= 2.0)
+        ),
+        island_fragmented_count=int(
+            sum(1 for row in final_island_metrics.values() if float(row["fragmentation"]) > 0.0)
+        ),
+        island_foreign_intrusion_count=int(
+            sum(float(row["foreign_intrusion"]) for row in final_island_metrics.values())
+        ),
     )
 
     _log(
@@ -1055,6 +1252,7 @@ def run_post_coldspot_finalize(
         f"margin={float(legality_margin['min_margin']):.3f}, "
         f"audit={'rollback' if audit_rollback else ('pass' if audit_passed else 'fail')}, "
         f"vector_audit={'pass' if vector_audit_passed else 'fail'}, "
+        f"islands={len(seed_island_limits)}, "
         f"violations={int(final_contract_violation_count)}, "
         f"source={hierarchy_source}, "
         f"cov_h={float(seed_hierarchy_coverage['clustered_hard_fraction']):.3f}->"

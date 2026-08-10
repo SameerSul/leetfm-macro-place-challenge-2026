@@ -57,8 +57,73 @@ winners, preserving the valid sequential prefix; direct soft-role fanout rises
 from 8 to 16, proxy-banded seed selection prefers contract headroom, and weak
 inferred child/deep search requires confidence 0.65. Focused IBM10 improved
 `1.1348 -> 1.0590`, remained VALID, passed every audit with no rollback, and
-raised soft coverage `39.56% -> 40.31%`. A full IBM/NG45/synthetic sweep is
+raised soft coverage `39.56% -> 40.31%`. A bounded ordinary-leaf assembly pass
+now jointly compacts 2-8-hard clusters with their owned movable softs and tests
+whole-leaf slot exchanges. IBM10 retained one seed-stage compaction, improving
+final hard hierarchy quality `6.11996 -> 4.84244` and composite `0.29896 ->
+0.29555`; exact proxy changed `1.0590 -> 1.0600` (+0.096%). The post-relief
+replay and slot lane retained no IBM10 moves, so richer connectivity-derived
+slot proposals remain open work. A full IBM/NG45/synthetic sweep is
 still required before replacing the established suite references above.
+
+The follow-up colour-contiguity candidate promotes high-confidence leaves from
+global-average audit terms to per-colour hierarchy islands. It freezes compact
+post-assembly hard/owned-soft boxes, independently limits leaf spread, bounding
+span, and local colour impurity, and selects the hierarchy-first eligible seed.
+The full IBM sweep is `AVG 1.2951`, 17/17 VALID, zero overlaps, all audits
+passing, in 456.05s. Compared with the proxy-first island control, fragmented
+leaves fall `229 -> 194`, foreign intrusions `18,841 -> 9,130`, and mean hard
+hierarchy quality `1.24789 -> 0.99651`; proxy worsens `1.1975 -> 1.2951`.
+This confirms that the evaluator's density/congestion proxy conflicts with the
+requested compact colour hierarchy. The accepted `AVG 1.1404` score remains the
+comparison baseline rather than being replaced by this hierarchy-first result.
+
+The current follow-up keeps those hierarchy levels fixed and targets congestion
+inside each leaf. A net-derived internal floorplanner puts strongly
+connected hard macros together, assigns externally connected macros to facing
+leaf boundaries, leaves an inset routing channel, and pulls directly owned soft
+macros toward their hard-affinity barycentres inside frozen island boxes.
+The first pre-freeze schedule was rejected: despite `0.00639` summed local
+gain, its full suite regressed `AVG 1.2951 -> 1.2977` because IBM02's small
+`0.000415` win displaced larger swap and soft-repair gains, ending that design
+`+0.1001` worse. The operator now runs as a final survivor inside frozen island
+boxes. Focused checks restore IBM02 exactly to `1.2303` and improve IBM10
+`1.7511 -> 1.7494`; both are VALID and audit-clean. The promoted late schedule
+reaches `AVG 1.2949`, 17/17 VALID, zero overlaps, and all audits passing in
+487.54s. Three retained layouts sum to `0.002001` attributable exact gain;
+fragmented protected leaves improve `194 -> 193`, foreign intrusions
+`9,130 -> 9,105`, and mean hierarchy composite is effectively flat
+(`0.140344 -> 0.140363`). Congestion still contributes `0.8392` to the average
+proxy, versus `0.3836` density and `0.0721` wirelength, so further work should
+continue to target congestion inside the immutable hierarchy envelope.
+
+The exact-tail diagnostic
+`uv run python test/diagnostic/analyze_final_hotspots.py --all` reran all IBM
+designs at AVG 1.2950, 17/17 valid, and localized the remaining cost. Across
+the worst congestion component per design, exact implicated demand is 70.18%
+unassigned-soft/IO, 25.03% internal to one inferred cluster, and 4.79%
+cross-cluster. Worst density components are 83.61% soft area. Thus boundary
+ports between hierarchy leaves are not the suite-wide primary blocker; the
+largest gap is low soft-role coverage, especially IBM18 (4.66%) and IBM17
+(16.97%). IBM08/03 remain strong internal-cluster cases, while IBM09/10/16 need
+separate macro-blockage channel treatment. The six primary score targets
+IBM10/12/14/16/17/18 account for 46.0% of suite congestion and 48.0% of suite
+density. Detailed coordinates, nets, macros, and recommended lanes are in
+`ml_data/hotspot_analysis/20260809T215011-findings.md`.
+
+`test/diagnostic/analyze_soft_role_coverage.py` originally explained the low
+direct coverage. Only 5,364/21,538 soft macros received a direct role. Of the
+16,174 then-unassigned macros,
+14,842 (91.76%) have soft/IO-only connectivity with no hard macro on any
+multi-pin net, 1,291 (7.98%) connect only to unclustered hard macros, and just
+41 (0.25%) reach clustered hard macros exclusively through nets above fanout
+16. There are zero qualifying-but-unassigned cases. Raising the fanout cap is
+therefore was not the remedy. The bounded confidence-tier implementation now
+adds 8,044 hop-one and 5,222 hop-two roles for 86.50% anchored coverage. Eight
+stable residual soft-only groups add 29 macros without promoting them to hard
+ownership, for 86.63% total hierarchy coverage. The remaining 2,879 macros
+still stay outside hierarchy; most lack the repeated, stable structural evidence
+needed to distinguish an IP block from incidental flat-net connectivity.
 
 ## Open Work
 
@@ -246,6 +311,17 @@ production 0.0001 whole-child floor rejects it. Further recursive hierarchy
 inference and promotion of low-confidence flat communities remain intentionally
 out of scope; the deepest-child boxes add search room without adding another
 inferred partition level.
+
+Large-macro corridors are now used by a bounded final survivor pass rather
+than being treated as generic cold windows. The pass found retained,
+contract-safe whole-leaf moves on IBM10 (`1.7205 -> 1.7165`) and IBM13
+(`1.1055 -> 1.1054`) in the 2026-08-10 full sweep. A locally improving IBM18
+move (`1.7056 -> 1.7051`) was correctly removed by the independent final audit.
+The current limitation is deliberate: only existing 2-12-hard leaves and their
+directly owned soft macros relocate. Pure soft-only groups remain available to
+grouped placement and explicit compound search, but are not yet standalone
+void occupants because soft overlap and density accounting need a separate
+capacity/legalization policy.
 
 Explicit slash-separated soft instance paths now form high-confidence bundles
 and are the only source of compound relocation groups. Flat IBM `Grp_*` names

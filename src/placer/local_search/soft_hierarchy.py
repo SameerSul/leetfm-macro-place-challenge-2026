@@ -298,6 +298,154 @@ def derive_connectivity_soft_bundles(
     )
 
 
+def select_stable_residual_soft_bundles(
+    candidates: Sequence[SoftBundle],
+    strict_candidates: Sequence[SoftBundle],
+    assigned,
+    edge_counts,
+    *,
+    max_cut_ratio: float = 0.35,
+    min_boundary_support: int = 2,
+) -> tuple[SoftBundle, ...]:
+    """Keep residual communities that survive a stricter graph threshold.
+
+    The boundary test uses the complete repeated low-fanout soft graph. This
+    rejects a locally strong pair that is still more strongly connected to the
+    rest of the design, while exact membership stability prevents a threshold-
+    fragile component from becoming a placement hierarchy.
+    """
+    assigned_set = {int(member) for member in assigned}
+    stats = {
+        "candidates": int(len(candidates)),
+        "residual": 0,
+        "stable": 0,
+        "cut_rejects": 0,
+        "kept": 0,
+        "cut_le_50": 0,
+        "cut_le_60": 0,
+        "cut_le_70": 0,
+        "cut_le_80": 0,
+        "cut_le_90": 0,
+    }
+    strict_sets = {
+        tuple(int(member) for member in np.asarray(bundle.members, dtype=np.int64))
+        for bundle in strict_candidates
+    }
+    kept = []
+    for bundle in candidates:
+        members = tuple(int(member) for member in np.asarray(bundle.members, dtype=np.int64))
+        member_set = set(members)
+        if len(members) < 2 or member_set & assigned_set:
+            continue
+        stats["residual"] += 1
+        if members not in strict_sets:
+            continue
+        stats["stable"] += 1
+        internal = 0.0
+        boundary = 0.0
+        for (left_raw, right_raw), count_raw in edge_counts.items():
+            left, right, count = int(left_raw), int(right_raw), float(count_raw)
+            if count < max(1, int(min_boundary_support)):
+                continue
+            left_inside, right_inside = left in member_set, right in member_set
+            if left_inside and right_inside:
+                internal += count
+            elif left_inside != right_inside:
+                boundary += count
+        if internal <= 0.0:
+            continue
+        cut_ratio = float(boundary / max(internal + boundary, 1.0e-12))
+        for threshold in (50, 60, 70, 80, 90):
+            if cut_ratio <= threshold / 100.0:
+                stats[f"cut_le_{threshold}"] += 1
+        if cut_ratio > float(max_cut_ratio):
+            stats["cut_rejects"] += 1
+            continue
+        score = float(min(0.89, max(float(bundle.score), 0.60 + 0.20 * (1.0 - cut_ratio))))
+        kept.append(
+            SoftBundle(
+                members=np.asarray(members, dtype=np.int64),
+                source="soft_only_connectivity",
+                key=bundle.key,
+                score=score,
+                confidence=soft_bundle_confidence(score),
+            )
+        )
+    kept.sort(key=lambda bundle: (int(bundle.members[0]), len(bundle.members), bundle.key))
+    stats["kept"] = int(len(kept))
+    select_stable_residual_soft_bundles.last_stats = stats
+    return tuple(kept)
+
+
+select_stable_residual_soft_bundles.last_stats = {}
+
+
+def derive_stable_residual_soft_bundles(
+    plc,
+    n_soft: int,
+    assigned,
+    *,
+    max_fanout: int = 8,
+    min_shared_nets: int = 2,
+    edge_ratio: float = 0.60,
+    stability_edge_ratio: float = 0.75,
+    max_cut_ratio: float = 0.35,
+    max_size: int = 16,
+) -> tuple[SoftBundle, ...]:
+    """Derive conservative soft-only hierarchy from the residual soft graph."""
+    try:
+        cache = _build_wl_cache(plc)
+        soft_lookup = {
+            int(module_index): soft_index
+            for soft_index, module_index in enumerate(plc.soft_macro_indices[: int(n_soft)])
+        }
+    except Exception:
+        return ()
+    soft_nets = []
+    edge_counts: dict[tuple[int, int], int] = {}
+    for net_index, start_raw in enumerate(cache["net_starts"]):
+        length = int(cache["net_lengths"][net_index])
+        if length < 2 or length > max(2, int(max_fanout)):
+            continue
+        start = int(start_raw)
+        members = sorted(
+            {
+                soft_lookup[int(reference)]
+                for reference in cache["ref_idx"][start : start + length]
+                if int(reference) in soft_lookup
+            }
+        )
+        if len(members) < 2:
+            continue
+        soft_nets.append(members)
+        for pos, left in enumerate(members):
+            for right in members[pos + 1 :]:
+                edge = (int(left), int(right))
+                edge_counts[edge] = edge_counts.get(edge, 0) + 1
+    ordinary = infer_connectivity_soft_bundles(
+        n_soft,
+        soft_nets,
+        min_shared_nets=min_shared_nets,
+        edge_ratio=edge_ratio,
+        max_size=max_size,
+    )
+    strict = infer_connectivity_soft_bundles(
+        n_soft,
+        soft_nets,
+        min_shared_nets=min_shared_nets,
+        edge_ratio=stability_edge_ratio,
+        max_size=max_size,
+    )
+    return select_stable_residual_soft_bundles(
+        ordinary,
+        strict,
+        assigned,
+        edge_counts,
+        max_cut_ratio=max_cut_ratio,
+        min_boundary_support=min_shared_nets,
+    )
+
+
 def combine_soft_bundle_evidence(
     path_bundles: Sequence[SoftBundle],
     connectivity_bundles: Sequence[SoftBundle],

@@ -69,16 +69,13 @@ HIER_SEED_ROUTE_CHANNEL_LANE_FRAC = 0.10
 HIER_SEED_ROUTE_CHANNEL_PUSH_FRAC = 0.35
 # Maximum route-channel push as a fraction of the cluster local span.
 HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
-# Rich hierarchy-vector seed selection is opt-in until full-suite calibration.
-# When enabled, proxy breaks ties among candidates inside the best hierarchy
-# quality band instead of selecting the lowest-proxy seed unconditionally.
-HIER_SEED_HIERARCHY_SELECT = False
+# Hierarchy-first seed selection: proxy breaks ties only inside the best
+# hierarchy-quality band. The 2026-08-09 full sweep confirms the expected proxy
+# cost but materially improves colour-island structure, which is now primary.
+HIER_SEED_HIERARCHY_SELECT = True
 HIER_SEED_HIERARCHY_ABS_SLACK = 0.002
 HIER_SEED_HIERARCHY_REL_SLACK = 0.15
-# Default seed selection first keeps candidates inside a tight proxy band, then
-# prefers hierarchy headroom inside that band. This prevents a large proxy
-# sacrifice while avoiding a needlessly boundary-tight seed when an equivalent
-# alternative exists.
+# Retained proxy-band constants support the proxy-first diagnostic control.
 HIER_SEED_HEADROOM_SELECT = True
 HIER_SEED_PROXY_BAND_ABS = 0.02
 HIER_SEED_PROXY_BAND_REL = 0.05
@@ -106,10 +103,36 @@ HIER_VECTOR_CONTRACT_ABS_SLACK = {
     "bridge_soft_distance": 0.015,
 }
 
+# Per-colour island contract. Explicit hierarchy leaves and inferred leaves at
+# or above the strict threshold may not become more scattered, impure,
+# fragmented, or interleaved after seed assembly. Medium-confidence leaves keep
+# bounded slack; low-confidence evidence remains advisory.
+HIER_ISLAND_STRICT_CONFIDENCE = 0.65
+HIER_ISLAND_STRICT_RELATIVE_SLACK = 0.25
+HIER_ISLAND_MEDIUM_RELATIVE_SLACK = 0.35
+HIER_ISLAND_DISTANCE_ABSOLUTE_SLACK = 0.005
+HIER_ISLAND_IMPURITY_ABSOLUTE_SLACK = 0.25
+
 # Soft ownership may use slightly wider direct hard-affinity nets than hard
 # cluster construction. It remains direct structural evidence: no geometry or
 # unanchored soft-only community can manufacture an owner.
 HIER_SOFT_ROLE_MAX_FANOUT = 16
+# Bounded soft-to-soft propagation extends a direct hard-cluster owner by at
+# most two synchronous graph hops. Each inferred role needs repeated low-
+# fanout support; ambiguous bridges are retained as corridor evidence but never
+# seed another round.
+HIER_SOFT_PROPAGATION_MAX_HOPS = 2
+HIER_SOFT_PROPAGATION_MIN_SUPPORT = (2, 2)
+HIER_SOFT_PROPAGATION_MIN_DOMINANCE = (0.60, 0.67)
+# Residual soft-only hierarchy requires the same repeated mutually strong
+# community to survive a stricter graph threshold and to have a small weighted
+# boundary cut. These groups never alter the hard hierarchy labels.
+HIER_SOFT_ONLY_MAX_FANOUT = 8
+HIER_SOFT_ONLY_MIN_SHARED_NETS = 2
+HIER_SOFT_ONLY_EDGE_RATIO = 0.60
+HIER_SOFT_ONLY_STABILITY_EDGE_RATIO = 0.75
+HIER_SOFT_ONLY_MAX_CUT_RATIO = 0.35
+HIER_SOFT_ONLY_MAX_SIZE = 16
 
 # Weak inferred parent models have produced no retained IBM moves. Skip their
 # rigid/deep exact search while retaining explicit and strong inferred models.
@@ -124,6 +147,57 @@ HIER_PROPOSAL_OUTSIDE_RELIEF_MARGIN = 0.08
 
 # Minimum exact-proxy gain required to accept hard propose-all relocation.
 HIER_RELOC_PROPOSE_MIN_GAIN = 0.0005
+
+# Assembly pass for ordinary small leaf clusters, which are not served by the
+# retained-parent child operator. It jointly compacts 2-8 hard macros, pulls
+# their directly owned soft macros inward, and may shift the group slightly
+# toward structurally adjacent leaves. Every retained state must improve both
+# hierarchy composite and exact proxy while passing the complete contract.
+HIER_SMALL_CLUSTER_CONSOLIDATION_BUDGET_S = 4.0
+HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SCORED = 64
+HIER_SMALL_CLUSTER_CONSOLIDATION_MIN_HARD = 2
+HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_HARD = 8
+HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SOFT = 16
+HIER_SMALL_CLUSTER_CONSOLIDATION_TOP = 8
+HIER_SMALL_CLUSTER_CONSOLIDATION_SLOT_TOP = 10
+HIER_SMALL_CLUSTER_CONSOLIDATION_SCALES = (0.92, 0.84)
+HIER_SMALL_CLUSTER_CONSOLIDATION_SHIFT_FRACTIONS = (0.0, 0.25)
+HIER_SMALL_CLUSTER_CONSOLIDATION_SOFT_SCALES = (0.75, 0.50)
+HIER_SMALL_CLUSTER_CONSOLIDATION_MIN_STRUCTURAL_GAIN = 0.000001
+HIER_SMALL_CLUSTER_CONSOLIDATION_MIN_PROXY_GAIN = 0.00001
+
+# Topology-aware internal leaf floorplanning. The pass preserves the existing
+# hierarchy partition while using the original nets to place internal neighbors,
+# external-facing boundary macros, demand-scaled routing whitespace, and owned
+# soft affinity barycentres inside immutable colour-island boxes after the main
+# congestion-search trajectory has completed.
+HIER_INTERNAL_FLOORPLAN_BUDGET_S = 6.0
+HIER_INTERNAL_FLOORPLAN_MAX_SCORED = 96
+HIER_INTERNAL_FLOORPLAN_MIN_HARD = 2
+HIER_INTERNAL_FLOORPLAN_MAX_HARD = 16
+HIER_INTERNAL_FLOORPLAN_MAX_SOFT = 32
+HIER_INTERNAL_FLOORPLAN_TOP = 8
+HIER_INTERNAL_FLOORPLAN_MAX_FANOUT = 32
+HIER_INTERNAL_FLOORPLAN_UTILIZATIONS = (0.65, 0.55, 0.45)
+HIER_INTERNAL_FLOORPLAN_TRANSFORMS = ("identity", "swap", "flip_x", "flip_y")
+HIER_INTERNAL_FLOORPLAN_BOUNDARY_RATIO = 0.35
+HIER_INTERNAL_FLOORPLAN_CHANNEL_FRAC = 0.04
+HIER_INTERNAL_FLOORPLAN_MIN_PROXY_GAIN = 0.00001
+# Final whole-leaf relocation into capacity-safe gaps bounded by large hard
+# macros. The graph centroid chooses the external-facing position inside each
+# gap; full hierarchy/island and exact-proxy gates remain authoritative.
+HIER_VOID_RELOCATION_BUDGET_S = 5.0
+HIER_VOID_RELOCATION_MAX_SCORED = 48
+HIER_VOID_RELOCATION_LARGE_AREA_PCT = 70.0
+HIER_VOID_RELOCATION_MIN_GAP_CELLS = 2
+HIER_VOID_RELOCATION_MAX_VOIDS = 96
+HIER_VOID_RELOCATION_MAX_HARD = 12
+HIER_VOID_RELOCATION_MAX_SOFT = 32
+HIER_VOID_RELOCATION_TOP_CLUSTERS = 10
+HIER_VOID_RELOCATION_MAX_UTILIZATION = 0.78
+HIER_VOID_RELOCATION_SOFT_COMPACT_SCALE = 0.65
+HIER_VOID_RELOCATION_MIN_FIELD_DROP = 0.01
+HIER_VOID_RELOCATION_MIN_GAIN = 0.0001
 
 # One retained parent layer above the active leaf partition. The child operator
 # rigidly translates one complete leaf (including owned softs) inside its parent

@@ -44,8 +44,19 @@ benchmark input
         reference falls back to grouped DREAMPlace; a mandatory lower-proxy
         candidate that misses one component may be repaired toward the passing
         reference when at least 95% of its displacement survives; the lowest
-        eligible exact proxy enters relief)
+        eligible hierarchy band enters relief, with exact proxy breaking ties)
   -> congestion-expanded hard/soft hierarchy regions
+  -> seed-stage small-leaf assembly
+       - target ordinary 2-8-hard leaves, independent of parent inference
+       - compact hard members and pull directly owned movable softs inward
+       - test whole-leaf slot exchanges to repair interleaved cluster ordering
+       - legalize affected hard sets and require hierarchy-composite plus exact-proxy gain
+  -> freeze confidence-calibrated hierarchy islands
+       - explicit leaves and inferred leaves with confidence >=0.65 are strict islands
+       - medium-confidence leaves receive wider per-colour limits; low-confidence evidence is advisory
+       - intersect strict hard/owned-soft movement boxes with the compact post-assembly footprint
+       - constrain spread, bounding span, and nearest-neighbour colour impurity per leaf
+       - retain fragmentation, owned-soft p90 distance, and foreign intrusion as per-leaf audit telemetry
   -> exact-gated local micro-shift polish
        - check the complete contract only for exact-improving winners
        - retain the best valid sequential prefix instead of rolling back a whole lane
@@ -53,8 +64,10 @@ benchmark input
        - reject hard candidates that exceed the selected seed's inexpensive
          hard-containment limit before exact batch scoring
        - keep the complete six-component checkpoint authoritative after the pass
+       - keep strict hard and directly owned soft macros inside their frozen island boxes
        - on refined graphs with at most 64 hard macros, reject individual hard
          and soft candidates that fail the complete contract before exact scoring
+  -> small-leaf assembly replay after ordinary region relief
   -> parent-bounded child-cluster search
        - keep the production DREAMPlace/leaf partition unchanged
        - require confidence >=0.65 for inferred child/deep search; explicit parents bypass the gate
@@ -118,6 +131,22 @@ benchmark input
        - run bounded hard/soft relocation, hard swaps only after useful released hard relocation, soft-involving swaps, and micro-shift polish
        - restore the best audit-passing exact-scored state seen inside the small-design pass
        - exact proxy, hard legality, and hierarchy audit budget remain the commit gates
+  -> topology-aware internal leaf survivor floorplanning
+       - derive a weighted induced graph for each eligible leaf directly from low-fanout nets
+       - use spectral coordinates to keep strongly connected hard macros adjacent
+       - classify macros by external-demand ratio and place them on the leaf side facing their weighted external centroid
+       - reserve a demand-scaled inset at those boundary ports and test 65%, 55%, and 45% utilization layouts
+       - move directly owned soft macros toward hard-affinity barycentres inside frozen island boxes
+       - affected-set legalize, enforce the complete hierarchy/island contract, and exact-score the complete hard/soft state
+       - schedule after the main congestion search so a small local win cannot replace a stronger downstream trajectory
+  -> inter-macro void relocation survivor
+       - extract rectangular corridors bounded by opposing edges of large hard macros
+       - rank hot 2-12-hard leaves against cold voids and reject moves that exceed 78% projected density utilization
+       - place the rigid hard leaf at its weighted hierarchy-graph-neighbour centroid projected into the void
+       - co-move and compact at most 32 directly owned soft macros inside the same void
+       - reject outside-hard overlaps and complete hierarchy/island contract failures before exact scoring
+       - exact-score at most 48 states and commit only the best gain of at least 0.0001
+       - retain at most one whole-leaf move, with the independent final audit still able to roll it back
   -> gain-controlled passes: stop repeats when latest exact gain <= HIER_PLATEAU_PROXY_GAIN
   -> final scorer-compatible hard legality margin audit
   -> final hierarchy-quality audit against the selected hierarchy seed:
@@ -483,6 +512,7 @@ not comparable to current numbers.
 | `src/utils/constants.py` | All tunable hierarchy constants (see appendix below). |
 | `src/placer/pipeline/macro_placer.py` | Production flow entrypoint; raises if `_hierarchy_floorplan()` cannot run. |
 | `src/placer/pipeline/hierarchy_floorplan.py` | The hierarchy pipeline itself: seed portfolio, region relief, swaps, and coldspot cleanup. |
+| `src/placer/local_search/cluster_consolidation.py` | Bounded small-leaf hard/owned-soft compaction and whole-leaf slot exchange with structural, contract, and exact-proxy gates. |
 | `src/placer/pipeline/hierarchy_context.py` | Shared `PlacementState`, `PassContext`, `PassResult`, `PlateauTelemetry` used across pipeline stages. |
 | `src/placer/local_search/hierarchy_model.py` | Inferred hierarchy: active clusters, one parent/child level, soft roles, graphs, region builders. |
 | `src/placer/local_search/soft_hierarchy.py` | Confidence-calibrated soft bundles: explicit instance paths can be active; flat-netlist connectivity and affinity remain diagnostic evidence. |
@@ -631,17 +661,13 @@ nearest-neighbor cluster impurity, weighted inter-cluster edge stretch,
 owned-soft distance, and bridge-soft corridor distance. Each vector component
 must remain within its independent absolute-or-relative slack from the
 legalized reference. Non-mandatory alternatives whose immutable hard
-components already fail are rejected before exact scoring. The lowest-proxy
-candidate defines a tight `max(0.02, 5%)` proxy band. Production maximizes the
-minimum normalized component headroom inside that band, then uses hierarchy
-composite and proxy as deterministic tie-breaks. This avoids buying hierarchy
-with a large proxy regression while preferring a less boundary-tight equivalent
-seed. The selected seed becomes
+components already fail are rejected before exact scoring. Production keeps
+the best hierarchy-composite band and uses exact proxy as its deterministic
+tie-break. The selected seed becomes
 the reference for the same six-component contract at pass checkpoints and
-final rollback. `HIER_SEED_HIERARCHY_SELECT=1` makes proxy the
-secondary choice inside the best hierarchy-quality band. That policy remains
-default-off: on the 2026-07-15 ibm10 experiment it improved seed composite
-`0.29168 -> 0.16328` but regressed final proxy `1.1778 -> 1.5281`.
+final rollback. `HIER_SEED_HIERARCHY_SELECT=1` is default-on after the explicit
+colour-cohesion direction change. The 2026-08-09 full sweep improved structural
+island metrics but regressed proxy, as recorded in `PROGRESS.md`.
 If no candidate satisfies the component contract, selection fails closed unless
 the reference candidate itself passes; an invalid fallback is never promoted
 to become the hierarchy baseline.
@@ -669,6 +695,17 @@ relative profile invalidated `ibm18`'s final state and `ibm07`'s selected seed;
 a uniform 20% absolute reduction invalidated `ibm08`/`ibm11` finals and the
 selected NG45 `nvdla` seed. The active profile therefore has measured real-
 design support rather than being inferred from the aggregate composite score.
+
+Soft hierarchy is confidence-tiered after hard labels are final. Tier 1 is the
+direct fanout-16 hard affinity. Tier 2 performs exactly two synchronous
+soft-to-soft propagation rounds with repeated support, 0.60/0.67 dominance,
+and non-propagating bridge results. Tier 3 examines only still-unassigned soft
+macros and retains a 2-16 member community only when repeated mutually strong
+edges produce identical membership at 0.60 and 0.75 thresholds and a repeated-
+edge cut ratio at most 0.35. Tier 2 roles enter the existing owned/bridge
+regions and contracts. Tier 3 groups enter grouped DREAMPlace and compound
+relocation but do not enter `cluster_softs`, so no soft-only evidence can
+manufacture hard ownership or alter the retained hard hierarchy levels.
 
 Neighbor impurity needs only the nearest four clustered hard macros. A cached
 Numba kernel therefore keeps a four-entry insertion-ordered selection per

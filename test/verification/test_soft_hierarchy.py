@@ -12,9 +12,10 @@ from placer.local_search.soft_hierarchy import (
     infer_connectivity_soft_bundles,
     infer_path_soft_bundles,
     select_high_confidence_soft_bundles,
+    select_stable_residual_soft_bundles,
     soft_bundle_confidence,
 )
-from placer.local_search.clusters import classify_soft_role_evidence
+from placer.local_search.clusters import classify_soft_role_evidence, infer_propagated_soft_roles
 
 
 def test_path_soft_bundles_choose_useful_explicit_prefixes():
@@ -118,3 +119,72 @@ def test_flat_soft_role_confidence_requires_repeated_hard_affinity():
         row["score"] < 0.90
         for row in (single_owner, repeated_owner, single_bridge, repeated_bridge)
     )
+
+
+def test_soft_role_propagation_is_synchronous_and_stops_after_two_hops():
+    owned, bridge, evidence = infer_propagated_soft_roles(
+        5,
+        [[0, 1], [0, 1], [1, 2], [1, 2], [2, 3], [2, 3], [3, 4], [3, 4]],
+        {0: 7},
+    )
+
+    assert np.array_equal(owned[7], np.array([1, 2]))
+    assert bridge == {}
+    assert evidence[1]["source"] == "soft_hop_1"
+    assert evidence[2]["source"] == "soft_hop_2"
+    assert 3 not in evidence and 4 not in evidence
+
+
+def test_soft_role_propagation_keeps_ambiguous_result_as_nonseeding_bridge():
+    owned, bridge, evidence = infer_propagated_soft_roles(
+        4,
+        [[0, 2], [0, 2], [1, 2], [1, 2], [2, 3], [2, 3]],
+        {0: 4, 1: 5},
+    )
+
+    assert owned == {}
+    assert np.array_equal(bridge[2], np.array([4, 5]))
+    assert evidence[2]["role"] == "bridge"
+    assert 3 not in evidence
+
+
+def test_soft_role_propagation_rejects_single_incidental_edge():
+    owned, bridge, evidence = infer_propagated_soft_roles(2, [[0, 1]], {0: 3})
+
+    assert owned == {}
+    assert bridge == {}
+    assert evidence == {}
+
+
+def test_soft_only_hierarchy_requires_stability_residual_members_and_small_cut():
+    stable = SoftBundle(np.array([0, 1]), "connectivity", "stable", 0.72)
+    unstable = SoftBundle(np.array([2, 3]), "connectivity", "unstable", 0.72)
+    assigned = SoftBundle(np.array([4, 5]), "connectivity", "assigned", 0.72)
+
+    selected = select_stable_residual_soft_bundles(
+        (stable, unstable, assigned),
+        (stable, assigned),
+        {4},
+        {(0, 1): 4, (0, 6): 1, (1, 7): 1, (2, 3): 4, (4, 5): 4},
+        max_cut_ratio=0.35,
+        min_boundary_support=2,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].key == "stable"
+    assert selected[0].source == "soft_only_connectivity"
+
+
+def test_soft_only_hierarchy_rejects_large_boundary_cut():
+    candidate = SoftBundle(np.array([0, 1]), "connectivity", "leaky", 0.72)
+
+    selected = select_stable_residual_soft_bundles(
+        (candidate,),
+        (candidate,),
+        set(),
+        {(0, 1): 2, (0, 2): 2, (1, 3): 2},
+        max_cut_ratio=0.35,
+        min_boundary_support=2,
+    )
+
+    assert selected == ()
