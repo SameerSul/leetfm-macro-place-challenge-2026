@@ -66,15 +66,15 @@ presented as VivaPlace measurements or forecasts.
    Methods,” *IMA Journal of Numerical Analysis* 8(1), 1988, pp. 141–148.
    [DOI](https://doi.org/10.1093/imanum/8.1.141).
 
-6. **IncreMacro — production technique reference.** Yuan Pu, Tinghuan Chen,
+6. **IncreMacro — historical / removed technique reference.** Yuan Pu, Tinghuan Chen,
    Zhuolun He, Chen Bai, Haisheng Zheng, Yibo Lin, and Bei Yu, “IncreMacro:
    Incremental Macro Placement Refinement,” ISPD 2024, pp. 169–176.
    [DOI](https://doi.org/10.1145/3626184.3633321),
    [author PDF](https://www.cse.cuhk.edu.hk/~byu/papers/C205-ISPD2024-IncreMacro.pdf).
-   VivaPlace's `src/placer/legalize/constraint_graph.py` is an independent,
-   bounded H/V separation-DAG implementation in the same constraint-graph
-   legalization family; it does not reproduce IncreMacro's LP, diagnosis,
-   macro-shifting, or cell-migration flow.
+   VivaPlace previously carried an independent bounded H/V separation-DAG
+   legalizer in the same broad family. It did not reproduce IncreMacro's LP,
+   diagnosis, macro-shifting, or cell-migration flow and was removed on
+   2026-08-11 because it did not consume hierarchy structure.
 
 7. **PeF — supporting constraint-graph reference.** Ximeng Li, Keyu Peng,
    Fuxing Huang, and Wenxing Zhu, “PeF: Poisson's Equation Based Large-Scale
@@ -281,6 +281,23 @@ related-work results are not confused with VivaPlace's measured results.
     optimal-region detailed-placement technique. Entry 25 is the accurate
     source for that technique; FastPlace 2.0 is a mixed-size analytical placer
     and is not implemented by the hierarchy-search operators.
+
+28. **Re²MaP — active independent adaptation.** Yunqi Shi, Xi Lin, Zhiang
+    Wang, Siyuan Xu, Shixiong Kai, Yao Lai, Chengrui Gao, Ke Xue, Mingxuan
+    Yuan, Chao Qian, and Zhi-Hua Zhou, “Re²MaP: Macro Placement by Recursively
+    Prototyping and Packing Tree-based Relocating,” arXiv:2511.08054, 2025.
+    [arXiv](https://arxiv.org/abs/2511.08054),
+    [official code](https://github.com/lamda-bbo/Re2MaP).
+    VivaPlace production independently adapts only the recurrent
+    prototype/freeze idea:
+    it freezes one or two complete hierarchy leaves between grouped DREAMPlace
+    runs. It does not reproduce Re²MaP's clustering, unified dataflow matrix,
+    ellipse-angle optimizer, packing-tree representation, evolutionary search,
+    or reported backend-flow results. A separate original deterministic
+    hierarchy-leaf B*-tree/contour seed was tested on 2026-08-11 and removed
+    after selecting on 0/17 IBM designs; it did not copy or reproduce the
+    upstream evolutionary packing implementation. See the
+    [diagnostic report](../ml_data/re2map_packing_tree/20260811-results.md).
 
 ## Project, Evaluator, Data, and Tool Links
 

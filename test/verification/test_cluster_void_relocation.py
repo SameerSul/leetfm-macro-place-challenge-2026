@@ -9,15 +9,19 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from placer.local_search.cluster_void_relocation import (
     _void_cluster_relocation,
+    _soft_routing_units,
     find_large_macro_voids,
 )
+from placer.local_search.soft_hierarchy import SoftBundle
 
 
 class _Scorer:
-    def __init__(self):
+    def __init__(self, plc=None):
         self.grid_occupied = np.zeros(400, dtype=np.float64)
         self.dens_grid_area = 1.0
         self.committed = None
+        self.plc = plc
+        self.soft_commits = 0
 
     def congestion_field(self):
         field = np.zeros((20, 20), dtype=np.float64)
@@ -34,6 +38,23 @@ class _Scorer:
             np.asarray(soft_indices).copy(),
             np.asarray(new_soft).copy(),
         )
+
+    def score_move_soft_group(self, soft_indices, new_soft):
+        return 0.9 - 0.1 * self.soft_commits
+
+    def commit_move_soft_group(self, soft_indices, new_soft):
+        self.soft_commits += 1
+        self.committed = (
+            np.asarray(soft_indices).copy(),
+            np.asarray(new_soft).copy(),
+        )
+
+
+class _ExpansionScorer(_Scorer):
+    def congestion_field(self):
+        field = np.zeros((20, 20), dtype=np.float64)
+        field[:, :10] = 1.0
+        return field
 
 
 def test_large_macro_voids_find_opposing_edge_corridor():
@@ -53,6 +74,79 @@ def test_large_macro_voids_find_opposing_edge_corridor():
     assert len(voids) == 1
     assert voids[0]["orientation"] == "horizontal"
     assert np.allclose(voids[0]["rect"], [4.0, 6.0, 16.0, 14.0])
+
+
+def test_large_macro_voids_include_canvas_edge_pockets():
+    hard = np.array([[10.0, 10.0]])
+    voids = find_large_macro_voids(
+        hard,
+        np.array([2.0]),
+        np.array([4.0]),
+        canvas_width=20.0,
+        canvas_height=20.0,
+        min_width=2.0,
+        min_height=2.0,
+    )
+
+    assert len(voids) == 4
+    assert {void["kind"] for void in voids} == {"edge"}
+    assert any(np.allclose(void["rect"], [0.0, 6.0, 8.0, 14.0]) for void in voids)
+
+
+def test_large_macro_voids_subtract_intervening_hard_blockage():
+    hard = np.array([[2.0, 10.0], [18.0, 10.0], [10.0, 10.0]])
+    voids = find_large_macro_voids(
+        hard,
+        np.array([2.0, 2.0, 1.0]),
+        np.array([4.0, 4.0, 1.0]),
+        large_area_percentile=70.0,
+        min_width=1.0,
+        min_height=1.0,
+    )
+
+    assert voids
+    for void in voids:
+        x0, y0, x1, y1 = void["rect"]
+        assert x1 <= 9.0 or x0 >= 11.0 or y1 <= 9.0 or y0 >= 11.0
+
+
+def test_soft_routing_units_keep_roles_separate_and_add_residual_fallbacks():
+    cache = {
+        "net_starts": np.array([0]),
+        "net_lengths": np.array([2]),
+        "net_weights": np.array([1.0]),
+        "ref_idx": np.array([104, 105]),
+    }
+    plc = SimpleNamespace(
+        soft_macro_indices=list(range(100, 107)),
+        _wl_vec_cache=cache,
+    )
+    bundle = SoftBundle(
+        members=np.array([2, 3]),
+        source="soft_only_connectivity",
+        key="stable",
+        score=0.8,
+    )
+    units = _soft_routing_units(
+        plc,
+        np.zeros((7, 2)),
+        {0: np.array([2])},
+        {1: np.array([0])},
+        [bundle],
+        np.ones(7, dtype=bool),
+        2,
+        np.arange(7, dtype=np.float64),
+        max_fanout=16,
+        max_cohort=8,
+        top_cohorts=12,
+        top_singletons=16,
+    )
+
+    by_kind = {unit["kind"]: tuple(unit["indices"]) for unit in units}
+    assert by_kind["stable_bundle"] == (2, 3)
+    assert by_kind["routing_cohort"] == (4, 5)
+    assert by_kind["soft_singleton"] == (6,)
+    assert all(0 not in unit["indices"] and 1 not in unit["indices"] for unit in units)
 
 
 def test_void_relocation_moves_whole_leaf_and_owned_soft_toward_graph_centroid():
@@ -101,6 +195,40 @@ def test_void_relocation_moves_whole_leaf_and_owned_soft_toward_graph_centroid()
     assert 6.0 <= moved_soft[0, 1] <= 14.0
 
 
+def test_void_relocation_expands_existing_cluster_boundary_into_clear_corridor():
+    hard = np.array([[8.0, 10.0], [4.0, 10.0]])
+    scorer = _ExpansionScorer()
+
+    moved_hard, _, accepts, score = _void_cluster_relocation(
+        hard.copy(),
+        np.zeros((0, 2), dtype=np.float64),
+        np.array([2.0, 0.5]),
+        np.array([4.0, 0.5]),
+        np.zeros(0),
+        np.zeros(0),
+        20.0,
+        20.0,
+        2,
+        SimpleNamespace(grid_rows=20, grid_cols=20),
+        scorer,
+        1.0,
+        clusters={0: np.array([0, 1])},
+        cluster_softs={},
+        edges=[],
+        movable_h=np.array([True, True]),
+        movable_soft=np.zeros(0, dtype=bool),
+        candidate_allowed=lambda trial_hard, trial_soft: True,
+        min_field_drop=0.01,
+        max_scored=96,
+    )
+
+    assert accepts >= 1
+    assert score == 0.9
+    assert moved_hard[0, 0] > hard[0, 0]
+    assert np.allclose(moved_hard[1], hard[1])
+    assert _void_cluster_relocation.last_stats["expansion_accepts"] == 1
+
+
 def test_void_relocation_respects_hierarchy_gate():
     hard = np.array([[2.0, 10.0], [18.0, 10.0], [8.0, 2.0], [9.0, 2.0]])
     scorer = _Scorer()
@@ -128,3 +256,46 @@ def test_void_relocation_respects_hierarchy_gate():
     assert result[2] == 0
     assert scorer.committed is None
     assert _void_cluster_relocation.last_stats["hierarchy_rejects"] >= 1
+
+
+def test_void_relocation_can_commit_multiple_residual_soft_singletons():
+    cache = {
+        "net_starts": np.zeros(0, dtype=np.int64),
+        "net_lengths": np.zeros(0, dtype=np.int64),
+        "net_weights": np.zeros(0, dtype=np.float64),
+        "ref_idx": np.zeros(0, dtype=np.int64),
+    }
+    plc = SimpleNamespace(soft_macro_indices=[0, 1], hard_macro_indices=[], _wl_vec_cache=cache)
+    scorer = _Scorer(plc)
+    hard = np.array([[2.0, 10.0], [18.0, 10.0]])
+    soft = np.array([[8.0, 2.0], [12.0, 2.0]])
+
+    moved_hard, moved_soft, accepts, score = _void_cluster_relocation(
+        hard.copy(),
+        soft.copy(),
+        np.array([2.0, 2.0]),
+        np.array([4.0, 4.0]),
+        np.array([0.5, 0.5]),
+        np.array([0.5, 0.5]),
+        20.0,
+        20.0,
+        2,
+        SimpleNamespace(grid_rows=20, grid_cols=20),
+        scorer,
+        1.0,
+        clusters={0: np.array([0]), 1: np.array([1])},
+        cluster_softs={},
+        edges=[],
+        movable_h=np.array([False, False]),
+        movable_soft=np.array([True, True]),
+        candidate_allowed=lambda trial_hard, trial_soft: True,
+        min_field_drop=0.01,
+        max_accepts=2,
+        max_scored=64,
+    )
+
+    assert accepts == 2
+    assert score == 0.8
+    assert np.allclose(moved_hard, hard)
+    assert np.all(moved_soft[:, 1] >= 6.5)
+    assert _void_cluster_relocation.last_stats["accepted_kinds"]

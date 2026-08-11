@@ -6,6 +6,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+from utils import constants as const
+
 from placer.local_search.hierarchy_quality import (
     hierarchy_island_contract,
     hierarchy_island_limits,
@@ -49,9 +51,7 @@ def test_island_contract_is_confidence_calibrated():
     hard = np.asarray([[1.0, 1.0], [2.0, 1.0], [8.0, 8.0], [9.0, 8.0]])
     sizes = np.ones((4, 2))
     clusters = {0: np.asarray([0, 1]), 1: np.asarray([2, 3])}
-    reference = hierarchy_island_metrics(
-        hard, np.zeros((0, 2)), clusters, {}, sizes, 10.0, 10.0
-    )
+    reference = hierarchy_island_metrics(hard, np.zeros((0, 2)), clusters, {}, sizes, 10.0, 10.0)
     limits = hierarchy_island_limits(
         reference,
         {0: 0.9, 1: 0.1},
@@ -61,11 +61,70 @@ def test_island_contract_is_confidence_calibrated():
 
     assert limits[0]["tier"] == 2.0
     assert 1 not in limits
+
+
 from placer.pipeline.segments.floorplan_seed import (
     _hard_placement_is_legal,
     repair_seed_to_contract,
+    select_recursive_prototype_leaves,
     select_seed_candidate,
 )
+
+
+def test_recursive_prototype_leaf_selection_is_stable_and_excludes_fixed_members():
+    clusters = {
+        7: np.array([0, 1]),
+        3: np.array([2, 3]),
+        9: np.array([4, 5]),
+    }
+    hard = np.array(
+        [[1.0, 1.0], [2.0, 1.0], [5.0, 1.0], [6.0, 1.0], [8.0, 1.0], [9.0, 1.0]]
+    )
+    half = np.full(6, 0.4)
+    movable = np.array([True, True, True, True, False, True])
+
+    selected = select_recursive_prototype_leaves(
+        clusters,
+        {7: 0.8, 3: 0.8, 9: 1.0},
+        movable,
+        hard,
+        half,
+        half,
+        max_leaves=2,
+    )
+
+    assert selected == [3, 7]
+    assert 9 not in selected
+
+
+def test_recursive_prototype_leaf_selection_requires_positive_confidence():
+    selected = select_recursive_prototype_leaves(
+        {0: np.array([0, 1])},
+        {0: 0.0},
+        np.ones(2, dtype=bool),
+        np.array([[1.0, 1.0], [2.0, 1.0]]),
+        np.full(2, 0.4),
+        np.full(2, 0.4),
+        max_leaves=1,
+    )
+
+    assert selected == []
+
+
+def test_recursive_prototype_leaf_selection_excludes_oversized_leaf():
+    members = np.arange(17, dtype=np.int64)
+    selected = select_recursive_prototype_leaves(
+        {0: members},
+        {0: 1.0},
+        np.ones(17, dtype=bool),
+        np.column_stack((np.arange(17, dtype=np.float64), np.zeros(17))),
+        np.full(17, 0.4),
+        np.full(17, 0.4),
+        max_leaves=1,
+        max_members=16,
+    )
+
+    assert selected == []
 
 
 def _vector(hard, soft):
@@ -147,6 +206,11 @@ def test_seed_selector_uses_proxy_within_best_hierarchy_band():
 
     assert proxy["name"] == "proxy_only"
     assert hierarchy["name"] == "balanced"
+
+
+def test_production_seed_selection_preserves_contract_valid_spread():
+    """Production ranks passing seeds by proxy instead of compactness alone."""
+    assert const.HIER_SEED_HIERARCHY_SELECT is False
 
 
 def test_seed_selector_prefers_contract_headroom_inside_proxy_band():

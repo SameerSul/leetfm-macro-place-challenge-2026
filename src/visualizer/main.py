@@ -30,7 +30,7 @@ def _benchmark_dir(name: str) -> Path:
     return path
 
 
-def _worker(queue, benchmark_name, benchmark_dir, sample_every):
+def _worker(queue, benchmark_name, benchmark_dir, sample_every, use_dreamplace_cache):
     placer_started = False
     try:
         from macro_place.loader import load_benchmark_from_dir
@@ -39,6 +39,8 @@ def _worker(queue, benchmark_name, benchmark_dir, sample_every):
         # Deterministic score quotas remain authoritative while diagnostic event
         # serialization is excluded from wall-clock safety guards.
         os.environ["HIER_DIAGNOSTIC_NO_DEADLINES"] = "1"
+        if use_dreamplace_cache:
+            os.environ["HIER_VISUALIZER_USE_CACHE"] = "1"
         source = Path(benchmark_dir) if benchmark_dir else _benchmark_dir(benchmark_name)
         benchmark, _plc = load_benchmark_from_dir(source.as_posix())
         benchmark.name = benchmark_name or source.name
@@ -89,6 +91,11 @@ def parse_args(argv=None):
     )
     parser.add_argument("--trace", type=Path, help="output JSONL path")
     parser.add_argument("--dreamplace-sample-every", type=int, default=10)
+    parser.add_argument(
+        "--use-dreamplace-cache",
+        action="store_true",
+        help="record the production cached seed; DREAMPlace optimizer frames are omitted",
+    )
     parser.add_argument("--export-mp4", type=Path, help="export --replay and exit")
     parser.add_argument("--export-fps", type=int, default=30)
     parser.add_argument(
@@ -129,7 +136,13 @@ def main(argv=None) -> int:
         event_queue = context.Queue(maxsize=4096)
         process = context.Process(
             target=_worker,
-            args=(event_queue, args.benchmark, args.benchmark_dir, args.dreamplace_sample_every),
+            args=(
+                event_queue,
+                args.benchmark,
+                args.benchmark_dir,
+                args.dreamplace_sample_every,
+                args.use_dreamplace_cache,
+            ),
             daemon=True,
         )
         process.start()
