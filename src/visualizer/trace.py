@@ -114,17 +114,3 @@ class TraceReader:
                     positions = positions.copy()
                     positions[indices] = changed
             yield event, None if positions is None else positions.copy()
-
-
-class FanoutSink:
-    """Forward every event to multiple sinks in stable order."""
-
-    def __init__(self, *sinks: Any):
-        self.sinks = tuple(sink for sink in sinks if sink is not None)
-
-    def emit(self, event: Mapping[str, Any]) -> None:
-        for sink in self.sinks:
-            if hasattr(sink, "emit"):
-                sink.emit(event)
-            else:
-                sink(event)

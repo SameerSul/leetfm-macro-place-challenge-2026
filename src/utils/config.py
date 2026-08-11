@@ -16,12 +16,6 @@ def gpu_experiment_selected(feature: str) -> bool:
     return bool(selected) and selected == str(feature).strip().lower()
 
 
-def gpu_experiment_allows(feature: str) -> bool:
-    """Allow a CUDA route unless a different diagnostic experiment was selected."""
-    selected = os.environ.get("HIER_GPU_EXPERIMENT", "").strip().lower()
-    return not selected or selected == str(feature).strip().lower()
-
-
 if torch.cuda.is_available():
     _USE_GPU = True
     _GPU_DEVICE = torch.device(_CUDA_DEVICE_REQUESTED)

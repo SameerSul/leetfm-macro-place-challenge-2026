@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Mapping, Protocol
+from typing import Any, Iterator, Mapping
 
 SCHEMA_VERSION = 1
 EVENT_TYPES = frozenset(
@@ -21,12 +21,6 @@ EVENT_TYPES = frozenset(
         "error",
     }
 )
-
-
-class PlacementEventSink(Protocol):
-    """Minimal sink accepted by the placer and scorer."""
-
-    def emit(self, event: Mapping[str, Any]) -> None: ...
 
 
 def _deliver(sink: Any, event: Mapping[str, Any]) -> None:

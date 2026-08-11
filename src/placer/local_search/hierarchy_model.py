@@ -730,25 +730,3 @@ def _derive_split_hierarchy(
                 child_parent[int(child_id)] = int(parent_id)
     return parent_clusters, parent_children, child_parent
 
-
-def _derive_split_parents(
-    plc,
-    n: int,
-    n_soft: int,
-    labels: np.ndarray,
-    max_fanout: int,
-    min_edge: int,
-) -> dict[int, list[int]]:
-    """Backward-compatible parent-to-child map for verification utilities."""
-    _parents, children, _child_parent = _derive_split_hierarchy(
-        plc,
-        n,
-        n_soft,
-        labels,
-        max_fanout,
-        min_edge,
-    )
-    return {
-        int(parent_id): [int(child_id) for child_id in child_ids]
-        for parent_id, child_ids in children.items()
-    }

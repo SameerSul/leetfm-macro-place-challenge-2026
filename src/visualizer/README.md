@@ -19,6 +19,10 @@ uv run --extra visualizer python src/visualizer/main.py \
 uv run --extra visualizer python src/visualizer/main.py --benchmark ibm10 \
   --trace ml_data/visualizer/manual.jsonl --dreamplace-sample-every 20
 
+# Record the production cached seed and subsequent accepted moves.
+uv run --extra visualizer python src/visualizer/main.py --benchmark ibm10 \
+  --use-dreamplace-cache --trace ml_data/visualizer/ibm10-production.jsonl
+
 # Completed or partially-written trace file, or a directory to select its newest trace
 uv run --extra visualizer python src/visualizer/main.py \
   --replay ml_data/visualizer/ibm10
@@ -32,6 +36,9 @@ Live traces default to
 `ml_data/visualizer/<benchmark>/<UTC-run-id>.jsonl`. Normal `uv sync` remains
 Qt-free; only `--extra visualizer` installs PyQtGraph 0.14, PySide6, ImageIO,
 and its packaged FFmpeg encoder.
+`--use-dreamplace-cache` produces evaluator-parity traces: it records the
+cached production seed and later checkpoints/moves while omitting DREAMPlace
+optimizer frames that did not execute.
 Passing a directory to `--replay` selects its newest `.jsonl` trace by
 modification time. A nonexistent path is rejected by argument validation with
 a concise error instead of a Python traceback; `TRACE.jsonl` in examples means

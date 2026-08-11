@@ -6,9 +6,6 @@ import colorsys
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-import numpy as np
-
-
 def hierarchy_color(cluster: int, *, parent: bool = False) -> tuple[int, int, int, int]:
     """Return a stable related colour for a hierarchy identifier."""
     if cluster < 0:

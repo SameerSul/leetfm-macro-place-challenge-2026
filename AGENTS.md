@@ -19,8 +19,8 @@ hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
 Current hierarchy-first result with normal BB/cache behavior:
-`uv run evaluate src/main.py --all` = **AVG 1.2835**, 17/17 VALID, 0
-overlaps, all final hierarchy/island audits passed, **592.64s**. The 2026-08-10
+`uv run evaluate src/main.py --all` = **AVG 1.2832**, 17/17 VALID, 0
+overlaps, all final hierarchy/island audits passed, **668.75s**. The 2026-08-10
 flow includes all three soft-confidence tiers: direct hard affinity, bounded
 synchronous hop-one/hop-two propagation, and stable residual soft-only groups.
 It preserves all hard labels and the retained parent/child level. Soft
@@ -28,16 +28,29 @@ hierarchy coverage is 18,659/21,538 (86.63%), mean final hard hierarchy quality
 is 0.918007, density is 0.744529, and congestion is 1.672588. The lower-proxy
 pre-hierarchy reference remains **AVG 1.1404 / 318.55s**; see
 `ml_data/soft_hierarchy_tiers/20260810-results.md` for all tier deltas.
-The final survivor now also relocates one existing small hierarchy leaf and its
-owned soft macros into a capacity-safe gap between large hard macros, guided by
-the inter-cluster graph. It retained IBM10 `1.7205 -> 1.7165` and IBM13
-`1.1055 -> 1.1054` for 0.0041 attributable exact gain. The raw average is 0.0002
-above the preceding sweep because earlier deadline-sensitive passes varied on
-IBM13/14/17; void relocation itself is exact non-worsening and final-audited.
+The final survivor relocates small hierarchy leaves and residual soft units
+into capacity-safe gaps between large hard macros and hard-clear canvas-edge
+pockets. Stable residual bundles, transient routing-only soft cohorts, and
+singletons never change hierarchy ownership. The verified sweep preserves the
+IBM10/13 interior hard-leaf wins, retains edge hard-leaf wins on IBM08/11/18,
+and fills edge pockets with residual soft singletons on IBM01/11/12/14. The
+pass contributes 0.005968 stage-local exact gain; IBM04 remains unchanged
+despite exposing 30 eligible soft units. Every committed state passed
+float32-return hard legality, the full hierarchy contract, exact proxy scoring,
+and the independent final audit.
+The focused visual follow-up gives exact-improving outward boundary expansion
+priority before rigid relocation. IBM10 retained one left-edge cluster
+expansion plus the prior rigid leaf move, improving `1.7205 -> 1.7157`, VALID,
+with zero overlaps and both audits passing. The selected production move shifts
+`a60088` and owned soft `Grp_613` outward by `1.504 µm`. Full-suite promotion is
+pending.
 The 2026-08-09 video-driven candidate is now fully IBM-verified:
 exact-improving micro-shift winners now pass the complete contract, direct
-soft-role fanout is 16, seed selection is hierarchy-first with proxy as a
-within-band tie-break, and inferred child/deep search requires confidence 0.65.
+soft-role fanout is 16, and inferred child/deep search requires confidence 0.65.
+The 2026-08-10 IBM10 visual correction makes the complete hierarchy contract
+the seed eligibility gate and ranks its passing proxy band by contract
+headroom; this avoids replacing a distributed legal canvas with the compact
+grouped-DREAMPlace basin. Focused IBM10 is verified; the full suite is pending.
 Ordinary 2-8-hard leaves now receive bounded joint hard/owned-soft compaction
 and whole-leaf slot candidates before relief, plus one post-relief replay; all
 retained states must improve hierarchy composite and exact proxy. IBM10
@@ -153,9 +166,12 @@ the candidate is not mandatory. A mandatory lower-proxy seed that misses exactly
 one component may be deterministically interpolated toward the passing reference;
 only a legal repair retaining at least 95% of the source displacement is exact-
 scored. The same contract is enforced against the selected seed throughout
-relief and final rollback. The portfolio
-includes a default-on constraint-graph legalization alternative for
-`initial.plc`, and hard-hard / hard-soft swap sets use exact batched scoring.
+relief and final rollback. The retained `initial.plc` candidate is legalized in
+hierarchy-cluster-consecutive connectivity-pressure order. The hierarchy-blind
+constraint-graph alternative has been deleted. The post-deletion IBM sweep is
+`AVG 1.2151`, 17/17 VALID, zero overlaps, and all final audits passing in
+838.30s; `initial` selected on 11/17 designs. Hard-hard / hard-soft swap sets use
+exact batched scoring.
 Swap congestion/density tails now use exact baseline-plus-touched-cell Numba
 reducers; ordinary disposable congestion batches still partition in place.
 Nearest-neighbor hierarchy-audit selection also uses a cached Numba kernel.
@@ -237,8 +253,8 @@ The independent synthetic sweep reached AVG 1.4193, 10/10 VALID, zero overlaps,
 and 10/10 truth-audit passes with the accepted deep pass enabled.
 
 NG45 explicit hierarchy-tag check: `uv run evaluate src/main.py --ng45` =
-**AVG 0.7121**, 4/4 VALID, 0 overlaps, all hierarchy audits passed. The latest
-validation observed 64.80s; explicit path parents bypassed
+**AVG 0.7072**, 4/4 VALID, 0 overlaps, all final states hierarchy-safe. The
+latest validation observed 113.91s under CPU contention; explicit path parents bypassed
 the fallback inference.
 `uv run python
 test/verification/_verify_ng45_hierarchy_tags.py` passes. The hierarchy model

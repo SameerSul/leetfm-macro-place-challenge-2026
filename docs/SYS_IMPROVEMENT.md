@@ -283,8 +283,9 @@ the passing boundary, and only repairs retaining at least 95% of source
 displacement are exact-scored. IBM09's accepted fraction is `0.99609375`;
 broader IBM03 and IBM13 repairs are rejected.
 
-Retain every current seed type, including the productive constraint-graph
-legalization. Change only evaluation order:
+Retain every hierarchy-constructed seed type. The former constraint-graph
+legalization was later removed because its construction had no hierarchy input.
+For the remaining seeds, use this evaluation order:
 
 1. Legalize `initial.plc` first and build its component limits.
 2. Legalize each alternative and compute the hard-only hierarchy components.
@@ -294,8 +295,8 @@ legalization. Change only evaluation order:
    remaining eligible candidates.
 5. Preserve the current `(score, name)` selection order among eligible seeds.
 
-The constraint-graph seed must remain: it was selected on `ibm10`, `ibm12`, and
-`ibm14` through `ibm18` in its promotion sweep.
+Historical note: the constraint-graph seed had selected on several designs,
+but proxy productivity did not satisfy the later hierarchy-construction rule.
 
 Acceptance result: the corrected legalized reference intentionally changed
 eligibility on designs where the former raw reference was inconsistent. The
