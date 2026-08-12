@@ -16,9 +16,8 @@ uv run evaluate src/main.py --all
 AVG 1.1404  17/17 VALID  0 overlaps  318.55s
 ```
 
-All final hierarchy audits passed. Sixteen scores match the accepted reference;
-a one-component, 99.61%-retained repair of the IBM09 constraint-graph seed
-improved `1.0122 -> 0.9978`. Two stable swap prefixes preserve winner order and
+All final hierarchy audits passed. This historical result included the
+hierarchy-blind constraint-graph seed removed on 2026-08-11. Two stable swap prefixes preserve winner order and
 logical quotas while raising avoided exact work from 66,703 to 79,466; the
 trace-compatible region phase fell `104.04s -> 98.74s`. Batched exact soft
 wirelength prefiltering rejected 100,831 proposals before field scoring and cut
@@ -167,10 +166,35 @@ previously failing `syn03_sram` case recovers all four truth groups exactly and
 improves proxy `4.3964 -> 4.3257`. The scalar hierarchy-first selector remains
 default-off because its focused proxy regression was too large.
 
-The exact-prescored seed portfolio now also contains a deterministic
-constraint-graph legalization of `initial.plc`. The ordinary initial seed
-remains available and the graph candidate advances only when it passes every
-component limit and its exact proxy is lower.
+The exact-prescored seed portfolio retains the hierarchy-aware ordinary initial
+seed, whose legalization is cluster-consecutive and connectivity-pressure
+ordered. Grouped DREAMPlace and its two recurrent hierarchy prototypes remain.
+The hierarchy-blind constraint-graph seed and the four zero-selection blend,
+radial-expansion, and synthetic-clearance candidates were deleted; post-hoc
+contract eligibility is not considered hierarchy optimization, and candidates
+with no measured selection yield do not retain production overhead.
+
+The post-deletion IBM sweep reached `AVG 1.2151`, 17/17 VALID, zero overlaps,
+and all final audits passing in `838.30s`. `initial` selected on 11 designs,
+including IBM10/11/12/15 where the removed candidate had previously selected;
+the two recursive seeds selected on four designs and grouped DREAMPlace on two.
+
+An original Re²MaP-inspired hierarchy-leaf B*-tree seed was subsequently
+tested and removed. It selected on 0/17 IBM designs, added 17.75s to the full
+sweep, and provided no attributable final-score improvement. Its diagnostic
+constructor, production hook, constant, and dedicated tests were pruned.
+
+The active portfolio also contains two non-mandatory Re²MaP-inspired recurrent
+prototype seeds. Before the hierarchy-blind constraint candidate was removed,
+the full IBM sweep selected them on IBM01/02/07/08 and reached historical
+`AVG 1.1625`, 17/17 VALID, zero overlaps, with every final audit passing in
+`1065.11s`. Mean density/congestion were `0.630059 / 1.539235`. NG45 reached
+`AVG 0.7233`, 4/4 VALID, zero overlaps, and its explicit-tag verifier passed;
+`nvdla` selected recursive round two. The complete dirty-tree synthetic run was
+10/10 VALID with zero overlaps but only 9/10 truth passes: `syn07_ports` missed
+worst-spread and impurity limits after selecting the now-removed
+`synthetic_clearance` seed. That result is retained as historical attribution;
+the current single-component refinement passes all ten truth cases.
 
 ### 2. Use attributable telemetry for scheduling (complete)
 
@@ -317,11 +341,25 @@ than being treated as generic cold windows. The pass found retained,
 contract-safe whole-leaf moves on IBM10 (`1.7205 -> 1.7165`) and IBM13
 (`1.1055 -> 1.1054`) in the 2026-08-10 full sweep. A locally improving IBM18
 move (`1.7056 -> 1.7051`) was correctly removed by the independent final audit.
-The current limitation is deliberate: only existing 2-12-hard leaves and their
-directly owned soft macros relocate. Pure soft-only groups remain available to
-grouped placement and explicit compound search, but are not yet standalone
-void occupants because soft overlap and density accounting need a separate
-capacity/legalization policy.
+The follow-up now adds hard-clear canvas-edge pockets and standalone soft
+occupants. Stable residual bundles keep their membership; additional movable
+residual softs form pass-local low-fanout routing cohorts or singleton fallbacks
+without acquiring hierarchy ownership. Exact rectangle occupancy replaces the
+former mean-area estimate for these soft lanes, and layouts must avoid hard and
+internal cohort overlaps. The full sweep reached `AVG 1.2832`, 17/17 VALID,
+zero overlaps, and all hierarchy/island audits passing. Interior hard moves
+retained on IBM10/13, edge hard moves on IBM08/11/18, and residual-soft fills on
+IBM01/11/12/14, for 0.005968 stage-local exact gain. IBM04 remains unchanged at
+`0.9964` after all 30 soft units fail the field/exact opportunity gates.
+
+The focused visual follow-up addresses the remaining rigid-motion limitation.
+For clusters owning a void boundary macro, it shifts only the hard/owned-soft
+band aligned with that clear rectangle, backing off until output-precision hard
+legality passes. Expansion wins receive first-winner priority before disjoint
+rigid moves. IBM10 retained one left-edge expansion and its prior rigid leaf
+move, improving `1.7205 -> 1.7157` with both audits passing. Visibility-aware
+selection moves `a60088` and owned soft `Grp_613` outward by `1.504 µm`. Full-suite
+promotion is still required.
 
 Explicit slash-separated soft instance paths now form high-confidence bundles
 and are the only source of compound relocation groups. Flat IBM `Grp_*` names

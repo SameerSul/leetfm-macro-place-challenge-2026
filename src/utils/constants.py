@@ -49,18 +49,12 @@ HIER_SINGLE_COMPONENT_CANDIDATE_GUARD_MAX_HARD = 64
 
 # DREAMPlace group attraction weight for cluster grouping constraints.
 HIER_GROUP_WEIGHT = 8
-# A small hierarchy-compatible seed portfolio around the grouped
-# DREAMPlace candidate. Seeds are legalized and prescored before region relief.
-# Blend ratios from DREAMPlace toward initial.plc for prescored seed basins.
-HIER_SEED_BLEND_ALPHAS = (0.35, 0.65)
-# Radial expansion applied to the grouped DREAMPlace basin.
-HIER_SEED_EXPANSION_FRAC = 0.06
-# Extra temporary half-extent fraction used by synthetic-clearance push-apart.
-HIER_SEED_CLEARANCE_FRAC = 0.08
-# Number of Jacobi-style synthetic-clearance push-apart iterations.
-HIER_SEED_CLEARANCE_ITERS = 3
-# Percentile of hard-macro area eligible for synthetic clearance.
-HIER_SEED_CLEARANCE_AREA_PCT = 97.0
+# Re²MaP-inspired recurrent prototypes. Each round freezes one complete,
+# movable, high-confidence leaf from the preceding legal prototype and reruns
+# grouped DREAMPlace for the remainder. Both results remain ordinary portfolio
+# candidates and cannot bypass the hierarchy contract or exact-score ranking.
+HIER_RE2MAP_RECURSIVE_SEEDS = 2
+HIER_RE2MAP_MAX_LEAF_HARD = 16
 # Minimum hard macros required before a hierarchy cluster receives route lanes.
 HIER_SEED_ROUTE_CHANNEL_MIN_CLUSTER = 4
 # Center-lane half-width as a fraction of the cluster local span.
@@ -72,7 +66,11 @@ HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
 # Hierarchy-first seed selection: proxy breaks ties only inside the best
 # hierarchy-quality band. The 2026-08-09 full sweep confirms the expected proxy
 # cost but materially improves colour-island structure, which is now primary.
-HIER_SEED_HIERARCHY_SELECT = True
+# Select from contract-passing seeds by proxy/headroom so an already-spread
+# legal canvas is not discarded merely because grouped DREAMPlace is more
+# compact.  The immutable six-component hierarchy contract still filters the
+# portfolio before this ranking is applied.
+HIER_SEED_HIERARCHY_SELECT = False
 HIER_SEED_HIERARCHY_ABS_SLACK = 0.002
 HIER_SEED_HIERARCHY_REL_SLACK = 0.15
 # Retained proxy-band constants support the proxy-first diagnostic control.
@@ -186,18 +184,27 @@ HIER_INTERNAL_FLOORPLAN_MIN_PROXY_GAIN = 0.00001
 # Final whole-leaf relocation into capacity-safe gaps bounded by large hard
 # macros. The graph centroid chooses the external-facing position inside each
 # gap; full hierarchy/island and exact-proxy gates remain authoritative.
-HIER_VOID_RELOCATION_BUDGET_S = 5.0
-HIER_VOID_RELOCATION_MAX_SCORED = 48
+HIER_VOID_RELOCATION_BUDGET_S = 15.0
+HIER_VOID_RELOCATION_MAX_SCORED = 96
+HIER_VOID_RELOCATION_MAX_ACCEPTS = 4
 HIER_VOID_RELOCATION_LARGE_AREA_PCT = 70.0
 HIER_VOID_RELOCATION_MIN_GAP_CELLS = 2
 HIER_VOID_RELOCATION_MAX_VOIDS = 96
 HIER_VOID_RELOCATION_MAX_HARD = 12
 HIER_VOID_RELOCATION_MAX_SOFT = 32
 HIER_VOID_RELOCATION_TOP_CLUSTERS = 10
+HIER_VOID_RELOCATION_MAX_EXPAND_HARD = 48
+HIER_VOID_RELOCATION_MAX_EXPAND_SOFT = 96
+HIER_VOID_RELOCATION_TOP_EXPAND_CLUSTERS = 12
 HIER_VOID_RELOCATION_MAX_UTILIZATION = 0.78
 HIER_VOID_RELOCATION_SOFT_COMPACT_SCALE = 0.65
 HIER_VOID_RELOCATION_MIN_FIELD_DROP = 0.01
 HIER_VOID_RELOCATION_MIN_GAIN = 0.0001
+HIER_VOID_RELOCATION_SOFT_MIN_GAIN = 0.00005
+HIER_VOID_RELOCATION_ROUTING_MAX_FANOUT = 16
+HIER_VOID_RELOCATION_ROUTING_MAX_COHORT = 8
+HIER_VOID_RELOCATION_ROUTING_TOP_COHORTS = 12
+HIER_VOID_RELOCATION_ROUTING_TOP_SINGLETONS = 16
 
 # One retained parent layer above the active leaf partition. The child operator
 # rigidly translates one complete leaf (including owned softs) inside its parent
@@ -491,12 +498,6 @@ HIER_GRAPH_TENSION_CORRIDOR_SAMPLES = 9
 HIER_GRAPH_PREFILTER = False
 HIER_GRAPH_PREFILTER_LOW_TENSION = 0.05
 HIER_GRAPH_PREFILTER_MIN_RELIEF = 0.0
-# Constraint-graph alternative to greedy cluster-consecutive
-# legalization. It projects the initial seed's overlapping hard macros through
-# horizontal and vertical separation DAGs, then enters the normal exact-scored
-# portfolio; the ordinary initial seed and final legality pass remain available
-# so the alternative cannot force a proxy regression.
-HIER_CONSTRAINT_GRAPH_MAX_ROUNDS = 6
 # Region-bounded hard-hard, hard-soft, and soft-soft swap relief.
 # Number of region-bounded swap rounds to attempt.
 HIER_REGION_SWAP_ROUNDS = 2

@@ -49,8 +49,7 @@ opportunity ordering, prepared Numba routing/legalization kernels, and batched
 soft relocation/swap scoring with in-place congestion tails and compiled
 density tails, exact batched
 hard-hard/hard-soft scoring, cached stable nearest-four hierarchy-audit
-selection, and a
-guarded constraint-graph legalization candidate for `initial.plc`, plus the
+selection, plus the
 per-component seed/final hierarchy contract and conservative explicit
 soft-bundle inference, legalized-reference seed prefiltering, structured
 contract calibration telemetry, hierarchy-prefiltered hard relocation, and
@@ -66,9 +65,8 @@ uv run evaluate src/main.py --all
 AVG 1.1404  17/17 VALID  0 overlaps  318.55s
 ```
 
-Sixteen per-design scores are bit-identical to the preceding accepted
-reference. A contract-preserving repair of the IBM09 constraint-graph seed
-improved that design from 1.0122 to 0.9978. Spatial/structural fallback inferred 23 parents
+This historical result included the now-removed hierarchy-blind
+constraint-graph seed. Spatial/structural fallback inferred 23 parents
 and 46 children on ten designs. The one-level operator exact-scored 24 complete
 IBM child states and retained none, so discovery alone did not change the
 established trajectory.
@@ -222,8 +220,6 @@ flowchart TD
     D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
     E --> F[Cluster-consecutive hard legalization]
     F --> E1[Exact-prescore seed portfolio + per-component hierarchy contract]
-    F --> F1[Constraint-graph legalized initial.plc alternative]
-    F1 --> E1
     E1 --> E2[Repair a one-component mandatory near miss<br/>only if at least 95% source displacement remains]
     E2 --> G[Default-order safety legalization]
     G --> H[Soft relocation cleanup]
@@ -252,7 +248,7 @@ flowchart TD
     Z2 -->|Yes| Z3[Low-confidence hierarchy release + exact polish]
     Z2 -->|No| Z4
     Z3 --> Z4[Topology-aware internal leaf survivor]
-    Z4 --> Z5[Capacity-safe whole-leaf relocation into large-macro voids<br/>graph-directed + exact gated]
+    Z4 --> Z5[Capacity-safe leaf and routing-only soft relocation<br/>interior/edge voids + exact gate]
     Z5 --> M[Final hard + rich-vector hierarchy audit + rollback checkpoint]
     M --> N[Return macro centers]
 ```
@@ -262,12 +258,18 @@ Every return path passes through a final in-bounds clamp for movable macros.
 pipeline; each pass returns a `PassResult` summary used by the deterministic
 scheduler and buffered plateau telemetry.
 
-The final void pass does not infer or merge hierarchy. It detects rectangular
-capacity between opposing edges of large hard macros, then tests rigid movement
-of an existing small leaf and its directly owned soft macros. A weighted
-inter-leaf graph centroid chooses the external-facing anchor inside the void.
-Projected density, hard legality, the complete colour-island contract, exact
-proxy gain, and the independent final audit are all mandatory gates.
+The final void pass does not infer or merge hierarchy. It preserves the verified
+opposing-edge whole-leaf prefix and also finds hard-clear fragments between
+large macros and canvas boundaries. Candidate occupants are an existing small
+leaf with its owned softs, a stable residual soft-only bundle, a transient
+low-fanout routing cohort, or a hot residual singleton. Hard leaves use the
+weighted inter-leaf graph centroid; soft units use the weighted centroid of
+external hard, soft, and IO pins. Routing cohorts are pass-local and never gain
+hierarchy ownership. Exact projected occupancy, hard/soft geometry, the complete
+colour-island contract, exact proxy gain, and the independent final audit remain
+mandatory. The current outward-expansion lane receives visibility-aware
+first-winner priority among exact-improving candidates; recomputed disjoint hard
+and soft fills may then commit within the shared 96-score ceiling.
 
 The seed portfolio legalizes `initial.plc` before it constructs the immutable
 component limits, and uses those same legalized coordinates for the scored
@@ -282,9 +284,22 @@ composite band and uses exact proxy as the deterministic tie-break inside it.
 A mandatory lower-proxy candidate that fails exactly one component may be
 interpolated toward the authoritative passing reference. Each deterministic
 trial is legalized and the passing boundary is bisected; a repair enters exact
-scoring only if it retains at least 95% of the source displacement. This keeps
-IBM09's 99.61%-retained constraint-graph improvement while rejecting broader
-IBM03/13 basin changes.
+scoring only if it retains at least 95% of the source displacement. The former
+IBM09 constraint-graph example is retained only in the historical progress
+ledger because that hierarchy-blind seed has been deleted.
+
+Two additional hierarchy-focused candidates apply one and two rounds of
+Re²MaP-inspired recurrent prototyping ([reference 28](REFERENCES.md)).
+Each round commits one whole, movable, positive-confidence 2–16-hard leaf from the prior
+legal prototype as temporary fixed Bookshelf terminals, then reruns the same
+grouped DREAMPlace problem for everything else. They preserve VivaPlace's
+existing leaf/soft ownership and use none of Re²MaP's ellipse or evolutionary
+packing-tree operators. They are non-mandatory seeds: immutable hierarchy
+prefiltering, exact proxy/headroom selection, downstream contracts, and final
+rollback are unchanged.
+A deterministic B*-tree/contour compaction of existing leaves was tested as a
+third seed, selected on 0/17 IBM designs, and removed from runtime. Its code and
+dedicated tests were pruned; only the measured rejection report remains.
 For the refined single-component topology, a legal raw `initial.plc` can remain
 the immutable reference when its legalized form still passes the raw limits;
 this prevents a second layer of slack. An illegal raw hard placement instead
@@ -321,6 +336,16 @@ prevents a small local improvement from replacing a stronger downstream swap
 trajectory. The
 pass therefore optimizes adjacency and port placement inside a leaf without
 repartitioning or weakening the existing hierarchy.
+
+The final void survivor then identifies hard-clear interior and canvas-edge
+corridors around large hard macros. Before rigid leaf relocation or routing-only
+soft fills, it finds the existing cluster owning each boundary macro and moves
+only the hard and owned-soft band physically aligned with that opening. Target
+depths are 25%, 50%, and 75%; each is backed off until float64 and returned
+float32 hard legality pass. Among expansions clearing the exact-gain floor, the
+largest visible displacement receives first-winner priority; voids are then
+recomputed and disjoint rigid or soft-only moves may retain. The complete hierarchy/island contract, exact proxy
+gate, 96-score ceiling, 15-second guard, and final rollback remain authoritative.
 
 Immediately after seed assembly, production freezes a confidence-calibrated
 island contract for every supported colour. Explicit path-tag leaves and
@@ -395,9 +420,12 @@ containment limit before exact batch scoring. The full six-component audit
 remains authoritative after the pass; prefilter rejections are recorded as
 `hierarchy_rejects` in plateau telemetry.
 The selected seed then anchors the same component limits during relief and the
-final rollback audit. `HIER_SEED_HIERARCHY_SELECT=1` is now production: proxy
-is used only within the best hierarchy-quality band. The measured structural
-improvement and proxy regression are both recorded in `PROGRESS.md`.
+final rollback audit. `HIER_SEED_HIERARCHY_SELECT=0` is production: the
+component contract is an immutable eligibility gate, then candidates in the
+best exact-proxy band are ranked by hierarchy headroom. This preserves spread
+already present in legal `initial.plc`-derived candidates instead of replacing
+it with a point-like grouped-DREAMPlace layout. The focused IBM10 result and
+pending full-suite status are recorded in `PROGRESS.md`.
 Seed selection fails closed if its reference candidate does not satisfy the
 component contract; the selector never establishes an invalid fallback seed as
 the hierarchy baseline.
@@ -437,12 +465,13 @@ legal but changed later search basins and regressed the full-suite average, so
 the accepted plateau pool remains 384 hot softs and 10 targets under a
 4-second cap.
 
-Production adds one guarded alternative derived from `initial.plc`.
-`constraint_graph.py` assigns each overlap to a horizontal or vertical
-separation DAG, projects centers inside longest-path earliest/latest bounds,
-and then runs the ordinary default-order spiral safety pass. The ordinary
-initial seed remains in the portfolio, so the graph alternative can only change
-the flow when it satisfies the component contract and its exact proxy wins.
+The retained `initial.plc` candidate is hierarchy-aware: its hard macros are
+legalized cluster-consecutively, ordering clusters and members by low-fanout
+connectivity pressure times macro area. It then passes the same complete
+hierarchy contract as every other seed. The former constraint-graph alternative
+used only geometry and original coordinate order; post-hoc contract filtering
+did not make its construction hierarchy-aware, so that seed and legalizer were
+deleted on 2026-08-11.
 
 Region swaps exact-score hard-hard and hard-soft sets in batches when at least
 two candidates share the first hard endpoint. Candidate routing, hard blockage,
@@ -613,9 +642,7 @@ Python lists, masks, `lexsort`, and concatenations.
 
 Hard legalization also keeps its hot candidate/conflict scan in Numba. The
 outer Python loop still enforces the runtime deadline between macros, while
-the kernel reproduces expanding-ring and lexicographic tie behavior. The
-synthetic-clearance seed's quadratic pair-push accumulation uses a separate
-cached JIT with a reusable delta buffer.
+the kernel reproduces expanding-ring and lexicographic tie behavior.
 
 Soft relocation keeps proposals as integer grid-cell IDs while one cached
 Numba filter converts/clips centers, applies the region mask, constructs exact

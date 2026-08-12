@@ -6,7 +6,14 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from placer.scoring.incremental import _batch_density_costs
+from placer.scoring.incremental import _batch_density_costs_jit
+
+
+def _batch_density_costs(grids, density_count, grid_area):
+    packed = np.empty(grids.shape[1], dtype=np.float64)
+    out = np.empty(grids.shape[0], dtype=np.float64)
+    _batch_density_costs_jit(grids, density_count, grid_area, packed, out)
+    return out
 
 
 def _reference_density_costs(grids, density_count, grid_area):

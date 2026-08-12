@@ -35,9 +35,9 @@ benchmark input
   -> grouped DREAMPlace global placement (synthetic clique nets per cluster)
   -> cluster-consecutive hard legalization
   -> exact-proxy seed portfolio selection
-       (grouped DREAMPlace, legalized initial.plc, DP/initial blends,
-        radial expansion, synthetic-clearance push-apart, and a
-        constraint-graph-legalized initial.plc; every candidate gets a complete
+       (grouped DREAMPlace, two Re²MaP-inspired recursive prototypes,
+        legalized initial.plc, and an explicit-tag route-channel candidate;
+        every candidate gets a complete
         hierarchy vector, the vector is constrained component-by-component
         relative to legalized initial.plc, except that a legal raw reference is
         retained for single-component affinity refinement and an illegal raw
@@ -140,13 +140,19 @@ benchmark input
        - affected-set legalize, enforce the complete hierarchy/island contract, and exact-score the complete hard/soft state
        - schedule after the main congestion search so a small local win cannot replace a stronger downstream trajectory
   -> inter-macro void relocation survivor
-       - extract rectangular corridors bounded by opposing edges of large hard macros
-       - rank hot 2-12-hard leaves against cold voids and reject moves that exceed 78% projected density utilization
+       - preserve the verified opposing-edge corridor prefix and also extract hard-clear fragments between large macros and canvas edges
+       - subtract intervening hard blockages before soft-only occupancy and track interior/edge provenance
+       - identify existing clusters that own the large hard macros bounding each clear fragment
+       - move the physically aligned boundary band 25%, 50%, or 75% into the corridor, backing off until float64 and returned-float32 hard legality pass
+       - co-move only the owned soft band aligned with the same opening, leaving the cluster interior fixed so its footprint expands outward
+       - rank hot 2-12-hard leaves, stable residual soft bundles, transient low-fanout routing cohorts, and hot residual singletons against cold voids
        - place the rigid hard leaf at its weighted hierarchy-graph-neighbour centroid projected into the void
        - co-move and compact at most 32 directly owned soft macros inside the same void
-       - reject outside-hard overlaps and complete hierarchy/island contract failures before exact scoring
-       - exact-score at most 48 states and commit only the best gain of at least 0.0001
-       - retain at most one whole-leaf move, with the independent final audit still able to roll it back
+       - place residual soft units toward their weighted external-pin centroid using rigid or deterministic non-overlapping shelf layouts
+       - keep routing cohorts pass-local: they never create hard ownership, a hierarchy label, or a parent/child relation
+       - reject projected utilization above 78%, soft/hard or internal cohort overlaps, and complete hierarchy/island contract failures before exact scoring
+       - exact-score at most 96 states; hard moves require 0.0001 gain and soft-only moves require 0.00005
+       - among contract-passing expansions above the exact-gain floor, prioritize the largest visible outward displacement; then recompute voids and allow disjoint rigid hard or soft-only fills
   -> gain-controlled passes: stop repeats when latest exact gain <= HIER_PLATEAU_PROXY_GAIN
   -> final scorer-compatible hard legality margin audit
   -> final hierarchy-quality audit against the selected hierarchy seed:
@@ -156,6 +162,23 @@ benchmark input
   -> final legality and bounds checks
   -> return center coordinates for hard and soft macros
 ```
+
+The two recursive prototype candidates are an independent, bounded adaptation
+of Re²MaP's recurrent prototyping idea ([reference 28](REFERENCES.md)).
+After ordinary grouped DREAMPlace is legalized, round one freezes one complete
+movable 2–16-hard leaf chosen deterministically by hierarchy confidence, footprint
+utilization, member count, and stable leaf ID. Round two freezes one additional
+eligible leaf from the first recursive result. Fixed-containing and
+zero-confidence leaves are ineligible. The remaining hard and soft macros are
+re-prototyped from real nets and the existing grouping cliques; no guide net,
+ellipse constraint, packing-tree search, or imported clustering is used.
+Temporary names and coordinates, exact grouping membership, and group weight
+are cache-separated. Both results enter the ordinary immutable prefilter,
+legalization, soft cleanup, exact scoring, and component-contract selection.
+A deterministic hierarchy-leaf B*-tree compaction seed was also evaluated and
+removed after selecting on 0/17 IBM designs. Its implementation and dedicated
+tests were pruned; production does not execute packing-tree relocation or the
+upstream evolutionary search.
 
 ## Live diagnostics architecture
 
@@ -250,7 +273,7 @@ low-net soft/SS breadth, medium/large soft-continuation scheduling, prepared
 Numba routing/legalization kernels, exact batched hard-hard/hard-soft scoring,
 batched soft relocation/swap scoring with direct global swap topology and exact
 sparse congestion/density-tail reduction,
-stable nearest-four hierarchy-audit selection, the guarded constraint-graph seed, and
+stable nearest-four hierarchy-audit selection, recurrent hierarchy prototypes, and
 the per-component seed/final hierarchy contract, legalized-reference seed
 prefiltering, hierarchy-prefiltered hard relocation, and deterministic
 exact-score work quotas, one-level child relocation/sibling swaps, and
@@ -367,11 +390,11 @@ reduced attributed region time from 104.04s to 102.68s. Focused IBM04/12/18
 reductions were 7.6%, 9.3%, and 5.5%; NG45 region time fell 15.41s to 14.62s.
 The full IBM wall time was 371.82s under broader run/compile variance, so only
 the attributable phase reduction is claimed.
-The current priority sweep accepts four further changes. First, a mandatory
+The historical priority sweep accepted four further changes. First, a mandatory
 lower-proxy seed with exactly one contract violation may be interpolated toward
 its passing reference; repairs must remain legal and retain at least 95% of the
-source displacement. IBM09 retained 99.61% of its constraint-graph candidate
-and improved `1.0122 -> 0.9978`, while weaker IBM03/13 repairs were rejected.
+source displacement. Its accepted IBM09 constraint-graph example is historical
+because that hierarchy-blind seed has since been removed.
 Second, all eligible soft-relocation targets use one exact batched wirelength
 prefilter. It rejected 100,831 IBM proposals before field scoring and reduced
 the region/interleaved/plateau/strong-soft phases by 20.7–22.3%. Third, swap
@@ -529,7 +552,6 @@ not comparable to current numbers.
 | `src/placer/scoring/exact.py` | Exact TILOS proxy wrapper. |
 | `src/placer/scoring/incremental.py` | Incremental scorer for relocation, swaps, and complete mixed hard/soft group moves, including cached-JIT bbox smoothing and batched density tails. |
 | `src/placer/legalize/spiral.py` | Hard-macro legalization, with cluster-consecutive order support. |
-| `src/placer/legalize/constraint_graph.py` | Deterministic horizontal/vertical separation-DAG projection for the guarded initial seed. |
 | `src/dreamplace_bridge/` | ICCAD04 pb/plc → Bookshelf, cluster grouping injection, DREAMPlace launcher, read-back. |
 | `scripts/dreamplace/` | Pinned source/toolchain bootstrap, CUDA-12 CUB patch, and native-extension preflight. |
 | `scripts/analyze_plateau_telemetry.py` | Provenance-filtered pass-yield aggregation and conservative skip-candidate report. |
@@ -647,13 +669,11 @@ the focused numbers remain in `PROGRESS.md`.
 ### 3. Seed Portfolio Selection
 
 Grouped DREAMPlace is one candidate seed among several: legalized
-`initial.plc`, two DP/initial blends, a radial expansion from the DP basin,
-and a synthetic-clearance push-apart from the DP basin. Production also adds a
-constraint-graph legalization of `initial.plc`: overlapping pairs become
-horizontal or vertical separation edges, both graphs stay acyclic under stable
-seed-coordinate order, and longest-path earliest/latest bounds project each
-movable macro toward its original coordinate. The ordinary initial candidate
-remains in the same portfolio. The reference `initial.plc` is legalized before
+`initial.plc`, two recurrent hierarchy prototypes, and an explicit-tag-only
+route-channel candidate. The ordinary initial
+candidate is explicitly hierarchy-aware: clusters and members legalize
+consecutively in low-fanout connectivity-pressure × area order. The reference
+`initial.plc` is legalized before
 any immutable limit is built; the same legalized coordinates are then
 exact-scored as the ordinary initial candidate. Each scored candidate records a
 richer hierarchy vector covering mean and worst hard-cluster spread,
@@ -661,13 +681,16 @@ nearest-neighbor cluster impurity, weighted inter-cluster edge stretch,
 owned-soft distance, and bridge-soft corridor distance. Each vector component
 must remain within its independent absolute-or-relative slack from the
 legalized reference. Non-mandatory alternatives whose immutable hard
-components already fail are rejected before exact scoring. Production keeps
-the best hierarchy-composite band and uses exact proxy as its deterministic
-tie-break. The selected seed becomes
+components already fail are rejected before exact scoring. Production first
+removes every candidate that fails the immutable component contract, then
+selects from the best exact-proxy band using hierarchy-contract headroom as its
+deterministic tie-break. This prevents a widely distributed, contract-valid
+canvas from being discarded solely because grouped DREAMPlace is more compact.
+The selected seed becomes
 the reference for the same six-component contract at pass checkpoints and
-final rollback. `HIER_SEED_HIERARCHY_SELECT=1` is default-on after the explicit
-colour-cohesion direction change. The 2026-08-09 full sweep improved structural
-island metrics but regressed proxy, as recorded in `PROGRESS.md`.
+final rollback. `HIER_SEED_HIERARCHY_SELECT=0` is production after the IBM10
+video exposed the compact grouped seed as the source of unused canvas. The
+focused result and pending full-suite promotion are recorded in `PROGRESS.md`.
 If no candidate satisfies the component contract, selection fails closed unless
 the reference candidate itself passes; an invalid fallback is never promoted
 to become the hierarchy baseline.
@@ -729,11 +752,10 @@ tests, and minimum-displacement tie behavior. Python retains the between-macro
 deadline check, and the former vectorized conflict-matrix path remains the
 diagnostic reference.
 
-The constraint-graph candidate always runs the same default-order spiral safety
-pass after projection. A dense or infeasible constraint graph therefore cannot
-bypass legality, fixed-macro immobility, or bounds. On the accepted 17-design
-sweep it was selected on ibm10, ibm12, and ibm14-18; the unchanged candidates
-protected every other design from regression.
+The former constraint-graph candidate used coordinate order and overlap
+geometry without hierarchy labels, edges, ownership, or confidence. It was
+deleted with its standalone legalizer on 2026-08-11 rather than treating
+post-hoc contract eligibility as hierarchy optimization.
 
 ### 5. Soft Cleanup
 
@@ -1026,9 +1048,8 @@ HIER_GROUP_WEIGHT=8
 
 **Seed portfolio**
 ```text
-HIER_SEED_BLEND_ALPHAS=0.35,0.65   HIER_SEED_EXPANSION_FRAC=0.06
-HIER_SEED_CLEARANCE_FRAC=0.08      HIER_SEED_CLEARANCE_ITERS=3
-HIER_SEED_CLEARANCE_AREA_PCT=97
+HIER_RE2MAP_RECURSIVE_SEEDS=2      HIER_RE2MAP_MAX_LEAF_HARD=16
+HIER_SEED_ROUTE_CHANNEL_MIN_CLUSTER=4
 HIER_VECTOR_CONTRACT_REL_SLACK=0.15
 HIER_VECTOR_CONTRACT_ABS_SLACK={compactness:0.005,worst_spread:0.015,
   neighbor_impurity:0.05,edge_stretch:0.015,owned_soft:0.015,bridge_soft:0.015}
@@ -1146,11 +1167,6 @@ are unchanged.
 
 Fallback congestion expansion now skips a hot cluster when no adjacent fallback
 side is colder than the cluster; component-guided expansion remains unchanged.
-
-**Seed alternatives**
-```text
-constraint-graph initial seed: always included; HIER_CONSTRAINT_GRAPH_MAX_ROUNDS=6
-```
 
 **Post-swap / plateau scheduling**
 ```text

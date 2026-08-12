@@ -6,7 +6,7 @@ import argparse
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Mapping, Optional, Tuple
 
 
 # Allow running as a script: add repo root so `macro_place` imports work.
@@ -83,6 +83,7 @@ def extract_bookshelf_data(
     scale: int = 1000,
     cluster_groups: "Optional[List[List[str]]]" = None,
     group_weight: int = 0,
+    temporary_fixed_positions: "Optional[Mapping[str, Tuple[float, float]]]" = None,
 ) -> Tuple[List[BookshelfNode], List[BookshelfNet], float, float, int]:
     """Extract scaled Bookshelf data from a parsed TILOS placement.
 
@@ -94,6 +95,7 @@ def extract_bookshelf_data(
     `ignore_net_degree` skips clusters larger than that cap automatically.
     """
     canvas_w, canvas_h = plc.get_canvas_width_height()
+    temporary_fixed_positions = dict(temporary_fixed_positions or {})
 
     nodes: List[BookshelfNode] = []
     name_seen = {}  # sanitized_name -> sanitized_name (deduped)
@@ -132,8 +134,8 @@ def extract_bookshelf_data(
         m = plc.modules_w_pins[idx]
         raw = m.get_name()
         w, h = _safe_size(m)
-        x, y = _safe_pos(m)
-        fixed = _safe_fixed(m)
+        x, y = temporary_fixed_positions.get(raw, _safe_pos(m))
+        fixed = _safe_fixed(m) or raw in temporary_fixed_positions
         bs_name = add_node(raw, w, h, x, y, terminal=fixed, fixed=fixed)
         tilos_to_bookshelf[raw] = bs_name
 
@@ -142,8 +144,12 @@ def extract_bookshelf_data(
         m = plc.modules_w_pins[idx]
         raw = m.get_name()
         w, h = _safe_size(m)
-        x, y = _safe_pos(m)
-        is_terminal = (not soft_macros_movable) or _safe_fixed(m)
+        x, y = temporary_fixed_positions.get(raw, _safe_pos(m))
+        is_terminal = (
+            (not soft_macros_movable)
+            or _safe_fixed(m)
+            or raw in temporary_fixed_positions
+        )
         is_fixed = is_terminal
         bs_name = add_node(raw, w, h, x, y, terminal=is_terminal, fixed=is_fixed)
         tilos_to_bookshelf[raw] = bs_name
@@ -295,7 +301,9 @@ def convert(benchmark_dir: str, output_dir: str, design: Optional[str] = None,
             soft_macros_movable: bool = False,
             plc: Optional[PlacementCost] = None,
             cluster_groups: "Optional[List[List[str]]]" = None,
-            group_weight: int = 0) -> Path:
+            group_weight: int = 0,
+            temporary_fixed_positions: "Optional[Mapping[str, Tuple[float, float]]]" = None,
+            ) -> Path:
     """Convert a TILOS benchmark dir to Bookshelf and return the .aux path."""
     benchmark_dir = Path(benchmark_dir).resolve()
     output_dir = Path(output_dir).resolve()
@@ -317,6 +325,7 @@ def convert(benchmark_dir: str, output_dir: str, design: Optional[str] = None,
     nodes, nets, cw, ch, scale = extract_bookshelf_data(
         plc, soft_macros_movable=soft_macros_movable,
         cluster_groups=cluster_groups, group_weight=group_weight,
+        temporary_fixed_positions=temporary_fixed_positions,
     )
 
     print(f"  benchmark={benchmark_dir.name}: {len(nodes)} nodes "

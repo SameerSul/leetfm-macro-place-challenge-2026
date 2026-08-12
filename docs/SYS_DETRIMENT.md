@@ -159,8 +159,8 @@ cleanup and full exact-score work even though they cannot be selected.
 Impact: avoidable seed overhead, especially on large routing grids.
 
 Action: build the initial reference first and prefilter immutable hard
-violations before soft cleanup and exact scoring. Do not remove the
-constraint-graph candidate or DREAMPlace seed.
+violations before soft cleanup and exact scoring. The hierarchy-blind
+constraint-graph candidate was subsequently deleted; DREAMPlace remains.
 
 ## Active Pass Disposition
 

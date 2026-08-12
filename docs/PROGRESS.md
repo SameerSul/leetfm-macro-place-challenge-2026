@@ -6,6 +6,151 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-08-11 — repository-wide dead-code audit):** Static lint,
+> repository-wide symbol reference analysis, and Vulture were reconciled against
+> evaluator reflection, Qt callbacks, PLC monkey-patched attributes, maintained
+> diagnostics, and scalar parity oracles. The verified dead set was removed:
+> three unused hierarchy-search locals, one unused visualizer import, the unused
+> GPU experiment compatibility predicate, the obsolete split-parent compatibility
+> alias, two superseded full-grid swap reducers and their orphan density helper,
+> unused exact-search timing counters/accessor, obsolete two-module touched-net
+> caching, the unused soft-net-centroid accessor, two unexported visualizer sink
+> abstractions, and the test-only congestion reducer with its orphan test. The
+> density reducer test now calls the production Numba kernel directly.
+>
+> The complete project suite passed 135 tests with two CUDA-only skips. Ruff,
+> bytecode compilation, diff checks, and the post-removal dead-code scan passed;
+> remaining Vulture findings are dynamic framework callbacks/attributes or
+> maintained diagnostic/scalar verification interfaces. Focused IBM10 reproduced
+> `1.2059`, VALID, selected `initial`, and passed every hierarchy/vector/island
+> audit in `71.17s`. No placement stage, operator order, acceptance gate, default,
+> or user command changed, so `ARCHITECTURE.md` and `DESIGN_FLOW.md` require no
+> behavioral revision for this audit.
+>
+> **Status (2026-08-11 — zero-selection seed code removed):** The two
+> DREAMPlace/initial blends, radial expansion, and synthetic-clearance candidates
+> were deleted after the accepted 17-design IBM sweep selected each on 0/17.
+> Their constructors, Numba pair-push kernel, constants, portfolio hooks, and
+> dedicated kernel test were removed. Historical measurements below remain as
+> experiment evidence. The explicit-tag route-channel candidate remains because
+> flat IBM does not instantiate it and therefore provides no evidence about its
+> intended NG45 use.
+>
+> Focused IBM10 now prescores only `initial`, `re2map_recursive_1`, `dreamplace`,
+> and `re2map_recursive_2`; `initial` remains selected. The evaluator reproduced
+> `1.2059`, VALID, with zero hierarchy/island violations in `79.22s`. Targeted
+> seed/hierarchy verification passed, and the complete verification suite passed
+> 102 tests with two GPU-only skips. A new full-suite result is not
+> claimed because deleting never-selected candidates cannot change the selected
+> seed under deterministic prescoring, but it removes their construction and
+> legalization overhead.
+>
+> **Status (2026-08-11 — Re²MaP packing-tree seed tested and removed):** An
+> original deterministic B*-tree/contour diagnostic compacted up to eight
+> positive-confidence movable hierarchy leaves from the second recursive
+> prototype around their existing footprint centers, co-shifting owned softs.
+> It used every ordinary legality, immutable hierarchy, exact-score, and final
+> audit gate. Focused IBM10 and IBM08 passed unchanged; their packing candidates
+> scored `2.0462 / hq 0.18846` and `1.4519 / hq 0.16111`, respectively, and
+> neither selected.
+>
+> The full IBM sweep was 17/17 VALID with zero overlaps and all audits safe at
+> `AVG 1.2144` in `856.05s`. The candidate was prefiltered on six designs,
+> exact-scored on eleven, passed the complete contract on nine, and selected on
+> zero. Seed counts were unchanged. The apparent `1.2151 -> 1.2144` delta came
+> from downstream deadline variance on unchanged seeds, while runtime rose
+> 17.75s. The runtime hook, constructor, constant, and dedicated tests were
+> removed; only the
+> [measured report](../ml_data/re2map_packing_tree/20260811-results.md) remains.
+>
+> **Status (2026-08-11 — hierarchy-blind constraint seed removed):** Auditing
+> the two initial-layout candidates found that ordinary `initial` is actively
+> hierarchy-aware: legalization is cluster-consecutive, with clusters and
+> members ordered by low-fanout connectivity pressure × macro area, followed
+> by the complete hierarchy contract. `constraint_graph_initial` consumed only
+> geometry, original X/Y order, size, boundary slack, and fixed status; passing
+> a hierarchy contract afterward did not make its construction hierarchy-aware.
+> The candidate, separation-DAG implementation, constant, export, and dedicated
+> tests were deleted. Historical measurements below remain as experiment
+> evidence.
+>
+> Focused IBM10 selected `initial` and finished at `1.2059`, VALID, with zero
+> overlaps and all final hierarchy/vector/island checks passing. The complete
+> post-removal IBM sweep reached `AVG 1.2151`, 17/17 VALID, zero overlaps, in
+> `838.30s`; all final hierarchy/vector/island checks passed. Seed selection was
+> `initial` 11/17, `re2map_recursive_2` 3/17, `dreamplace` 2/17, and
+> `re2map_recursive_1` 1/17. The four designs that had selected the deleted
+> candidate in the preceding sweep (IBM10/11/12/15) all selected the
+> hierarchy-ordered `initial` seed. The proxy regression from `1.1625` is the
+> measured cost of removing a geometry-only constructor that had supplied four
+> favorable starting basins; it is not grounds to call that constructor
+> hierarchy optimization.
+>
+> **Status (2026-08-10 — contract-gated distributed seed selection, focused
+> IBM10 verification):** IBM10 video review showed that the apparent failure to
+> occupy whitespace happened before local search: grouped DREAMPlace scored
+> `1.8005` with hard hierarchy quality `0.16052`, while the distributed
+> constraint-graph seed scored `1.3367` with quality `0.30335` and still passed
+> every immutable hierarchy component. The hierarchy-first scalar selector
+> nevertheless chose the compact seed. Production now filters the portfolio by
+> the complete six-component hierarchy contract, selects the best exact-proxy
+> band, and uses contract headroom as its tie-break. It does not loosen any
+> downstream island, vector, legality, or rollback gate.
+>
+> Focused IBM10 now selects `constraint_graph_initial` and finishes at `1.1025`
+> versus `1.7785` for the preceding compact-seed run. Density improves
+> `1.179 -> 0.544` and congestion `2.272 -> 1.508`; the placement is VALID with
+> zero hard overlap, `audit=pass`, `vector_audit=pass`, and zero island
+> violations. The evaluator run retained 427 downstream moves. The production
+> trace is `ml_data/visualizer/ibm10/20260810-spread-seed.jsonl`, and the 8x
+> review export is `ml_data/visualizer/ibm10/vivaplace-ibm10-spread-seed.mp4`.
+> Full IBM/NG45/synthetic promotion remains pending.
+>
+> **Status (2026-08-10 — void-directed existing-cluster expansion, focused IBM10
+> verification):** The final void survivor now selects clusters that own a
+> large hard macro bounding a hard-clear corridor. It moves the physically
+> aligned hard boundary band 25%, 50%, or 75% into that opening, backing off
+> until both float64 and returned-float32 hard legality pass, and co-moves only
+> the aligned owned-soft band. The cluster interior remains fixed, so the
+> footprint expands outward instead of merely translating a tiny rigid leaf.
+> Among expansions clearing the exact-gain floor, the largest visible outward
+> displacement receives first-winner priority; voids are then recomputed and
+> disjoint rigid/soft moves may retain. The deterministic ceiling
+> is 96 exact scores and the emergency guard is 15 seconds.
+>
+> Focused IBM10 generated 24 expansion candidates; all 24 were hard-legal, 23
+> passed the complete hierarchy contract, and the best gained `0.000158`
+> exactly. The final pass retained `hard_soft_expand_left_edge_void` followed by
+> the prior rigid leaf relocation, improving `1.7205 -> 1.7157`. The design is
+> VALID with zero overlaps, `audit=pass`, and `vector_audit=pass`. The selected
+> production expansion moves `a60088` and owned soft `Grp_613` left by
+> `1.504 µm`. Full IBM,
+> NG45, and synthetic promotion remains pending.
+>
+> **Status (2026-08-10 — edge-pocket and routing-only soft void extension,
+> fully IBM verified):** The final survivor preserves the verified interior
+> hard-leaf candidate prefix, adds hard-clear fragments between large macros and
+> canvas boundaries, and admits stable residual soft bundles, transient
+> low-fanout routing cohorts, and hot residual singletons. Routing cohorts remain
+> pass-local and never change hierarchy ownership. Soft layouts use exact
+> rectangle occupancy, avoid hard/internal overlaps, and require `0.00005` exact
+> gain; the existing hard lane retains its `0.0001` gate. At most one
+> hard-containing move can commit before bounded soft-only fills.
+>
+> The complete sweep reached `AVG 1.2832`, 17/17 VALID, zero overlaps, and all
+> hierarchy/island audits passing in 668.75s. Interior hard-leaf wins survive on
+> IBM10/13; edge hard-leaf wins retain on IBM08/11/18; and residual-soft
+> singleton fills retain on IBM01/11/12/14. Together they contribute 0.005968
+> stage-local exact gain. IBM04 stays at `0.9964`; 30 soft units were considered
+> but correctly produced no exact winner. The full verification suite passes
+> 133 tests with two GPU-only skips. NG45 reached `AVG 0.7072`, 4/4 VALID and
+> zero overlaps; the void pass retained no NG45 state. The synthetic suite was
+> 10/10 VALID with zero overlaps at `AVG 1.4461`; its independent truth audit was
+> 9/10 because `syn07_ports` exceeded two truth limits before the void pass,
+> which scored and retained no state on that design. The new operator retained
+> no state on any synthetic design and therefore introduced no synthetic
+> hierarchy drift.
+>
 > **Status (2026-08-10 — graph-directed inter-macro void relocation, fully IBM
 > verified):** A final survivor pass now detects rectangular gaps bounded by
 > opposing edges of large hard macros. It tests existing 2-12-hard hierarchy
@@ -3326,6 +3471,47 @@ SLOW_SCORE_THRESHOLD_S = 100.0     # safety net for exact scoring
 ```
 
 ---
+
+## 2026-08-10: Re²MaP-inspired recurrent prototype seeds — active integration
+
+Two non-mandatory portfolio candidates now rerun grouped DREAMPlace after
+temporarily fixing one, then two, complete hierarchy leaves from the preceding
+legal prototype. Eligibility requires 2–16 movable hard members, no fixed hard
+member, and positive calibrated hierarchy confidence. Ranking is
+deterministic by confidence, footprint utilization, member count, and leaf ID.
+The implementation preserves the existing hierarchy/ownership model and uses
+real Bookshelf terminals; it does not add guide nets, ellipse constraints, or
+packing-tree search. Recursive cache entries cover exact fixed membership and
+coordinates, grouping membership, group weight, and the ordinary solver key.
+
+Focused IBM03/08/10/17/18 completed VALID with every audit passing. IBM03
+rejected both recursive candidates at the immutable prefilter; IBM10/17/18
+retained their existing controls. With the 16-hard leaf ceiling, IBM08 selected
+round two at `proxy 1.1848 / hierarchy composite 0.15988`, versus round one
+`1.2575 / 0.16905` and ordinary grouped DREAMPlace `1.2696 / 0.16676`; its
+complete result improved from the immediately preceding one-round run
+`1.1551 -> 1.1044`.
+
+The full IBM sweep reached `AVG 1.1625`, 17/17 VALID, zero hard overlaps, all
+final hierarchy/vector/island audits passing, in `1065.11s`. Mean wirelength,
+density, and congestion were `0.077824 / 0.630059 / 1.539235`. Recursive round
+one selected on IBM02; round two selected on IBM01/07/08; 13 designs retained
+an existing seed. The aggregate is materially better than the documented
+dirty-tree hierarchy result, but that delta also contains the pre-existing
+void-expansion work and is not attributed solely to recurrent prototyping.
+
+NG45 reached `AVG 0.7233`, 4/4 VALID and zero overlaps in `140.40s`; explicit
+hierarchy-tag verification passed 4/4, and `nvdla` selected recursive round two.
+The synthetic suite reached `AVG 1.4277`, 10/10 VALID and zero overlaps, but
+only 9/10 truth-audit passes. `syn07_ports` missed worst-cluster spread and
+neighbor impurity; it generated no recursive seed and selected the existing
+`synthetic_clearance` candidate, proving that failure is not caused by the new
+path. The recursive integration remains default-on because its attributable
+IBM/NG45 legality and selection gates pass, while the complete dirty-tree
+checkpoint remains not fully promoted until the independent synthetic truth
+regression is resolved.
+
+See [reference 28](REFERENCES.md).
 
 ## Next Experiments to Try
 
