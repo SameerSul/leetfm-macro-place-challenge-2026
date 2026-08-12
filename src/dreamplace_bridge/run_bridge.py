@@ -11,7 +11,7 @@ import threading
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 import numpy as np
 
@@ -25,7 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 from macro_place._plc import PlacementCost  # noqa: E402
 
 # Disk cache keyed by input files and DREAMPlace settings.
-CACHE_VERSION = "v3"
+CACHE_VERSION = "v4"
 
 
 def dreamplace_design_name(benchmark_dir: str | Path) -> str:
@@ -52,6 +52,8 @@ def _cache_key(
     soft_macros_movable: bool,
     random_center_init: bool,
     group_sig: str = "",
+    temporary_fixed_sig: str = "",
+    target_density: float = 0.75,
 ) -> str:
     netlist_fp = _file_fingerprint(benchmark_dir / "netlist.pb.txt")
     init_fp = _file_fingerprint(benchmark_dir / "initial.plc")
@@ -60,7 +62,8 @@ def _cache_key(
         f"{CACHE_VERSION}|{design}|path={benchmark_dir.as_posix()}|netlist={netlist_fp}|"
         f"init={init_fp}|iter={iterations}|seed={random_seed}|"
         f"threads={num_threads}|soft={int(soft_macros_movable)}|"
-        f"rci={int(random_center_init)}|grp={group_sig}"
+        f"rci={int(random_center_init)}|density={float(target_density):.12g}|"
+        f"grp={group_sig}|tmpfix={temporary_fixed_sig}"
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -72,6 +75,26 @@ def _group_sig(cluster_groups, group_weight) -> str:
     n_groups = len(cluster_groups)
     n_members = sum(len(g) for g in cluster_groups)
     return f"w{int(group_weight)}-g{n_groups}-m{n_members}"
+
+
+def _temporary_fixed_sig(
+    temporary_fixed_positions: "Optional[Mapping[str, tuple[float, float]]]",
+    cluster_groups=None,
+    group_weight: int = 0,
+) -> str:
+    """Fingerprint a recursive prototype's exact fixed state and grouping."""
+    if not temporary_fixed_positions:
+        return ""
+    payload = {
+        "fixed": [
+            [str(name), float(xy[0]), float(xy[1])]
+            for name, xy in sorted(temporary_fixed_positions.items())
+        ],
+        "groups": [sorted(str(name) for name in group) for group in (cluster_groups or [])],
+        "group_weight": int(group_weight),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _cache_paths(work_dir: Path, key: str) -> "tuple[Path, Path]":
@@ -123,8 +146,8 @@ _AVAILABILITY_CACHE: Optional[tuple[bool, str]] = None
 
 
 def _use_final_cache(event_sink) -> bool:
-    """Visualizer runs must execute the optimizer; production retains its cache."""
-    return event_sink is None
+    """Use production cache normally, with an explicit visualizer replay override."""
+    return event_sink is None or os.environ.get("HIER_VISUALIZER_USE_CACHE", "0") == "1"
 
 
 def _decode_progress_payload(line: str) -> tuple[int, np.ndarray]:
@@ -274,6 +297,7 @@ def run_dreamplace(
     return_full: bool = False,
     event_sink=None,
     sample_every: int = 10,
+    temporary_fixed_positions: "Optional[Mapping[str, tuple[float, float]]]" = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Run DREAMPlace and return hard-macro center positions."""
     if not is_available():
@@ -293,6 +317,12 @@ def run_dreamplace(
         soft_macros_movable,
         random_center_init,
         group_sig=_group_sig(cluster_groups, group_weight),
+        temporary_fixed_sig=_temporary_fixed_sig(
+            temporary_fixed_positions,
+            cluster_groups,
+            group_weight,
+        ),
+        target_density=target_density,
     )
     cached = _try_load_cache(work_dir, cache_key) if _use_final_cache(event_sink) else None
     if cached is not None:
@@ -314,6 +344,7 @@ def run_dreamplace(
         plc=plc,
         cluster_groups=cluster_groups,
         group_weight=group_weight,
+        temporary_fixed_positions=temporary_fixed_positions,
     )
 
     # Write DREAMPlace config.

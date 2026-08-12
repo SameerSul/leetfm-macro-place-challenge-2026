@@ -1,6 +1,5 @@
 """Incremental proxy scorer used by local-search moves."""
 
-import time
 from collections.abc import Mapping
 
 import numpy as np
@@ -879,83 +878,6 @@ if HAS_NUMBA:
                     top_sum = updated
                 out[batch_idx] = top_sum / top_count
 
-    @_numba_njit(cache=True, fastmath=False)
-    def _batch_hard_swap_congestion_values_jit(
-        raw_h,
-        raw_v,
-        bboxes,
-        base_h_smoothed,
-        base_v_smoothed,
-        h_macro,
-        v_macro,
-        h_capacity,
-        v_capacity,
-        h_window_lo,
-        h_window_hi,
-        h_window_count,
-        v_window_lo,
-        v_window_hi,
-        v_window_count,
-        smooth_range,
-        grid_row,
-        grid_col,
-        out,
-    ):
-        """Create exact congestion values with candidate-specific hard blockage."""
-        n_cells = grid_row * grid_col
-        prefix_h = np.empty(grid_row + 1, dtype=np.float64)
-        prefix_v = np.empty(grid_col + 1, dtype=np.float64)
-        for batch_idx in range(raw_h.shape[0]):
-            for cell in range(n_cells):
-                out[batch_idx, cell] = base_v_smoothed[cell] + v_macro[batch_idx, cell] / v_capacity
-                out[batch_idx, n_cells + cell] = (
-                    base_h_smoothed[cell] + h_macro[batch_idx, cell] / h_capacity
-                )
-
-            r_lo = bboxes[batch_idx, 0]
-            r_hi = bboxes[batch_idx, 1]
-            c_lo = bboxes[batch_idx, 2]
-            c_hi = bboxes[batch_idx, 3]
-            if smooth_range <= 0:
-                for col in range(c_lo, c_hi + 1):
-                    for row in range(grid_row):
-                        cell = row * grid_col + col
-                        out[batch_idx, n_cells + cell] = (
-                            raw_h[batch_idx, cell] + h_macro[batch_idx, cell]
-                        ) / h_capacity
-                for row in range(r_lo, r_hi + 1):
-                    base = row * grid_col
-                    for col in range(grid_col):
-                        cell = base + col
-                        out[batch_idx, cell] = (
-                            raw_v[batch_idx, cell] + v_macro[batch_idx, cell]
-                        ) / v_capacity
-                continue
-
-            for col in range(c_lo, c_hi + 1):
-                prefix_h[0] = 0.0
-                for row in range(grid_row):
-                    cell = row * grid_col + col
-                    value = raw_h[batch_idx, cell] / h_capacity
-                    prefix_h[row + 1] = prefix_h[row] + value / h_window_count[row]
-                for row in range(grid_row):
-                    cell = row * grid_col + col
-                    smoothed = prefix_h[h_window_hi[row] + 1] - prefix_h[h_window_lo[row]]
-                    out[batch_idx, n_cells + cell] = (
-                        smoothed + h_macro[batch_idx, cell] / h_capacity
-                    )
-
-            for row in range(r_lo, r_hi + 1):
-                base = row * grid_col
-                prefix_v[0] = 0.0
-                for col in range(grid_col):
-                    value = raw_v[batch_idx, base + col] / v_capacity
-                    prefix_v[col + 1] = prefix_v[col] + value / v_window_count[col]
-                for col in range(grid_col):
-                    cell = base + col
-                    smoothed = prefix_v[v_window_hi[col] + 1] - prefix_v[v_window_lo[col]]
-                    out[batch_idx, cell] = smoothed + v_macro[batch_idx, cell] / v_capacity
-
     @_numba_njit(cache=True, fastmath=False, inline="always")
     def _mark_sparse_cell_jit(mark, touched_cells, touched_count, cell):
         """Mark one sparse trial cell and return the new touched count."""
@@ -1231,44 +1153,6 @@ if HAS_NUMBA:
             out[batch_idx] = (total_wl_raw + delta) / normalizer
 
     @_numba_njit(cache=True, fastmath=False)
-    def _add_density_rect_jit(
-        grid,
-        cx,
-        cy,
-        half_w,
-        half_h,
-        weight,
-        grid_w,
-        grid_h,
-        grid_row,
-        grid_col,
-    ):
-        """Add one weighted rectangle's occupancy to a density grid."""
-        x_min = cx - half_w
-        x_max = cx + half_w
-        y_min = cy - half_h
-        y_max = cy + half_h
-        bl_col = int(np.floor(x_min / grid_w))
-        ur_col = int(np.floor(x_max / grid_w))
-        bl_row = int(np.floor(y_min / grid_h))
-        ur_row = int(np.floor(y_max / grid_h))
-        if ur_row < 0 or ur_col < 0 or bl_row >= grid_row or bl_col >= grid_col:
-            return
-        bl_col = min(max(bl_col, 0), grid_col - 1)
-        ur_col = min(max(ur_col, 0), grid_col - 1)
-        bl_row = min(max(bl_row, 0), grid_row - 1)
-        ur_row = min(max(ur_row, 0), grid_row - 1)
-        for row in range(bl_row, ur_row + 1):
-            overlap_y = min(grid_h * (row + 1), y_max) - max(grid_h * row, y_min)
-            if overlap_y < 0.0:
-                overlap_y = 0.0
-            for col in range(bl_col, ur_col + 1):
-                overlap_x = min(grid_w * (col + 1), x_max) - max(grid_w * col, x_min)
-                if overlap_x < 0.0:
-                    overlap_x = 0.0
-                grid[row * grid_col + col] += weight * overlap_x * overlap_y
-
-    @_numba_njit(cache=True, fastmath=False)
     def _add_sparse_density_rect_jit(
         delta,
         mark,
@@ -1458,75 +1342,6 @@ if HAS_NUMBA:
                 mark[touched_cells[touched_idx]] = 0
 
     @_numba_njit(cache=True, fastmath=False)
-    def _batch_soft_swap_density_grids_jit(
-        a_xy,
-        b_xy,
-        a_half_w,
-        a_half_h,
-        b_half_w,
-        b_half_h,
-        base_grid,
-        grid_w,
-        grid_h,
-        grid_row,
-        grid_col,
-        out,
-    ):
-        """Build exact density grids for a batch of soft-soft swaps."""
-        for batch_idx in range(b_xy.shape[0]):
-            for cell in range(base_grid.shape[0]):
-                out[batch_idx, cell] = base_grid[cell]
-            grid = out[batch_idx]
-            _add_density_rect_jit(
-                grid,
-                a_xy[0],
-                a_xy[1],
-                a_half_w,
-                a_half_h,
-                -1.0,
-                grid_w,
-                grid_h,
-                grid_row,
-                grid_col,
-            )
-            _add_density_rect_jit(
-                grid,
-                b_xy[batch_idx, 0],
-                b_xy[batch_idx, 1],
-                b_half_w[batch_idx],
-                b_half_h[batch_idx],
-                -1.0,
-                grid_w,
-                grid_h,
-                grid_row,
-                grid_col,
-            )
-            _add_density_rect_jit(
-                grid,
-                b_xy[batch_idx, 0],
-                b_xy[batch_idx, 1],
-                a_half_w,
-                a_half_h,
-                1.0,
-                grid_w,
-                grid_h,
-                grid_row,
-                grid_col,
-            )
-            _add_density_rect_jit(
-                grid,
-                a_xy[0],
-                a_xy[1],
-                b_half_w[batch_idx],
-                b_half_h[batch_idx],
-                1.0,
-                grid_w,
-                grid_h,
-                grid_row,
-                grid_col,
-            )
-
-    @_numba_njit(cache=True, fastmath=False)
     def _batch_soft_density_grids_jit(
         xy,
         half_w,
@@ -1593,53 +1408,6 @@ if HAS_NUMBA:
                 for index in range(count_nonzero - top_count, count_nonzero):
                     top_sum += partitioned[index]
                 out[batch_idx] = 0.5 * top_sum / grid_area / density_count
-
-
-def _batch_congestion_costs(congestion_values: np.ndarray) -> np.ndarray:
-    """Consume trial grids and return their top-tail congestion costs."""
-    values = np.ascontiguousarray(congestion_values, dtype=np.float64)
-    count = int(values.shape[1] * 0.05)
-    if count == 0:
-        return values.max(axis=1)
-    values.partition(values.shape[1] - count, axis=1)
-    return values[:, -count:].sum(axis=1) / count
-
-
-def _batch_density_costs(
-    density_grids: np.ndarray,
-    density_count: int,
-    grid_area: float,
-    packed: "np.ndarray | None" = None,
-) -> np.ndarray:
-    """Return scalar-equivalent density costs for a batch of trial grids."""
-    grids = np.ascontiguousarray(density_grids, dtype=np.float64)
-    out = np.empty(grids.shape[0], dtype=np.float64)
-    if HAS_NUMBA:
-        scratch = (
-            np.empty(grids.shape[1], dtype=np.float64)
-            if packed is None
-            else np.asarray(packed, dtype=np.float64)
-        )
-        _batch_density_costs_jit(
-            grids,
-            int(density_count),
-            float(grid_area),
-            scratch,
-            out,
-        )
-        return out
-
-    for batch_idx, occupied in enumerate(grids):
-        nonzero = occupied[occupied != 0.0]
-        if nonzero.size == 0:
-            out[batch_idx] = 0.0
-        elif grids.shape[1] < 10:
-            out[batch_idx] = 0.5 * float(nonzero.mean() / grid_area)
-        else:
-            count = min(int(density_count), nonzero.size)
-            top = np.partition(nonzero, nonzero.size - count)[nonzero.size - count :]
-            out[batch_idx] = 0.5 * float(top.sum()) / grid_area / density_count
-    return out
 
 
 class IncrementalScorer:
@@ -1834,18 +1602,6 @@ class IncrementalScorer:
             self.dens_n_cells + self.dens_density_cnt, dtype=np.float64
         )
 
-        self.search_accel_stats = {
-            "pair_pack_calls": 0,
-            "pair_pack_rows": 0,
-            "pair_pack_seconds": 0.0,
-            "route_construction_rows": 0,
-            "route_construction_seconds": 0.0,
-            "congestion_reduction_rows": 0,
-            "congestion_reduction_seconds": 0.0,
-            "density_reduction_rows": 0,
-            "density_reduction_seconds": 0.0,
-            "dependency_invalidations": 0,
-        }
         # Dense soft-relocation workspaces grow to the largest requested batch
         # and are then sliced for smaller sources.
         self._soft_workspace_capacity = 0
@@ -1982,9 +1738,6 @@ class IncrementalScorer:
     def _invalidate_swap_tail_baseline(self) -> None:
         """Invalidate swap tail metadata after committed scorer state changes."""
         self._swap_tail_baseline_cache = None
-        stats = getattr(self, "search_accel_stats", None)
-        if stats is not None:
-            stats["dependency_invalidations"] += 1
 
     def _batch_sparse_swap_congestion_costs(
         self,
@@ -2001,7 +1754,6 @@ class IncrementalScorer:
         top_count = int(base_values.size * 0.05)
         out = np.empty(raw_h.shape[0], dtype=np.float64)
         candidate_hard_macro = h_macro is not None
-        t0 = time.perf_counter()
         _batch_sparse_swap_congestion_costs_jit(
             raw_h,
             raw_v,
@@ -2035,8 +1787,6 @@ class IncrementalScorer:
             self._swap_congestion_prefix_v,
             out,
         )
-        self.search_accel_stats["congestion_reduction_rows"] += int(raw_h.shape[0])
-        self.search_accel_stats["congestion_reduction_seconds"] += time.perf_counter() - t0
         return out
 
     def _batch_sparse_swap_density_costs(
@@ -2053,7 +1803,6 @@ class IncrementalScorer:
         base = baseline["density"]
         base_order = baseline["density_order"]
         out = np.empty(b_xy.shape[0], dtype=np.float64)
-        t0 = time.perf_counter()
         _batch_sparse_swap_density_costs_jit(
             a_xy,
             b_xy,
@@ -2077,13 +1826,7 @@ class IncrementalScorer:
             self._swap_density_candidates,
             out,
         )
-        self.search_accel_stats["density_reduction_rows"] += int(b_xy.shape[0])
-        self.search_accel_stats["density_reduction_seconds"] += time.perf_counter() - t0
         return out
-
-    def acceleration_stats(self) -> dict:
-        """Return a snapshot of internal exact-search acceleration telemetry."""
-        return dict(self.search_accel_stats)
 
     def _soft_scoring_workspace(self, batch_size: int) -> dict:
         """Return retained dense arrays sized for at least one soft batch."""
@@ -2283,27 +2026,6 @@ class IncrementalScorer:
         min_y = np.minimum.reduceat(pin_y, sub_starts)
         return (max_x - min_x) + (max_y - min_y)
 
-    def _touched_nets(self, i_module: int, j_module: int) -> np.ndarray:
-        i0 = int(i_module)
-        j0 = int(j_module)
-        key = (i0, j0) if i0 <= j0 else (j0, i0)
-        cached = self._touched_cache2.get(key)
-        if cached is not None:
-            return cached
-        a = self.macro_to_nets.get(i0)
-        b = self.macro_to_nets.get(j0)
-        if a is None and b is None:
-            return np.empty(0, dtype=np.int64)
-        if a is None:
-            self._touched_cache2[key] = b
-            return b
-        if b is None:
-            self._touched_cache2[key] = a
-            return a
-        out = np.union1d(a, b)
-        self._touched_cache2[key] = out
-        return out
-
     def _touched_nets_only(self, module: int) -> np.ndarray:
         """Return nets touched by exactly one module."""
         module = int(module)
@@ -2365,37 +2087,6 @@ class IncrementalScorer:
         if key not in cache:
             cache[key] = _build_net_routing_struct(self.plc, self._touched_nets_many(key))
         return cache[key]
-
-    def soft_net_centroids(self) -> np.ndarray:
-        """Return a connection-centered target point for each soft macro."""
-        pos = _ensure_pos_cache(self.plc)
-        ref_idx = self.wl_cache["ref_idx"]
-        pin_to_net = self.wl_cache["pin_to_net"]
-        starts = self.net_starts
-        out = np.empty((self.num_soft, 2), dtype=np.float64)
-        for k in range(self.num_soft):
-            out[k, 0] = self.committed_soft_pos[k, 0]
-            out[k, 1] = self.committed_soft_pos[k, 1]
-        if ref_idx.size == 0 or starts.size == 0:
-            return out
-        pin_x = pos[ref_idx, 0] + self.x_off
-        pin_y = pos[ref_idx, 1] + self.y_off
-        counts = (self.net_ends - self.net_starts).astype(np.float64)
-        counts[counts == 0] = 1.0
-        net_cx = np.add.reduceat(pin_x, starts) / counts
-        net_cy = np.add.reduceat(pin_y, starts) / counts
-        n_mod = int(ref_idx.max()) + 1
-        msx = np.zeros(n_mod, dtype=np.float64)
-        msy = np.zeros(n_mod, dtype=np.float64)
-        mc = np.zeros(n_mod, dtype=np.float64)
-        np.add.at(msx, ref_idx, net_cx[pin_to_net])
-        np.add.at(msy, ref_idx, net_cy[pin_to_net])
-        np.add.at(mc, ref_idx, 1.0)
-        for k, m in enumerate(self.soft_indices):
-            if m < n_mod and mc[m] > 0:
-                out[k, 0] = msx[m] / mc[m]
-                out[k, 1] = msy[m] / mc[m]
-        return out
 
     def score_move(self, i_hard: int, new_xy) -> float:
         """Score a hard relocation, then restore the old state."""
@@ -3000,7 +2691,6 @@ class IncrementalScorer:
         capacity = int(a_count * b_modules.size + np.sum(b_counts))
         touched_offsets = np.empty(b_modules.size + 1, dtype=np.int64)
         touched_storage = np.empty(max(capacity, 1), dtype=np.int64)
-        t0 = time.perf_counter()
         packed = _pack_pair_net_unions_jit(
             a_module,
             b_modules,
@@ -3009,9 +2699,6 @@ class IncrementalScorer:
             touched_offsets,
             touched_storage,
         )
-        self.search_accel_stats["pair_pack_calls"] += 1
-        self.search_accel_stats["pair_pack_rows"] += int(b_modules.size)
-        self.search_accel_stats["pair_pack_seconds"] += time.perf_counter() - t0
         touched = touched_storage[:packed]
         lengths = np.diff(touched_offsets)
         max_touched = max(int(lengths.max()), 1) if lengths.size else 1
@@ -3152,7 +2839,6 @@ class IncrementalScorer:
             if prepared_pos_cache is not None
             else np.ascontiguousarray(_ensure_pos_cache(self.plc), dtype=np.float64)
         )
-        route_t0 = time.perf_counter()
         _batch_soft_swap_route_grids_jit(
             batch["a_module"],
             batch["b_modules"],
@@ -3183,8 +2869,6 @@ class IncrementalScorer:
             self.grid_row,
             self.grid_col,
         )
-        self.search_accel_stats["route_construction_rows"] += n_batch
-        self.search_accel_stats["route_construction_seconds"] += time.perf_counter() - route_t0
 
         cong_cache = self.plc._cong_cache
         a_slot = self._module_to_hard_slot.get(a_module)
@@ -3338,7 +3022,6 @@ class IncrementalScorer:
             if prepared_pos_cache is not None
             else np.ascontiguousarray(_ensure_pos_cache(self.plc), dtype=np.float64)
         )
-        route_t0 = time.perf_counter()
         _batch_soft_swap_route_grids_jit(
             batch["a_module"],
             batch["b_modules"],
@@ -3369,8 +3052,6 @@ class IncrementalScorer:
             self.grid_row,
             self.grid_col,
         )
-        self.search_accel_stats["route_construction_rows"] += int(cand.size)
-        self.search_accel_stats["route_construction_seconds"] += time.perf_counter() - route_t0
 
         congestion = self._batch_sparse_swap_congestion_costs(
             raw_h,

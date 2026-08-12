@@ -649,6 +649,7 @@ def run_hierarchy_floorplan(
             csofts=csofts,
             bridge_softs=bridge_softs,
             hierarchy_edges=hierarchy.edges,
+            cluster_confidence=hierarchy.cluster_confidence,
             cw=cw,
             ch=ch,
             const=const,
@@ -1832,7 +1833,6 @@ def run_hierarchy_floorplan(
         micro_enforce = _empty_audit_report()
         micro_proposed_after = float(before_micro)
         for use_density in (False, True):
-            micro_before = float(r_score)
             h_pos, s_pos, got, r_score = _micro_shift_polish(
                 h_pos,
                 s_pos,
@@ -1892,7 +1892,6 @@ def run_hierarchy_floorplan(
         reloc_proposed_after = float(before_reloc)
         if not round_aborted:
             for use_density in (False, True):
-                reloc_before = float(r_score)
                 h_pos, got, r_score = _relocation_moves(
                     h_pos,
                     sizes[:n],
@@ -1956,7 +1955,6 @@ def run_hierarchy_floorplan(
         soft_reloc_proposed_after = float(before_soft_reloc)
         if not round_aborted:
             for use_density in (False, True):
-                soft_before = float(r_score)
                 s_pos, got, r_score = _soft_relocation_moves(
                     s_pos,
                     soft_hw,

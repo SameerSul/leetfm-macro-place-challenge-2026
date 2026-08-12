@@ -18,45 +18,6 @@ from placer.local_search.hierarchy_quality import (
     hierarchy_vector_margins,
 )
 from placer.local_search.plateau_telemetry import log_plateau_event
-from utils.config import HAS_NUMBA, _numba_njit
-
-if HAS_NUMBA:
-
-    @_numba_njit(cache=True, fastmath=False)
-    def _synthetic_clearance_delta_jit(hard, eligible, temp_hw, temp_hh, delta):
-        """Accumulate one synthetic-clearance push iteration."""
-        delta.fill(0.0)
-        n = hard.shape[0]
-        for i in range(n):
-            for j in range(i + 1, n):
-                move_i = eligible[i]
-                move_j = eligible[j]
-                if not (move_i or move_j):
-                    continue
-                dx = hard[i, 0] - hard[j, 0]
-                dy = hard[i, 1] - hard[j, 1]
-                overlap_x = temp_hw[i] + temp_hw[j] - abs(dx)
-                overlap_y = temp_hh[i] + temp_hh[j] - abs(dy)
-                if overlap_x <= 0.0 or overlap_y <= 0.0:
-                    continue
-                if overlap_x <= overlap_y:
-                    push_x = 0.5 * overlap_x * (1.0 if dx >= 0.0 else -1.0)
-                    if move_i and move_j:
-                        delta[i, 0] += push_x
-                        delta[j, 0] -= push_x
-                    elif move_i:
-                        delta[i, 0] += 2.0 * push_x
-                    else:
-                        delta[j, 0] -= 2.0 * push_x
-                else:
-                    push_y = 0.5 * overlap_y * (1.0 if dy >= 0.0 else -1.0)
-                    if move_i and move_j:
-                        delta[i, 1] += push_y
-                        delta[j, 1] -= push_y
-                    elif move_i:
-                        delta[i, 1] += 2.0 * push_y
-                    else:
-                        delta[j, 1] -= 2.0 * push_y
 
 
 def _hard_placement_is_legal(
@@ -90,6 +51,47 @@ def _hard_placement_is_legal(
     )
     np.fill_diagonal(separated, True)
     return bool(separated.all())
+
+
+def select_recursive_prototype_leaves(
+    clusters,
+    cluster_confidence,
+    movable_hard: np.ndarray,
+    hard_xy: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    *,
+    max_leaves: int,
+    max_members: int = 16,
+    excluded: tuple[int, ...] = (),
+) -> list[int]:
+    """Select compact, high-confidence leaves that are safe to freeze."""
+    excluded_set = {int(cid) for cid in excluded}
+    ranked = []
+    for cid, members in clusters.items():
+        cid = int(cid)
+        mem = np.asarray(members, dtype=np.int64)
+        if (
+            cid in excluded_set
+            or mem.size < 2
+            or mem.size > max(2, int(max_members))
+            or not bool(np.all(movable_hard[mem]))
+        ):
+            continue
+        confidence = float((cluster_confidence or {}).get(cid, 0.0))
+        if confidence <= 0.0:
+            continue
+        left = float(np.min(hard_xy[mem, 0] - hw[mem]))
+        right = float(np.max(hard_xy[mem, 0] + hw[mem]))
+        bottom = float(np.min(hard_xy[mem, 1] - hh[mem]))
+        top = float(np.max(hard_xy[mem, 1] + hh[mem]))
+        footprint = max((right - left) * (top - bottom), 1.0e-12)
+        utilization = float(np.sum(4.0 * hw[mem] * hh[mem]) / footprint)
+        ranked.append(
+            (-round(confidence, 12), -round(utilization, 12), -int(mem.size), cid)
+        )
+    ranked.sort()
+    return [int(row[-1]) for row in ranked[: max(0, int(max_leaves))]]
 
 
 def select_seed_candidate(
@@ -281,6 +283,7 @@ def run_seed_portfolio(
     csofts,
     bridge_softs,
     hierarchy_edges,
+    cluster_confidence=None,
     cluster_source: str = "hierarchy",
     cw: float,
     ch: float,
@@ -316,25 +319,8 @@ def run_seed_portfolio(
         hard_xy: np.ndarray,
         seed_deadline: float,
         name: str,
-        *,
-        constraint_graph: bool = False,
     ) -> np.ndarray:
-        if not constraint_graph:
-            return will_legalize(
-                hard_xy,
-                movable[:n],
-                sizes[:n],
-                hw,
-                hh,
-                cw,
-                ch,
-                n,
-                deadline=seed_deadline,
-                order=order,
-            )
-        from placer.legalize.constraint_graph import _will_legalize_constraint_graph
-
-        projected, stats = _will_legalize_constraint_graph(
+        return will_legalize(
             hard_xy,
             movable[:n],
             sizes[:n],
@@ -344,17 +330,8 @@ def run_seed_portfolio(
             ch,
             n,
             deadline=seed_deadline,
-            max_rounds=max(1, int(getattr(const, "HIER_CONSTRAINT_GRAPH_MAX_ROUNDS", 6))),
+            order=order,
         )
-        logger(
-            "  [hier] constraint-graph legalize "
-            f"{name}: overlaps {int(stats['initial_overlaps'])}->"
-            f"{int(stats['final_overlaps'])}, constraints="
-            f"{int(stats['x_constraints'])}+{int(stats['y_constraints'])}, "
-            f"rounds={int(stats['rounds'])}, infeasible={int(bool(stats['infeasible']))}, "
-            f"elapsed={float(stats['elapsed_s']):.3f}s"
-        )
-        return projected
 
     def _prepare_dreamplace_candidate(
         *,
@@ -406,6 +383,78 @@ def run_seed_portfolio(
 
         return legal_hard, raw_soft
 
+    def _prepare_recursive_candidate(
+        name: str,
+        fixed_leaf_ids: list[int],
+        fixed_hard: np.ndarray,
+    ):
+        hard_indices = sorted(
+            {
+                int(index)
+                for cid in fixed_leaf_ids
+                for index in np.asarray(clusters[int(cid)], dtype=np.int64)
+            }
+        )
+        fixed_positions = {}
+        for hard_index in hard_indices:
+            module_index = plc.hard_macro_indices[hard_index]
+            module_name = plc.modules_w_pins[module_index].get_name()
+            fixed_positions[module_name] = (
+                float(fixed_hard[hard_index, 0]),
+                float(fixed_hard[hard_index, 1]),
+            )
+        if not fixed_positions:
+            raise ValueError("recursive prototype requires at least one fixed hard macro")
+
+        dreamplace_t0 = time.perf_counter()
+        raw_hard, raw_soft = run_dreamplace(
+            str(benchmark_dir),
+            plc=plc,
+            scratch_root=scratch_root,
+            iterations=300,
+            num_threads=2,
+            random_seed=random_seed,
+            soft_macros_movable=True,
+            cluster_groups=(groups or None),
+            group_weight=group_weight,
+            return_full=True,
+            temporary_fixed_positions=fixed_positions,
+        )
+        _log_stage_timing(
+            "seed_recursive_dreamplace",
+            float(time.perf_counter() - dreamplace_t0),
+            candidate=name,
+            fixed_leaves=[int(cid) for cid in fixed_leaf_ids],
+            fixed_hard_count=len(hard_indices),
+        )
+        recursive_movable = movable[:n].copy()
+        recursive_movable[np.asarray(hard_indices, dtype=np.int64)] = False
+        legal_hard = will_legalize(
+            raw_hard.copy(),
+            recursive_movable,
+            sizes[:n],
+            hw,
+            hh,
+            cw,
+            ch,
+            n,
+            deadline=time.monotonic() + 120,
+            order=order,
+        )
+        legal_hard = will_legalize(
+            legal_hard,
+            recursive_movable,
+            sizes[:n],
+            hw,
+            hh,
+            cw,
+            ch,
+            n,
+            deadline=time.monotonic() + 120,
+            order=None,
+        )
+        return legal_hard, raw_soft, hard_indices
+
     def _clip_seed(hard_xy: np.ndarray, soft_xy: np.ndarray):
         hard_xy = hard_xy.copy()
         soft_xy = soft_xy.copy()
@@ -432,7 +481,6 @@ def run_seed_portfolio(
         soft_xy,
         *,
         budget_s: float = 60.0,
-        constraint_graph: bool = False,
         record_timing: bool = True,
     ):
         legalize_t0 = time.perf_counter()
@@ -442,7 +490,6 @@ def run_seed_portfolio(
             hard_xy,
             seed_deadline,
             name,
-            constraint_graph=constraint_graph,
         )
         legal_hard = will_legalize(
             legal_hard,
@@ -461,7 +508,6 @@ def run_seed_portfolio(
                 "seed_creation",
                 float(time.perf_counter() - legalize_t0),
                 candidate=str(name),
-                constraint_graph=bool(constraint_graph),
                 budget_s=float(budget_s),
             )
         return legal_hard, soft_xy
@@ -526,68 +572,6 @@ def run_seed_portfolio(
             "soft_coverage": float(row_vector.get("soft_coverage", 0.0)),
             "soft_total": float(row_vector.get("soft_total", 0.0)),
         }
-
-    def _expanded_seed(base_hard, base_soft):
-        hard = base_hard.copy()
-        soft = base_soft.copy()
-        frac = float(const.HIER_SEED_EXPANSION_FRAC)
-        hard_mov = movable[:n]
-        if np.any(hard_mov):
-            center = np.mean(hard[hard_mov], axis=0)
-            hard[hard_mov] = center + (1.0 + frac) * (hard[hard_mov] - center)
-        if n_soft and np.any(movable[n : n + n_soft]):
-            soft_mov_local = movable[n : n + n_soft]
-            center = np.mean(soft[soft_mov_local], axis=0)
-            soft[soft_mov_local] = center + (1.0 + frac) * (soft[soft_mov_local] - center)
-        return hard, soft
-
-    def _synthetic_clearance_seed(base_hard, base_soft):
-        hard = base_hard.copy()
-        hard_mov = movable[:n]
-        area = sizes[:n, 0] * sizes[:n, 1]
-        area_limit = float(np.percentile(area, float(const.HIER_SEED_CLEARANCE_AREA_PCT)))
-        eligible = hard_mov & (area <= area_limit)
-        if not np.any(eligible):
-            return hard, base_soft.copy()
-        temp_hw = hw.copy()
-        temp_hh = hh.copy()
-        temp_hw[eligible] *= 1.0 + float(const.HIER_SEED_CLEARANCE_FRAC)
-        temp_hh[eligible] *= 1.0 + float(const.HIER_SEED_CLEARANCE_FRAC)
-        iters = max(1, int(const.HIER_SEED_CLEARANCE_ITERS))
-        delta = np.zeros_like(hard)
-        for _ in range(iters):
-            if HAS_NUMBA:
-                _synthetic_clearance_delta_jit(hard, eligible, temp_hw, temp_hh, delta)
-            else:
-                delta.fill(0.0)
-                for i in range(n):
-                    for j in range(i + 1, n):
-                        move_i = bool(eligible[i])
-                        move_j = bool(eligible[j])
-                        if not (move_i or move_j):
-                            continue
-                        dx = float(hard[i, 0] - hard[j, 0])
-                        dy = float(hard[i, 1] - hard[j, 1])
-                        ox = float(temp_hw[i] + temp_hw[j] - abs(dx))
-                        oy = float(temp_hh[i] + temp_hh[j] - abs(dy))
-                        if ox <= 0.0 or oy <= 0.0:
-                            continue
-                        if ox <= oy:
-                            sx = 1.0 if dx >= 0.0 else -1.0
-                            push = np.array([0.5 * ox * sx, 0.0], dtype=np.float64)
-                        else:
-                            sy = 1.0 if dy >= 0.0 else -1.0
-                            push = np.array([0.0, 0.5 * oy * sy], dtype=np.float64)
-                        if move_i and move_j:
-                            delta[i] += push
-                            delta[j] -= push
-                        elif move_i:
-                            delta[i] += 2.0 * push
-                        elif move_j:
-                            delta[j] -= 2.0 * push
-            hard[eligible] += 0.5 * delta[eligible]
-            hard, _soft = _clip_seed(hard, base_soft)
-        return hard, base_soft.copy()
 
     def _has_explicit_path_tags() -> bool:
         try:
@@ -750,7 +734,7 @@ def run_seed_portfolio(
             for key in immutable_contract_keys
             if key in reference_contract_limits
         }
-        mandatory = {"dreamplace", "constraint_graph_initial"}
+        mandatory = {"dreamplace"}
 
         def _immutable_contract_pass(hard_xy, soft_xy):
             vector = hierarchy_quality_vector(
@@ -781,13 +765,50 @@ def run_seed_portfolio(
         except Exception as exc:
             logger("  [hier] seed dreamplace scoring failed: " f"{type(exc).__name__}: {exc}")
         rows.append(_score_seed("initial", initial_legal_hard, initial_legal_soft))
+        recursive_seed_count = max(
+            0,
+            min(2, int(getattr(const, "HIER_RE2MAP_RECURSIVE_SEEDS", 2))),
+        )
+        fixed_leaf_ids: list[int] = []
+        recursive_hard = dp_hard
+        for round_index in range(recursive_seed_count):
+            next_ids = select_recursive_prototype_leaves(
+                clusters,
+                cluster_confidence,
+                movable[:n],
+                recursive_hard,
+                hw,
+                hh,
+                max_leaves=1,
+                max_members=int(getattr(const, "HIER_RE2MAP_MAX_LEAF_HARD", 16)),
+                excluded=tuple(fixed_leaf_ids),
+            )
+            if not next_ids:
+                break
+            fixed_leaf_ids.extend(next_ids)
+            name = f"re2map_recursive_{round_index + 1}"
+            try:
+                recursive_hard, recursive_soft, fixed_hard_indices = (
+                    _prepare_recursive_candidate(name, fixed_leaf_ids, recursive_hard)
+                )
+            except Exception as exc:
+                logger(
+                    f"  [hier] seed {name} failed recursive prototype: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                break
+            passed, _ = _immutable_contract_pass(recursive_hard, recursive_soft)
+            if not passed:
+                logger(f"  [hier] seed {name} failed immutable contract prefilter")
+                continue
+            try:
+                row = _score_seed(name, recursive_hard, recursive_soft, do_soft_cleanup=True)
+                row["recursive_fixed_leaves"] = tuple(int(cid) for cid in fixed_leaf_ids)
+                row["recursive_fixed_hard"] = tuple(int(i) for i in fixed_hard_indices)
+                rows.append(row)
+            except Exception as exc:
+                logger(f"  [hier] seed {name} failed scoring: {type(exc).__name__}: {exc}")
         raw_candidates = []
-        for alpha in tuple(float(a) for a in const.HIER_SEED_BLEND_ALPHAS):
-            hard = (1.0 - alpha) * dp_hard + alpha * init_hard
-            soft = (1.0 - alpha) * dp_soft + alpha * init_soft
-            raw_candidates.append((f"blend_{alpha:.2f}", hard, soft))
-        raw_candidates.append(("expand", *_expanded_seed(dp_hard, dp_soft)))
-        raw_candidates.append(("synthetic_clearance", *_synthetic_clearance_seed(dp_hard, dp_soft)))
         if _has_explicit_path_tags():
             raw_candidates.append(("route_channel", *_route_channel_seed(dp_hard, dp_soft)))
         for name, cand_h, cand_s in raw_candidates:
@@ -804,26 +825,6 @@ def run_seed_portfolio(
                 rows.append(_score_seed(name, legal_hard, legal_soft))
             except Exception as exc:
                 logger(f"  [hier] seed {name} failed scoring: {type(exc).__name__}: {exc}")
-        try:
-            cg_hard, cg_soft = _legalize_seed(
-                "constraint_graph_initial",
-                init_hard,
-                init_soft,
-                budget_s=45.0,
-                constraint_graph=True,
-            )
-            cg_passed, _ = _immutable_contract_pass(cg_hard, cg_soft)
-            if not cg_passed:
-                logger(
-                    "  [hier] seed constraint_graph_initial failed immutable contract prefilter "
-                    "(kept due mandatory candidate path)"
-                )
-            rows.append(_score_seed("constraint_graph_initial", cg_hard, cg_soft))
-        except Exception as exc:
-            logger(
-                "  [hier] seed constraint_graph_initial failed prescore: "
-                f"{type(exc).__name__}: {exc}"
-            )
         for row in rows:
             vector = hierarchy_quality_vector(
                 np.asarray(row["hard"], dtype=np.float64),
@@ -843,6 +844,8 @@ def run_seed_portfolio(
                 "immutable_contract_limits": dict(
                     (str(k), float(v)) for k, v in immutable_contract_limits.items()
                 ),
+                "recursive_fixed_leaves": list(row.get("recursive_fixed_leaves", ())),
+                "recursive_fixed_hard": list(row.get("recursive_fixed_hard", ())),
             }
         if seed_reference_kind == "dreamplace":
             seed_reference_vector = dict(

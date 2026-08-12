@@ -44,7 +44,9 @@ macros in cluster-consecutive order, and then runs a sequence of
 exact-proxy-gated local search passes, region-locked relocation, cluster
 decompression, region-bounded swaps, and congestion-driven coldspot
 tightening. A final graph-directed survivor can place a complete small leaf and
-its owned soft macros into density-safe gaps between large hard macros. These
+its owned soft macros into density-safe gaps between large hard macros. It also
+tests hard-clear canvas-edge pockets with stable residual soft bundles,
+pass-local routing cohorts, and residual singleton soft macros. These
 passes improve wirelength, density, and congestion while never
 breaking the inferred hierarchy or the legality constraints the evaluator
 enforces. The exact proxy still decides every accepted move; it is just no
@@ -54,10 +56,10 @@ Current full-suite result:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.2835  17/17 VALID  0 overlaps  all hierarchy/island audits passed  (592.64s)
+AVG 1.2832  17/17 VALID  0 overlaps  all hierarchy/island audits passed  (668.75s)
 
 uv run evaluate src/main.py --ng45
-AVG 0.7121  4/4 VALID  0 overlaps  all hierarchy audits passed  (64.80s)
+AVG 0.7072  4/4 VALID  0 overlaps  final hierarchy-safe  (113.91s)
 ```
 
 The 2026-08-10 hierarchy adds bounded one/two-hop soft roles and stable
@@ -68,12 +70,24 @@ comparison is recorded in
 `ml_data/soft_hierarchy_tiers/20260810-results.md`. The prior lower-proxy
 reference remains `AVG 1.1404 / 318.55s` for tradeoff comparisons.
 
-The final void-relocation sweep retained whole-leaf moves on IBM10 and IBM13
-for 0.0041 attributable exact gain. IBM10 improved `1.7205 -> 1.7165`, including
-congestion `2.226 -> 2.221` and density `1.101 -> 1.098`; the final hierarchy
-audit rejected a tentative IBM18 move. The suite's small raw increase from the
-prior 1.2833 run comes from earlier deadline-sensitive passes on IBM13/14/17,
-not from the non-worsening void survivor.
+The final void-relocation sweep uses both interior corridors and hard-clear
+canvas-edge pockets. It preserves the IBM10/13 whole-leaf wins, retains new
+edge hard-leaf wins on IBM08/11/18, and fills edge pockets with residual soft
+singletons on IBM01/11/12/14, for 0.005968 stage-local exact gain. Routing
+cohorts remain optimization-only and do not change hard labels or soft
+ownership. IBM04 remains unchanged at `0.9964` despite exposing 30 eligible
+soft units. Every retained state passes the full hierarchy contract, exact
+proxy scoring, float32-return legality, and the independent final audit.
+
+A focused follow-up now expands existing cluster boundaries into their own
+hard-clear corridors before testing rigid relocation. It moves only the hard
+and owned-soft band physically aligned with the opening, backs the displacement
+off until float32-return legality passes, and gives an exact-improving outward
+move first-winner priority. IBM10 retains one visible left-edge expansion plus
+the earlier rigid leaf move, improving `1.7205 -> 1.7157`, VALID, with zero
+overlaps and both audits passing. The production trajectory moves hard macro
+`a60088` and owned soft `Grp_613` outward by `1.504 µm`. Full-suite promotion
+is pending.
 
 Focused 2026-08-09 validation of the hierarchy-safe micro-shift and small-leaf
 assembly candidate improved IBM10 `1.1348 -> 1.0600`, VALID, with no audit
@@ -85,7 +99,9 @@ authoritative.
 The subsequent colour-contiguity candidate prevents global averages from
 hiding a scattered leaf. Explicit and high-confidence inferred colours receive
 frozen post-assembly movement boxes plus independent spread, bounding-span,
-and nearest-neighbour impurity limits, and seed selection is hierarchy-first.
+and nearest-neighbour impurity limits. Seed selection now treats that hierarchy
+contract as the hard eligibility gate, then preserves the best-proxy/headroom
+candidate instead of preferring compactness by itself.
 Its full IBM result is `AVG 1.2951`, 17/17 VALID, zero overlaps, and all island
 audits passing in 456.05s. Relative to the proxy-first island control, fragmented
 leaves fall `229 -> 194`, foreign intrusions fall `18,841 -> 9,130`, and mean
@@ -176,6 +192,10 @@ uv run evaluate src/main.py -b ibm10 --vis
 # Live accepted-move dashboard (optional Qt dependencies)
 uv run --extra visualizer python src/visualizer/main.py --benchmark ibm10
 
+# Evaluator-parity dashboard using the ordinary cached DREAMPlace seed
+uv run --extra visualizer python src/visualizer/main.py \
+  --benchmark ibm10 --use-dreamplace-cache
+
 # Generated/custom design directory; initial.plc is optional
 uv run --extra visualizer python src/visualizer/main.py \
   --benchmark-dir test/benchmarks/testcases/syn01_wide
@@ -209,21 +229,18 @@ flowchart TD
     B --> C[Grouped DREAMPlace global placement<br/>synthetic clique nets per cluster]
     C --> D[Cluster-consecutive hard legalization]
 
-    D --> P[Seed portfolio: exact-scored candidates from initial.plc and DP basin]
+    D --> P[Seed portfolio: exact-scored hierarchy-aware candidates]
     P --> S0[Legalized initial.plc]
     P --> S1[Grouped DREAMPlace basin]
-    P --> S2[DP and initial blend, alpha = 0.35]
-    P --> S3[DP and initial blend, alpha = 0.65]
-    P --> S4[Radial expansion from DP basin]
-    P --> S5[Synthetic-clearance push-apart from DP basin]
-    P --> S6[Constraint-graph legalization of initial.plc]
+    P --> S2[Recurrent prototype round 1]
+    P --> S3[Recurrent prototype round 2]
+    P --> S4[Explicit-tag route-channel seed]
     S0 --> E[Enforce the per-component contract,<br/>select the best hierarchy band,<br/>then break ties by proxy]
     S1 --> E
     S2 --> E
     S3 --> E
     S4 --> E
-    S5 --> E
-    S6 --> S7[Repair one-component mandatory near miss<br/>only when at least 95% source displacement remains]
+    S1 --> S7[Repair one-component mandatory near miss<br/>only when at least 95% source displacement remains]
     S7 --> E
 
     E --> F[Congestion-expanded hierarchy regions]
@@ -247,16 +264,15 @@ flowchart TD
     classDef search fill:#fff3e0,stroke:#ef6c00,color:#e65100
     classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     class A,B,C,D,P,E,F0 seed
-    class S0,S1,S2,S3,S4,S5,S6,S7 cand
+    class S0,S1,S2,S3,S4,S7 cand
     class F,G,G2,G3,H,I,I2,J search
     class L,M,N audit
 ```
 
 Blue nodes build the hierarchy-aware seed; the lighter blue row is the seed
 portfolio — grouped DREAMPlace sits next to
-the legalized `initial.plc`, two DP/initial blends, a radial expansion of
-the DP basin, a synthetic-clearance push-apart of the DP basin, and a
-constraint-graph legalization of `initial.plc`. A mandatory lower-proxy seed
+two bounded Re²MaP-inspired recurrent prototypes, the legalized `initial.plc`,
+and, for explicit path-tag designs, a cluster-local route-channel seed. A mandatory lower-proxy seed
 that misses exactly one component may be projected toward the passing reference;
 the repaired state advances to exact scoring only when it is legal and retains
 at least 95% of the source displacement. Production legalizes
@@ -287,13 +303,12 @@ The same flow, written as a linear pipeline:
 benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
           -> grouped DREAMPlace global placement (synthetic clique nets)
           -> cluster-consecutive hard legalization
-          -> seed portfolio: legalized initial.plc, DP basin,
-             two DP/initial blends (alpha = 0.35, 0.65), radial
-             expansion of DP basin, synthetic-clearance push-apart,
-             constraint-graph legalized initial.plc
+          -> seed portfolio: legalized initial.plc, grouped DP basin,
+             two recurrent hierarchy prototypes, and an explicit-tag-only
+             route-channel candidate
           -> exact-score all candidates, apply the per-component hierarchy
              contract relative to the topology-appropriate legal reference,
-             then select the best hierarchy-quality band and break ties by proxy
+             then select the best proxy band and break ties by contract headroom
           -> congestion-expanded hierarchy regions
           -> compact ordinary small leaves
           -> freeze confidence-calibrated

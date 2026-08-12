@@ -89,6 +89,8 @@ def test_offscreen_layers_sidebar_and_replay_controls(tmp_path):
     assert args.export_speed == 0.02
     newest = parse_args(["--replay", str(tmp_path)])
     assert newest.replay == trace
+    cached = parse_args(["--benchmark", "ibm10", "--use-dreamplace-cache"])
+    assert cached.use_dreamplace_cache is True
     window = Dashboard(replay=trace)
     window.timeline.setValue(2)
     window._render_current()
