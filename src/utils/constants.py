@@ -55,6 +55,12 @@ HIER_GROUP_WEIGHT = 8
 # candidates and cannot bypass the hierarchy contract or exact-score ranking.
 HIER_RE2MAP_RECURSIVE_SEEDS = 2
 HIER_RE2MAP_MAX_LEAF_HARD = 16
+# Preserve the distributed legalized-initial basin while grouped DREAMPlace
+# re-optimizes the remainder. The anchors are selected from the strongest
+# leaves, then spread across the canvas by deterministic farthest-first choice.
+HIER_INITIAL_RECURRENT_MIN_LEAVES = 2
+HIER_INITIAL_RECURRENT_MAX_LEAVES = 4
+HIER_INITIAL_RECURRENT_MIN_PROXY_ADVANTAGE = 0.15
 # Minimum hard macros required before a hierarchy cluster receives route lanes.
 HIER_SEED_ROUTE_CHANNEL_MIN_CLUSTER = 4
 # Center-lane half-width as a fraction of the cluster local span.
@@ -196,6 +202,11 @@ HIER_VOID_RELOCATION_TOP_CLUSTERS = 10
 HIER_VOID_RELOCATION_MAX_EXPAND_HARD = 48
 HIER_VOID_RELOCATION_MAX_EXPAND_SOFT = 96
 HIER_VOID_RELOCATION_TOP_EXPAND_CLUSTERS = 12
+# Boundary macros take the full outward void shift. Low-fanout graph neighbors
+# follow for three hops at a decaying amplitude, leaving progressively wider
+# spacing toward the newly occupied boundary.
+HIER_VOID_RELOCATION_GRAPH_TAPER_MAX_HOPS = 3
+HIER_VOID_RELOCATION_GRAPH_TAPER_DECAY = 0.55
 HIER_VOID_RELOCATION_MAX_UTILIZATION = 0.78
 HIER_VOID_RELOCATION_SOFT_COMPACT_SCALE = 0.65
 HIER_VOID_RELOCATION_MIN_FIELD_DROP = 0.01
@@ -463,6 +474,17 @@ HIER_DECOMPRESS_LOCAL_SHIFT_FRAC = 0.20
 # estimate whether the proposed cluster bbox has enough unblocked local area.
 HIER_DECOMPRESS_FEASIBILITY_MIN_FREE_RATIO = 0.70
 HIER_DECOMPRESS_FEASIBILITY_MAX_BLOCKAGE = 0.75
+
+# Dynamic ownership transfer across graph-adjacent hierarchy leaves. A complete
+# candidate must improve exact proxy and the density/congestion contribution by
+# these sizable floors before ownership changes. One bounded intra-leaf repair
+# round follows only after an accepted transfer.
+HIER_ADJACENT_TRANSFER_BUDGET_S = 3.0
+HIER_ADJACENT_TRANSFER_MAX_INTER_SCORED = 12
+HIER_ADJACENT_TRANSFER_MAX_INTRA_SCORED = 8
+HIER_ADJACENT_TRANSFER_MAX_INTER_ACCEPTS = 2
+HIER_ADJACENT_TRANSFER_MIN_PROXY_GAIN = 0.00035
+HIER_ADJACENT_TRANSFER_MIN_DENSITY_CONGESTION_GAIN = 0.0005
 # Graph-guided decompression rescue. When a candidate improves graph-edge
 # geometry but fails cheap feasibility or hard legalization, try smaller and
 # slightly shifted variants before discarding it. Final acceptance still requires

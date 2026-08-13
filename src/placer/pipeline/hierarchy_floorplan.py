@@ -35,8 +35,13 @@ def run_hierarchy_floorplan(
         hierarchy_quality_metric,
     )
     from placer.local_search.cluster_consolidation import _small_cluster_consolidation
+    from placer.local_search.adjacent_cluster_transfer import run_adjacent_cluster_transfer
     from placer.local_search.compound_relocation import _compound_soft_relocation
-    from placer.local_search.fields import _congestion_field, _density_field
+    from placer.local_search.fields import (
+        _congestion_field,
+        _density_field,
+        weighted_congestion_field,
+    )
     from placer.local_search.plateau_telemetry import log_plateau_event
     from placer.local_search.graph_tension import (
         cluster_graph_tension,
@@ -296,6 +301,24 @@ def run_hierarchy_floorplan(
     )
 
     hierarchy = HierarchyModel.build(plc, n, n_soft, hard_sizes=sizes[:n])
+    from placer.local_search.location_graph import LocationAwareGraph
+
+    initial_graph_positions = (benchmark.macro_positions.detach().cpu().numpy().astype(np.float64))[
+        : n + n_soft
+    ]
+    hierarchy.location_graph = LocationAwareGraph.build(
+        plc,
+        hierarchy,
+        initial_graph_positions,
+        sizes[: n + n_soft],
+        max_fanout=max(hierarchy.max_fanout, int(const.HIER_SOFT_ROLE_MAX_FANOUT)),
+    )
+    # This map only deduplicates repeated hierarchy-construction scans. The
+    # persistent macro graph supersedes it for runtime traversal.
+    if hasattr(plc, "_hard_edge_maps_cache"):
+        delattr(plc, "_hard_edge_maps_cache")
+    setattr(plc, "_location_graph", hierarchy.location_graph)
+    setattr(benchmark, "_location_graph", hierarchy.location_graph)
     labels = hierarchy.labels
     clusters = hierarchy.clusters
     csofts = hierarchy.cluster_softs
@@ -673,6 +696,7 @@ def run_hierarchy_floorplan(
             group_weight=gw,
             random_seed=1000,
             scratch_root="/tmp/dreamplace_v1_hier",
+            event_sink=event_sink,
         )
     except Exception as exc:
         _log_stage_timing(
@@ -717,6 +741,7 @@ def run_hierarchy_floorplan(
 
     legal = hard
     s_pos = soft.copy()
+    hierarchy.location_graph.synchronize(legal, s_pos)
     seed_hard_for_tension = legal.copy()
     state = PlacementState(legal.copy(), s_pos.copy(), float(s_score))
     pos = state.full()
@@ -2626,6 +2651,86 @@ def run_hierarchy_floorplan(
                 proposed_after=decomp_proposed_after,
                 rollback_report=decomp_enforce,
             )
+    adjacent_transfer_t0 = time.monotonic()
+    adjacent_transfer_before = float(r_score)
+    h_pos, s_pos, r_score, rscorer, adjacent_transfer_stats = run_adjacent_cluster_transfer(
+        h_pos,
+        s_pos,
+        hw,
+        hh,
+        soft_hw,
+        soft_hh,
+        cw,
+        ch,
+        movable[:n],
+        soft_mov,
+        hierarchy,
+        plc,
+        benchmark,
+        r_score,
+        candidate_allowed=lambda trial_hard, trial_soft: bool(
+            _vector_contract(trial_hard, trial_soft)[0]
+        ),
+        deadline=_deadline(float(const.HIER_ADJACENT_TRANSFER_BUDGET_S), None),
+        min_proxy_gain=float(const.HIER_ADJACENT_TRANSFER_MIN_PROXY_GAIN),
+        min_density_congestion_gain=float(const.HIER_ADJACENT_TRANSFER_MIN_DENSITY_CONGESTION_GAIN),
+        max_inter_scored=int(const.HIER_ADJACENT_TRANSFER_MAX_INTER_SCORED),
+        max_intra_scored=int(const.HIER_ADJACENT_TRANSFER_MAX_INTRA_SCORED),
+        max_inter_accepts=int(const.HIER_ADJACENT_TRANSFER_MAX_INTER_ACCEPTS),
+    )
+    adjacent_transfer_accepts = int(adjacent_transfer_stats.get("inter_accepts", 0)) + int(
+        adjacent_transfer_stats.get("intra_accepts", 0)
+    )
+    if int(adjacent_transfer_stats.get("inter_accepts", 0)):
+        region = hierarchy.hard_regions(h_pos, sizes[:n], hw, hh, cw, ch, n)
+        soft_region = hierarchy.soft_regions(
+            h_pos,
+            s_pos,
+            sizes[:n],
+            hw,
+            hh,
+            soft_hw,
+            soft_hh,
+            cw,
+            ch,
+            n,
+        )
+        for cluster_id, cluster in hierarchy.location_graph.clusters.items():
+            dynamic_bounds = hierarchy.location_graph.dynamic_cluster_bounds(cluster_id, cw, ch)
+            for index in cluster.hard_members:
+                region[index] = [
+                    dynamic_bounds[0] + hw[index],
+                    dynamic_bounds[1] + hh[index],
+                    dynamic_bounds[2] - hw[index],
+                    dynamic_bounds[3] - hh[index],
+                ]
+            for index in cluster.soft_members:
+                local = index - n
+                soft_region[local] = [
+                    dynamic_bounds[0] + soft_hw[local],
+                    dynamic_bounds[1] + soft_hh[local],
+                    dynamic_bounds[2] - soft_hw[local],
+                    dynamic_bounds[3] - soft_hh[local],
+                ]
+        best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), float(r_score)
+        audit_h, audit_s, audit_score = h_pos.copy(), s_pos.copy(), float(r_score)
+        audit_quality = hierarchy_quality_metric(h_pos, clusters)
+    _log(
+        f"  [hier] adjacent-cluster transfer: "
+        f"{int(adjacent_transfer_stats.get('inter_accepts', 0))} transfers, "
+        f"{int(adjacent_transfer_stats.get('intra_accepts', 0))} intra accepts, "
+        f"scored={int(adjacent_transfer_stats.get('inter_scored', 0))}/"
+        f"{int(adjacent_transfer_stats.get('intra_scored', 0))}, "
+        f"proxy {adjacent_transfer_before:.4f}->{r_score:.4f}"
+    )
+    _record_plateau(
+        "adjacent_cluster_transfer",
+        adjacent_transfer_before,
+        r_score,
+        adjacent_transfer_accepts,
+        time.monotonic() - adjacent_transfer_t0,
+        **adjacent_transfer_stats,
+    )
     if (
         n_soft
         and bool(np.any(soft_mov))
@@ -3836,6 +3941,8 @@ def run_hierarchy_floorplan(
                 "  [hier] strong soft repair skipped: "
                 f"{reason}, spare_min={min_spare:.1f}s, budget={strong_budget:.1f}s"
             )
+    hierarchy.location_graph.synchronize(h_pos, s_pos)
+    graph_legalization_order = hierarchy.location_graph.legalization_order(order)
     legal_candidate = _will_legalize(
         h_pos,
         movable[:n],
@@ -3846,7 +3953,7 @@ def run_hierarchy_floorplan(
         ch,
         n,
         deadline=_deadline(30),
-        order=order,
+        order=graph_legalization_order,
     )
     exact_post_legalization_t0 = time.perf_counter()
     legal_pre_full_score = float(r_score)
@@ -3878,6 +3985,7 @@ def run_hierarchy_floorplan(
     else:
         legal = legal_candidate
         _maybe_update_audit_checkpoint(legal, s_pos, legal_score)
+    hierarchy.location_graph.synchronize(legal, s_pos)
     _log_stage_timing(
         "hierarchy_search_total",
         time.perf_counter() - search_t0,
@@ -3935,11 +4043,23 @@ def run_hierarchy_floorplan(
         coldspot_scorer = IncrementalScorer(
             plc, benchmark, np.vstack([legal, s_pos]).astype(np.float64)
         )
+        graph_rows, graph_cols = int(coldspot_scorer.grid_row), int(coldspot_scorer.grid_col)
+        graph_field = np.asarray(
+            weighted_congestion_field(coldspot_scorer, graph_rows, graph_cols),
+            dtype=np.float64,
+        )
+        graph_density = np.asarray(coldspot_scorer.grid_occupied, dtype=np.float64).reshape(
+            graph_rows, graph_cols
+        )
+        graph_field += graph_density / max(float(coldspot_scorer.dens_grid_area), 1.0e-12)
+        hierarchy.location_graph.synchronize(legal, s_pos)
+        hierarchy.location_graph.analyze_state(graph_field, cw, ch)
         emit_event(
             event_sink,
             "checkpoint",
             reason="bulk_coldspot_replacements",
             positions=np.vstack([legal, s_pos]).tolist(),
+            location_graph=hierarchy.location_graph.to_visualizer_payload(),
             metrics=coldspot_scorer.visualizer_metrics(),
             metrics_stale=False,
         )

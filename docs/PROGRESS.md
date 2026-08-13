@@ -6,6 +6,132 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-08-13 — canonical graph consolidation):** Runtime graph state
+> now has one cached immutable pin/net topology, one persistent weighted macro
+> projection, one canonical active-leaf edge list, and separate retained-child
+> and parent projections. `HierarchyModel.edges` and
+> `LocationAwareGraph.active_edges` are the same list object; cluster-neighbor
+> queries project that list instead of retaining a duplicate dictionary on each
+> cluster node. Hard ownership changes rebuild the shared list directly from
+> cached eligible net endpoints using the original hierarchy rule: every net
+> contributes its full weight once per distinct hard-owner pair. Soft ownership
+> changes cannot alter hard hierarchy edges. This fixes the former post-transfer
+> normalization drift caused by rebuilding from normalized macro clique edges.
+>
+> Repeated hard-edge-map inference is cached, and the old decompression fallback
+> that rescanned the netlist into a private adjacency has been removed. The PLC,
+> benchmark, and hierarchy attributes remain aliases to one persistent graph,
+> while visualizer payloads remain intentional immutable snapshots. Focused
+> verification passes 58/58. IBM10 reproduced `1.1744`, VALID, zero overlap, and
+> both audits in 78.87s. Canonical adjacency let the bounded transfer lane
+> exact-score 12 states instead of 2, but retained none.
+>
+> **Status (2026-08-13 — stateful hierarchy-ID graph operators):** The persistent
+> location graph is now the shared state layer for hierarchy-local optimization.
+> Each revision derives per-leaf area/utilization/free capacity, side capacity,
+> heat, internal/external demand, geometric/topological frontier membership,
+> destination affinity and graph-cut delta. Routing demand is split into
+> internal-cluster, cross-cluster, bridge-soft, unowned-soft, and boundary-pair
+> totals. The graph grows bounded connected frontier bundles, constructs
+> capacity-directed dynamic leaf bounds, orders legalization boundary-first with
+> graph followers before interiors, retains bounded checkpoints/transfer history,
+> and emits a JSON-safe dashboard payload.
+>
+> Adjacent transfer now runs strictly after cluster decompression and ranks
+> hard-hard, soft-soft, hard-soft, single relocation, and connected-bundle
+> candidates from this state. Ownership and dynamic regions change only after
+> the full contract and exact component gates pass. Empty-boundary decompression
+> now uses weak-edge stopping, internal-degree damping, heat boosting, and hop
+> decay. Focused graph/transfer/decompression/hierarchy/visualizer verification
+> passes 57/57. IBM10 finished VALID with zero overlap and both audits passing at
+> `1.1744` in 81.26s, versus the preceding focused `1.2059`. The transfer lane
+> exact-scored two states and retained none, so this is evidence for the
+> integrated schedule/order, not an ownership-reassignment win. Full-suite
+> promotion remains pending.
+>
+> **Status (2026-08-13 — adjacent inter-cluster transfer and reassignment):** A
+> new bounded stage runs immediately after cluster decompression. Persistent-
+> graph adjacent leaves under the same retained parent propose hard-hard,
+> soft-soft, and hard-soft swaps plus one-way hard/soft relocation into cold
+> destination cells. Position and ownership changes are staged transactionally
+> across active labels/clusters, retained-child membership, soft ownership,
+> graph nodes, live cluster geometry, and rebuilt canonical cluster adjacency. Emptying a
+> source leaf is forbidden. The staged state must pass the complete dynamic
+> hierarchy/island contract, improve exact proxy by at least 0.00035, and improve
+> the density-plus-congestion proxy contribution by at least 0.0005. Only then
+> does ownership become authoritative and trigger one bounded same-leaf
+> hard-hard/soft-soft swap and hard/soft relocation round.
+>
+> Transaction and acceptance tests prove atomic commit/rollback, graph and
+> hierarchy reassignment, exact component gating, and post-transfer repair
+> scheduling. IBM10 exact-scored one dynamically contract-passing transfer but
+> it failed the gain/component gates; the design reproduced `1.2059`, VALID, in
+> 78.06s. IBM11 exposed no contract-passing transfer and reproduced `0.9962`,
+> VALID, in 56.85s. Both retained all final audits. No full-suite promotion claim
+> is made from these zero-selection focused runs.
+>
+> **Status (2026-08-13 — persistent location-aware hierarchy graph):** Every
+> hierarchy placement call now builds one persistent graph containing stable
+> hard/soft macro nodes, active leaf and retained child/parent membership,
+> bridge roles, sizes, current coordinates, and weighted low-fanout adjacency.
+> Cluster nodes retain hard/owned-soft membership, inter-cluster edges, and live
+> centroid/bounding-box geometry. Dense placement arrays remain authoritative;
+> committed synchronization preserves node identity and increments a graph
+> revision. The graph is attached to the `HierarchyModel`, PLC, and benchmark
+> for placement operators and diagnostics. The graph-tapered void decompressor
+> now consumes its graph-hop profile instead of rebuilding hard adjacency.
+> Focused location/transfer/void/hierarchy verification passes 36/36. IBM10 reproduced
+> `1.2059`, VALID, with both hierarchy audits passing in 90.96s.
+>
+> **Status (2026-08-13 — graph-tapered empty-boundary decompression,
+> implemented / no focused selection):** The final hard-clear void survivor now
+> adds a follower-wave candidate alongside the existing rigid boundary band.
+> The boundary hard macros move the full outward distance; leaf-local hard
+> macros reached through low-fanout nets follow for at most three graph hops at
+> `0.55^hop` displacement. Disconnected macros stay fixed. This fills the
+> boundary macros' vacated space while preserving progressively larger spacing
+> toward the opening. Owned soft macros retain the existing aligned-band rule.
+> Projected void occupancy above 78%, float64 or returned-float32 hard overlap,
+> hierarchy/island contract failure, and non-improving exact proxy reject the
+> candidate. No ownership or hierarchy label changes.
+>
+> Focused IBM10 retained one distinct capacity-safe tapered candidate and
+> exact-scored it in three recomputed rounds; it was exact-neutral or worse, and
+> 18 additional overfilled expansion constructions were rejected before
+> scoring. The prior two rigid void moves remained and the final result
+> reproduced `1.2059`, VALID, in 71.79s with both audits passing. IBM11 had no eligible boundary-owned
+> expansion, retained its ordinary graph-directed void move, and reproduced
+> `0.9962`, VALID, in 73.16s. The candidate family remains bounded inside the
+> existing 96-score / 15-second survivor budget. A full-suite promotion claim is
+> not warranted without a retained tapered state.
+>
+> **Status (2026-08-11 — conditional initial-anchored recurrent seed):** The
+> seed portfolio now integrates a bounded Re²MaP-inspired repair around the
+> hierarchy-aware legalized `initial.plc`. When grouped DREAMPlace fails the
+> complete component contract but improves exact proxy over `initial` by at
+> least 15%, the placer freezes two to four positive-confidence hierarchy leaves
+> at distributed initial positions and reruns grouped DREAMPlace for the
+> remainder. Anchors are ranked strongest-first, then selected normalized
+> farthest-first across the canvas. The candidate remains subject to the
+> immutable prefilter, cluster-consecutive legalization, soft cleanup, exact
+> scoring, portfolio selection, downstream contracts, and final rollback.
+>
+> The first unrestricted experiment ran the candidate on all 17 designs. It
+> selected only on IBM11 and improved that design from `1.1306 -> 0.9961`, but
+> fresh solve overhead shifted deadline-limited downstream work: the suite was
+> `AVG 1.2173`, 17/17 VALID, zero overlaps, in `913.89s`, versus the `1.2151`
+> post-deletion reference. The production gate reduces candidate construction
+> to IBM03/09/11/13. IBM03 and IBM13 fail the immutable prefilter, IBM09 fails
+> the complete contract, and IBM11 selects the candidate.
+>
+> The gated promotion sweep reached **AVG 1.2081**, 17/17 VALID, zero overlaps,
+> and all final hierarchy/vector/island audits passing in **793.26s**. Seed
+> selection was `initial` 10/17, `re2map_recursive_2` 3/17, `dreamplace` 2/17,
+> `re2map_recursive_1` 1/17, and `initial_recurrent` 1/17. Focused IBM10 skipped
+> the candidate and reproduced `1.2059`; focused IBM11 selected it and
+> reproduced `0.9961`. See the
+> [experiment report](../ml_data/initial_recurrent/20260811-results.md).
+>
 > **Status (2026-08-11 — repository-wide dead-code audit):** Static lint,
 > repository-wide symbol reference analysis, and Vulture were reconciled against
 > evaluator reflection, Qt callbacks, PLC monkey-patched attributes, maintained
