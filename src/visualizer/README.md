@@ -56,6 +56,10 @@ The selected upstream documentation is recorded in
   unclustered softs are neutral. Fixed macros have a red double border.
 - A moved macro glows temporarily and its old-to-new vector is drawn. Parent
   groups use translucent related outlines.
+- Stateful graph checkpoints add live leaf bounding boxes labelled with cluster
+  ID, mean heat, and free capacity. Orange dashed frontier vectors point from
+  ranked boundary macros toward candidate adjacent leaves; the trace payload
+  also retains routing attribution and accepted transfer history.
 - Synthetic grouping nets are enabled by default and collapse the repeated
   DREAMPlace copies into one dashed centroid/spoke hyperedge; line thickness
   reflects `HIER_GROUP_WEIGHT`. Real nets and hierarchy-graph centroid edges
@@ -83,9 +87,12 @@ inflating the file. The CLI reports frame progress and an estimated time
 remaining. Qt may print `This plugin does not support propagateSizeHints()` in
 offscreen mode; that platform warning is harmless and encoding continues.
 
-The sidebar shows the current algorithm, round, and lane; exact or stale
-status; all five lower-is-better metrics; signed change from the exact initial
-placement; and trends. After seed selection it also shows hard containment and
+The sidebar shows the current algorithm, round, and lane; the active seed name
+and its build/scoring/selected state; exact or stale status; all five
+lower-is-better metrics; signed change from the exact initial placement; and
+trends. Live DREAMPlace frames keep the seed name visible beside the optimizer
+iteration. Cached seeds still emit their name and state even though no optimizer
+frames execute. After seed selection it also shows hard containment and
 all six contract-component values beside their limits and signed headroom, so a
 single composite cannot hide the component responsible for a rollback:
 
@@ -99,10 +106,12 @@ hierarchy = hierarchy_quality_vector(...)["composite"]
 Records are newline-delimited JSON dictionaries with `schema`, `type`,
 `timestamp_ns`, and (after the emitter is installed) `sequence`. Event types
 are `run_metadata`, `algorithm_start`, `algorithm_end`, `accepted_move`,
-`checkpoint`, `dreamplace_progress`, `rollback`, `completion`, and `error`.
-Accepted moves contain output-tensor `indices`, `old_positions`,
+`checkpoint`, `seed_status`, `dreamplace_progress`, `rollback`, `completion`,
+and `error`.
+`seed_status` records contain `seed_name` and `status`. Accepted moves contain
+output-tensor `indices`, `old_positions`,
 `new_positions`, `move_kind`, and exact metrics. DREAMPlace frames contain
-changed indices/centers and `metrics_stale=true`; the sidebar retains the most
+the `seed_name`, changed indices/centers, and `metrics_stale=true`; the sidebar retains the most
 recent exact values under its stale badge until the next exact checkpoint.
 Checkpoints contain full positions at algorithm-stage boundaries, explicit
 pipeline boundaries, and every 250 accepted moves. Replay ignores one

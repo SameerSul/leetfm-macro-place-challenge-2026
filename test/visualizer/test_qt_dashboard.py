@@ -153,3 +153,53 @@ def test_replay_placeholder_has_actionable_error(tmp_path, capsys):
     error = capsys.readouterr().err
     assert "example placeholder" in error
     assert "--replay ml_data/visualizer/ibm10" in error
+
+
+def test_seed_name_remains_visible_during_dreamplace_progress(tmp_path):
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    trace = tmp_path / "seed-trace.jsonl"
+    rows = [
+        {
+            "schema": SCHEMA_VERSION,
+            "type": "run_metadata",
+            "canvas": [100, 80],
+            "macro_names": ["hard/a"],
+            "macro_sizes": [[10, 8]],
+            "macro_fixed": [False],
+            "num_hard_macros": 1,
+        },
+        {
+            "schema": SCHEMA_VERSION,
+            "type": "checkpoint",
+            "reason": "initial_placement",
+            "positions": [[20, 20]],
+            "metrics_stale": True,
+        },
+        {
+            "schema": SCHEMA_VERSION,
+            "type": "seed_status",
+            "seed_name": "re2map_recursive_1",
+            "status": "building",
+            "metrics_stale": True,
+        },
+        {
+            "schema": SCHEMA_VERSION,
+            "type": "dreamplace_progress",
+            "seed_name": "re2map_recursive_1",
+            "iteration": 30,
+            "indices": [0],
+            "new_positions": [[25, 24]],
+            "metrics_stale": True,
+        },
+    ]
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    window = Dashboard(replay=trace)
+    window.timeline.setValue(2)
+    window._render_current()
+    assert window.seed.text() == "Seed: re2map_recursive_1 · building"
+    window.timeline.setValue(3)
+    window._render_current()
+    assert window.seed.text() == "Seed: re2map_recursive_1 · DREAMPlace iteration 30"
+    window.close()
+    app.processEvents()

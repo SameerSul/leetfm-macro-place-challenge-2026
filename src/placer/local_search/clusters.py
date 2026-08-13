@@ -386,6 +386,10 @@ def derive_oversized_hard_clusters(
 
 
 def _hard_edge_maps(plc, n: int, max_fanout: int):
+    key = (int(n), int(max_fanout))
+    cached = getattr(plc, "_hard_edge_maps_cache", None)
+    if cached is not None and cached[0] == key:
+        return cached[1], cached[2]
     cache = _build_wl_cache(plc)
     ref_idx = cache["ref_idx"]
     net_starts = cache["net_starts"]
@@ -409,6 +413,7 @@ def _hard_edge_maps(plc, n: int, max_fanout: int):
                 e = (hard_a[i], hard_a[j])
                 edge_count[e] = edge_count.get(e, 0) + 1
                 edge_weight[e] = edge_weight.get(e, 0.0) + weight
+    plc._hard_edge_maps_cache = (key, edge_count, edge_weight)
     return edge_count, edge_weight
 
 

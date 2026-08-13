@@ -19,9 +19,11 @@ hard-soft/soft swap and cycle passes, generic LSMC, generic cluster kicks, ML
 ranker defaults, and their proxy-only verifiers are not active code.
 
 Current hierarchy-first result with normal BB/cache behavior:
-`uv run evaluate src/main.py --all` = **AVG 1.2832**, 17/17 VALID, 0
-overlaps, all final hierarchy/island audits passed, **668.75s**. The 2026-08-10
-flow includes all three soft-confidence tiers: direct hard affinity, bounded
+`uv run evaluate src/main.py --all` = **AVG 1.2081**, 17/17 VALID, 0
+overlaps, all final hierarchy/island audits passed, **793.26s**. The 2026-08-11
+seed portfolio includes the conditional initial-anchored recurrent repair; it
+selected on IBM11 only. The 2026-08-10 hierarchy flow includes all three
+soft-confidence tiers: direct hard affinity, bounded
 synchronous hop-one/hop-two propagation, and stable residual soft-only groups.
 It preserves all hard labels and the retained parent/child level. Soft
 hierarchy coverage is 18,659/21,538 (86.63%), mean final hard hierarchy quality
@@ -172,6 +174,15 @@ constraint-graph alternative has been deleted. The post-deletion IBM sweep is
 `AVG 1.2151`, 17/17 VALID, zero overlaps, and all final audits passing in
 838.30s; `initial` selected on 11/17 designs. Hard-hard / hard-soft swap sets use
 exact batched scoring.
+The portfolio now also has a cost-gated initial-anchored recurrent repair. If
+grouped DREAMPlace fails the complete contract while beating legalized
+`initial.plc` by at least 15% exact proxy, it freezes two to four spatially
+distributed positive-confidence leaves from `initial` and reruns grouped
+DREAMPlace for the remainder. The accepted IBM sweep is **AVG 1.2081**, 17/17
+VALID, zero overlaps, and all final audits passing in **793.26s**. The gate ran
+on IBM03/09/11/13 and selected on IBM11 only, improving its final proxy from
+1.1306 to 0.9961. The candidate uses no benchmark-name branch and retains every
+ordinary prefilter, legalization, exact-score, selection, and rollback gate.
 Swap congestion/density tails now use exact baseline-plus-touched-cell Numba
 reducers; ordinary disposable congestion batches still partition in place.
 Nearest-neighbor hierarchy-audit selection also uses a cached Numba kernel.
@@ -402,9 +413,18 @@ The current production path optimizes for **hierarchy preservation**, not the
 lowest proxy score. It keeps connected subsystems together using grouped
 DREAMPlace, cluster-consecutive legalization, owned/bridge soft roles,
 congestion-expanded regions, region-locked hard/soft relief, exact-gated cluster
-decompression, region-bounded swaps, and proxy-aware coldspot tightening. The
+decompression, transactional graph-adjacent ownership transfer with an exact
+density/congestion gate, post-transfer same-leaf repair, region-bounded swaps,
+and proxy-aware coldspot tightening. The
 exact proxy is still used for evaluator reports and local accept gates, but the
 old spread-oriented proxy optimizer is gone.
+
+`HierarchyModel.edges` and `LocationAwareGraph.active_edges` share one canonical
+list. Do not add per-cluster adjacency copies or rebuild hierarchy edges from
+normalized macro adjacency. Hard ownership changes must use cached eligible
+nets and the full-net `_cluster_graph` weighting; soft ownership changes must
+not alter the hard hierarchy graph. Retained child and parent edges are distinct
+hierarchy projections and should remain separate.
 
 Historical proxy objective:
 

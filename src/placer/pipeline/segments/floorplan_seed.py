@@ -87,11 +87,103 @@ def select_recursive_prototype_leaves(
         top = float(np.max(hard_xy[mem, 1] + hh[mem]))
         footprint = max((right - left) * (top - bottom), 1.0e-12)
         utilization = float(np.sum(4.0 * hw[mem] * hh[mem]) / footprint)
-        ranked.append(
-            (-round(confidence, 12), -round(utilization, 12), -int(mem.size), cid)
-        )
+        ranked.append((-round(confidence, 12), -round(utilization, 12), -int(mem.size), cid))
     ranked.sort()
     return [int(row[-1]) for row in ranked[: max(0, int(max_leaves))]]
+
+
+def select_initial_recurrent_leaves(
+    clusters,
+    cluster_confidence,
+    movable_hard: np.ndarray,
+    hard_xy: np.ndarray,
+    hw: np.ndarray,
+    hh: np.ndarray,
+    *,
+    canvas_width: float,
+    canvas_height: float,
+    max_leaves: int,
+    max_members: int = 16,
+) -> list[int]:
+    """Select strong initial-placement anchors with broad canvas coverage."""
+    limit = max(0, int(max_leaves))
+    if limit == 0:
+        return []
+    ranked = []
+    for cid, members in clusters.items():
+        cid = int(cid)
+        mem = np.asarray(members, dtype=np.int64)
+        if (
+            mem.size < 2
+            or mem.size > max(2, int(max_members))
+            or not bool(np.all(movable_hard[mem]))
+        ):
+            continue
+        confidence = float((cluster_confidence or {}).get(cid, 0.0))
+        if confidence <= 0.0:
+            continue
+        left = float(np.min(hard_xy[mem, 0] - hw[mem]))
+        right = float(np.max(hard_xy[mem, 0] + hw[mem]))
+        bottom = float(np.min(hard_xy[mem, 1] - hh[mem]))
+        top = float(np.max(hard_xy[mem, 1] + hh[mem]))
+        footprint = max((right - left) * (top - bottom), 1.0e-12)
+        utilization = float(np.sum(4.0 * hw[mem] * hh[mem]) / footprint)
+        ranked.append(
+            {
+                "cid": cid,
+                "confidence": round(confidence, 12),
+                "utilization": round(utilization, 12),
+                "members": int(mem.size),
+                "center": np.mean(hard_xy[mem], axis=0),
+            }
+        )
+    ranked.sort(
+        key=lambda row: (
+            -row["confidence"],
+            -row["utilization"],
+            -row["members"],
+            row["cid"],
+        )
+    )
+    pool = ranked[: max(limit, 4 * limit)]
+    if not pool:
+        return []
+    selected = [pool.pop(0)]
+    width = max(float(canvas_width), 1.0e-12)
+    height = max(float(canvas_height), 1.0e-12)
+    while pool and len(selected) < limit:
+
+        def _coverage_key(row):
+            center = row["center"]
+            min_distance = min(
+                ((float(center[0]) - float(anchor["center"][0])) / width) ** 2
+                + ((float(center[1]) - float(anchor["center"][1])) / height) ** 2
+                for anchor in selected
+            )
+            return (
+                -round(min_distance, 12),
+                -row["confidence"],
+                -row["utilization"],
+                -row["members"],
+                row["cid"],
+            )
+
+        pool.sort(key=_coverage_key)
+        selected.append(pool.pop(0))
+    return [int(row["cid"]) for row in selected]
+
+
+def should_run_initial_recurrent(
+    dreamplace_score: float,
+    initial_score: float,
+    *,
+    dreamplace_contract_passed: bool,
+    minimum_proxy_advantage: float,
+) -> bool:
+    """Return whether a contract-repairing recurrent solve is worth its cost."""
+    if dreamplace_contract_passed:
+        return False
+    return float(dreamplace_score) <= float(initial_score) * (1.0 - float(minimum_proxy_advantage))
 
 
 def select_seed_candidate(
@@ -297,6 +389,7 @@ def run_seed_portfolio(
     group_weight: int,
     random_seed: int = 1000,
     scratch_root: str = "/tmp/dreamplace_v1_hier",
+    event_sink=None,
 ) -> tuple[np.ndarray, np.ndarray, float, list[dict[str, object]]]:
     """Create and score the seed portfolio used by hierarchy floorplanning.
 
@@ -305,6 +398,19 @@ def run_seed_portfolio(
     survivability before downstream region cleanup.
     """
     benchmark_name = str(getattr(benchmark, "_hierarchy_trace_name", benchmark.name))
+
+    def _emit_seed_status(name: str, status: str) -> None:
+        if event_sink is None:
+            return
+        from visualizer.events import emit_event
+
+        emit_event(
+            event_sink,
+            "seed_status",
+            seed_name=str(name),
+            status=str(status),
+            metrics_stale=True,
+        )
 
     def _log_stage_timing(stage: str, elapsed_s: float, **extra) -> None:
         payload = {
@@ -351,6 +457,7 @@ def run_seed_portfolio(
             cluster_groups=(groups or None),
             group_weight=group_weight,
             return_full=True,
+            seed_name="dreamplace",
         )
         _log_stage_timing(
             "seed_dreamplace_cache_lookup",
@@ -418,6 +525,7 @@ def run_seed_portfolio(
             cluster_groups=(groups or None),
             group_weight=group_weight,
             return_full=True,
+            seed_name=name,
             temporary_fixed_positions=fixed_positions,
         )
         _log_stage_timing(
@@ -655,6 +763,7 @@ def run_seed_portfolio(
         initial = benchmark.macro_positions.detach().cpu().numpy().astype(np.float64)
         init_hard = initial[:n].copy()
         init_soft = initial[n : n + n_soft].copy()
+        _emit_seed_status("initial", "building")
         try:
             initial_legal_hard, initial_legal_soft = _legalize_seed(
                 "initial",
@@ -755,6 +864,7 @@ def run_seed_portfolio(
             return True, vector
 
         rows: list[dict[str, object]] = []
+        _emit_seed_status("dreamplace", "scoring")
         try:
             dp_passed, _ = _immutable_contract_pass(dp_hard, dp_soft)
             if not dp_passed:
@@ -764,7 +874,90 @@ def run_seed_portfolio(
             rows.append(_score_seed("dreamplace", dp_hard, dp_soft, do_soft_cleanup=True))
         except Exception as exc:
             logger("  [hier] seed dreamplace scoring failed: " f"{type(exc).__name__}: {exc}")
-        rows.append(_score_seed("initial", initial_legal_hard, initial_legal_soft))
+        _emit_seed_status("initial", "scoring")
+        initial_row = _score_seed("initial", initial_legal_hard, initial_legal_soft)
+        rows.append(initial_row)
+        dreamplace_row = next(
+            (row for row in rows if str(row["name"]) == "dreamplace"),
+            None,
+        )
+        dreamplace_contract_passed = True
+        if dreamplace_row is not None:
+            dreamplace_vector = hierarchy_quality_vector(
+                dreamplace_row["hard"],
+                dreamplace_row["soft"],
+                clusters,
+                csofts,
+                bridge_softs,
+                hierarchy_edges,
+                cw,
+                ch,
+            )
+            dreamplace_contract_passed, _ = hierarchy_vector_contract(
+                dreamplace_vector,
+                reference_contract_limits,
+            )
+        minimum_advantage = float(
+            getattr(const, "HIER_INITIAL_RECURRENT_MIN_PROXY_ADVANTAGE", 0.15)
+        )
+        recurrent_worthwhile = bool(
+            dreamplace_row is not None
+            and should_run_initial_recurrent(
+                float(dreamplace_row["score"]),
+                float(initial_row["score"]),
+                dreamplace_contract_passed=dreamplace_contract_passed,
+                minimum_proxy_advantage=minimum_advantage,
+            )
+        )
+        initial_recurrent_ids = []
+        if recurrent_worthwhile:
+            initial_recurrent_ids = select_initial_recurrent_leaves(
+                clusters,
+                cluster_confidence,
+                movable[:n],
+                initial_legal_hard,
+                hw,
+                hh,
+                canvas_width=cw,
+                canvas_height=ch,
+                max_leaves=int(getattr(const, "HIER_INITIAL_RECURRENT_MAX_LEAVES", 4)),
+                max_members=int(getattr(const, "HIER_RE2MAP_MAX_LEAF_HARD", 16)),
+            )
+        if recurrent_worthwhile and len(initial_recurrent_ids) >= int(
+            getattr(const, "HIER_INITIAL_RECURRENT_MIN_LEAVES", 2)
+        ):
+            _emit_seed_status("initial_recurrent", "building")
+            try:
+                initial_recurrent_hard, initial_recurrent_soft, fixed_hard_indices = (
+                    _prepare_recursive_candidate(
+                        "initial_recurrent",
+                        initial_recurrent_ids,
+                        initial_legal_hard,
+                    )
+                )
+                passed, _ = _immutable_contract_pass(
+                    initial_recurrent_hard,
+                    initial_recurrent_soft,
+                )
+                if passed:
+                    _emit_seed_status("initial_recurrent", "scoring")
+                    row = _score_seed(
+                        "initial_recurrent",
+                        initial_recurrent_hard,
+                        initial_recurrent_soft,
+                        do_soft_cleanup=True,
+                    )
+                    row["recursive_fixed_leaves"] = tuple(int(cid) for cid in initial_recurrent_ids)
+                    row["recursive_fixed_hard"] = tuple(int(i) for i in fixed_hard_indices)
+                    row["initial_recurrent"] = True
+                    rows.append(row)
+                else:
+                    logger("  [hier] seed initial_recurrent failed immutable contract prefilter")
+            except Exception as exc:
+                logger(
+                    "  [hier] seed initial_recurrent failed recursive prototype: "
+                    f"{type(exc).__name__}: {exc}"
+                )
         recursive_seed_count = max(
             0,
             min(2, int(getattr(const, "HIER_RE2MAP_RECURSIVE_SEEDS", 2))),
@@ -787,9 +980,10 @@ def run_seed_portfolio(
                 break
             fixed_leaf_ids.extend(next_ids)
             name = f"re2map_recursive_{round_index + 1}"
+            _emit_seed_status(name, "building")
             try:
-                recursive_hard, recursive_soft, fixed_hard_indices = (
-                    _prepare_recursive_candidate(name, fixed_leaf_ids, recursive_hard)
+                recursive_hard, recursive_soft, fixed_hard_indices = _prepare_recursive_candidate(
+                    name, fixed_leaf_ids, recursive_hard
                 )
             except Exception as exc:
                 logger(
@@ -802,6 +996,7 @@ def run_seed_portfolio(
                 logger(f"  [hier] seed {name} failed immutable contract prefilter")
                 continue
             try:
+                _emit_seed_status(name, "scoring")
                 row = _score_seed(name, recursive_hard, recursive_soft, do_soft_cleanup=True)
                 row["recursive_fixed_leaves"] = tuple(int(cid) for cid in fixed_leaf_ids)
                 row["recursive_fixed_hard"] = tuple(int(i) for i in fixed_hard_indices)
@@ -812,6 +1007,7 @@ def run_seed_portfolio(
         if _has_explicit_path_tags():
             raw_candidates.append(("route_channel", *_route_channel_seed(dp_hard, dp_soft)))
         for name, cand_h, cand_s in raw_candidates:
+            _emit_seed_status(name, "building")
             try:
                 legal_hard, legal_soft = _legalize_seed(name, cand_h, cand_s, budget_s=45.0)
             except Exception as exc:
@@ -822,6 +1018,7 @@ def run_seed_portfolio(
                 logger(f"  [hier] seed {name} failed immutable contract prefilter")
                 continue
             try:
+                _emit_seed_status(name, "scoring")
                 rows.append(_score_seed(name, legal_hard, legal_soft))
             except Exception as exc:
                 logger(f"  [hier] seed {name} failed scoring: {type(exc).__name__}: {exc}")
@@ -1039,8 +1236,10 @@ def run_seed_portfolio(
             f"hierarchy_first={int(hierarchy_first)}; contract_reference={reference_name}"
             f"/{seed_reference_kind}"
         )
+        _emit_seed_status(str(selected["name"]), "selected")
         return selected["hard"], selected["soft"], float(selected["score"]), rows
 
+    _emit_seed_status("dreamplace", "building")
     hard, soft = _prepare_dreamplace_candidate(
         group_weight=group_weight,
         random_seed=random_seed,

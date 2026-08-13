@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from placer.local_search.cluster_void_relocation import (
+    _graph_taper_profile,
     _void_cluster_relocation,
     _soft_routing_units,
     find_large_macro_voids,
@@ -55,6 +56,32 @@ class _ExpansionScorer(_Scorer):
         field = np.zeros((20, 20), dtype=np.float64)
         field[:, :10] = 1.0
         return field
+
+
+class _GraphExpansionScorer(_ExpansionScorer):
+    def score_move_group(self, members, new_hard, soft_indices, new_soft):
+        return 0.8 if len(members) > 1 else 0.9
+
+
+def test_graph_taper_profile_follows_low_fanout_edges_with_decaying_shift():
+    class _LocationGraph:
+        def directional_graph_profile(self, boundary, allowed, *, max_hops, decay):
+            assert np.array_equal(boundary, [0])
+            assert np.array_equal(allowed, [0, 1, 2, 3, 4])
+            assert max_hops == 3
+            assert decay == 0.5
+            return np.array([0, 1, 2, 3]), np.array([1.0, 0.5, 0.25, 0.125])
+
+    members, scales = _graph_taper_profile(
+        np.array([0, 1, 2, 3, 4]),
+        np.array([0]),
+        max_hops=3,
+        decay=0.5,
+        location_graph=_LocationGraph(),
+    )
+
+    assert np.array_equal(members, [0, 1, 2, 3])
+    assert np.allclose(scales, [1.0, 0.5, 0.25, 0.125])
 
 
 def test_large_macro_voids_find_opposing_edge_corridor():
@@ -227,6 +254,58 @@ def test_void_relocation_expands_existing_cluster_boundary_into_clear_corridor()
     assert moved_hard[0, 0] > hard[0, 0]
     assert np.allclose(moved_hard[1], hard[1])
     assert _void_cluster_relocation.last_stats["expansion_accepts"] == 1
+
+
+def test_void_relocation_can_select_graph_tapered_boundary_expansion():
+    hard = np.array([[8.0, 10.0], [4.0, 10.0], [2.0, 10.0]])
+    plc = SimpleNamespace(
+        hard_macro_indices=[100, 101, 102],
+        _wl_vec_cache={
+            "net_starts": np.array([0, 2]),
+            "net_lengths": np.array([2, 2]),
+            "net_weights": np.ones(2),
+            "ref_idx": np.array([100, 101, 101, 102]),
+        },
+    )
+    scorer = _GraphExpansionScorer(plc)
+
+    class _LocationGraph:
+        def synchronize(self, hard_positions, soft_positions):
+            return None
+
+        def directional_graph_profile(self, boundary, allowed, *, max_hops, decay):
+            return np.array([0, 1, 2]), np.array([1.0, decay, decay**2])
+
+    moved_hard, _, accepts, score = _void_cluster_relocation(
+        hard.copy(),
+        np.zeros((0, 2), dtype=np.float64),
+        np.array([2.0, 0.5, 0.5]),
+        np.array([4.0, 0.5, 0.5]),
+        np.zeros(0),
+        np.zeros(0),
+        20.0,
+        20.0,
+        3,
+        SimpleNamespace(grid_rows=20, grid_cols=20),
+        scorer,
+        1.0,
+        location_graph=_LocationGraph(),
+        clusters={0: np.array([0, 1, 2])},
+        cluster_softs={},
+        edges=[],
+        movable_h=np.ones(3, dtype=bool),
+        movable_soft=np.zeros(0, dtype=bool),
+        candidate_allowed=lambda trial_hard, trial_soft: True,
+        min_field_drop=0.01,
+        max_accepts=1,
+        max_scored=96,
+    )
+
+    shifts = moved_hard[:, 0] - hard[:, 0]
+    assert accepts == 1
+    assert score == 0.8
+    assert shifts[0] > shifts[1] > shifts[2] > 0.0
+    assert _void_cluster_relocation.last_stats["graph_taper_accepts"] == 1
 
 
 def test_void_relocation_respects_hierarchy_gate():

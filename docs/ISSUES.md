@@ -168,7 +168,8 @@ default-off because its focused proxy regression was too large.
 
 The exact-prescored seed portfolio retains the hierarchy-aware ordinary initial
 seed, whose legalization is cluster-consecutive and connectivity-pressure
-ordered. Grouped DREAMPlace and its two recurrent hierarchy prototypes remain.
+ordered. Grouped DREAMPlace, its two recurrent hierarchy prototypes, and the
+conditional initial-anchored recurrent repair remain.
 The hierarchy-blind constraint-graph seed and the four zero-selection blend,
 radial-expansion, and synthetic-clearance candidates were deleted; post-hoc
 contract eligibility is not considered hierarchy optimization, and candidates
@@ -195,6 +196,14 @@ the full IBM sweep selected them on IBM01/02/07/08 and reached historical
 worst-spread and impurity limits after selecting the now-removed
 `synthetic_clearance` seed. That result is retained as historical attribution;
 the current single-component refinement passes all ten truth cases.
+
+The initial-anchored recurrent repair is separately cost-gated: it runs only
+when grouped DREAMPlace fails the complete component contract and offers at
+least 15% exact-proxy advantage over legalized `initial.plc`. This preserves
+distributed high-confidence leaves while allowing grouped DREAMPlace to
+reprototype the remainder. It is not a benchmark-name branch, and it cannot
+bypass immutable hierarchy, legality, exact scoring, seed selection, or final
+rollback.
 
 ### 2. Use attributable telemetry for scheduling (complete)
 
@@ -360,6 +369,50 @@ rigid moves. IBM10 retained one left-edge expansion and its prior rigid leaf
 move, improving `1.7205 -> 1.7157` with both audits passing. Visibility-aware
 selection moves `a60088` and owned soft `Grp_613` outward by `1.504 µm`. Full-suite
 promotion is still required.
+
+The 2026-08-13 graph-taper follow-up adds the missing follower wave to those
+boundary candidates. Boundary hard macros take the full outward displacement;
+hard macros reached through low-fanout leaf-local nets follow for up to three
+hops with a 0.55 per-hop decay. Disconnected macros do not move. Projected void
+occupancy above 78%, float64 or returned-float32 overlap, complete hierarchy
+contract failure, and non-improving exact proxy all reject the complete state.
+Focused IBM10 retained one distinct capacity-safe tapered layout and exact-scored
+it in three recomputed rounds; none improved exact proxy, and 18 additional
+overfilled expansion constructions were rejected before scoring. The final
+`1.2059` result remained unchanged and audit-safe. IBM11 exposed no eligible
+boundary-owned expansion and reproduced `0.9962`, VALID. This is implemented as
+a bounded candidate family, but is not yet a promoted score improvement.
+
+The persistent graph now also supports a bounded dynamic-ownership pass directly
+after cluster decompression. Only graph-adjacent leaves under the same retained
+parent participate. The pass stages hard-hard, soft-soft, hard-soft swaps and
+one-way relocation into cold destination-leaf cells, transfers active and child
+membership plus soft ownership transactionally, rebuilds graph adjacency, and
+checks the complete hierarchy/island contract against the staged partition. A
+candidate must improve exact proxy by at least 0.00035 and the weighted density
+plus congestion contribution by at least 0.0005. A retained transfer triggers
+one same-cluster repair round; a rejection restores every hierarchy map and
+graph role. IBM10 exact-scored one contract-passing transfer candidate but it
+failed the component/gain gates; IBM11 exposed none. Both reproduced their prior
+VALID results (`1.2059` and `0.9962`). Full-suite promotion remains pending.
+
+The expanded stateful-graph selector exposes two contract-passing exact
+candidates on focused IBM10, versus one under heat-only ranking, but neither
+clears the `0.00035` proxy and `0.0005` density/congestion gain gates. The
+integrated after-decompression schedule, directional propagation, dynamic
+regions, and graph legalization order finished at `1.1744`, VALID and audit-safe.
+Because no ownership transfer was selected, the score change must not be
+attributed to inter-cluster reassignment; isolate legalization order and stage
+placement on more benchmarks before full-suite promotion.
+
+The graph consolidation removes the prior active-edge duplication and fixes a
+latent accepted-transfer hazard: initial hierarchy edges used full net weights,
+whereas reassignment rebuilt them from normalized hard/soft macro clique edges.
+There is now one shared active list and one weighting rule. Focused IBM10
+exact-scored 12 transfer states under the corrected adjacency, accepted none,
+and reproduced `1.1744` VALID. The remaining repeated structures—macro adjacency
+and retained child/parent projections—serve distinct traversal and hierarchy
+levels rather than duplicating active ownership.
 
 Explicit slash-separated soft instance paths now form high-confidence bundles
 and are the only source of compound relocation groups. Flat IBM `Grp_*` names
