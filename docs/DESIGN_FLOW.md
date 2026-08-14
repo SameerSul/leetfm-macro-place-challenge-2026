@@ -216,7 +216,8 @@ implements it, and the constants that control it), see
 flowchart TD
     A[Benchmark + initial macro locations] --> B[Load PLC]
     B --> C[Build HierarchyModel from path tags or inferred connectivity<br/>refine a nearly all-covering single flat component<br/>retain one spatial/structural parent/child level]
-    C --> D[Classify soft macros as owned or bridge<br/>and calibrate role confidence]
+    C --> C0[Build persistent location-aware macro graph<br/>membership + shared active edges + live coordinates and bounds]
+    C0 --> D[Classify soft macros as owned or bridge<br/>and calibrate role confidence]
     D --> E[Run grouped DREAMPlace with synthetic cluster clique nets]
     E --> F[Cluster-consecutive hard legalization]
     F --> E1[Exact-prescore seed portfolio + per-component hierarchy contract]
@@ -233,7 +234,11 @@ flowchart TD
     A2 -->|No| V
     A3 --> A4[Freeze deepest-child footprint + graph/field margin boxes<br/>bounded hard/owned-soft relocation + hard swaps]
     A4 --> V[Exact-gated cluster decompression + graph-tension ordering]
-    V --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps<br/>two stable exact prefixes, untouched suffix on demand]
+    V --> V1[Adjacent-cluster hard-hard / soft-soft / hard-soft swaps and relocation<br/>transactional ownership transfer + exact density/congestion gate]
+    V1 --> V2{Ownership transferred?}
+    V2 -->|Yes| V3[Rebuild membership, graph adjacency, and regions<br/>then run one same-cluster repair round]
+    V2 -->|No| T
+    V3 --> T[Region-bounded hard-hard / hard-soft / soft-soft swaps<br/>two stable exact prefixes, untouched suffix on demand]
     T --> T1[Per-round micro-shift replay + audit checkpoint]
     T1 --> X[Post-swap micro-shift replay; telemetry skips duplicate ordinary post-swap soft pass]
     X --> C1{Post-soft plateau and spare budget?}
@@ -257,6 +262,21 @@ Every return path passes through a final in-bounds clamp for movable macros.
 `PlacementState` carries hard/soft coordinates and exact proxy through the
 pipeline; each pass returns a `PassResult` summary used by the deterministic
 scheduler and buffered plateau telemetry.
+
+The location-aware graph persists beside `PlacementState`. Placement arrays
+remain the numerical source of truth; committed synchronization updates stable
+macro nodes and recomputes only the required live cluster geometry. This lets
+later graph/spatial operators reuse one topology rather than rebuilding it from
+the flat netlist. Every analyzed revision also records cluster capacity and
+heat, four-sided whitespace, internal/external routing demand, boundary-facing
+macros, destination affinity, and estimated graph-cut change. Those records
+drive connected frontier migration, directional decompression, dynamic regions,
+and boundary-first legalization. Bounded graph checkpoints and accepted-transfer
+history are serialized into visualizer checkpoints for replay and debugging.
+The active edge list is shared with `HierarchyModel`; cluster neighbor rows are
+views of that list, not independent graph copies. Hard reassignment rebuilds it
+from cached nets with the original full-net hierarchy weighting, while soft
+reassignment leaves it unchanged. Child and parent projections remain separate.
 
 The final void pass does not infer or merge hierarchy. It preserves the verified
 opposing-edge whole-leaf prefix and also finds hard-clear fragments between
@@ -297,6 +317,15 @@ existing leaf/soft ownership and use none of Re²MaP's ellipse or evolutionary
 packing-tree operators. They are non-mandatory seeds: immutable hierarchy
 prefiltering, exact proxy/headroom selection, downstream contracts, and final
 rollback are unchanged.
+A conditional initial-anchored recurrent repair applies the same freeze/rerun
+mechanism only when grouped DREAMPlace fails the complete component contract
+while beating the legalized initial seed's exact proxy by at least 15%. It
+freezes two to four positive-confidence leaves at their initial positions,
+choosing a strong first anchor and then normalized farthest-first canvas
+coverage, and reruns grouped DREAMPlace on everything else. This targets the
+specific case where the compact basin has useful proxy structure but needs
+distributed hierarchy anchors. Ordinary immutable, legality, exact-score,
+selection, and rollback gates remain authoritative.
 A deterministic B*-tree/contour compaction of existing leaves was tested as a
 third seed, selected on 0/17 IBM designs, and removed from runtime. Its code and
 dedicated tests were pruned; only the measured rejection report remains.

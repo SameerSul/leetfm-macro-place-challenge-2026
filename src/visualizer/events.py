@@ -15,6 +15,7 @@ EVENT_TYPES = frozenset(
         "algorithm_end",
         "accepted_move",
         "checkpoint",
+        "seed_status",
         "dreamplace_progress",
         "rollback",
         "completion",

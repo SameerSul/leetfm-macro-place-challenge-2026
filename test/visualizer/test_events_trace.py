@@ -31,6 +31,13 @@ def test_event_stage_inheritance_and_sequence():
     assert move["lane"] == "congestion"
 
 
+def test_seed_status_is_a_supported_event():
+    rows = []
+    emit_event(rows.append, "seed_status", seed_name="initial", status="scoring")
+    assert rows[0]["type"] == "seed_status"
+    assert rows[0]["seed_name"] == "initial"
+
+
 def test_trace_delta_round_trip_and_periodic_keyframe(tmp_path):
     path = tmp_path / "trace.jsonl"
     with TraceWriter(path, keyframe_every=2) as writer:

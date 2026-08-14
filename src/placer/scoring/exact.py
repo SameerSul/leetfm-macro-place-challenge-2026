@@ -3,6 +3,7 @@
 import atexit
 import time
 
+import numpy as np
 import torch
 from macro_place.benchmark import Benchmark
 
@@ -40,3 +41,21 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
         _exact_stats["calls"] += 1
         _exact_stats["total_s"] += time.perf_counter() - _t0
     return float(wl + 0.5 * dens + 0.5 * cong)
+
+
+def exact_proxy_components(placement, benchmark: Benchmark, plc) -> dict[str, float]:
+    """Set one placement on the PLC and return its exact proxy terms."""
+    _patch_plc_wirelength(plc)
+    _patch_plc_congestion(plc, benchmark)
+    _patch_plc_density(plc, benchmark)
+    placement_np = np.asarray(placement, dtype=np.float64)
+    _fast_set_placement(plc, placement_np, benchmark)
+    wirelength = float(plc.get_cost())
+    density = float(plc.get_density_cost())
+    congestion = float(plc.get_congestion_cost())
+    return {
+        "wirelength": wirelength,
+        "density": density,
+        "congestion": congestion,
+        "proxy": wirelength + 0.5 * density + 0.5 * congestion,
+    }
