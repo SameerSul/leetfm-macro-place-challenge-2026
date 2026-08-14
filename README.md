@@ -42,27 +42,32 @@ hierarchy-aware global solver
 (DREAMPlace, seeded with synthetic clique nets per cluster), legalizes hard
 macros in cluster-consecutive order, and then runs a sequence of
 exact-proxy-gated local search passes, region-locked relocation, cluster
-decompression, region-bounded swaps, and congestion-driven coldspot
+decompression, transactional graph-adjacent ownership transfer, region-bounded
+swaps, and congestion-driven coldspot
 tightening. A final graph-directed survivor can place a complete small leaf and
 its owned soft macros into density-safe gaps between large hard macros. It also
 tests hard-clear canvas-edge pockets with stable residual soft bundles,
 pass-local routing cohorts, and residual singleton soft macros. These
-passes improve wirelength, density, and congestion while never
-breaking the inferred hierarchy or the legality constraints the evaluator
-enforces. The exact proxy still decides every accepted move; it is just no
+passes improve wirelength, density, and congestion while preserving the dynamic
+hierarchy contract and the legality constraints the evaluator enforces. The
+exact proxy still decides every accepted move; it is just no
 longer the only thing the system is allowed to trade away.
 
 Current full-suite result:
 
 ```text
 uv run evaluate src/main.py --all
-AVG 1.2832  17/17 VALID  0 overlaps  all hierarchy/island audits passed  (668.75s)
+AVG 1.2081  17/17 VALID  0 overlaps  all hierarchy/island audits passed  (793.26s)
 
 uv run evaluate src/main.py --ng45
 AVG 0.7072  4/4 VALID  0 overlaps  final hierarchy-safe  (113.91s)
 ```
 
-The 2026-08-10 hierarchy adds bounded one/two-hop soft roles and stable
+The 2026-08-11 seed portfolio conditionally reruns grouped DREAMPlace around
+distributed legalized-initial hierarchy anchors when its compact basin is
+contract-ineligible but at least 15% better in exact proxy. The promoted sweep
+selected that repair on IBM11 and improved its final score from 1.1306 to
+0.9961. The 2026-08-10 hierarchy adds bounded one/two-hop soft roles and stable
 residual soft-only groups without changing hard labels or the retained
 parent/child level. Coverage rises from 24.90% direct-only to 86.63%; the
 three-tier proxy, congestion, density, coverage, and hierarchy-quality
@@ -235,11 +240,13 @@ flowchart TD
     P --> S2[Recurrent prototype round 1]
     P --> S3[Recurrent prototype round 2]
     P --> S4[Explicit-tag route-channel seed]
+    P --> S5[Conditional initial-anchored recurrent repair]
     S0 --> E[Enforce the per-component contract,<br/>select the best hierarchy band,<br/>then break ties by proxy]
     S1 --> E
     S2 --> E
     S3 --> E
     S4 --> E
+    S5 --> E
     S1 --> S7[Repair one-component mandatory near miss<br/>only when at least 95% source displacement remains]
     S7 --> E
 
@@ -250,7 +257,8 @@ flowchart TD
     G --> G2[Parent-bounded child relocation<br/>and sibling slot swaps]
     G2 --> G3[Deepest-child footprint + graph/field margin boxes<br/>bounded internal relocation and hard swaps]
     G3 --> H[Exact-gated cluster decompression]
-    H --> I[Region-bounded hard/soft swaps<br/>two stable exact prefixes]
+    H --> H1[Adjacent-cluster swaps and relocation<br/>transactional ownership transfer + same-leaf repair]
+    H1 --> I[Region-bounded hard/soft swaps<br/>two stable exact prefixes]
     I --> I2[Explicit high-confidence soft-bundle relocation<br/>final-state exact acceptance]
     I2 --> J[Coldspot tightening<br/>congestion-driven local relief]
     J --> K[Topology-aware leaf survivor floorplanning:<br/>internal adjacency, boundary ports,<br/>owned-soft barycentres]
@@ -264,7 +272,7 @@ flowchart TD
     classDef search fill:#fff3e0,stroke:#ef6c00,color:#e65100
     classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     class A,B,C,D,P,E,F0 seed
-    class S0,S1,S2,S3,S4,S7 cand
+    class S0,S1,S2,S3,S4,S5,S7 cand
     class F,G,G2,G3,H,I,I2,J search
     class L,M,N audit
 ```
@@ -272,6 +280,7 @@ flowchart TD
 Blue nodes build the hierarchy-aware seed; the lighter blue row is the seed
 portfolio — grouped DREAMPlace sits next to
 two bounded Re²MaP-inspired recurrent prototypes, the legalized `initial.plc`,
+a conditional initial-anchored recurrent repair,
 and, for explicit path-tag designs, a cluster-local route-channel seed. A mandatory lower-proxy seed
 that misses exactly one component may be projected toward the passing reference;
 the repaired state advances to exact scoring only when it is legal and retains
@@ -304,8 +313,8 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
           -> grouped DREAMPlace global placement (synthetic clique nets)
           -> cluster-consecutive hard legalization
           -> seed portfolio: legalized initial.plc, grouped DP basin,
-             two recurrent hierarchy prototypes, and an explicit-tag-only
-             route-channel candidate
+             two recurrent hierarchy prototypes, a conditional initial-anchored
+             recurrent repair, and an explicit-tag-only route-channel candidate
           -> exact-score all candidates, apply the per-component hierarchy
              contract relative to the topology-appropriate legal reference,
              then select the best proxy band and break ties by contract headroom
@@ -320,6 +329,13 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
              congestion, density, and graph pressure; run bounded internal
              hard/owned-soft relocation and hard-hard swaps
           -> exact-gated cluster decompression
+          -> derive live frontier, cut, capacity, heat, routing-attribution,
+             and boundary-pressure state from the persistent hierarchy-ID graph
+          -> graph-adjacent hard/soft swaps, single relocation, and connected
+             frontier-bundle migration; commit dynamic
+             ownership only after exact proxy, density/congestion, and complete
+             hierarchy gates, rebuild capacity-directed regions, then repair
+             inside the updated leaves
           -> region-bounded hard/soft swaps with two stable exact prefixes
           -> hierarchy-bounded explicit high-confidence soft-bundle relocation;
              exact-score only after the complete group move is formed
@@ -329,9 +345,17 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
              ports with routing-channel insets, and move owned softs toward
              hard-affinity barycentres inside the frozen islands
           -> final legality, bounds, hard-cluster audit, and per-component
-             hierarchy-vector plus per-colour island audit
+             hierarchy-vector plus per-colour island audit using graph-derived
+             boundary-to-interior legalization order
           -> macro center coordinates
 ```
+
+The hierarchy model and persistent location graph share one canonical active
+leaf-edge list. Macro adjacency is a cached traversal projection of the same
+immutable pin/net topology; retained child and parent edges are separate
+hierarchy-level projections. Hard ownership changes rebuild active edges from
+cached nets with the original full-net weighting, while soft-only ownership
+changes leave the hard hierarchy graph unchanged.
 
 Every pass after the initial seed is gated by the exact proxy and, where
 relevant, a hierarchy-quality budget: a candidate move is only accepted if it

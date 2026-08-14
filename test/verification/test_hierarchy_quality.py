@@ -66,8 +66,10 @@ def test_island_contract_is_confidence_calibrated():
 from placer.pipeline.segments.floorplan_seed import (
     _hard_placement_is_legal,
     repair_seed_to_contract,
+    select_initial_recurrent_leaves,
     select_recursive_prototype_leaves,
     select_seed_candidate,
+    should_run_initial_recurrent,
 )
 
 
@@ -77,9 +79,7 @@ def test_recursive_prototype_leaf_selection_is_stable_and_excludes_fixed_members
         3: np.array([2, 3]),
         9: np.array([4, 5]),
     }
-    hard = np.array(
-        [[1.0, 1.0], [2.0, 1.0], [5.0, 1.0], [6.0, 1.0], [8.0, 1.0], [9.0, 1.0]]
-    )
+    hard = np.array([[1.0, 1.0], [2.0, 1.0], [5.0, 1.0], [6.0, 1.0], [8.0, 1.0], [9.0, 1.0]])
     half = np.full(6, 0.4)
     movable = np.array([True, True, True, True, False, True])
 
@@ -125,6 +125,61 @@ def test_recursive_prototype_leaf_selection_excludes_oversized_leaf():
     )
 
     assert selected == []
+
+
+def test_initial_recurrent_leaf_selection_spreads_strong_anchors_across_canvas():
+    clusters = {
+        0: np.array([0, 1]),
+        1: np.array([2, 3]),
+        2: np.array([4, 5]),
+        3: np.array([6, 7]),
+    }
+    hard = np.array(
+        [
+            [1.0, 1.0],
+            [2.0, 1.0],
+            [4.0, 1.0],
+            [5.0, 1.0],
+            [49.0, 1.0],
+            [50.0, 1.0],
+            [98.0, 1.0],
+            [99.0, 1.0],
+        ]
+    )
+    selected = select_initial_recurrent_leaves(
+        clusters,
+        {0: 0.90, 1: 0.85, 2: 0.80, 3: 0.75},
+        np.ones(8, dtype=bool),
+        hard,
+        np.full(8, 0.4),
+        np.full(8, 0.4),
+        canvas_width=100.0,
+        canvas_height=100.0,
+        max_leaves=3,
+    )
+
+    assert selected == [0, 3, 2]
+
+
+def test_initial_recurrent_requires_contract_failure_and_large_proxy_gap():
+    assert should_run_initial_recurrent(
+        1.0,
+        1.2,
+        dreamplace_contract_passed=False,
+        minimum_proxy_advantage=0.15,
+    )
+    assert not should_run_initial_recurrent(
+        1.0,
+        1.2,
+        dreamplace_contract_passed=True,
+        minimum_proxy_advantage=0.15,
+    )
+    assert not should_run_initial_recurrent(
+        1.05,
+        1.2,
+        dreamplace_contract_passed=False,
+        minimum_proxy_advantage=0.15,
+    )
 
 
 def _vector(hard, soft):

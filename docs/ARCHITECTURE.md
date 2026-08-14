@@ -35,8 +35,9 @@ benchmark input
   -> grouped DREAMPlace global placement (synthetic clique nets per cluster)
   -> cluster-consecutive hard legalization
   -> exact-proxy seed portfolio selection
-       (grouped DREAMPlace, two Re²MaP-inspired recursive prototypes,
-        legalized initial.plc, and an explicit-tag route-channel candidate;
+       (grouped DREAMPlace, legalized initial.plc, two Re²MaP-inspired
+        recursive prototypes, a conditional initial-anchored recurrent repair,
+        and an explicit-tag route-channel candidate;
         every candidate gets a complete
         hierarchy vector, the vector is constrained component-by-component
         relative to legalized initial.plc, except that a legal raw reference is
@@ -86,6 +87,18 @@ benchmark input
        - require 0.0005 local gain before activating the downstream multilevel contract
   -> exact-gated cluster decompression with composite hierarchy quality
        - large designs can order opportunities by hierarchy graph tension
+  -> adjacent-cluster ownership transfer
+       - consider only persistent-graph adjacent leaves in the same retained parent
+       - derive revision-scoped utilization, side capacity, heat, internal/external demand, frontier, and cut-delta features
+       - propose hard-hard, soft-soft, hard-soft swaps and one-way hard/soft relocation into cold destination-leaf cells
+       - grow bounded connected frontier bundles and translate them rigidly into capacity-safe cold targets
+       - stage position and ownership changes across active/child membership, soft ownership, graph nodes, and the shared active-edge list
+       - preserve at least one hard macro in every source leaf
+       - require the complete dynamic hierarchy/island contract after reassignment
+       - require exact proxy gain >= 0.00035 and density-plus-congestion contribution gain >= 0.0005
+       - commit ownership only after all gates pass; otherwise restore the previous hierarchy maps and graph roles
+       - after a retained transfer, run one bounded same-cluster hard-hard/soft-soft swap and hard/soft relocation round
+       - rebuild capacity-directed hard/soft regions from the committed ownership revision
   -> budget-aware interleaved soft repair
   -> region-bounded hard-hard / hard-soft / soft-soft swaps
        - hard-moving swap candidates must stay inside the hierarchy audit budget
@@ -144,6 +157,8 @@ benchmark input
        - subtract intervening hard blockages before soft-only occupancy and track interior/edge provenance
        - identify existing clusters that own the large hard macros bounding each clear fragment
        - move the physically aligned boundary band 25%, 50%, or 75% into the corridor, backing off until float64 and returned-float32 hard legality pass
+       - also build a graph-tapered decompression candidate: the boundary band takes the full shift while low-fanout hard-graph followers move 55% per hop for at most three hops; disconnected cluster macros remain fixed
+       - reject projected void occupancy above 78% before exact scoring so the follower wave fills the vacated interior without saturating the opening
        - co-move only the owned soft band aligned with the same opening, leaving the cluster interior fixed so its footprint expands outward
        - rank hot 2-12-hard leaves, stable residual soft bundles, transient low-fanout routing cohorts, and hot residual singletons against cold voids
        - place the rigid hard leaf at its weighted hierarchy-graph-neighbour centroid projected into the void
@@ -175,6 +190,15 @@ ellipse constraint, packing-tree search, or imported clustering is used.
 Temporary names and coordinates, exact grouping membership, and group weight
 are cache-separated. Both results enter the ordinary immutable prefilter,
 legalization, soft cleanup, exact scoring, and component-contract selection.
+A third recurrent candidate bridges a different failure mode. When grouped
+DREAMPlace fails the complete component contract but improves exact proxy over
+the legalized initial seed by at least 15%, VivaPlace freezes two to four
+positive-confidence leaves at their distributed initial positions and reruns
+grouped DREAMPlace for the remainder. The anchors are selected strongest-first,
+then normalized farthest-first across the canvas. The candidate uses the same
+immutable prefilter, legalization, soft cleanup, exact scoring, selection, and
+final rollback as every other seed. The gate avoids paying for another global
+solve when grouped DREAMPlace is already eligible or offers too little upside.
 A deterministic hierarchy-leaf B*-tree compaction seed was also evaluated and
 removed after selecting on 0/17 IBM designs. Its implementation and dedicated
 tests were pruned; production does not execute packing-tree relocation or the
@@ -538,6 +562,7 @@ not comparable to current numbers.
 | `src/placer/local_search/cluster_consolidation.py` | Bounded small-leaf hard/owned-soft compaction and whole-leaf slot exchange with structural, contract, and exact-proxy gates. |
 | `src/placer/pipeline/hierarchy_context.py` | Shared `PlacementState`, `PassContext`, `PassResult`, `PlateauTelemetry` used across pipeline stages. |
 | `src/placer/local_search/hierarchy_model.py` | Inferred hierarchy: active clusters, one parent/child level, soft roles, graphs, region builders. |
+| `src/placer/local_search/location_graph.py` | Persistent macro/cluster topology with live coordinates, sizes, ownership, adjacency, cluster centroids/bounds, graph-hop, and spatial-box queries. |
 | `src/placer/local_search/soft_hierarchy.py` | Confidence-calibrated soft bundles: explicit instance paths can be active; flat-netlist connectivity and affinity remain diagnostic evidence. |
 | `src/placer/local_search/hierarchy_quality.py` | Complete hierarchy vector, including cached-JIT stable nearest-four impurity selection. |
 | `src/placer/local_search/clusters.py` | Hard-cluster derivation, oversized-cluster splitting, region-box primitives. |
@@ -545,6 +570,7 @@ not comparable to current numbers.
 | `src/placer/local_search/subcluster_relocation.py` | Parent-bounded child relocation, deepest-child graph/field margin construction, bounded internal relocation, and hard swaps. |
 | `src/placer/local_search/hierarchy_swaps.py` | Region-bounded hard-hard, hard-soft, soft-soft swap relief. |
 | `src/placer/local_search/cluster_decompress.py` | Exact-gated decompression of hot hierarchy blobs. |
+| `src/placer/local_search/adjacent_cluster_transfer.py` | Transactional graph-adjacent swaps, relocations, ownership transfer, exact component gating, and post-transfer intra-leaf repair. |
 | `src/placer/local_search/region_expand.py` | Expands hot cluster regions toward colder congestion bands. |
 | `src/placer/local_search/lsmc_explore.py` | Coldspot kick candidate generation. |
 | `src/placer/local_search/fields.py` | Congestion/coldspot fields used by relocation and coldspot tightening. |
@@ -594,6 +620,37 @@ bridge regions and proposal evidence, but is not proof that the soft macros are
 one IP.
 Oversized split eligibility counts unique bridge softs per flat hard component;
 evidence from another component cannot authorize a split.
+
+Each placement call also creates one persistent `LocationAwareGraph` and stores
+it on `HierarchyModel.location_graph`; the same object is exposed as
+`plc._location_graph` and `benchmark._location_graph` for diagnostics. A macro
+node has a stable placement index, PLC module index, name, hard/soft role, size,
+active leaf, retained child/parent identifiers, bridge memberships, and weighted
+low-fanout macro adjacency. A cluster node contains hard and owned-soft members
+plus live centroid/bounding-box geometry. The graph and `HierarchyModel` share
+one canonical active-leaf edge list; neighbor maps are projected on demand. Dense
+NumPy placement arrays remain authoritative for scoring. The orchestration layer
+synchronizes the graph at seed selection, before and after final survivor
+search, after every retained void move, and after final audit rollback. Node
+objects retain identity across synchronization and `revision` increases after
+each committed snapshot. Consumers can query `cluster_of()`, `neighbors()`,
+`macros_in_box()`, or `graph_hop_profile()` without reconstructing topology.
+Each analyzed revision derives leaf area/utilization/free capacity, four-sided
+whitespace, congestion/density heat, internal/external demand, geometric
+frontiers, destination affinity, and cut delta. It also attributes routing to
+internal, cross-leaf, bridge-soft, unowned-soft, and boundary-pair demand. The
+same state grows connected frontier bundles, directs decompression waves,
+constructs live capacity-directed regions, and orders final legalization from
+boundary seeds through graph followers to interiors. Bounded checkpoints keep
+positions, hierarchy roles, proxy components, and accepted-transfer history;
+the dashboard consumes a JSON-safe graph payload for replay.
+
+Hard ownership changes rebuild the shared active edge list from cached eligible
+net endpoints with the same full-net weighting used during hierarchy inference.
+Soft ownership changes do not affect the hard graph. Retained-child and parent
+edge lists remain separate projections because they encode different hierarchy
+levels. The decompressor has no private topology fallback; it requires the
+persistent macro graph.
 
 The model separately retains one additional hierarchy level without changing
 the active clusters sent to DREAMPlace. Path-tag designs keep the nearest

@@ -90,6 +90,8 @@ def run_post_coldspot_finalize(
     _is_hard_valid = hard_valid_fn
     _deadline = deadline_fn
     benchmark_trace_name = str(getattr(benchmark, "_hierarchy_trace_name", benchmark.name))
+    if hierarchy.location_graph is not None:
+        hierarchy.location_graph.synchronize(legal, s_pos)
 
     def _log_stage_timing(stage: str, elapsed_s: float, **extra) -> None:
         payload = {
@@ -1049,6 +1051,7 @@ def run_post_coldspot_finalize(
         bridge_softs=bridge_softs,
         soft_only_bundles=hierarchy.soft_only_bundles,
         edges=hierarchy.edges,
+        location_graph=hierarchy.location_graph,
         movable_h=movable[:n],
         movable_soft=soft_mov,
         candidate_allowed=_vector_contract,
@@ -1062,6 +1065,8 @@ def run_post_coldspot_finalize(
         max_expand_hard=max(2, int(const.HIER_VOID_RELOCATION_MAX_EXPAND_HARD)),
         max_expand_soft=max(0, int(const.HIER_VOID_RELOCATION_MAX_EXPAND_SOFT)),
         top_expand_clusters=max(0, int(const.HIER_VOID_RELOCATION_TOP_EXPAND_CLUSTERS)),
+        graph_taper_max_hops=max(0, int(const.HIER_VOID_RELOCATION_GRAPH_TAPER_MAX_HOPS)),
+        graph_taper_decay=float(const.HIER_VOID_RELOCATION_GRAPH_TAPER_DECAY),
         max_utilization=float(const.HIER_VOID_RELOCATION_MAX_UTILIZATION),
         soft_compact_scale=float(const.HIER_VOID_RELOCATION_SOFT_COMPACT_SCALE),
         min_field_drop=float(const.HIER_VOID_RELOCATION_MIN_FIELD_DROP),
@@ -1107,6 +1112,10 @@ def run_post_coldspot_finalize(
         expansion_hierarchy_rejects=int(void_stats.get("expansion_hierarchy_rejects", 0)),
         expansion_scored=int(void_stats.get("expansion_scored", 0)),
         expansion_best_proxy_gain=float(void_stats.get("expansion_best_proxy_gain", 0.0)),
+        graph_taper_candidates=int(void_stats.get("graph_taper_candidates", 0)),
+        graph_taper_accepts=int(void_stats.get("graph_taper_accepts", 0)),
+        graph_taper_scored=int(void_stats.get("graph_taper_scored", 0)),
+        graph_taper_best_proxy_gain=float(void_stats.get("graph_taper_best_proxy_gain", 0.0)),
         accepted_expansion_shift=float(void_stats.get("accepted_expansion_shift", 0.0)),
         capacity_rejects=int(void_stats.get("capacity_rejects", 0)),
         overlap_rejects=int(void_stats.get("overlap_rejects", 0)),
@@ -1205,6 +1214,8 @@ def run_post_coldspot_finalize(
         s_pos.copy(),
         full_proxy,
     )
+    if hierarchy.location_graph is not None:
+        hierarchy.location_graph.synchronize(state.hard, state.soft)
     out = torch.tensor(state.full().astype(np.float32), dtype=torch.float32)
     proxy = float(state.proxy)
     margin_eps = float(const.HIER_LEGALITY_MARGIN_EPS)

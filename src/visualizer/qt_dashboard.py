@@ -88,6 +88,39 @@ class MacroLayer(pg.GraphicsObject):
             painter.setPen(pg.mkPen(color, width=2))
             painter.drawRect(QtCore.QRectF(lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]))
 
+        graph = self.hierarchy.get("location_graph", {})
+        graph_clusters = graph.get("clusters", {})
+        for cluster_id, row in graph_clusters.items():
+            bbox = row.get("bbox", ())
+            if len(bbox) != 4:
+                continue
+            heat = float(row.get("metrics", {}).get("mean_heat", 0.0))
+            width = 1.0 + min(max(heat, 0.0), 4.0) * 0.4
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+            painter.setPen(pg.mkPen(hierarchy_color(int(cluster_id)), width=width))
+            painter.drawRect(
+                QtCore.QRectF(
+                    float(bbox[0]),
+                    float(bbox[1]),
+                    float(bbox[2] - bbox[0]),
+                    float(bbox[3] - bbox[1]),
+                )
+            )
+            centroid = row.get("centroid", ())
+            if len(centroid) == 2:
+                free_capacity = float(row.get("metrics", {}).get("free_capacity", 0.0))
+                painter.drawText(
+                    QtCore.QPointF(float(centroid[0]), float(centroid[1])),
+                    f"C{cluster_id} H{heat:.2f} F{free_capacity:.0f}",
+                )
+        painter.setPen(pg.mkPen((255, 145, 40, 180), width=1.5, style=QtCore.Qt.PenStyle.DashLine))
+        for frontier in graph.get("frontiers", ()):
+            index = int(frontier.get("index", -1))
+            destination = graph_clusters.get(str(frontier.get("destination")), {})
+            centroid = destination.get("centroid", ())
+            if 0 <= index < len(self.positions) and len(centroid) == 2:
+                painter.drawLine(QtCore.QPointF(*self.positions[index]), QtCore.QPointF(*centroid))
+
         for index, (center, size) in enumerate(zip(self.positions, sizes)):
             x, y = center - size / 2.0
             rect = QtCore.QRectF(float(x), float(y), float(size[0]), float(size[1]))
@@ -275,9 +308,12 @@ class Dashboard(QtWidgets.QMainWindow):
         panel = QtWidgets.QVBoxLayout(side)
         self.algorithm = QtWidgets.QLabel("Waiting for placement…")
         self.algorithm.setWordWrap(True)
+        self.seed = QtWidgets.QLabel("Seed: —")
+        self.seed.setWordWrap(True)
         self.badge = QtWidgets.QLabel("STALE")
         self.badge.setStyleSheet("color:#ffb84d;font-weight:bold")
         panel.addWidget(self.algorithm)
+        panel.addWidget(self.seed)
         panel.addWidget(self.badge)
         self.metric_labels = {}
         for key in ("wirelength", "density", "congestion", "hierarchy", "proxy"):
@@ -387,6 +423,9 @@ class Dashboard(QtWidgets.QMainWindow):
             self.metadata.update(event["metadata_update"])
         if event.get("hierarchy"):
             self.hierarchy = event["hierarchy"]
+        if event.get("location_graph"):
+            self.hierarchy = dict(self.hierarchy)
+            self.hierarchy["location_graph"] = event["location_graph"]
         if positions is None:
             if "positions" in event:
                 self.current_positions = np.asarray(event["positions"], dtype=float)
@@ -416,6 +455,9 @@ class Dashboard(QtWidgets.QMainWindow):
                 self.metadata.update(row["metadata_update"])
             if row.get("hierarchy"):
                 self.hierarchy = row["hierarchy"]
+            if row.get("location_graph"):
+                self.hierarchy = dict(self.hierarchy)
+                self.hierarchy["location_graph"] = row["location_graph"]
         moved = event.get("indices", ())
         vectors = list(zip(event.get("old_positions", ()), event.get("new_positions", ())))
         self.macros.set_state(
@@ -434,6 +476,18 @@ class Dashboard(QtWidgets.QMainWindow):
         if event.get("lane"):
             suffix.append(str(event["lane"]))
         self.algorithm.setText(str(label) + (" · " + " · ".join(suffix) if suffix else ""))
+        seed_event = next(
+            (row for row in reversed(self.events[: index + 1]) if row.get("seed_name")),
+            None,
+        )
+        if seed_event is None:
+            self.seed.setText("Seed: —")
+        else:
+            seed_status = seed_event.get("status")
+            if seed_event.get("type") == "dreamplace_progress":
+                seed_status = f"DREAMPlace iteration {seed_event.get('iteration', '—')}"
+            detail = f" · {seed_status}" if seed_status else ""
+            self.seed.setText(f"Seed: {seed_event['seed_name']}{detail}")
         stale = bool(event.get("metrics_stale", event.get("metrics") is None))
         self.badge.setText("STALE" if stale else "EXACT")
         self.badge.setStyleSheet(

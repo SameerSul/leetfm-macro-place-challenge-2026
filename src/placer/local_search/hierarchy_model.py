@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -33,6 +34,9 @@ from placer.local_search.soft_hierarchy import (
     select_high_confidence_soft_bundles,
 )
 from placer.scoring.wirelength import _build_wl_cache
+
+if TYPE_CHECKING:
+    from placer.local_search.location_graph import LocationAwareGraph
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,7 @@ class HierarchyModel:
     cluster_source: str
     max_fanout: int
     min_edge: int
+    location_graph: "LocationAwareGraph | None" = None
 
     @classmethod
     def build(cls, plc, n: int, n_soft: int, hard_sizes=None) -> "HierarchyModel":
@@ -729,4 +734,3 @@ def _derive_split_hierarchy(
             for child_id in child_ids:
                 child_parent[int(child_id)] = int(parent_id)
     return parent_clusters, parent_children, child_parent
-

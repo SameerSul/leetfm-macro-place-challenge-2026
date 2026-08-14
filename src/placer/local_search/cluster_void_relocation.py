@@ -12,6 +12,32 @@ from placer.local_search.subcluster_relocation import _hard_group_is_legal
 from placer.scoring.wirelength import _build_wl_cache
 
 
+def _graph_taper_profile(
+    members: np.ndarray,
+    boundary_members: np.ndarray,
+    *,
+    max_hops: int,
+    decay: float,
+    location_graph,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return graph-reachable hard macros and a decaying outward shift profile."""
+    members = np.asarray(members, dtype=np.int64).reshape(-1)
+    boundary_members = np.asarray(boundary_members, dtype=np.int64).reshape(-1)
+    if members.size == 0 or boundary_members.size == 0:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float64)
+    if location_graph is None:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float64)
+    selected, scales = location_graph.directional_graph_profile(
+        boundary_members,
+        members,
+        max_hops=max_hops,
+        decay=decay,
+    )
+    if selected.size <= boundary_members.size:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float64)
+    return selected, scales
+
+
 def _subtract_rectangles(
     rect: np.ndarray,
     hard_pos: np.ndarray,
@@ -539,6 +565,7 @@ def _void_cluster_relocation(
     clusters: Mapping[int, Sequence[int]],
     cluster_softs: Mapping[int, Sequence[int]],
     edges,
+    location_graph=None,
     movable_h: np.ndarray,
     movable_soft: np.ndarray,
     bridge_softs: Mapping[int, Sequence[int]] | None = None,
@@ -554,6 +581,8 @@ def _void_cluster_relocation(
     max_expand_hard: int = 48,
     max_expand_soft: int = 96,
     top_expand_clusters: int = 12,
+    graph_taper_max_hops: int = 3,
+    graph_taper_decay: float = 0.55,
     max_utilization: float = 0.78,
     soft_compact_scale: float = 0.65,
     min_field_drop: float = 0.01,
@@ -579,6 +608,10 @@ def _void_cluster_relocation(
         "expansion_hierarchy_rejects": 0,
         "expansion_scored": 0,
         "expansion_best_proxy_gain": 0.0,
+        "graph_taper_candidates": 0,
+        "graph_taper_accepts": 0,
+        "graph_taper_scored": 0,
+        "graph_taper_best_proxy_gain": 0.0,
         "soft_units": 0,
         "capacity_rejects": 0,
         "overlap_rejects": 0,
@@ -603,6 +636,8 @@ def _void_cluster_relocation(
     moved_hard: set[int] = set()
     moved_soft: set[int] = set()
     current_score = float(initial_score)
+    if location_graph is not None:
+        location_graph.synchronize(hard_pos, soft_pos)
 
     for accept_round in range(max(0, int(max_accepts))):
         if int(stats["scored"]) >= max(0, int(max_scored)):
@@ -882,6 +917,9 @@ def _void_cluster_relocation(
                         new_hard_hw=hw[move_members],
                         new_hard_hh=hh[move_members],
                     )
+                    if utilization > float(max_utilization):
+                        stats["capacity_rejects"] += 1
+                        continue
                     lanes["hard_expand"].append(
                         {
                             "lane": "hard_expand",
@@ -901,8 +939,77 @@ def _void_cluster_relocation(
                             "kind": f"hard_soft_expand_{direction}_{void['kind']}_void",
                         }
                     )
-        lanes["hard_expand"].sort(key=lambda row: row["rank"])
-        lanes["hard_expand"] = lanes["hard_expand"][:24]
+                    taper_members, taper_scales = _graph_taper_profile(
+                        members,
+                        move_members,
+                        max_hops=graph_taper_max_hops,
+                        decay=graph_taper_decay,
+                        location_graph=location_graph,
+                    )
+                    if taper_members.size:
+                        taper_hard = hard_pos[taper_members].copy()
+                        taper_hard[:, axis] += shift * taper_scales
+                        if _hard_group_is_legal(hard_pos, taper_members, taper_hard, hw, hh):
+                            returned_hard = hard_pos.astype(np.float32).astype(np.float64)
+                            returned_targets = taper_hard.astype(np.float32).astype(np.float64)
+                            if _hard_group_is_legal(
+                                returned_hard,
+                                taper_members,
+                                returned_targets,
+                                hw,
+                                hh,
+                                tolerance=0.0,
+                            ):
+                                taper_utilization = _projected_void_utilization(
+                                    void["rect"],
+                                    soft_pos,
+                                    soft_hw,
+                                    soft_hh,
+                                    moved_soft=move_soft_indices,
+                                    new_soft=new_soft,
+                                    new_soft_hw=soft_hw[move_soft_indices],
+                                    new_soft_hh=soft_hh[move_soft_indices],
+                                    new_hard=taper_hard,
+                                    new_hard_hw=hw[taper_members],
+                                    new_hard_hh=hh[taper_members],
+                                )
+                                if taper_utilization > float(max_utilization):
+                                    stats["capacity_rejects"] += 1
+                                    continue
+                                lanes["hard_expand"].append(
+                                    {
+                                        "lane": "hard_expand",
+                                        "rank": (
+                                            -relief,
+                                            -abs(shift),
+                                            taper_utilization,
+                                            int(row["cid"]),
+                                            direction,
+                                        ),
+                                        "cid": int(row["cid"]),
+                                        "members": taper_members,
+                                        "new_hard": taper_hard,
+                                        "soft_indices": move_soft_indices,
+                                        "new_soft": new_soft,
+                                        "outward_shift": abs(shift),
+                                        "kind": (
+                                            f"hard_soft_expand_graph_taper_{direction}_"
+                                            f"{void['kind']}_void"
+                                        ),
+                                    }
+                                )
+        uniform_expansions = [
+            row for row in lanes["hard_expand"] if "graph_taper" not in str(row["kind"])
+        ]
+        graph_expansions = [
+            row for row in lanes["hard_expand"] if "graph_taper" in str(row["kind"])
+        ]
+        uniform_expansions.sort(key=lambda row: row["rank"])
+        graph_expansions.sort(key=lambda row: row["rank"])
+        lanes["hard_expand"] = uniform_expansions[:24] + graph_expansions[:24]
+        stats["graph_taper_candidates"] = max(
+            int(stats["graph_taper_candidates"]), min(24, len(graph_expansions))
+        )
         stats["expansion_candidates"] = max(
             int(stats["expansion_candidates"]), int(len(lanes["hard_expand"]))
         )
@@ -1212,6 +1319,11 @@ def _void_cluster_relocation(
                     stats["expansion_best_proxy_gain"] = max(
                         float(stats["expansion_best_proxy_gain"]), current_score - score
                     )
+                if "graph_taper" in str(proposal["kind"]):
+                    stats["graph_taper_scored"] += 1
+                    stats["graph_taper_best_proxy_gain"] = max(
+                        float(stats["graph_taper_best_proxy_gain"]), current_score - score
+                    )
                 remaining -= 1
                 stats["best_proxy_gain"] = max(
                     float(stats["best_proxy_gain"]), current_score - score
@@ -1248,6 +1360,8 @@ def _void_cluster_relocation(
             incremental_scorer.commit_move_soft_group(soft_indices, new_soft)
         hard_pos[members] = new_hard
         soft_pos[soft_indices] = new_soft
+        if location_graph is not None:
+            location_graph.synchronize(hard_pos, soft_pos)
         moved_hard.update(int(index) for index in members)
         moved_soft.update(int(index) for index in soft_indices)
         current_score = float(best_score)
@@ -1258,6 +1372,8 @@ def _void_cluster_relocation(
         if str(best["kind"]).startswith("hard_soft_expand_"):
             stats["expansion_accepts"] += 1
             stats["accepted_expansion_shift"] = float(best.get("outward_shift", 0.0))
+        if "graph_taper" in str(best["kind"]):
+            stats["graph_taper_accepts"] += 1
 
     _void_cluster_relocation.last_stats = stats
     return hard_pos, soft_pos, int(stats["accepts"]), float(current_score)

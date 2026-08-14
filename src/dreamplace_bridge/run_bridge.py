@@ -297,6 +297,7 @@ def run_dreamplace(
     return_full: bool = False,
     event_sink=None,
     sample_every: int = 10,
+    seed_name: str | None = None,
     temporary_fixed_positions: "Optional[Mapping[str, tuple[float, float]]]" = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Run DREAMPlace and return hard-macro center positions."""
@@ -416,6 +417,7 @@ def run_dreamplace(
         emit_event(
             event_sink,
             "dreamplace_progress",
+            seed_name=seed_name,
             iteration=iteration,
             indices=indices,
             new_positions=centers,

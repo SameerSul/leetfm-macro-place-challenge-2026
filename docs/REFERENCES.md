@@ -289,9 +289,12 @@ related-work results are not confused with VivaPlace's measured results.
     [arXiv](https://arxiv.org/abs/2511.08054),
     [official code](https://github.com/lamda-bbo/Re2MaP).
     VivaPlace production independently adapts only the recurrent
-    prototype/freeze idea:
-    it freezes one or two complete hierarchy leaves between grouped DREAMPlace
-    runs. It does not reproduce Re²MaP's clustering, unified dataflow matrix,
+    prototype/freeze idea. Two ordinary candidates freeze one or two complete
+    hierarchy leaves between grouped DREAMPlace runs. A conditional repair
+    instead freezes two to four spatially distributed leaves from legalized
+    `initial.plc` before re-prototyping the remainder when the compact basin is
+    contract-ineligible but materially better in exact proxy. It does not
+    reproduce Re²MaP's clustering, unified dataflow matrix,
     ellipse-angle optimizer, packing-tree representation, evolutionary search,
     or reported backend-flow results. A separate original deterministic
     hierarchy-leaf B*-tree/contour seed was tested on 2026-08-11 and removed
