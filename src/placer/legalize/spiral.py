@@ -146,7 +146,8 @@ def _will_legalize(
     """
     if order is None:
         order = sorted(range(n), key=lambda i: -(sizes[i, 0] * sizes[i, 1]))
-    placed = np.zeros(n, dtype=bool)
+    # Fixed obstacles must be visible even when they occur later in the order.
+    placed = ~np.asarray(movable[:n], dtype=bool)
     legal = pos.copy()
 
     if HAS_NUMBA:

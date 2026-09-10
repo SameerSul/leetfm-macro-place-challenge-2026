@@ -26,7 +26,6 @@ LocalRegionsFn = Callable[
     ]
     | None,
 ]
-AdditiveFn = Callable[[float | None], bool]
 
 
 def refine_coldspot_candidate(
@@ -48,7 +47,6 @@ def refine_coldspot_candidate(
     region_bias: float,
     deadline: float | None,
     local_regions_fn: LocalRegionsFn,
-    additive_spare_fn: AdditiveFn,
     hier_soft_barrier_gain: float,
 ) -> tuple[np.ndarray, np.ndarray, float, dict]:
     """Refine one candidate placement proposal locally and return updated candidate score."""
@@ -104,10 +102,9 @@ def refine_coldspot_candidate(
 
     local_hard_swap_k = max(1, int(const.HIER_COLDSPOT_LOCAL_HARD_SWAP_K))
     local_soft_swap_k = max(1, int(const.HIER_COLDSPOT_LOCAL_SOFT_SWAP_K))
-    if additive_spare_fn(deadline):
-        extra_k = max(0, int(const.HIER_ADDITIVE_SWAP_EXTRA_K))
-        local_hard_swap_k += extra_k
-        local_soft_swap_k += extra_k
+    extra_k = max(0, int(const.HIER_ADDITIVE_SWAP_EXTRA_K))
+    local_hard_swap_k += extra_k
+    local_soft_swap_k += extra_k
 
     hard_reloc_before = float(score)
     for use_density in (False, True):
@@ -196,7 +193,6 @@ def refine_coldspot_candidate(
         ch,
         local_h_mask,
         n,
-        plc,
         benchmark,
         scorer,
         score,
@@ -224,7 +220,6 @@ def refine_coldspot_candidate(
             cw,
             ch,
             n,
-            plc,
             benchmark,
             scorer,
             score,

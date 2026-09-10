@@ -54,6 +54,7 @@ def _cache_key(
     group_sig: str = "",
     temporary_fixed_sig: str = "",
     target_density: float = 0.75,
+    gpu: bool = False,
 ) -> str:
     netlist_fp = _file_fingerprint(benchmark_dir / "netlist.pb.txt")
     init_fp = _file_fingerprint(benchmark_dir / "initial.plc")
@@ -65,6 +66,9 @@ def _cache_key(
         f"rci={int(random_center_init)}|density={float(target_density):.12g}|"
         f"grp={group_sig}|tmpfix={temporary_fixed_sig}"
     )
+    # Preserve existing CPU caches; CUDA trajectories need their own entries.
+    if gpu:
+        raw += "|backend=cuda"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -213,11 +217,12 @@ def _default_dreamplace_config(
     num_threads: int = 4,
     random_center_init: bool = False,
     target_density: float = 0.75,
+    gpu: bool = False,
 ) -> dict:
     """Build the DREAMPlace config used for fast global placement."""
     cfg = {
         "aux_input": aux_input,
-        "gpu": 0,
+        "gpu": int(gpu),
         "num_bins_x": 64,
         "num_bins_y": 64,
         "global_place_stages": [
@@ -301,6 +306,11 @@ def run_dreamplace(
     temporary_fixed_positions: "Optional[Mapping[str, tuple[float, float]]]" = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Run DREAMPlace and return hard-macro center positions."""
+    gpu_setting = os.environ.get("DREAMPLACE_GPU", "0").strip()
+    if gpu_setting not in {"0", "1"}:
+        raise ValueError("DREAMPLACE_GPU must be 0 (CPU) or 1 (CUDA)")
+    gpu = gpu_setting == "1"
+    backend = "cuda" if gpu else "cpu"
     if not is_available():
         raise RuntimeError(f"DREAMPlace unavailable: {availability_error()}")
 
@@ -324,13 +334,14 @@ def run_dreamplace(
             group_weight,
         ),
         target_density=target_density,
+        gpu=gpu,
     )
     cached = _try_load_cache(work_dir, cache_key) if _use_final_cache(event_sink) else None
     if cached is not None:
         hard_pos, soft_pos = cached
         print(
             f"  [dreamplace] {design}: {hard_pos.shape[0]} hard macros "
-            f"(cache hit, skipped subprocess)"
+            f"(backend={backend}, cache hit, skipped subprocess)"
         )
         if return_full:
             return hard_pos, soft_pos
@@ -359,6 +370,7 @@ def run_dreamplace(
         num_threads=num_threads,
         random_center_init=random_center_init,
         target_density=target_density,
+        gpu=gpu,
     )
     cfg_path = work_dir / f"{design}.json"
     cfg_path.write_text(json.dumps(cfg, indent=2))
@@ -500,7 +512,7 @@ def run_dreamplace(
         if return_full:
             print(
                 f"  [dreamplace] {design}: {hard_pos.shape[0]} hard macros placed "
-                f"(global-place {dp_time:.1f}s)"
+                f"(backend={backend}, global-place {dp_time:.1f}s)"
             )
             return hard_pos, soft_pos
         pos = hard_pos
@@ -508,7 +520,7 @@ def run_dreamplace(
         pos = read_dreamplace_positions(plc, str(work_dir), design)
     print(
         f"  [dreamplace] {design}: {pos.shape[0]} hard macros placed "
-        f"(global-place {dp_time:.1f}s)"
+        f"(backend={backend}, global-place {dp_time:.1f}s)"
     )
     return pos
 

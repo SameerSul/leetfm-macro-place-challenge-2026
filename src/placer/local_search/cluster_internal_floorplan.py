@@ -111,7 +111,9 @@ def _cluster_topologies(
             if endpoint not in seen:
                 endpoints.append(endpoint)
                 seen.add(endpoint)
-        if len(endpoints) < 2:
+        if len(endpoints) < 2 or not any(
+            kind == 0 and index in hard_local for kind, index in endpoints
+        ):
             continue
         pair_weight = float(cache["net_weights"][net_index]) / max(len(endpoints) - 1, 1)
         for left_index, left in enumerate(endpoints):

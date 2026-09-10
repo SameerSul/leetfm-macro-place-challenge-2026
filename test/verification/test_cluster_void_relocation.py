@@ -11,12 +11,16 @@ from placer.local_search.cluster_void_relocation import (
     _graph_taper_profile,
     _void_cluster_relocation,
     _soft_routing_units,
+    _routing_target,
     find_large_macro_voids,
 )
 from placer.local_search.soft_hierarchy import SoftBundle
 
 
 class _Scorer:
+    def _touched_nets_many(self, modules):
+        return np.zeros(0, dtype=np.int64)
+
     def __init__(self, plc=None):
         self.grid_occupied = np.zeros(400, dtype=np.float64)
         self.dens_grid_area = 1.0
@@ -135,6 +139,39 @@ def test_large_macro_voids_subtract_intervening_hard_blockage():
     for void in voids:
         x0, y0, x1, y1 = void["rect"]
         assert x1 <= 9.0 or x0 >= 11.0 or y1 <= 9.0 or y0 >= 11.0
+
+
+def test_routing_target_unions_incident_nets_and_preserves_external_pin_weights():
+    from placer.scoring.incremental import IncrementalScorer
+
+    offsets = np.zeros(10)
+    offsets[2] = 0.5
+    cache = {
+        "net_starts": np.array([0, 3, 5, 8]),
+        "net_lengths": np.array([3, 2, 3, 2]),
+        "net_weights": np.array([2.0, 3.0, 1.0, 100.0]),
+        "ref_idx": np.array([20, 20, 10, 30, 40, 20, 30, 40, 10, 40]),
+        "x_off": offsets,
+        "y_off": offsets,
+    }
+    plc = SimpleNamespace(
+        soft_macro_indices=[20, 30],
+        hard_macro_indices=[10],
+        _wl_vec_cache=cache,
+        modules_w_pins={40: SimpleNamespace(get_pos=lambda: (8.0, 9.0))},
+    )
+    scorer = SimpleNamespace(
+        plc=plc,
+        _touched_cache_many={},
+        _macro_nets=lambda module: {20: np.array([0, 2]), 30: np.array([1, 2])}[module],
+    )
+    scorer._touched_nets_many = lambda modules: IncrementalScorer._touched_nets_many(
+        scorer, modules
+    )
+    hard, soft = np.array([[1.0, 2.0]]), np.array([[3.0, 4.0], [5.0, 6.0]])
+    expected = (2.0 * (hard[0] + 0.5) + 4.0 * np.array([8.0, 9.0])) / 6.0
+    np.testing.assert_array_equal(_routing_target(scorer, hard, soft, [0, 1]), expected)
+    np.testing.assert_array_equal(_routing_target(scorer, hard, soft, [1, 0]), expected)
 
 
 def test_soft_routing_units_keep_roles_separate_and_add_residual_fallbacks():

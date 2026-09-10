@@ -6,6 +6,340 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-09-09 — maintenance cleanup):**
+> Removed 32 unused parameters from 21 internal search, scoring-cache, and EDA
+> helpers, updating all maintained callers and scalar verifiers. Removed the
+> dead environment parser, always-true coldspot callback, unused noise portfolio,
+> and ignored `n_restarts`, `noise_fracs`, and `time_budget_s` constructor options.
+> Constructor options are keyword-only. The EDA CLI's ignored `--budget` flag is
+> deleted; the generic synthetic runner applies an explicit override only when
+> an alternative placer supports it and otherwise reports an error. Existing
+> per-pass limits, score quotas, candidate order, and acceptance gates remain.
+>
+> The cleanup removes **126 net production lines**. README, agent onboarding,
+> architecture/flow, objectives, subsystem guides, and system reviews now
+> describe the current pipeline; duplicated obsolete score histories are
+> replaced by links to the experiment ledger. The deleted deepest-child search
+> is no longer described as an active objective, and ignored API options are
+> no longer advertised as effective runtime controls.
+>
+> All **144 selected tests pass**: 122 verification tests, 15 EDA tests
+> including its end-to-end CLI, and seven visualizer event/trace tests. The
+> independent IBM01 scorer check passes 12 trial moves and five sequential
+> commits. Final-source IBM10 and Ariane136 replays preserve every coordinate,
+> evaluator score (**1.173217535** and **0.703326106**), complete hierarchy
+> metric, and final audit; both are valid with zero overlaps. The prior
+> 31-design cluster-tile result below remains the quality reference.
+> See `ml_data/algorithm_review/20260909/maintenance_results.md` for source
+> snapshots, caller changes, and validation controls. No speedup is claimed.
+>
+> **Status (2026-09-09 — algorithm cleanup and final cluster-tile search):**
+> Removed the overwritten coldspot anchor calculation and unused partial-frontier,
+> ego-net, soft-only fallback, graph-anchor/reranking, graph prefilter, decompression
+> rescue, and weak/hot region-reshape implementations. The deepest-child internal
+> pass, private region builders, and settings are also deleted after an isolated
+> 31-design ablation preserves every coordinate, score, and hierarchy value.
+> It previously scored 566 states, retained none, and performed no rollback in
+> this control. Whole-child relocation, sibling swaps, multilevel contracts,
+> spectral leaf floorplanning, and void relocation remain. Second consolidation
+> stays: its isolated removal regresses IBM02 by **0.0019778013**.
+>
+> The new final search attributes directional congestion tails, hard blockage,
+> and density through complete incident routes, reusing the canonical location
+> graph. It tests joint assignments of 2–4 units inside one leaf/child partition,
+> freezes ownership and fixed/bridge macros, and moves only complete explicit
+> bundles rigidly. At most four patches exact-score 16 states each, borrowing
+> up to three seconds of unused internal-floorplan/void allowance. A fresh
+> clamped float32 baseline/winner comparison, unchanged complete hierarchy
+> contract, and final hard-legality check must retain a gain above 0.000001.
+>
+> All **31 captured pre-tile placements and hierarchy limits are identical**
+> after cleanup, and **606 remaining ordered pass rows** preserve their candidate,
+> legality, score, acceptance, and quota counts. The final tile replay improves
+> **4 designs**, leaves **27 unchanged**, and has **zero regressions**. Paired
+> fresh external scores on the same float32 coordinates promoted to float64:
+> IBM **1.181150561 → 1.181101299**, NG45 **0.717062705 → 0.717060425**,
+> synthetic **1.436273508 unchanged**. Winners are IBM01 (a three-hard-macro
+> rearrangement), IBM10, IBM18, and Ariane136. All outputs are valid with zero
+> hard overlaps and pass complete hierarchy contracts, all four independent
+> NG45 tag checks, and all ten synthetic truth checks. Read-only attribution
+> checks preserve committed positions, grids, and exact metrics on every design.
+>
+> The final ordinary-guard run is also **31/31 valid**, with zero overlaps and
+> complete final audits. Every returned coordinate equals the independently
+> audited replay. Its headline means are IBM **1.181128351**, NG45
+> **0.717060223**, and synthetic **1.436273508**. An initial contended control
+> differs on IBM13 because it skips existing plateau cleanup; a quiet repeat
+> of that archived source exactly reproduces the candidate's score, coordinates,
+> hierarchy metrics, and all 19 remaining ordered pass counts. The raw timed
+> discrepancy is retained in the report, not counted as a tile-search gain.
+>
+> The replay scores 1,177 candidates in **13.273s total**, at most **0.850s per
+> design**, including its fresh scoring. These are warmed stage measurements;
+> concurrent fixed-work controls and earlier timed-search variation do not
+> support an end-to-end speed claim. The global checkpoint-cache defect remains
+> open; this pass initializes fresh scoring state for its own transactions.
+> All **121 verification tests pass**; three tests solely for deleted deep-search
+> behavior were removed. The source change removes 2,570 production lines and
+> adds 351, with 66 old settings removed (the retained child graph-priority
+> weight is renamed without changing its value). See
+> `ml_data/algorithm_review/20260909/results.md` for controls, snapshots,
+> per-design placements, and ordinary-guard validation.
+>
+> **Status (2026-09-09 — equivalent runtime reductions):**
+> Candidate island checks now omit the three reporting-only metrics while
+> retaining every acceptance component and complete seed/final reporting. Void
+> relocation reuses each round's base geometry and the scorer's incident-net
+> unions, preserving lane filtering and candidate order. Mixed hard/soft group
+> trials reuse grid snapshots and sparse congestion tails; a compiled density
+> scratch transaction preserves the original rectangle order and leaves
+> committed occupancy untouched. Objectives, hierarchy limits, score quotas,
+> wall-clock guards, and commit behavior remain unchanged. The preceding
+> congestion/density improvements remain active; the checkpoint-cache repair
+> remains reverted and its defect is still open.
+>
+> The warmed fixed-work IBM04/10/12 pair falls **167.276s → 117.730s (29.62%)**,
+> with identical returned float32 coordinates, evaluator scores, and complete
+> hierarchy metrics. All 61 ordered pass rows have identical candidate, scored,
+> accepted, and quota counts. Attributable seed assembly, consolidation,
+> internal floorplanning, and void relocation fall respectively **12.743 →
+> 7.888s**, **10.571 → 6.969s**, **15.465 → 9.007s**, and **32.247 → 15.256s**.
+> This is one warmed sequential pair on three designs, not a suite-wide runtime
+> guarantee. Kernel comparisons preserve required island metrics, routing
+> targets, and void rows exactly; 180 group trials differ by at most **1.33e-15**.
+> All **117 verification tests** and the scalar group/swap reference checks pass.
+>
+> With ordinary guards, all **31 designs are VALID**, have zero hard overlaps,
+> and pass the complete final hierarchy audit. **Six improve, 25 are unchanged,
+> and none regress** against the archived source control: IBM mean proxy is
+> **1.189068966 → 1.181177381**, NG45 remains **0.717062488**, and synthetic is
+> **1.436582007 → 1.436273510**. Ordinary guard prefixes and some control-side
+> DREAMPlace cache misses prevent treating the normal suite runtime change as
+> a causal end-to-end claim. These are paired runs, not the preceding
+> final-density pass's same-input experiment.
+> Fresh saved-placement scoring also passes, along with all **4 independent
+> NG45 tag checks** and **10 synthetic truth checks**. The scalar synthetic
+> audit promotes the same returned coordinates to fp64 to match the runner's
+> accumulation precision; its largest remaining difference is **1.58e-8**,
+> within the original `1e-7` check. The 25 unchanged designs retain identical
+> coordinates and hierarchy values; all six improving designs pass the same
+> complete hierarchy contracts.
+>
+> Source snapshots, per-design placements, traces, and reproduction commands
+> live under `ml_data/speed_equivalence/20260909/` (`results.md`).
+>
+> **Focused trial (2026-09-09 — optional CUDA DREAMPlace):**
+> `DREAMPLACE_GPU=1` enables the existing CUDA engine for ordinary and recurrent
+> seeds. The default remains CPU (`0`); existing CPU cache keys are unchanged,
+> and CUDA adds a backend suffix. Grouping, BB steps, seed eligibility, exact
+> scoring, legalization, and hierarchy limits are unchanged. Both backends use
+> fresh private caches for a sequential IBM04/10/12 comparison with diagnostic
+> search deadlines disabled and the ordinary deterministic score quotas kept.
+> Ordinary grouped Bookshelf inputs are byte-identical across backends.
+>
+> CUDA improves IBM04 **1.002937913 -> 0.996435285** by selecting recurrent
+> prototype 1 instead of prototype 2. IBM10 stays **1.173315525** and IBM12
+> **1.702679157**, with identical returned coordinates and hierarchy metrics.
+> All six outputs are VALID with zero hard overlaps and passing complete final
+> hierarchy audits. Nine fresh DREAMPlace calls take **72.014s -> 88.755s**;
+> aggregate placer runtime is **187.246s -> 204.418s**. These are one sequential
+> pair's observations, not a repeated kernel benchmark: recurrent inputs and
+> work can differ after CPU/CUDA trajectories diverge. CUDA is therefore
+> retained as an explicit option, not promoted as a speed improvement. This
+> initial pair did not cover normal guards or the 31-design suite. All **120 verification
+> tests pass**; independent fresh evaluator checks pass on all six outputs with
+> zero score difference. See `ml_data/dreamplace_cuda/20260909/results.md` for artifacts,
+> fresh evaluator audits, hardware details, and reproduction commands.
+>
+> **Requested full IBM follow-up:**
+> `DREAMPLACE_GPU=1 uv run evaluate src/main.py --all`, with normal production
+> deadlines, completes at **AVG 1.1806**, **17/17 VALID**, **zero hard overlaps**,
+> and **17 passing complete final hierarchy audits** in **980.93s placer time**.
+> All **55 DREAMPlace calls execute CUDA**, with **zero cache hits**. The same
+> production source was used; this is not a paired CPU comparison or a backend
+> default promotion. The CLI runtime excludes loading/external final scoring.
+> Per-design scores, logs, audit rows, and source fingerprints are recorded in
+> `ml_data/dreamplace_cuda/20260909/cuda_all/results.md`. CPU remains the default;
+> NG45 and synthetic CUDA suites remain untested.
+>
+> **Status (2026-09-09 — individually gated congestion/density improvements):**
+> Three changes survive the individual trials: transfer heat reads reuse the
+> non-mutating density helper; leaf topology skips nets whose endpoint pairs
+> cannot contribute; and a bounded final density lane moves only free soft
+> macros after checkpoint selection. It freezes all hard positions, fixed
+> softs, every active/child/parent soft role, all soft bundles/evidence, and
+> direct hard-connected softs. It reuses regional relocation with 16 hot sources,
+> four targets, a 64-score ceiling, and a two-second search guard. Fresh baseline
+> and candidate scoring share the existing API bounds clamp; only a complete
+> contract pass and a float32 proxy gain above 0.000001 can commit.
+>
+> Paired external-evaluator checks compare each returned output with the same
+> run's clamped input to the final pass. IBM improves **1.188733634 → 1.188504272**
+> (16 improve, 1 unchanged); NG45 improves **0.717651725 → 0.717062488**
+> (3 improve, 1 unchanged); synthetic remains **1.436111467** (10 unchanged).
+> There are **zero paired proxy regressions**, identical hard/fixed coordinates,
+> and identical active/child/parent vectors and island metrics on all 31 designs.
+> All are VALID with zero hard overlaps. All **113 verification tests**, all
+> **31 final hierarchy audits**, **4 independent NG45 tag checks**, and
+> **10 synthetic truth checks** pass. IBM retains 68 moves from 1,053 candidate
+> scores in 3.079s; NG45 retains 11 from 95 in 0.216s. Synthetic softs are fully
+> assigned and skip candidate scoring. IBM mean density/congestion fall by
+> 0.000246760/0.000232901. NG45's density reduction outweighs small wirelength
+> and congestion increases; the acceptance objective remains total proxy.
+>
+> Nine variants were removed after proxy or hierarchy regressions: shared
+> checkpoint-cache repair, independent early density scheduling, density-tail
+> and route-tail source ranking, bounded wirelength rescue, richer hard/soft
+> winner checks, removing consolidation's structural-gain gate, and hard-blockage
+> ranking. The cache defect remains open: its repair improved focused IBM09/12
+> but regressed normal IBM01/10. The consolidation change improved IBM04 proxy
+> while increasing fragmented leaves 4→5 and foreign intrusions 26→35, so it
+> was rejected despite passing the ordinary contract.
+>
+> Timing-sensitive prefixes prevent treating separate full runs as matched
+> controls. The preceding tail sweep reached IBM 1.187981609, but its IBM13
+> prefix performed 20 rather than 24 micro moves and finished worse than its
+> earlier control. Direct final-pass verification instead proves IBM13
+> **1.137223363 → 1.136410356** with unchanged hierarchy. The new paired input
+> average is not the earlier 1.1881 placement. No end-to-end runtime gain is
+> claimed. Full deltas, rejected variants, and component tradeoffs are in
+> [CONGESTION_DENSITY_REVIEW.md](CONGESTION_DENSITY_REVIEW.md); source snapshots,
+> individual patches, paired placements, and reproduction commands are under
+> `ml_data/proxy_individual/20260908/` (`paired_summary.json`, `results.md`).
+>
+> **Status (2026-09-08 — proxy optimization with hierarchy constraints):**
+> The user explicitly replaced the isolation-first priority with exact-proxy
+> optimization while retaining hierarchical structure. Terminal active-leaf
+> envelope packing and both dependent hard/soft repolish passes are removed,
+> along with their isolation-specific final audit exemptions. Seed selection
+> now takes the lowest exact-proxy contract-passing candidate; hierarchy-band
+> and proxy-band/headroom ranking modes and constants are removed. Grouped
+> DREAMPlace, hard/soft ownership, retained parent/child structure, per-leaf
+> movement boxes and limits, all six component gates, and final rollback stay.
+> This removes **1,043 production lines** relative to the starting working tree.
+>
+> Fresh before/after runs improve IBM10 **2.1636 -> 1.1744** (45.72%) and
+> IBM04 **1.4318 -> 1.0029** (29.95%), both VALID with zero hard overlaps and
+> complete hierarchy audits passing. Hard/soft hierarchy coverage is unchanged.
+> Every proxy component improves: IBM10 WL/density/congestion changes from
+> **0.124 / 0.946 / 3.133** to **0.080 / 0.597 / 1.593**; IBM04 changes from
+> **0.091 / 0.883 / 1.798** to **0.087 / 0.520 / 1.312** (rounded evaluator values).
+>
+> The baseline's own pre-isolation scores were **1.2055** and **0.9935**,
+> respectively, directly exposing the terminal isolation regression. The
+> candidate's further IBM10 gain reflects ordinary warm-cache/budget effects;
+> IBM04's cheaper recursive seed finishes slightly worse than its old
+> pre-isolation basin. No standalone seed-ranking or clean runtime gain is
+> claimed from these focused runs.
+>
+> The first IBM sweep reached **AVG 1.1869**, 17/17 zero overlaps and complete
+> hierarchy audits passing. NG45's independent tag check passed 4/4, but detailed
+> telemetry exposed an invalid NVDLA rollback seed: the spiral legalizer did not
+> reserve fixed obstacles occurring later in the supplied order. Temporarily
+> anchored recurrent leaves could therefore overlap already-placed macros.
+> The shared legalizer now reserves every fixed obstacle before moving any
+> member. Its regression test fails before the fix and passes in both NumPy
+> and Numba paths afterward. Focused NVDLA improves **0.7585 -> 0.7329**, VALID,
+> zero overlaps, with the complete hierarchy audit and independent tag check
+> passing. All **111 verification tests pass**.
+>
+> The corrected full IBM sweep reaches **AVG 1.1881**, 17/17 VALID, zero hard
+> overlaps, and all complete hierarchy audits passing, in **818.42s** reported
+> evaluator runtime. This is **34.7% below** the recorded isolation reference
+> of 1.8192; the earlier 1.1869 sweep is superseded. NG45 reaches **AVG 0.7177**,
+> 4/4 VALID, zero overlaps, with all four complete hierarchy audits and all four
+> independent explicit-tag checks passing. Synthetic validation reaches
+> **AVG 1.4361**, 10/10 VALID, zero overlaps, with all ten complete hierarchy
+> audits and all ten independent truth checks passing (651.15s process time).
+> These are normal BB/cache runs; differing cache warmth, pass guards, and host
+> load prevent a causal end-to-end runtime claim.
+>
+> A bounded archived-headroom control changes the seed on only IBM02/04. With
+> the corrected legalizer and isolation still removed, cheapest-seed selection
+> improves IBM02 **1.1785 -> 1.1709** but worsens IBM04 **0.9935 -> 1.0029**.
+> Their combined exact delta is +0.001836 (+0.000108 divided across the IBM
+> suite). The simpler exact-cost selector is retained without claiming an
+> independent final-proxy win; no per-design exception is introduced. Both
+> controls are VALID and pass the complete hierarchy audit. The principal
+> improvement is removal of terminal isolation.
+> Source snapshot, logs, telemetry, and attribution notes live under
+> `ml_data/proxy_rebalance/20260908/`; see its `results.md` and
+> `focused_results.json` for details.
+>
+> **Status (2026-08-25 — final active-leaf isolation and bounded hard/soft proxy polish):** The terminal
+> hierarchy stage now compacts each movable active hard leaf and legalizes its
+> padded envelope with every other leaf and unclustered hard obstacle. It asks
+> for a canvas-scaled guard band of
+> `0.0025 * max(canvas_width, canvas_height)`, retries deterministically at
+> one-half and one-quarter margin, and retains the legal baseline if none fit.
+> Owned soft macros translate with their leaf subject to canvas bounds; bridge
+> and unassigned soft macros remain independent. Fixed leaves do not move. The
+> stage has no proxy acceptance cap because failure-domain isolation is its
+> objective.
+>
+> The isolation-only IBM sweep achieved the full target on all 17 designs, reducing
+> overlapping active-leaf envelope pairs **1,940 -> 0** with achieved margins
+> from **0.0576 to 0.2028 microns**. It reached **AVG 1.8334**, 17/17 VALID,
+> zero hard overlaps, and all final hierarchy/vector/isolation audits passed in
+> **1071.92s**. This is a deliberate proxy regression of **0.6253** from the
+> pre-isolation hierarchy reference of AVG 1.2081. Isolation itself took at
+> most 1.28s per IBM design. Final-only island proximity/spread, neighbor
+> impurity, edge stretch, and owned/bridge soft-distance metrics are advisory
+> because the new disjoint-envelope contract supersedes those proximity
+> objectives; ownership, parent/child structure, global hard hierarchy quality,
+> fixed macros, bounds, and float32 hard legality remain mandatory.
+> The isolation-only NG45 sweep likewise achieved every requested margin, reduced
+> envelope overlaps **371 -> 0**, and reached **AVG 0.9348**, 4/4 VALID, zero
+> hard overlaps, and all final audits passing in **132.68s**.
+>
+> A terminal proxy polish now freezes those envelopes and runs up to three
+> rounds of one-cell shifts, hard relocations, and same-leaf hard swaps. The
+> complete IBM sweep reached **AVG 1.8193**, 17/17 VALID, zero hard overlaps,
+> every full margin preserved, and all final audits passing in **1015.29s**.
+> The stage improved 15/17 designs by **0.078767** attributable exact proxy in
+> total through 25 shifts, 3 relocations, and 201 swaps; 2,144 relocation/swap
+> states were exact-scored in 56.17s, with no margin failure or rollback. NG45
+> reached **AVG 0.9340**, 4/4 VALID, zero overlaps, and all margins/audits safe
+> in **98.15s**; 63 swaps contributed 0.003110 exact gain in 2.68s.
+>
+> Because isolation runs after the ordinary soft search, the finalizer now
+> replays the existing soft relocation and soft-soft swap operators against the
+> final hard geometry. All hard macros stay fixed. Owned soft targets are
+> bounded by their frozen leaf envelope when they fit; oversized owned softs
+> freeze, while bridge and residual softs retain legal canvas freedom. Both
+> swap endpoints and every relocation target pass the isolation-aware float64
+> and returned-float32 contract before exact scoring.
+>
+> The promoted IBM sweep reached **AVG 1.8192**, 17/17 VALID, zero hard
+> overlaps, every full margin preserved, and every final audit passing in
+> **1217.98s**. The soft replay improved 13/17 isolated states by **0.093965**
+> attributable exact proxy through 32 relocations and 15 swaps. It exact-scored
+> 731 states in 226.74s with no rollback; its maximum measured elapsed time was
+> 23.63s because an in-flight exact batch can cross the nominal 12-second guard.
+> The preceding hard-only reference remains **AVG 1.8193 / 1015.29s**; the
+> rounded full-run delta includes normal upstream schedule variance, while the
+> per-state soft-replay delta is exact and monotonic.
+>
+> NG45 improved **AVG 0.9340 -> 0.9269**, remained 4/4 VALID with zero
+> overlaps and all full margins/audits safe in **134.41s**. All four designs
+> improved for 0.028475 attributable exact gain, and the independent hierarchy-
+> tag verifier passed 4/4. Synthetic validation improved **AVG 3.7670 ->
+> 3.7392**, remained 10/10 VALID with zero hard overlaps, and gained 0.285968
+> exact proxy across all eight feasible isolation cases. The two infeasible
+> capacity cases exact-scored zero soft proposals and preserved their legal
+> baselines.
+>
+> Synthetic validation previously reached **AVG 3.7670**, 10/10 VALID, and zero hard
+> overlaps, versus the isolation-only AVG 3.9114. Eight designs achieved the
+> full requested margin and gained 1.431783 attributable exact proxy through 33
+> shifts, 4 relocations, and 108 swaps with no margin failure or rollback. The
+> fixed-obstacle and deliberately dense capacity cases retained their legal
+> baselines and skipped the polish with zero scored work. The
+> legacy geometry-based truth audit passed 3/10: all failures were
+> compactness/spread, neighbor impurity, or owned-soft distance, which this
+> terminal isolation policy deliberately makes advisory. Inferred ownership
+> labels were not changed by the pass.
+>
 > **Status (2026-08-13 — canonical graph consolidation):** Runtime graph state
 > now has one cached immutable pin/net topology, one persistent weighted macro
 > projection, one canonical active-leaf edge list, and separate retained-child
@@ -129,8 +463,8 @@ Target: beat RePlAce avg of 1.4578.
 > selection was `initial` 10/17, `re2map_recursive_2` 3/17, `dreamplace` 2/17,
 > `re2map_recursive_1` 1/17, and `initial_recurrent` 1/17. Focused IBM10 skipped
 > the candidate and reproduced `1.2059`; focused IBM11 selected it and
-> reproduced `0.9961`. See the
-> [experiment report](../ml_data/initial_recurrent/20260811-results.md).
+> reproduced `0.9961`. The detailed artifact
+> `ml_data/initial_recurrent/20260811-results.md` is absent from this checkout.
 >
 > **Status (2026-08-11 — repository-wide dead-code audit):** Static lint,
 > repository-wide symbol reference analysis, and Vulture were reconciled against
@@ -186,8 +520,8 @@ Target: beat RePlAce avg of 1.4578.
 > zero. Seed counts were unchanged. The apparent `1.2151 -> 1.2144` delta came
 > from downstream deadline variance on unchanged seeds, while runtime rose
 > 17.75s. The runtime hook, constructor, constant, and dedicated tests were
-> removed; only the
-> [measured report](../ml_data/re2map_packing_tree/20260811-results.md) remains.
+> removed. The detailed artifact
+> `ml_data/re2map_packing_tree/20260811-results.md` is absent from this checkout.
 >
 > **Status (2026-08-11 — hierarchy-blind constraint seed removed):** Auditing
 > the two initial-layout candidates found that ordinary `initial` is actively

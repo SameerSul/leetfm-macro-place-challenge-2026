@@ -43,3 +43,12 @@ def test_spiral_legalizer_jit_matches_numpy_reference():
         actual = _legalize(pos, movable, sizes, order, True)
         expected = _legalize(pos, movable, sizes, order, False)
         np.testing.assert_array_equal(actual, expected)
+
+
+def test_spiral_legalizer_reserves_fixed_macros_before_movable_members():
+    pos = np.array([[10.0, 10.0], [10.0, 10.0]])
+    sizes = np.full((2, 2), 4.0)
+    for use_numba in (False, True):
+        legal = _legalize(pos, np.array([True, False]), sizes, [0, 1], use_numba)
+        np.testing.assert_array_equal(legal[1], pos[1])
+        assert np.any(np.abs(legal[0] - legal[1]) >= (sizes[0] + sizes[1]) / 2.0)

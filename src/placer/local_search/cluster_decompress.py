@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 
 import numpy as np
@@ -265,7 +264,7 @@ def _full_tensor(hard_xy, soft_xy):
     return torch.tensor(np.vstack([hard_xy, soft_xy]).astype(np.float32), dtype=torch.float32)
 
 
-def _hard_rejection_reason(hard_xy, sizes, hw, hh, cw, ch) -> str | None:
+def _hard_rejection_reason(hard_xy, hw, hh, cw, ch) -> str | None:
     if (
         np.any(hard_xy[:, 0] < hw - 1e-6)
         or np.any(hard_xy[:, 0] > cw - hw + 1e-6)
@@ -371,7 +370,6 @@ def _cluster_decompression_relief(
     hot_percentile: float = 65.0,
     quality_budget: float = 0.03,
     min_proxy_gain: float = 1e-4,
-    use_density: bool = False,
     anisotropic: bool = False,
     anisotropic_band: int = 3,
     anisotropic_secondary: float = 0.25,
@@ -401,14 +399,6 @@ def _cluster_decompression_relief(
     cur_quality = hierarchy_quality_metric(cur_h, clusters)
     accepts = 0
     factors = const.HIER_DECOMPRESS_FACTORS
-    prefilter_enabled = os.environ.get(
-        "HIER_GRAPH_PREFILTER",
-        "1" if bool(getattr(const, "HIER_GRAPH_PREFILTER", False)) else "0",
-    ).strip() not in {"0", "false", "False", "no", "NO", "off", ""}
-    prefilter_low_tension = max(
-        0.0, float(getattr(const, "HIER_GRAPH_PREFILTER_LOW_TENSION", 0.05))
-    )
-    prefilter_min_relief = max(0.0, float(getattr(const, "HIER_GRAPH_PREFILTER_MIN_RELIEF", 0.0)))
     feasibility_min_free = max(
         0.0,
         float(getattr(const, "HIER_DECOMPRESS_FEASIBILITY_MIN_FREE_RATIO", 0.70)),
@@ -416,20 +406,6 @@ def _cluster_decompression_relief(
     feasibility_max_blockage = min(
         1.0,
         max(0.0, float(getattr(const, "HIER_DECOMPRESS_FEASIBILITY_MAX_BLOCKAGE", 0.75))),
-    )
-    graph_rescue_enabled = os.environ.get(
-        "HIER_DECOMPRESS_GRAPH_RESCUE",
-        "1" if bool(getattr(const, "HIER_DECOMPRESS_GRAPH_RESCUE", False)) else "0",
-    ).strip() not in {"0", "false", "False", "no", "NO", "off", ""}
-    graph_rescue_max_delta = float(getattr(const, "HIER_DECOMPRESS_GRAPH_RESCUE_MAX_DELTA", 0.0))
-    graph_rescue_shrinks = tuple(
-        float(v) for v in getattr(const, "HIER_DECOMPRESS_GRAPH_RESCUE_SHRINKS", (0.75, 0.55))
-    )
-    graph_rescue_shift_mults = tuple(
-        float(v) for v in getattr(const, "HIER_DECOMPRESS_GRAPH_RESCUE_SHIFT_MULTS", (1.25,))
-    )
-    graph_rescue_max_variants = max(
-        0, int(getattr(const, "HIER_DECOMPRESS_GRAPH_RESCUE_MAX_VARIANTS", 4))
     )
     graph_survivor_max_delta = float(
         getattr(const, "HIER_DECOMPRESS_GRAPH_SURVIVOR_MAX_DELTA", -0.01)
@@ -553,7 +529,6 @@ def _cluster_decompression_relief(
 
                 def _build_candidate(
                     effective_factor: float,
-                    shift_mult: float,
                 ) -> tuple[np.ndarray, np.ndarray, list[int], np.ndarray]:
                     trial_h = cur_h.copy()
                     trial_s = cur_s.copy()
@@ -573,7 +548,6 @@ def _cluster_decompression_relief(
                             )
                             * max(0.0, float(local_component_shift_frac))
                             * max(0.0, float(effective_factor) - 1.0)
-                            * max(0.0, float(shift_mult))
                         )
                     trial_h[mem] = center + vec * trial_scale + trial_shift
                     trial_h[mem] = _clip_to_region(trial_h[mem], hard_region, mem, hw, hh, cw, ch)
@@ -653,7 +627,7 @@ def _cluster_decompression_relief(
                         if moved_soft.size:
                             trial_changed_s = np.any(trial_s[moved_soft] != cur_s[moved_soft])
                     if trial_reason is None:
-                        trial_reason = _hard_rejection_reason(trial_h, sizes, hw, hh, cw, ch)
+                        trial_reason = _hard_rejection_reason(trial_h, hw, hh, cw, ch)
                     return (
                         trial_h,
                         trial_s,
@@ -816,7 +790,7 @@ def _cluster_decompression_relief(
                         return best_trial_h, best_trial_s, best_trial_score, attempts
                     return trial_h, trial_s, None, attempts
 
-                cand_h, cand_s, soft_touched, scale = _build_candidate(float(factor), 1.0)
+                cand_h, cand_s, soft_touched, scale = _build_candidate(float(factor))
                 feasible = _candidate_feasibility(cand_h)
                 cand_h, cand_s, changed_h, changed_s, reason, scale = _finalize_candidate(
                     cand_h, cand_s, soft_touched, scale, feasible
@@ -828,14 +802,6 @@ def _cluster_decompression_relief(
                 if not changed_h and not changed_s:
                     continue
 
-                graph_tension = float(priority.get(int(cid), 0.0))
-                source_field = float(local[mem].mean()) if mem.size else 0.0
-                target_field = (
-                    float(_cell_values(cand_h[mem], field, cw, ch).mean())
-                    if mem.size
-                    else source_field
-                )
-                local_relief = float(source_field - target_field)
                 graph_delta_stats = candidate_graph_edge_delta(
                     cur_h,
                     cand_h,
@@ -849,91 +815,9 @@ def _cluster_decompression_relief(
                     affected_clusters=[int(cid)],
                     samples=max(2, int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9))),
                 )
-                trigger_delta = float(graph_delta_stats.get("graph_candidate_delta", 0.0))
-                can_rescue = (
-                    graph_rescue_enabled
-                    and graph_rescue_max_variants > 0
-                    and trigger_delta <= graph_rescue_max_delta
-                    and reason in {"feasibility_blocked", "illegal_overlap"}
-                )
-                if can_rescue:
-                    rescue_specs: list[tuple[float, float]] = []
-                    for shrink in graph_rescue_shrinks:
-                        if len(rescue_specs) >= graph_rescue_max_variants:
-                            break
-                        if not (0.0 < float(shrink) < 1.0):
-                            continue
-                        rescue_specs.append((1.0 + (float(factor) - 1.0) * float(shrink), 1.0))
-                    if local_anchor is not None:
-                        for shift_mult in graph_rescue_shift_mults:
-                            if len(rescue_specs) >= graph_rescue_max_variants:
-                                break
-                            rescue_specs.append((float(factor), float(shift_mult)))
-                    for rescue_factor, rescue_shift_mult in rescue_specs:
-                        if deadline is not None and time.monotonic() > deadline:
-                            break
-                        trial_h, trial_s, trial_softs, trial_scale = _build_candidate(
-                            rescue_factor, rescue_shift_mult
-                        )
-                        trial_feasible = _candidate_feasibility(trial_h)
-                        (
-                            trial_h,
-                            trial_s,
-                            trial_changed_h,
-                            trial_changed_s,
-                            trial_reason,
-                            trial_scale,
-                        ) = _finalize_candidate(
-                            trial_h,
-                            trial_s,
-                            trial_softs,
-                            trial_scale,
-                            trial_feasible,
-                        )
-                        if trial_reason is not None:
-                            continue
-                        if not trial_changed_h and not trial_changed_s:
-                            continue
-                        cand_h = trial_h
-                        cand_s = trial_s
-                        changed_h = trial_changed_h
-                        changed_s = trial_changed_s
-                        reason = None
-                        feasibility_rejected = False
-                        scale = trial_scale
-                        target_field = (
-                            float(_cell_values(cand_h[mem], field, cw, ch).mean())
-                            if mem.size
-                            else source_field
-                        )
-                        local_relief = float(source_field - target_field)
-                        graph_delta_stats = candidate_graph_edge_delta(
-                            cur_h,
-                            cand_h,
-                            clusters,
-                            graph_edges,
-                            cw=cw,
-                            ch=ch,
-                            field=field,
-                            seed_hard_xy=seed_hard_xy,
-                            confidence=graph_confidence,
-                            affected_clusters=[int(cid)],
-                            samples=max(
-                                2,
-                                int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9)),
-                            ),
-                        )
-                        break
                 q = None if feasibility_rejected else hierarchy_quality_metric(cand_h, clusters)
                 if reason is None and q > cur_quality + quality_budget:
                     reason = "hierarchy_quality_failed"
-                if (
-                    reason is None
-                    and prefilter_enabled
-                    and graph_tension <= prefilter_low_tension
-                    and local_relief <= prefilter_min_relief
-                ):
-                    reason = "prefilter_no_local_relief"
                 if reason is None:
                     score = float(_exact_proxy(_full_tensor(cand_h, cand_s), benchmark, plc))
                     if score < old_score - min_proxy_gain:
@@ -970,12 +854,6 @@ def _cluster_decompression_relief(
                                 cand_h = survivor_h
                                 cand_s = survivor_s
                                 score = float(survivor_score)
-                                target_field = (
-                                    float(_cell_values(cand_h[mem], field, cw, ch).mean())
-                                    if mem.size
-                                    else source_field
-                                )
-                                local_relief = float(source_field - target_field)
                                 graph_delta_stats = candidate_graph_edge_delta(
                                     cur_h,
                                     cand_h,

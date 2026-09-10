@@ -1,11 +1,10 @@
 """Vectorized density helpers."""
 
 import numpy as np
-from macro_place.benchmark import Benchmark
 
 from placer.plc.placement import _ensure_pos_cache
 
-def _build_density_cache(plc, benchmark: Benchmark):
+def _build_density_cache(plc):
     """One-time precomputation per plc for the vectorized density path.
 
     Density depends on (macro half-widths/heights) which are immutable, and
@@ -157,10 +156,10 @@ def _vectorized_get_grid_cells_density(plc) -> "list[float]":
     return plc.grid_cells
 
 
-def _patch_plc_density(plc, benchmark: Benchmark) -> None:
+def _patch_plc_density(plc) -> None:
     """Install vectorized density on this plc instance (idempotent)."""
     if getattr(plc, "_density_vec_installed", False):
         return
-    _build_density_cache(plc, benchmark)
+    _build_density_cache(plc)
     plc.get_grid_cells_density = lambda _plc=plc: _vectorized_get_grid_cells_density(_plc)
     plc._density_vec_installed = True

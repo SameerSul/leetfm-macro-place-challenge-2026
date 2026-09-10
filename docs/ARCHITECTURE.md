@@ -4,7 +4,22 @@
 
 `MacroPlacer.place()` always routes through `_hierarchy_floorplan()` in
 `src/placer/pipeline/macro_placer.py`. There is no proxy-only fallback path:
-the placer raises if grouped DREAMPlace is unavailable.
+the placer raises if grouped DREAMPlace is unavailable. Exact proxy is the
+optimization objective within the existing hierarchy and legality constraints.
+Seed ranking pays no premium for additional hierarchy headroom. Terminal
+cluster isolation and its hard/soft repolish sequence are removed.
+
+The constructor exposes keyword-only `seed`, `event_sink`, and
+`dreamplace_sample_every`. The old restart/noise options and overall
+`time_budget_s` were unused and are removed. Existing per-pass time limits and
+exact-score quotas control runtime. `src/place_design.py` no longer accepts
+the ignored `--budget`; the synthetic runner supports an explicit budget
+override only for alternative placers that expose `time_budget_s`.
+
+The maintenance cleanup also removes unused local-search arguments, a dead
+environment parser, and an always-true coldspot callback. The effective
+coldspot candidate counts, search order, scoring, and hierarchy gates remain
+the same. Current validation is recorded in [PROGRESS.md](PROGRESS.md).
 
 The optional live visualizer adds a dependency-free schema-v1 event sink at
 the placer/scorer boundary. With no sink (the evaluator default), no events,
@@ -34,6 +49,7 @@ benchmark input
        - record inter-cluster edge weights and confidence
   -> grouped DREAMPlace global placement (synthetic clique nets per cluster)
   -> cluster-consecutive hard legalization
+       - reserve every fixed obstacle before placing any movable macro, including recurrent seed anchors
   -> exact-proxy seed portfolio selection
        (grouped DREAMPlace, legalized initial.plc, two Re²MaP-inspired
         recursive prototypes, a conditional initial-anchored recurrent repair,
@@ -45,7 +61,7 @@ benchmark input
         reference falls back to grouped DREAMPlace; a mandatory lower-proxy
         candidate that misses one component may be repaired toward the passing
         reference when at least 95% of its displacement survives; the lowest
-        eligible hierarchy band enters relief, with exact proxy breaking ties)
+        exact-proxy contract-passing candidate enters relief)
   -> congestion-expanded hard/soft hierarchy regions
   -> seed-stage small-leaf assembly
        - target ordinary 2-8-hard leaves, independent of parent inference
@@ -71,20 +87,13 @@ benchmark input
   -> small-leaf assembly replay after ordinary region relief
   -> parent-bounded child-cluster search
        - keep the production DREAMPlace/leaf partition unchanged
-       - require confidence >=0.65 for inferred child/deep search; explicit parents bypass the gate
+       - require confidence >=0.65 for inferred child search; explicit parents bypass the gate
        - rigidly translate hot child groups toward cold space inside the parent
        - co-move every leaf-owned movable soft macro; bridge softs stay independent
        - test sibling slot swaps inside the same parent
        - when a rigid state is blocked, compact and legalize only the affected children
        - enforce child and parent hierarchy contracts before exact mixed-group scoring
        - activate the multilevel contract for later passes only after a move is retained
-  -> deepest-child bounded internal relief
-       - freeze a box around each current child footprint plus a per-child margin
-       - blend congestion heat, density heat, and inter-child graph tension into the margin
-       - expand hot boxes toward cold components favored by graph corridors, then clip to parent
-       - relocate individual hard/owned-soft members and swap hard members only inside the box
-       - use neighboring-child graph centroids for target guidance and exact-score at most 48 states
-       - require 0.0005 local gain before activating the downstream multilevel contract
   -> exact-gated cluster decompression with composite hierarchy quality
        - large designs can order opportunities by hierarchy graph tension
   -> adjacent-cluster ownership transfer
@@ -120,7 +129,6 @@ benchmark input
   -> coldspot tightening:
        - refresh current congestion field and cold-cell graph memory
        - generate coldspot kick candidates
-       - optional default-off hard-only ego-net candidate groups move small graph neighbors
        - co-move owned/bridge soft macros
        - legalize candidate hard macros
        - expand local graph border through adjacent open cold cells
@@ -174,6 +182,17 @@ benchmark input
        - enforce both the legacy hard-cluster budget and independent limits for
          all six rich-vector components
        - roll back to the best saved audit-passing checkpoint when needed
+  -> bounded final density relief for free soft macros
+       - freeze all hard macros, fixed softs, active/child/parent soft roles, soft bundles, and direct hard-connected softs
+       - reuse region-bounded soft relocation: 16 hot sources, 4 targets, at most 64 candidate scores, 2-second search guard
+       - independently rescore baseline and proposed float32 output; retain only a full-contract gain above 0.000001
+  -> bounded final cluster-tile rearrangement
+       - attribute directional routing-tail, hard-blockage, and density pressure through complete incident nets
+       - reuse the canonical location graph to form 2–4 connected units within one leaf/child partition
+       - keep fixed and bridge macros frozen; move complete explicit bundles rigidly
+       - rank joint assignments to current slots and nearby cold tiles, then exact-score at most 16 per patch and 64 total
+       - spend at most 3 seconds of unused internal-floorplan/void search allowance
+       - retain only a complete-contract float32 gain above 0.000001 after fresh baseline/winner scoring
   -> final legality and bounds checks
   -> return center coordinates for hard and soft macros
 ```
@@ -276,11 +295,10 @@ legacy values cannot disable the selected behavior.
 proxy_cost = wirelength + 0.5 * density + 0.5 * congestion
 ```
 
-The exact proxy is still the accept gate for every committed move, and still
-drives evaluator reporting. But the system optimizes for **hierarchy
-preservation** first: it deliberately keeps connected subsystems together
-even when a flatter, more-spread placement would score lower proxy. The
-structural reasoning behind this is in [OBJECTIVES.md](OBJECTIVES.md).
+Exact proxy guides optimization and evaluator reporting, subject to the
+existing hierarchy and legality contracts. Extra hierarchy compactness does
+not justify a proxy increase. The required structure and constraints are
+documented in [OBJECTIVES.md](OBJECTIVES.md).
 
 The structural objectives that drive the hierarchy flow are documented in
 [OBJECTIVES.md](OBJECTIVES.md). The retired learned-GNN stack is preserved only
@@ -288,193 +306,12 @@ as historical experiment results in [PROGRESS.md](PROGRESS.md); its inference,
 candidate tracing, offline training, artifacts, and dedicated documentation
 are no longer part of the system.
 
-Current verified full sweep with strict hierarchy-audit rollback,
-audit-aware hard swap gating, component-aware region expansion/decompression,
-large-design hierarchy graph-tension opportunity ordering, swap-round
-micro-shift replay, stronger opportunity gates, component-aware scheduling,
-post-coldspot small-design polish with subpass audit restore, no-release
-low-net soft/SS breadth, medium/large soft-continuation scheduling, prepared
-Numba routing/legalization kernels, exact batched hard-hard/hard-soft scoring,
-batched soft relocation/swap scoring with direct global swap topology and exact
-sparse congestion/density-tail reduction,
-stable nearest-four hierarchy-audit selection, recurrent hierarchy prototypes, and
-the per-component seed/final hierarchy contract, legalized-reference seed
-prefiltering, hierarchy-prefiltered hard relocation, and deterministic
-exact-score work quotas, one-level child relocation/sibling swaps, and
-graph/field-derived deepest-child relief boxes, two-stage stable-prefix region-
-swap exact scoring, batched soft wirelength prefiltering, calibrated soft-role
-confidence, and audited retained-gain late-lane stopping:
-
-```text
-uv run evaluate src/main.py --all
-AVG 1.1404  17/17 VALID  0 overlaps  318.55s
-```
-
-The prior proxy-leaning hierarchy sweep reached `AVG 1.1627`, 17/17 VALID,
-0 overlaps, 1116.90s, but final hierarchy audit was report-only and failed on
-several designs after late proxy-improving relief. A strict final-rollback-only
-audit sweep reached `AVG 1.1999`; the audit-preserving local-relief recovery
-reached `AVG 1.1664`; the pre-optimization BB-on verification was
-`AVG 1.1653` cold (`AVG 1.1652` with cache hits). The prior optimized
-normal-cache sweep was `AVG 1.1575`; the constraint-graph/batched-swap sweep
-was `AVG 1.1199`, the component-contract sweep was `AVG 1.1205` in `540.33s`,
-and the compound-relocation sweep was `AVG 1.1205` in `544.94s`.
-The learned-GNN removal sweep preserves every telemetry-scheduled production
-score at `AVG 1.1205` in `542.58s`; its candidate rankers, selectors, tracing,
-offline tooling, tests, and active schemas are gone.
-The later conservative soft-bundle inference sweep again preserved every proxy
-at `AVG 1.1205` in `547.05s`: only explicit soft instance paths change
-compound-relocation groups, while flat-net connectivity and hard-affinity
-communities remain diagnostic evidence.
-The current batch-density/nearest-four-audit JIT validation again preserved
-every proxy at `AVG 1.1205` in `554.54s`. That full-suite wall time is a
-loaded-host observation, not a claimed end-to-end speedup; isolated kernels
-are measured in [PROGRESS.md](PROGRESS.md).
-Subsequent accepted 2026-07-18 scheduling, coldspot, incremental-scoring, and
-region-expansion changes established an active-root reference of `AVG 1.1487`
-in `409.72s`. Correcting the immutable contract reference to the actually
-legalized `initial.plc` improved the control to `AVG 1.1468` in `404.09s`.
-The hard-relocation containment prefilter then improved the active result to
-`AVG 1.1412` in `404.01s`, with all 17 final component audits passing.
-Deterministic exact-score quotas preserved every placement and score from that
-reference while the observed runtime moved to `398.57s`.
-The subsequent single-component hierarchy refinement is structurally dormant
-on the audited multi-component IBM graphs. Its full IBM validation reproduced
-all 17 accepted scores exactly at `AVG 1.1412`, with 17/17 VALID, zero overlaps,
-and all audits passing in 413.49s; the preceding deterministic-quota reference
-recorded the same placements in 398.57s. `ibm10` also reproduced `1.1348` VALID
-in 26.57s (the preceding repeat was 25.13s). Full synthetic validation reached
-`AVG 1.4206`, 10/10 VALID, zero
-overlaps, and 10/10 independent truth audits in 338.6s, versus the attributed
-`AVG 1.4262` reference with nine truth passes.
-The one-level hierarchy pass then preserved all 17 IBM placements at `AVG
-1.1412`, 17/17 VALID, zero overlaps, and all final audits passing in 423.87s.
-It formed 418 child candidates, localized 150 blocked variants, exact-scored
-55 complete states, and retained none; total operator time was 2.26s. NG45
-improved `AVG 0.7123 -> 0.7121` in 76.85s by retaining one localized child
-move on `ariane136` (`0.7298 -> 0.7291`), with 4/4 valid and all multilevel
-audits passing. Final synthetic validation reached `AVG 1.4204`, 10/10 valid,
-zero overlaps, and 10/10 truth audits.
-The spatial/structural fallback then replaced topology-only bisection for
-eligible active clusters. Direct low-fanout hard edges and shared-soft
-support remain mandatory; initial macro proximity, local macro-area density,
-and placed low-fanout wire demand only reinforce those relations. A split must
-also satisfy the raw cut, compactness-gain, and combined-confidence floors.
-The full IBM validation inferred 23 spatial parents / 46 children on 10
-designs, exact-scored 24 child states, retained none, and reproduced every
-score at `AVG 1.1412` in 430.06s. NG45 remained `AVG 0.7121` in 80.65s with
-explicit path parents taking precedence. The synthetic suite reached `AVG
-1.4195`, 10/10 valid, zero overlaps, and 10/10 truth audits.
-The deepest-child internal phase then added immutable footprint-plus-margin
-boxes after whole-child search. The margin is `0.01 + [0, 0.025]` of the larger
-canvas dimension from a `0.45/0.35/0.20` congestion/density/graph-pressure
-blend; directional cold-component expansion can add up to `0.01`, with graph
-corridors biasing component choice. The accepted IBM sweep exact-scored 528
-states over 11 participating designs in 2.93s, retained none at the 0.0005
-floor, and reproduced every score at `AVG 1.1412` in 433.09s. An exploratory
-0.0001 floor retained six locally improving moves but activated the tighter
-downstream contract and regressed the final average to 1.1453, so that
-calibration is rejected. The independent synthetic sweep reached `AVG 1.4193`,
-10/10 valid, zero overlaps, and 10/10 truth-audit passes with the accepted
-deepest-child pass enabled.
-Region-swap exact scoring then split each stable candidate list into a short
-prefix and its untouched remainder. Because this operator commits the first
-acceptable candidate, a winner in the prefix makes the remainder irrelevant;
-otherwise the remainder is scored in its original order. The IBM sweep avoided
-58,820 exact evaluations relative to full per-source batches and reduced
-region-swap time from 159.91s to 150.68s. A follow-up calibration increased the
-soft-soft prefix from 8 to 12 while retaining 4/8 for hard-hard/hard-soft,
-ranked candidates before evaluating hard legality, and removed zero-valued
-graph-mask work when that path is disabled. It increased avoided exact work to
-66,703 and reduced region-swap time again to 148.29s. All 17 exact scores were
-reproduced at `AVG 1.1412`; complete evaluator time was 416.74s, effectively
-flat under final-score timing noise. The batched congestion reducer now
-partitions its disposable trial grids in place, and one cached pair of hard
-separation matrices serves every field, round, and fallback in the region-swap
-schedule. The next sweep preserved the same 1,077,431 physical exact scores
-and 66,703 avoided scores while reducing attributed swap time to 146.98s;
-complete evaluator time remained flat at 416.87s. Swap routing now reads the
-global net/pin topology directly and packs only the selected pin cells inside
-the compiled candidate loop, eliminating pair-specific topology construction
-and flattening. Exact sparse reducers recompute the routing-changed H columns,
-V rows, hard-blockage cells, and four density rectangles, then merge them with
-the sorted unchanged baseline tail. The accepted sweep preserved all counts,
-placements, and scores while reducing attributed region-swap time to 104.04s
-and complete runtime to 351.48s. Strong and medium late-soft
-lanes expose per-lane proposed/retained gain and stop the remaining rounds after
-audit restore or a retained gain no larger than 0.00005. The synthetic suite
-reached `AVG 1.4193`, 10/10 valid, zero overlaps, and 10/10 truth passes; one bridge-soft violation
-was restored immediately. Prefix-truncating an individual late lane was
-rejected because IBM12 finds useful moves beyond ordered source 384.
-The exact swap-tail baseline is commit-scoped: congestion values and stable
-descending order, density occupancy/order, nonzero count, and sum are built
-once, reused across rejected batches, and invalidated by every scorer commit.
-The accepted IBM verification preserved all physical/avoided counts and
-reduced attributed region time from 104.04s to 102.68s. Focused IBM04/12/18
-reductions were 7.6%, 9.3%, and 5.5%; NG45 region time fell 15.41s to 14.62s.
-The full IBM wall time was 371.82s under broader run/compile variance, so only
-the attributable phase reduction is claimed.
-The historical priority sweep accepted four further changes. First, a mandatory
-lower-proxy seed with exactly one contract violation may be interpolated toward
-its passing reference; repairs must remain legal and retain at least 95% of the
-source displacement. Its accepted IBM09 constraint-graph example is historical
-because that hierarchy-blind seed has since been removed.
-Second, all eligible soft-relocation targets use one exact batched wirelength
-prefilter. It rejected 100,831 IBM proposals before field scoring and reduced
-the region/interleaved/plateau/strong-soft phases by 20.7–22.3%. Third, swap
-scoring tests a second same-sized stable prefix before its untouched suffix,
-raising avoided exact evaluations from 66,703 to 79,466 and reducing the
-trace-compatible region phase `104.04s -> 98.74s`. Finally, flat owner/bridge
-evidence is assigned medium/low confidence and no longer creates compound
-groups; explicit path bundles remain the only high-confidence compound source.
-The full IBM run reached `AVG 1.1404`, 17/17 valid, zero overlaps, and all
-audits passing in 318.55s. NG45 remained `AVG 0.7121` in 64.80s, and synthetic
-validation reached `AVG 1.4192`, 10/10 valid with 10/10 truth audits.
-The next exact-equivalent scorer sweep compiles each swap pair's sorted
-incident-net union directly from CSR arrays and reuses all grid-sized sparse
-reducer scratch for the scorer lifetime. The IBM run preserved the same
-1,048,385 logical, 1,066,186 physical, and 79,466 avoided scores while reducing
-attributed region-swap time from 98.74s to 94.37s. Soft relocation retains
-stable integer grid IDs through bounds, region-mask, hierarchy, and duplicate
-filtering; only surviving IDs become coordinates. Its accepted dense scorer
-reuses capacity-grown routing/density buffers, overwrites disposable H/V route
-grids with exact smoothed congestion values, and performs the congestion
-top-tail reduction in the same compiled call. Candidate order, scalar cost
-semantics, scorer commits, and hierarchy gates are unchanged. The complete IBM
-run remained `AVG 1.1404`; NG45 remained `AVG 0.7121`; synthetic remained `AVG
-1.4192` with 10/10 truth audits.
-
-The latest exact-equivalent follow-up prepares a multi-prefix swap source only
-once. Candidate modules and coordinates, the position snapshot, and the ragged
-incident-net union are sliced by the existing stable prefix boundaries instead
-of rebuilt for each dispatch. The physical/logical/avoided work and all
-placements remain unchanged; attributed region-swap time was `94.37s ->
-94.29s`. Soft target filtering now runs grid-ID conversion, clipping, symbolic
-keys, region masks, and stable stamp deduplication in cached Numba kernels while
-leaving the ordered hierarchy callback unchanged. The identical five soft-
-relocation phase workloads fell `74.039s -> 73.400s`; region-soft relocation
-fell `38.431s -> 37.916s`. Exact-score caches, compact swap deltas, and a fused
-soft transaction API were measured and removed after phase regressions.
-
-The external algorithm lineage and the boundary between accepted code,
-research inspiration, and rejected prototypes are documented in
-[`REFERENCES.md`](REFERENCES.md#hierarchy-search-acceleration-literature),
-entries 21–27. In particular, paper-reported ABCDPlace, GPU-DPO, and Xplace
-speedups are not VivaPlace performance claims.
-
-A conservative unchanged-cell congestion lower bound was removed after it
-rejected only 1.2% of IBM10 soft-soft rows and added net overhead. Cross-source
-speculative waves and net-optimal prefix ranking are likewise not production
-paths: dependencies after a first-winner commit require recomputation, and no
-exact-safe workload reduction cleared promotion.
-The 2026-07-17 SYS_DETRIMENT checkpoint experiment is not part of this
-reference: its vector-safe full sweep reached `AVG 1.1564 / 514.27s` and was
-rejected for proxy regression despite the lower runtime.
-The prior best same-path sweep was
-`AVG 1.1657`. The
-production path preserves the audit invariant earlier in local relief so fewer
-proxy-improving states need to be discarded at finalization. Earlier Stage-6
-audit sweeps are retained in `PROGRESS.md` as historical experiment records.
+The final ordinary-guard run matches the independently audited cluster-tile
+replay on all 31 placements. The replay improves four designs and leaves 27
+unchanged while preserving legality and the complete hierarchy contract.
+Current validation and maintenance checks are in [PROGRESS.md](PROGRESS.md);
+paired scores, source snapshots, and timing controls are in the
+[algorithm review](../ml_data/algorithm_review/20260909/results.md).
 
 The graph-tension signal is advisory and applies to structurally eligible large designs. It
 orders decompression/coldspot opportunities but does not change commit gates.
@@ -496,60 +333,24 @@ HIER_SWAP_GRAPH_FALLBACK_BUDGET_S=2.5
 These controls are diagnostic/ranking only in default mode; no candidate is
 rejected for violating the mask, and final commit still requires hard legality,
 hierarchy quality, exact proxy gain, and the active audit checks.
-Coldspot and decompression use graph-edge candidate deltas internally: weighted
-edge stretch, corridor congestion change, weighted edge-length change, and a
-combined graph delta. These are deterministic ranking features only; they do
-not alter acceptance.
-The default-off `HIER_COLDSPOT_GRAPH_DELTA_RANK` hook can use that combined
-graph delta during exact coldspot candidate ordering by adding a small
-proxy-equivalent penalty for graph-worsening moves before the normal graph-score
-tie-break. Focused `ibm10`/`ibm12` tests were valid and audit-passing but did
-not improve proxy, so the default weight remains `0.0`.
+Decompression uses graph-edge stretch, corridor congestion, and weighted
+edge-length deltas to identify its bounded graph-survivor polish candidates.
+Coldspot candidates retain exact-proxy ordering and the ordinary graph-score
+tie-break.
 The default-off `HIER_REGION_GRAPH_COMPONENT_WEIGHT` hook uses hierarchy graph
 edge corridors to bias which contiguous cold congestion component a hot region
 expands toward. It changes only region construction; local relief still uses
 the normal legality, exact-proxy, and hierarchy gates.
-The default-off `HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT` hook keeps congestion as
-the primary coldspot anchor signal, then uses the selected cluster's weighted
-graph-neighbor centroid to break cold-window ties and near-ties. Candidate
-acceptance is unchanged.
 Decompression always estimates the proposed bbox's free area and neighbor
 blockage before legalization and exact scoring, and logs `feasibility_blocked`
 rejects.
-The default-off `HIER_DECOMPRESS_GRAPH_RESCUE` hook uses the graph-edge delta
-signal to rescue decompression candidates that improve graph geometry but fail
-feasibility or hard-overlap legalization. It tries a bounded set of smaller or
-cold-component-shifted variants, then returns to the normal hard legality,
-hierarchy-quality, exact-proxy, and audit gates. Full-suite validation was
-legal but not promoted because the average regressed to `1.1663`.
 The graph-survivor path is narrower: for legal,
 hierarchy-safe decompression candidates that miss exact proxy by a small amount
 while improving graph-edge geometry, it exact-scores a tiny hard/soft local
 polish pool around the moved cluster. It commits only if the final candidate
-clears the normal exact-proxy gain and audit gates. The pre-optimization
-cold-cache sweep was `AVG 1.1653`; the current optimized normal-cache sweep is
-`AVG 1.1199`.
-The default-off `HIER_GRAPH_PREFILTER` hook can reject low-tension
-decompression/coldspot candidates before exact scoring when their cheap local
-congestion estimate does not improve. It is trace-visible, but not promoted by
-default because focused A/B found `ibm10` better with the filter disabled.
-The default-off `HIER_COLDSPOT_EGONET` scaffold can synthesize temporary
-small-neighbor hard-only coldspot candidate groups. These groups are candidate
-generation inputs only; final acceptance still uses the original hierarchy
-quality and audit gates, plus an ego-net-specific exact-gain floor
-(`HIER_COLDSPOT_EGONET_MIN_GAIN`).
-
-Current NG45 verification:
-
-```text
-uv run evaluate src/main.py --ng45
-AVG 0.7121  4/4 VALID  0 overlaps  64.80s
-```
-
-Historical proxy-optimized scores in `PROGRESS.md` and `ISSUES.md` (avg
-~1.12-1.18) describe a deleted code path — candidate restarts, R2/2-opt,
-generic LSMC, ML candidate ranker — that did not preserve hierarchy. They are
-not comparable to current numbers.
+clears the normal exact-proxy gain and audit gates. Historical score and timing comparisons are retained in
+[PROGRESS.md](PROGRESS.md). They span different hierarchy contracts and search
+schedules and must not be used as interchangeable current baselines.
 
 ## Main Components
 
@@ -567,8 +368,9 @@ not comparable to current numbers.
 | `src/placer/local_search/hierarchy_quality.py` | Complete hierarchy vector, including cached-JIT stable nearest-four impurity selection. |
 | `src/placer/local_search/clusters.py` | Hard-cluster derivation, oversized-cluster splitting, region-box primitives. |
 | `src/placer/local_search/relocation.py` | Hard and soft relocation used by region-locked relief and post-swap polish. |
-| `src/placer/local_search/subcluster_relocation.py` | Parent-bounded child relocation, deepest-child graph/field margin construction, bounded internal relocation, and hard swaps. |
+| `src/placer/local_search/subcluster_relocation.py` | Parent-bounded child relocation and sibling slot swaps. |
 | `src/placer/local_search/hierarchy_swaps.py` | Region-bounded hard-hard, hard-soft, soft-soft swap relief. |
+| `src/placer/local_search/cluster_tile_rearrange.py` | Final directional tile attribution and bounded joint assignments within immutable leaf/child partitions. |
 | `src/placer/local_search/cluster_decompress.py` | Exact-gated decompression of hot hierarchy blobs. |
 | `src/placer/local_search/adjacent_cluster_transfer.py` | Transactional graph-adjacent swaps, relocations, ownership transfer, exact component gating, and post-transfer intra-leaf repair. |
 | `src/placer/local_search/region_expand.py` | Expands hot cluster regions toward colder congestion bands. |
@@ -668,7 +470,7 @@ its raw structural cut is at most 0.20, within-child mean distance improves by
 at least 10%, and combined confidence is at least 0.54. No child is recursively
 split. Parent and child layers each receive their own labels, hard/soft roles,
 cluster graph, confidence, regions, reference vector, and six-component limits.
-Inferred child relocation and deepest-child relief require mean confidence at
+Inferred child relocation requires mean confidence at
 least 0.65; lower-confidence discovered structure remains audited and visible
 but does not spend exact-search work. Explicit and retained connectivity parents
 bypass this scheduling threshold.
@@ -686,21 +488,29 @@ shares a 24-state quota, a 4s deadline guard, and requires a local exact gain of
 rollback only after a child state is retained; pure discovery therefore cannot
 perturb an otherwise unchanged placement trajectory.
 
-After the whole-child pass, each deepest child receives a fixed internal box.
-The initial outer box is the current child footprint plus a margin derived from
-normalized congestion heat, density heat, and inter-child graph tension.
-Congestion-aware region expansion can extend a hot side toward a nearby cold
-connected component, while graph corridors bias which component is preferred;
-the result is intersected with the retained parent box and then frozen.
-Individual movable hard macros and owned soft macros may relocate within their
-member-inset boxes. Hard-hard swaps are restricted to members of one child and
-both swapped centers must remain in their own inset boxes. Weighted neighboring-
-child centroids guide relocation targets, graph tension selects the children to
-search, and active/child/parent contracts run before commit. The pass shares a
-48-state exact quota and 3s guard. A retained state must improve local proxy by
-at least 0.0005 before it can activate multilevel limits downstream.
+The separate deepest-child internal search has been removed. Its isolated
+31-design ablation preserves every returned coordinate, score, and hierarchy
+measurement. Parent/child inference, whole-child relocation, sibling swaps, and
+all corresponding hierarchy contracts remain. The final cluster-tile pass
+provides bounded member rearrangement after the other search and checkpoint
+selection, without activating new downstream constraints.
 
 ### 2. Grouped DREAMPlace
+
+`DREAMPLACE_GPU=1` runs fresh DREAMPlace solves on the first visible CUDA GPU;
+`0` (the default) keeps CPU execution. The setting is independent of the main
+process's CUDA detection and applies to ordinary and recurrent seeds. CUDA
+cache keys add a backend suffix, while existing CPU cache keys remain valid.
+Cache hits report their backend and skip the subprocess on either setting.
+Grouping, BB updates, legalization, and all seed/final hierarchy gates are the
+same. The focused backend comparison is recorded in
+`ml_data/dreamplace_cuda/20260909/results.md`: CUDA improves IBM04 and preserves
+IBM10/12 exactly, but the nine fresh seed calls take 88.76s versus 72.01s on
+the RTX 4050. CUDA remains opt-in; no full-suite promotion is claimed.
+The requested normal-guard IBM `--all` follow-up reaches AVG 1.1806, 17/17 VALID,
+zero hard overlaps, and all final audits passing in 980.93s placer time, with
+55 fresh CUDA seed calls. This has no paired CPU control; see
+`ml_data/dreamplace_cuda/20260909/cuda_all/results.md`.
 
 `run_dreamplace()` accepts `cluster_groups` and `group_weight`; the bridge
 adds synthetic clique nets among each cluster's hard and soft members so
@@ -740,14 +550,11 @@ must remain within its independent absolute-or-relative slack from the
 legalized reference. Non-mandatory alternatives whose immutable hard
 components already fail are rejected before exact scoring. Production first
 removes every candidate that fails the immutable component contract, then
-selects from the best exact-proxy band using hierarchy-contract headroom as its
-deterministic tie-break. This prevents a widely distributed, contract-valid
-canvas from being discarded solely because grouped DREAMPlace is more compact.
-The selected seed becomes
-the reference for the same six-component contract at pass checkpoints and
-final rollback. `HIER_SEED_HIERARCHY_SELECT=0` is production after the IBM10
-video exposed the compact grouped seed as the source of unused canvas. The
-focused result and pending full-suite promotion are recorded in `PROGRESS.md`.
+selects the lowest exact proxy, breaking exact ties by stable candidate name.
+Hierarchy composite and headroom remain diagnostic values; neither can promote
+a higher-cost seed. The former hierarchy-band/headroom modes and their runtime
+switch are removed. The selected seed becomes the reference for the same
+six-component contract at pass checkpoints and final rollback.
 If no candidate satisfies the component contract, selection fails closed unless
 the reference candidate itself passes; an invalid fallback is never promoted
 to become the hierarchy baseline.
@@ -967,20 +774,53 @@ pass telemetry shows plateaued cleanup or a useful soft signal.
 
 ### 10. Coldspot Tightening
 
-`_coldspot_cluster_kick()` selects a hot cluster, gathers it and its owned/
+`_coldspot_cluster_kick_candidates()` selects hot clusters, gathers it and its owned/
 bridge soft macros into a low-congestion window, legalizes, and refines
 locally (swaps + relocation) before accepting only if exact proxy improves
 and the hierarchy-quality metric stays within budget. When no kick commits,
 a graph-local fallback runs the same bordered refinement on the hottest
 eligible cluster without a kick.
 
-### 11. Final Audit
+### 11. Final Audit and Bounded Relief
 
-Production continues from post-coldspot replay directly to structurally
-eligible small-design polish, then a hard-legality margin audit and final
-hierarchy-quality audit against the selected seed. It rolls back to the best
-saved audit-passing checkpoint if the final state fails. The former broad
-survivor pool was removed after 636 telemetry records showed no proxy gain.
+Post-coldspot replay, eligible small-design polish, topology-aware leaf search,
+and hard-clear void relocation feed the final exact score directly. The finalizer
+keeps the lowest exact-scored legal checkpoint that passes the hard hierarchy
+budget, all six component limits, per-leaf island limits, and any active
+parent/child contract. Terminal disjoint-envelope packing and both repair
+replays are removed: envelope intersections alone do not violate macro legality.
+There are no terminal exemptions for edge stretch, impurity, or soft distance.
+
+After checkpoint selection, one bounded density lane can move only free soft
+macros. It excludes every active, child, and parent owner/bridge role, every
+retained or evidenced soft bundle, fixed soft macros, and any soft macro on a
+multi-pin net with a hard endpoint. The existing regional relocation operator
+tests at most 64 candidates from 16 hot sources and four targets per source.
+The search has a two-second guard; scorer setup and final verification are
+additional bounded work. A fresh scoring transaction evaluates the actual
+float32 baseline and candidate through the same `clamp_in_bounds()` helper
+used by the API return, and the complete contract must pass. A gain
+above 0.000001 is required; otherwise the original coordinates survive.
+Protected coordinates retain their original internal precision. The subsequent
+cluster-tile pass requires a fresh exact improvement over this result.
+
+The final cluster-tile pass builds a temporary attribution of the evaluator's
+directional congestion tail, hard blockage, and density tail. Incident nets
+include external endpoints; routing pressure can therefore belong to a macro
+whose footprint is far from the hot tile. The existing canonical location graph
+connects small patches inside one leaf/child partition. It never changes
+ownership, hierarchy edges, or confidence. Fixed and bridge macros remain
+frozen, and eligible complete explicit soft bundles move rigidly.
+
+Each of at most four patches contains two to four units, capped at 32 macros.
+Bounded enumeration ranks joint assignments to the current slots and up to two
+cold tile centers. The rank is a proposal heuristic; hard legality, center
+regions, the complete hierarchy contract, and exact mixed-group scoring decide
+acceptance. There are at most 16 exact trials per patch and 64 overall. Search
+uses at most three seconds of unused internal-floorplan/void allowance; fresh
+baseline/winner scoring and final reporting are additional bounded work.
+The winner passes the API bounds clamp in float32 and fresh full scoring before
+commit, with a required gain above 0.000001. A failed check restores the input.
 
 ### 12. Plateau Telemetry
 
@@ -1040,7 +880,6 @@ candidate or commit order.
 | region hard relocation | 2,600 |
 | region soft relocation | 24,000 |
 | parent-bounded child relocation / sibling swaps | 24 |
-| deepest-child internal relocation / hard swaps | 48 |
 | interleaved soft repair | 4,096 |
 | regional swaps | 72,000 |
 | regional-swap graph fallback | 100 |
@@ -1055,6 +894,20 @@ the reference already scored exactly 4,096 candidates. An intentionally
 aggressive binding profile regressed ibm11 and was not promoted.
 
 ## Scoring and Legality
+
+Candidate island checks request only spread, bounding span, and nearest-neighbor
+impurity. Reporting-only fragmentation, owned-soft p90, and foreign intrusion
+remain in seed/final diagnostics. The limits and acceptance rules are unchanged.
+The void survivor shares initial interior/edge geometry between its two lanes
+and obtains each soft routing unit's nets from the scorer's cached incident-net
+union, preserving net/pin accumulation order and lane-specific filtering.
+
+Mixed hard/soft group scoring reuses the sparse swap congestion reducer and
+retained grid snapshots. A compiled density scratch transaction removes all old
+rectangles, then adds all new rectangles in the original order; changed values
+merge with the cached unchanged density tail. It leaves committed occupancy and
+smoothed routing untouched, and retains scalar scoring for tiny grids or the
+diagnostic NumPy fallback. Commits and complete final audits remain unchanged.
 
 - Fixed macros stay fixed.
 - Hard macros must not overlap.
@@ -1071,11 +924,11 @@ are returned as structured `PassResult` trace payloads.
 ## Verification
 
 ```bash
-uv run python -m py_compile $(find src -type f -name "*.py")
+uv run python -m compileall -q src
 uv run python test/verification/_verify_region_escape_gate.py
 uv run python test/verification/_verify_score_region_swaps.py
 uv run python test/verification/_verify_coldspot_kick.py ibm10
-uv run pytest test/ -q
+uv run --with pytest python -m pytest test/verification/ test/eda_io/ test/visualizer/ -q
 uv run evaluate src/main.py -b ibm10
 uv run evaluate src/main.py --all
 ```
@@ -1154,8 +1007,7 @@ source-to-window displacement. Default production tries the top two opportunity
 clusters with five whole-cluster variants per cluster, then commits from
 exact-proxy-ranked refined candidates rather than from a graph-ranked prefix.
 Coldspot also stops after repeated generated pools fail to commit.
-Weak-opportunity and dry-limit exits skip graph-local and soft-only coldspot
-fallbacks too.
+Weak-opportunity and dry-limit exits also skip the graph-local fallback.
 
 This is not the old generic LSMC path. It is a narrow hierarchy-tightening
 helper. Candidate-local refinement runs hard-hard and hard-soft swaps with the
@@ -1172,11 +1024,6 @@ relocation room.
 The graph supplies coldspot-local relocation target pools and gates relocation
 targets by graph mask; default candidate commitment uses exact-proxy-ranked
 refined outcomes.
-`HIER_COLDSPOT_SOFT_ONLY=0` is a default-off fallback that runs only when hard
-coldspot kicks and graph-local fallback commit no candidate. It keeps all hard
-macros fixed, builds a target pool from remembered open cold cells, and invokes
-the exact-gated soft relocation pass with hierarchy region boxes and the cold
-cell mask still active.
 Coldspot kick candidate generation augments each cluster's owned soft set with
 movable bridge soft macros tied to the same hierarchy cluster. The default pool
 now tries multiple opportunity-ranked clusters, with shape-preserving variants
@@ -1186,23 +1033,7 @@ compaction, and a lower-displacement centroid-blended candidate. The hard
 cluster and those soft macros are placed into the cold window together, then the
 existing legalization, local refinement, exact-proxy gate, and hierarchy-quality
 gate accept or reject the resulting full candidate as one state.
-`HIER_COLDSPOT_PARTIAL_FRONTIER=0` is a default-off experiment that can add one
-capacity-aware partial frontier candidate to the same pool: it estimates the
-connected cold area around the chosen anchor, selects a true subset of the hot
-cluster nearest that anchor, biases the split by low-fanout net connectivity,
-places cross-cut-heavy macros near the source-facing coldspot border, and then
-uses the same legalization, local refinement, exact-proxy gate, and
-hierarchy-quality gate as the normal kick. The prototype skips tiny source
-clusters by default because far 2-of-3 splits can improve proxy while failing
-the radius/bbox hierarchy-quality metric. It also runs a cheap pre-exact
-split-shape predictor after partial hard legalization and rejects candidates
-whose source cluster radius, bbox radius, or moved-vs-remaining separation
-would grow beyond the configured ratios. Additional cheap gates reject majority
-splits, splits that leave too few source macros behind, disconnected selected
-subsets when low-fanout local edges are available, and high selected-vs-remaining
-cut ratios. Majority/remaining-macro limits are applied during subset
-construction, not only after selection, so the partial generator can try
-smaller frontier groups before rejecting. When no coldspot kick commits, the
+When no coldspot kick commits, the
 graph-local fallback runs the same bordered swaps and relocations on the
 current placement for the hottest eligible clusters.
 Production then reruns `_micro_shift_polish()` once more after coldspot
@@ -1241,7 +1072,6 @@ HIER_COLDSPOT_MIN_GAIN=0.0001       HIER_COLDSPOT_QUALITY_BUDGET=0.01
 HIER_COLDSPOT_MIN_FIELD_GAP=0.02    HIER_COLDSPOT_MAX_DRY_ROUNDS=2
 HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS=1
 HIER_COLDSPOT_WHOLE_VARIANTS=5      HIER_COLDSPOT_ANCHOR_VARIANTS=3
-HIER_COLDSPOT_SOFT_ONLY=0           HIER_COLDSPOT_PARTIAL_FRONTIER=0
 ```
 
 **Plateau telemetry (runtime env vars, not constants)**

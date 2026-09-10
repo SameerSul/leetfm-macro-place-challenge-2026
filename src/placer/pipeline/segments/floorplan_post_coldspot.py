@@ -16,6 +16,7 @@ from placer.local_search.cluster_internal_floorplan import (
     _topology_aware_cluster_floorplan,
 )
 from placer.local_search.cluster_void_relocation import _void_cluster_relocation
+from placer.local_search.cluster_tile_rearrange import final_cluster_tile_relief
 from placer.local_search.hierarchy_quality import (
     hierarchy_island_contract,
     hierarchy_island_metrics,
@@ -33,8 +34,83 @@ from placer.local_search.relocation import (
 )
 from placer.local_search.plateau_telemetry import flush_plateau_events, log_plateau_event
 from placer.pipeline.hierarchy_context import PlacementState
+from placer.plc.placement import clamp_in_bounds
 from placer.scoring.exact import _exact_proxy
 from placer.scoring.incremental import IncrementalScorer
+from placer.scoring.wirelength import _build_wl_cache
+
+
+def _final_free_soft_relief(
+    hard, soft, benchmark, plc, hierarchy, initial_score, candidate_allowed,
+    *, region_bbox=None, deadline=None,
+):
+    """Try one density lane after checkpoint selection, freezing all hierarchy roles."""
+    n = len(hard)
+    allowed = ~benchmark.macro_fixed.numpy()[n:].copy()
+    for mapping in (hierarchy.cluster_softs, hierarchy.subcluster_softs,
+                    hierarchy.parent_cluster_softs):
+        for members in mapping.values():
+            allowed[np.asarray(members, dtype=np.int64) - n] = False
+    for mapping in (hierarchy.bridge_softs, hierarchy.subcluster_bridge_softs,
+                    hierarchy.parent_bridge_softs):
+        allowed[np.asarray(list(mapping), dtype=np.int64)] = False
+    for bundles in (hierarchy.soft_bundles, hierarchy.soft_connectivity_bundles,
+                    hierarchy.soft_bundle_evidence, hierarchy.active_soft_bundles,
+                    hierarchy.soft_only_bundles):
+        for bundle in bundles:
+            allowed[np.asarray(bundle.members, dtype=np.int64)] = False
+    stats = {"eligible": 0, "accepts": 0, "scored": 0, "full_exact_scored": 0}
+    if not allowed.any() or (deadline is not None and time.monotonic() >= deadline):
+        return soft, initial_score, initial_score, stats
+
+    baseline = clamp_in_bounds(
+        torch.from_numpy(np.vstack([hard, soft]).astype(np.float32)), benchmark,
+    ).numpy()
+    # This independent transaction starts from the actual returned coordinates.
+    scorer = IncrementalScorer(plc, benchmark, baseline)
+    cache = _build_wl_cache(plc)
+    if len(cache["net_starts"]):
+        hard_pin = np.isin(cache["ref_idx"], plc.hard_macro_indices[:n])
+        has_hard = np.logical_or.reduceat(np.r_[hard_pin, False], cache["net_starts"])
+        has_hard &= cache["net_lengths"] >= 2
+        for k in np.flatnonzero(allowed):
+            if has_hard[scorer._touched_nets_only(scorer.soft_indices[k])].any():
+                allowed[k] = False
+    stats["eligible"] = int(allowed.sum())
+    if not allowed.any():
+        return soft, initial_score, initial_score, stats
+
+    before = float(_exact_proxy(torch.from_numpy(baseline), benchmark, plc))
+    sizes = benchmark.macro_sizes.numpy()[n:].astype(np.float64)
+    proposed, accepts, _ = _soft_relocation_moves(
+        baseline[n:].astype(np.float64), sizes[:, 0] / 2, sizes[:, 1] / 2,
+        float(benchmark.canvas_width), float(benchmark.canvas_height),
+        n, benchmark, scorer, before, deadline=deadline,
+        top_hot=16, n_targets=4, soft_movable=allowed, use_density=True,
+        region_bbox=region_bbox, max_scored=64,
+    )
+    stats.update(_soft_relocation_moves.last_stats)
+    stats["full_exact_scored"] = 1
+    stats["accepts"] = 0
+    if not accepts:
+        return soft, before, before, stats
+
+    # Keep protected coordinates bit-identical, including their internal precision.
+    result = soft.copy()
+    result[allowed] = proposed[allowed].astype(np.float32)
+    candidate = clamp_in_bounds(
+        torch.from_numpy(np.vstack([hard, result]).astype(np.float32)), benchmark,
+    ).numpy()
+    result[allowed] = candidate[n:][allowed]
+    if candidate_allowed(hard, result):
+        IncrementalScorer(plc, benchmark, candidate)
+        after = float(_exact_proxy(torch.from_numpy(candidate), benchmark, plc))
+        stats["full_exact_scored"] += 1
+        if after < before - 1.0e-6:
+            stats["accepts"] = int(accepts)
+            return result, before, after, stats
+    IncrementalScorer(plc, benchmark, baseline)
+    return soft, before, before, stats
 
 
 def run_post_coldspot_finalize(
@@ -345,6 +421,7 @@ def run_post_coldspot_finalize(
             sizes[:n],
             cw,
             ch,
+            diagnostics=False,
         )
         island_passed, island_violations = hierarchy_island_contract(
             island_metrics,
@@ -608,7 +685,6 @@ def run_post_coldspot_finalize(
                     float(ch),
                     movable[:n],
                     int(n),
-                    plc,
                     benchmark,
                     small_scorer,
                     float(cur_proxy),
@@ -659,7 +735,6 @@ def run_post_coldspot_finalize(
                         float(cw),
                         float(ch),
                         int(n),
-                        plc,
                         benchmark,
                         small_scorer,
                         float(cur_proxy),
@@ -839,7 +914,6 @@ def run_post_coldspot_finalize(
                     movable[:n],
                     soft_mov,
                     int(n),
-                    plc,
                     benchmark,
                     small_scorer,
                     float(cur_proxy),
@@ -995,6 +1069,7 @@ def run_post_coldspot_finalize(
         max_scored=max(0, int(const.HIER_INTERNAL_FLOORPLAN_MAX_SCORED)),
     )
     internal_stats = getattr(_topology_aware_cluster_floorplan, "last_stats", {})
+    internal_elapsed = time.monotonic() - internal_t0
     _update_audit_checkpoint(legal, s_pos, float(cur_proxy))
     if float(cur_proxy) < float(best_score) - 1.0e-9:
         best_h, best_s, best_score = legal.copy(), s_pos.copy(), float(cur_proxy)
@@ -1080,6 +1155,7 @@ def run_post_coldspot_finalize(
         max_scored=max(0, int(const.HIER_VOID_RELOCATION_MAX_SCORED)),
     )
     void_stats = getattr(_void_cluster_relocation, "last_stats", {})
+    void_elapsed = time.monotonic() - void_t0
     _update_audit_checkpoint(legal, s_pos, float(cur_proxy))
     if float(cur_proxy) < float(best_score) - 1.0e-9:
         best_h, best_s, best_score = legal.copy(), s_pos.copy(), float(cur_proxy)
@@ -1153,8 +1229,7 @@ def run_post_coldspot_finalize(
     )
     final_coverage = _hierarchy_coverage(final_vector)
     final_quality = hierarchy_quality_metric_fn(legal, clusters)
-    vector_audit_passed = _vector_contract(legal, s_pos)
-    _, final_contract_violations = _vector_contract_with_violations(legal, s_pos)
+    vector_audit_passed, final_contract_violations = _contract_violation_values(legal, s_pos)
     final_contract_violation_count = len(final_contract_violations)
     audit_passed = final_quality <= audit_limit and vector_audit_passed
     audit_rollback = False
@@ -1194,7 +1269,7 @@ def run_post_coldspot_finalize(
                     ch,
                 )
                 final_coverage = _hierarchy_coverage(final_vector)
-                _, final_contract_violations = _vector_contract_with_violations(legal, s_pos)
+                _, final_contract_violations = _contract_violation_values(legal, s_pos)
                 final_contract_violation_count = len(final_contract_violations)
                 vector_audit_passed = True
                 audit_passed = True
@@ -1209,6 +1284,62 @@ def run_post_coldspot_finalize(
         quality_before=float(pre_audit_quality),
         quality_after=float(final_quality),
     )
+    free_t0 = time.monotonic()
+    s_pos, free_before, full_proxy, free_stats = _final_free_soft_relief(
+        legal, s_pos, benchmark, plc, hierarchy, full_proxy, _vector_contract,
+        region_bbox=soft_region, deadline=_deadline(2.0, None),
+    )
+    _record_plateau(
+        "final_free_soft_density", free_before, full_proxy, free_stats["accepts"],
+        time.monotonic() - free_t0,
+        candidates=int(free_stats.get("candidates", 0)),
+        legal=int(free_stats.get("legal", 0)), scored=int(free_stats["scored"]),
+        eligible=int(free_stats["eligible"]),
+        full_exact_scored=int(free_stats["full_exact_scored"]),
+        exact_quota_limit=64,
+        exact_quota_exhausted=bool(free_stats.get("quota_exhausted", False)),
+    )
+    _log(
+        f"  [hier] final free-soft density: {free_stats['accepts']} accepts, "
+        f"eligible={free_stats['eligible']}, scored={free_stats['scored']}, "
+        f"proxy {free_before:.7f}->{full_proxy:.7f}"
+    )
+    tile_t0 = time.monotonic()
+    unused_late_time = max(0.0, float(const.HIER_INTERNAL_FLOORPLAN_BUDGET_S)
+                           + float(const.HIER_VOID_RELOCATION_BUDGET_S)
+                           - internal_elapsed - void_elapsed)
+    legal, s_pos, tile_before, tile_after, tile_stats = final_cluster_tile_relief(
+        legal, s_pos, benchmark, plc, hierarchy,
+        lambda hard, soft: (hierarchy_quality_metric_fn(hard, clusters) <= audit_limit
+                            and _vector_contract(hard, soft)),
+        hard_region=region, soft_region=soft_region,
+        deadline=_deadline(min(3.0, unused_late_time), None),
+    )
+    if tile_after is not None:
+        full_proxy = tile_after
+    _record_plateau(
+        "final_cluster_tile_rearrangement",
+        full_proxy if tile_before is None else tile_before, full_proxy,
+        tile_stats["accepts"], time.monotonic() - tile_t0,
+        candidates=tile_stats["candidates"], scored=tile_stats["scored"],
+        patches=tile_stats["patches"], hierarchy_rejects=tile_stats["hierarchy_rejects"],
+        full_exact_scored=tile_stats["full_exact_scored"], exact_quota_limit=64,
+        exact_quota_exhausted=bool(tile_stats["scored"] >= 64),
+    )
+    if consume_final_audit_exact is not None:
+        consume_final_audit_exact(exact=tile_stats["full_exact_scored"])
+    if tile_stats["accepts"]:
+        final_quality = hierarchy_quality_metric_fn(legal, clusters)
+        final_vector = _placement_hierarchy_vector(legal, s_pos)
+        final_subcluster_vector = _placement_subcluster_hierarchy_vector(legal, s_pos)
+        final_parent_vector = _placement_parent_hierarchy_vector(legal, s_pos)
+        final_island_metrics = hierarchy_island_metrics(legal, s_pos, clusters, csofts, sizes[:n], cw, ch)
+        final_coverage = _hierarchy_coverage(final_vector)
+        vector_audit_passed, final_contract_violations = _contract_violation_values(legal, s_pos)
+        final_contract_violation_count = len(final_contract_violations)
+        audit_passed = final_quality <= audit_limit and vector_audit_passed
+    _log(f"  [hier] final cluster tiles: {tile_stats['accepts']} accepts, "
+         f"scored={tile_stats['scored']}, proxy={full_proxy:.7f}")
     state = PlacementState(
         legal.copy(),
         s_pos.copy(),
@@ -1297,7 +1428,7 @@ def run_post_coldspot_finalize(
         f"{float(final_coverage['soft_coverage']):.3f}, "
         f"coverage={coverage_scope}, provenance={provenance}, "
         f"weight={group_weight}: proxy={proxy:.4f} "
-        f"(pre-relief {pre_relief:.4f}; hierarchy-preserving NON-proxy mode)"
+        f"(pre-relief {pre_relief:.4f}; proxy optimization with hierarchy constraints)"
     )
     flush_plateau_events()
     return out

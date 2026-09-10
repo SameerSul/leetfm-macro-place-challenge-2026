@@ -157,12 +157,6 @@ def expand_regions_by_congestion(
     hot_percentile: float = 60.0,
     max_expand_frac: float = 0.08,
     side_band: int = 3,
-    cluster_confidence=None,
-    weak_confidence_max: float = 0.0,
-    weak_hot_extra_frac: float = 0.0,
-    weak_hot_max_clusters: int = 0,
-    weak_hot_side_floor: float = 0.35,
-    weak_candidate_clusters=None,
     component_cold_percentile: float = 45.0,
     component_min_cells: int = 4,
     component_max_distance_cells: int = 4,
@@ -174,9 +168,6 @@ def expand_regions_by_congestion(
         "expanded": 0,
         "component_expanded": 0,
         "graph_component_expanded": 0,
-        "weak_hot_reshaped": 0,
-        "weak_hot_clusters": [],
-        "weak_hot_candidate_clusters": [],
     }
     if field is None or not clusters:
         return hard_region, soft_region, 0
@@ -204,22 +195,6 @@ def expand_regions_by_congestion(
         cold_percentile=float(component_cold_percentile),
         min_cells=max(1, int(component_min_cells)),
     )
-    weak_hot_clusters: set[int] = set()
-    weak_candidates = None
-    if weak_candidate_clusters is not None:
-        weak_candidates = {int(cid) for cid in weak_candidate_clusters}
-    if cluster_confidence and weak_hot_extra_frac > 0.0 and weak_hot_max_clusters > 0:
-        weak_rows = []
-        for cid, h in heat:
-            if weak_candidates is not None and int(cid) not in weak_candidates:
-                continue
-            conf = float(cluster_confidence.get(int(cid), 1.0))
-            if h < threshold or conf > float(weak_confidence_max):
-                continue
-            weak_rows.append((float(h), -conf, int(cid)))
-        weak_rows.sort(reverse=True)
-        weak_hot_clusters = {int(cid) for _h, _neg_conf, cid in weak_rows[:weak_hot_max_clusters]}
-
     bridge_by_cluster: "dict[int, list[int]]" = {}
     for s, cids in (bridge_softs or {}).items():
         for cid in cids:
@@ -257,10 +232,7 @@ def expand_regions_by_congestion(
     for cid, h in heat:
         if h < threshold:
             continue
-        weak_hot = int(cid) in weak_hot_clusters
-        local_max_dx = max_dx + (float(weak_hot_extra_frac) * float(cw) if weak_hot else 0.0)
-        local_max_dy = max_dy + (float(weak_hot_extra_frac) * float(ch) if weak_hot else 0.0)
-        side_floor = float(weak_hot_side_floor) if weak_hot else 0.35
+        side_floor = 0.35
         mem = np.asarray(clusters[cid], dtype=np.int64)
         x0, x1 = float(hard_xy[mem, 0].min()), float(hard_xy[mem, 0].max())
         y0, y1 = float(hard_xy[mem, 1].min()), float(hard_xy[mem, 1].max())
@@ -284,8 +256,8 @@ def expand_regions_by_congestion(
                 c1,
                 cell_w=cell_w,
                 cell_h=cell_h,
-                max_dx=local_max_dx,
-                max_dy=local_max_dy,
+                max_dx=max_dx,
+                max_dy=max_dy,
                 side_floor=side_floor,
                 side_band=side_band,
                 max_distance_cells=component_max_distance_cells,
@@ -302,12 +274,12 @@ def expand_regions_by_congestion(
             if not finite or min(finite) >= float(h) - 1e-12:
                 continue
             cold = min(finite)
-            left = local_max_dx if side_vals["left"] <= cold + 1e-12 else side_floor * local_max_dx
+            left = max_dx if side_vals["left"] <= cold + 1e-12 else side_floor * max_dx
             right = (
-                local_max_dx if side_vals["right"] <= cold + 1e-12 else side_floor * local_max_dx
+                max_dx if side_vals["right"] <= cold + 1e-12 else side_floor * max_dx
             )
-            down = local_max_dy if side_vals["down"] <= cold + 1e-12 else side_floor * local_max_dy
-            up = local_max_dy if side_vals["up"] <= cold + 1e-12 else side_floor * local_max_dy
+            down = max_dy if side_vals["down"] <= cold + 1e-12 else side_floor * max_dy
+            up = max_dy if side_vals["up"] <= cold + 1e-12 else side_floor * max_dy
 
         _expand_one_region(hard_region, mem, left, right, down, up, hw, hh, cw, ch)
         soft_pidx = list(np.asarray(cluster_softs.get(cid, []), dtype=np.int64))
@@ -329,8 +301,5 @@ def expand_regions_by_congestion(
         "expanded": int(expanded),
         "component_expanded": int(component_expanded),
         "graph_component_expanded": int(graph_component_expanded),
-        "weak_hot_reshaped": int(len(weak_hot_clusters)),
-        "weak_hot_clusters": sorted(int(cid) for cid in weak_hot_clusters),
-        "weak_hot_candidate_clusters": sorted(int(cid) for cid in weak_candidates or []),
     }
     return hard_region, soft_region, expanded
