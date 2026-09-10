@@ -35,12 +35,15 @@ def hierarchy_island_metrics(
     canvas_width: float,
     canvas_height: float,
     cluster_ids: Sequence[int] | None = None,
+    *,
+    diagnostics: bool = True,
 ) -> dict[int, dict[str, float]]:
     """Return independent spatial-cohesion metrics for every hierarchy leaf.
 
     Unlike :func:`hierarchy_quality_vector`, these values are never averaged
     across colours.  That prevents compact leaves from hiding one scattered or
     interleaved leaf in the complete-placement contract.
+    Candidate gates can omit reporting-only metrics with ``diagnostics=False``.
     """
     hard = np.asarray(hard_xy, dtype=np.float64)
     soft = np.asarray(soft_xy, dtype=np.float64)
@@ -84,15 +87,21 @@ def hierarchy_island_metrics(
                 mismatch.append(float(np.mean(labels[clustered[nearest]] != cid)))
             impurity = float(np.max(mismatch)) if mismatch else 0.0
 
+        result[cid] = {
+            "spread": spread,
+            "bbox_span": bbox_span,
+            "neighbor_impurity": impurity,
+        }
+        if not diagnostics:
+            continue
+
         owned_distances = []
         for full_index in np.asarray((cluster_softs or {}).get(cid, ()), dtype=np.int64):
             soft_index = int(full_index) - n_hard
             if 0 <= soft_index < soft.shape[0]:
                 owned_distances.append(float(np.linalg.norm(soft[soft_index] - center)) / diag)
         owned_soft_p90 = (
-            float(np.percentile(np.asarray(owned_distances), 90.0))
-            if owned_distances
-            else 0.0
+            float(np.percentile(np.asarray(owned_distances), 90.0)) if owned_distances else 0.0
         )
 
         # Same-colour rectangles form one component when their edge-to-edge
@@ -130,14 +139,11 @@ def hierarchy_island_metrics(
         else:
             foreign_intrusion = 0.0
 
-        result[cid] = {
-            "spread": spread,
-            "bbox_span": bbox_span,
-            "neighbor_impurity": impurity,
-            "owned_soft_p90": owned_soft_p90,
-            "fragmentation": fragmentation,
-            "foreign_intrusion": foreign_intrusion,
-        }
+        result[cid].update(
+            owned_soft_p90=owned_soft_p90,
+            fragmentation=fragmentation,
+            foreign_intrusion=foreign_intrusion,
+        )
     return result
 
 
