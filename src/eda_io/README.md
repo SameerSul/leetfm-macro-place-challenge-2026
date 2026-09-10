@@ -103,10 +103,13 @@ uv run python .../place_design.py --netlist-pb dir/netlist.pb.txt \
     --plc dir/initial.plc --report qor.rpt
 ```
 
-Useful flags: `--budget <s>` placer time budget (default 150),
-`--workdir <dir>` keeps the converted ICCAD04 files for inspection,
+Useful flags: `--workdir <dir>` keeps the converted ICCAD04 files for inspection,
 `--top <module>` picks the top module in a multi-module Verilog file,
 `--design-name` overrides the design name.
+
+VivaPlace uses per-pass time limits and exact-score quotas in
+`src/utils/constants.py`. The former `--budget` option was ignored and has been
+removed; this command does not expose an overall placer time-budget override.
 
 Python API:
 
