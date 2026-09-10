@@ -118,7 +118,7 @@ def build_benchmark(
     hard_pos += blockage_pos
     fixed += [True] * len(blockage_sizes)
 
-    _seed_missing(hard_sizes, hard_pos, fixed, canvas_w, canvas_h)
+    _seed_missing(hard_sizes, hard_pos, canvas_w, canvas_h)
 
     cell_cluster = {}
     for m, members in enumerate(clusters):
@@ -263,7 +263,7 @@ def _cluster_cells(design, cells, canvas_w, canvas_h, origin, per_cluster):
             seeds.append((cx, cy))
         else:
             seeds.append(None)
-    _seed_missing(sizes, seeds, [False] * len(seeds), canvas_w, canvas_h)
+    _seed_missing(sizes, seeds, canvas_w, canvas_h)
     return groups, sizes, seeds
 
 
@@ -309,7 +309,7 @@ def _cluster_by_connectivity(design, cells, per_cluster):
     return [groups[k] for k in sorted(groups)]
 
 
-def _seed_missing(sizes, pos, fixed, canvas_w, canvas_h):
+def _seed_missing(sizes, pos, canvas_w, canvas_h):
     """Shelf-pack a seed location for every entry whose position is None."""
     todo = [i for i, p in enumerate(pos) if p is None]
     todo.sort(key=lambda i: -sizes[i][1])
