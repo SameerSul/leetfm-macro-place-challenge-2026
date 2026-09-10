@@ -21,19 +21,17 @@ robust and easier to route, clock, and debug.
 This repository is our submission to the [Partcl/HRT Macro Placement
 Challenge](https://github.com/partcleda/macro-place-challenge-2026), built on
 the ICCAD04 benchmark suite and the TILOS exact proxy evaluator. We treat
-hierarchy preservation as the primary design objective rather than a side
-effect of cost minimization. The placer infers a hierarchy model directly
-from netlist connectivity, conservatively refining a nearly all-covering flat
+exact proxy cost as the optimization objective, subject to legality and
+hierarchy preservation. Extra hierarchy compactness or headroom cannot justify
+a higher-cost seed, and final envelope isolation is removed. The placer infers
+a hierarchy model directly from netlist connectivity, conservatively refining a nearly all-covering flat
 component from shared hard-to-soft affinity when ordinary connectivity hides
 its boundaries. It also retains one non-recursive parent/child level. When no
 explicit or retained connectivity parent exists, direct/shared-soft structural
 relations are reinforced by initial placement proximity, local macro density,
 and placed wire pressure; proximity alone cannot declare an IP. Active leaf
 clusters can then relocate or exchange slots inside a larger parent region
-without changing the global DREAMPlace partition. Each deepest child also gets
-a footprint-plus-margin relief box whose margin and cold-side expansion blend
-congestion, density, and hierarchy-graph pressure. Individual members can
-relocate or swap only inside that box. Region swaps exact-score two stable
+without changing the global DREAMPlace partition. Region swaps exact-score two stable
 prefixes and skip an untouched suffix only when either prefix already contains
 the same first acceptable move. Disposable batched congestion grids are reduced
 in place, and static hard-macro separation geometry is shared by every field
@@ -49,115 +47,35 @@ its owned soft macros into density-safe gaps between large hard macros. It also
 tests hard-clear canvas-edge pockets with stable residual soft bundles,
 pass-local routing cohorts, and residual singleton soft macros. These
 passes improve wirelength, density, and congestion while preserving the dynamic
-hierarchy contract and the legality constraints the evaluator enforces. The
-exact proxy still decides every accepted move; it is just no
-longer the only thing the system is allowed to trade away.
+hierarchy contract and the legality constraints the evaluator enforces.
+Exact proxy decides accepted moves within those constraints. After checkpoint
+selection, a bounded density pass can move free soft macros while freezing
+every hard macro, hierarchy role, and soft bundle. It verifies the proposed
+float32 output through the same bounds clamp used by the API return.
+The following cluster-tile search attributes directional congestion and density
+pressure to complete incident nets, then jointly rearranges small connected
+groups within one leaf/child partition. Ownership stays fixed, explicit soft
+bundles move rigidly, and only a fresh exact gain passing the existing hierarchy
+and legality gates can survive. Search is capped at 64 trials and three seconds
+of unused late-pass allowance.
 
-Current full-suite result:
+The current cluster-tile same-input replay improves **4/31 designs**, leaves
+**27 unchanged**, and passes every hierarchy, legality, and independent tag/truth
+check. The deepest-child internal search was removed after its isolated
+31-design ablation preserved all coordinates and hierarchy metrics. See [PROGRESS.md](docs/PROGRESS.md) for paired controls
+and the distinction between fixed-work and ordinary timed results.
 
-```text
-uv run evaluate src/main.py --all
-AVG 1.2081  17/17 VALID  0 overlaps  all hierarchy/island audits passed  (793.26s)
+The ordinary-guard run returns exactly the same 31 placements as the
+independently audited replay. Its evaluator headline means are IBM
+**1.181128351**, NG45 **0.717060223**, and synthetic **1.436273508**. Earlier
+score histories and timing controls are in [PROGRESS.md](docs/PROGRESS.md) and
+[the algorithm review](ml_data/algorithm_review/20260909/results.md).
 
-uv run evaluate src/main.py --ng45
-AVG 0.7072  4/4 VALID  0 overlaps  final hierarchy-safe  (113.91s)
-```
-
-The 2026-08-11 seed portfolio conditionally reruns grouped DREAMPlace around
-distributed legalized-initial hierarchy anchors when its compact basin is
-contract-ineligible but at least 15% better in exact proxy. The promoted sweep
-selected that repair on IBM11 and improved its final score from 1.1306 to
-0.9961. The 2026-08-10 hierarchy adds bounded one/two-hop soft roles and stable
-residual soft-only groups without changing hard labels or the retained
-parent/child level. Coverage rises from 24.90% direct-only to 86.63%; the
-three-tier proxy, congestion, density, coverage, and hierarchy-quality
-comparison is recorded in
-`ml_data/soft_hierarchy_tiers/20260810-results.md`. The prior lower-proxy
-reference remains `AVG 1.1404 / 318.55s` for tradeoff comparisons.
-
-The final void-relocation sweep uses both interior corridors and hard-clear
-canvas-edge pockets. It preserves the IBM10/13 whole-leaf wins, retains new
-edge hard-leaf wins on IBM08/11/18, and fills edge pockets with residual soft
-singletons on IBM01/11/12/14, for 0.005968 stage-local exact gain. Routing
-cohorts remain optimization-only and do not change hard labels or soft
-ownership. IBM04 remains unchanged at `0.9964` despite exposing 30 eligible
-soft units. Every retained state passes the full hierarchy contract, exact
-proxy scoring, float32-return legality, and the independent final audit.
-
-A focused follow-up now expands existing cluster boundaries into their own
-hard-clear corridors before testing rigid relocation. It moves only the hard
-and owned-soft band physically aligned with the opening, backs the displacement
-off until float32-return legality passes, and gives an exact-improving outward
-move first-winner priority. IBM10 retains one visible left-edge expansion plus
-the earlier rigid leaf move, improving `1.7205 -> 1.7157`, VALID, with zero
-overlaps and both audits passing. The production trajectory moves hard macro
-`a60088` and owned soft `Grp_613` outward by `1.504 µm`. Full-suite promotion
-is pending.
-
-Focused 2026-08-09 validation of the hierarchy-safe micro-shift and small-leaf
-assembly candidate improved IBM10 `1.1348 -> 1.0600`, VALID, with no audit
-rollback. Against the unconsolidated focused run, hard hierarchy quality
-improved `6.11996 -> 4.84244` while proxy changed `1.0590 -> 1.0600`. Full
-IBM/NG45/synthetic validation is pending, so the suite references above remain
-authoritative.
-
-The subsequent colour-contiguity candidate prevents global averages from
-hiding a scattered leaf. Explicit and high-confidence inferred colours receive
-frozen post-assembly movement boxes plus independent spread, bounding-span,
-and nearest-neighbour impurity limits. Seed selection now treats that hierarchy
-contract as the hard eligibility gate, then preserves the best-proxy/headroom
-candidate instead of preferring compactness by itself.
-Its full IBM result is `AVG 1.2951`, 17/17 VALID, zero overlaps, and all island
-audits passing in 456.05s. Relative to the proxy-first island control, fragmented
-leaves fall `229 -> 194`, foreign intrusions fall `18,841 -> 9,130`, and mean
-hard hierarchy quality improves `1.24789 -> 0.99651`; proxy worsens from
-`1.1975 -> 1.2951`. The accepted proxy-oriented suite reference above therefore
-remains the score baseline, while the working tree intentionally keeps the
-requested hierarchy-first behaviour.
-
-The accepted follow-up keeps those hierarchy levels fixed and runs a
-topology-aware internal leaf pass only after the main congestion search. It
-uses low-fanout nets to keep connected hard macros adjacent, place high
-external-demand macros on facing boundary ports with routing-channel insets,
-and pull directly owned softs toward hard-affinity barycentres inside frozen
-island boxes. The full IBM result improves `AVG 1.2951 -> 1.2949`, with 17/17
-VALID, zero overlaps, and all hierarchy/island audits passing in 487.54s.
-Three final layouts contributed `0.002001` direct exact-proxy gain; fragmented
-protected leaves improved `194 -> 193` and foreign intrusions `9,130 -> 9,105`.
-Congestion remains the dominant average proxy contribution (`0.8392`), ahead
-of density (`0.3836`) and wirelength (`0.0721`).
-
-Sixteen IBM scores remain bit-identical to the accepted reference. A
-contract-preserving near-miss repair retained 99.61% of the IBM09 constraint-
-graph seed displacement and improved that design from `1.0122` to `0.9978`.
-Stable-prefix swap scoring, ranked-only hard legality, and disabled-graph
-allocation removal now avoid 66,703 exact evaluations and reduce attributed
-region-swap time from 159.91s to 148.29s. In-place congestion-tail reduction
-and schedule-scoped hard-geometry reuse reduce it again to 146.98s while
-preserving all placements and exact-score counts. Direct global-topology swap
-routing then removes pair-specific topology construction, while exact sparse
-congestion/density reducers merge only changed cells with the cached baseline
-tail. Attributed region-swap time falls again to 104.04s with the same
-1,077,431 physical and 66,703 avoided exact scores; complete IBM runtime falls
-to 351.48s.
-A commit-scoped cache now reuses the sorted congestion/density baseline and
-density summary across rejected swap batches, rebuilding it only after a
-committed scorer-state change. The verification sweep preserved every IBM
-placement/count and reduced attributed region-swap time again from 104.04s to
-102.68s; focused IBM04/12/18 reductions were 7.6%, 9.3%, and 5.5%. NG45 kept
-AVG 0.7121 while its region phase fell from 15.41s to 14.62s. Candidate-row
-parallelism and a fused hard-blockage scratch were benchmarked and reverted
-because they were slower.
-The current swap scheduler tests a second same-sized stable prefix before the
-untouched suffix, increasing avoided exact evaluations from 66,703 to 79,466
-and reducing trace-compatible region-swap time from 104.04s to 98.74s. Batched
-soft wirelength prefiltering rejects 100,831 proposals before congestion and
-density scoring, cutting the four main soft-relocation phases by 20.7–22.3%.
-Mutually exclusive telemetry accounts for at least 99.86% of every IBM placer
-call: 297.33s was inside `MacroPlacer.place()` and the remaining 21.22s of the
-318.55s command was evaluator loading/final scoring.
-The independent synthetic hierarchy suite is 10/10 valid with zero overlaps,
-10/10 truth-audit passes, and `AVG 1.4192`.
+`MacroPlacer` accepts keyword-only `seed`, `event_sink`, and
+`dreamplace_sample_every` options. The unused restart/noise settings and overall
+`time_budget_s` option are removed. VivaPlace uses per-pass time limits and
+exact-score quotas; `src/place_design.py` no longer advertises the ignored
+`--budget` flag.
 
 ## Setup
 
@@ -176,6 +94,9 @@ scripts/dreamplace/bootstrap.sh preflight
 ```bash
 # Single benchmark - fastest feedback loop
 uv run evaluate src/main.py -b ibm10
+
+# Experimental CUDA DREAMPlace seeds, with a separate cache (CPU is default)
+rtk proxy env DREAMPLACE_GPU=1 uv run evaluate src/main.py -b ibm10
 
 # Full IBM ICCAD04 suite
 uv run evaluate src/main.py --all
@@ -241,7 +162,7 @@ flowchart TD
     P --> S3[Recurrent prototype round 2]
     P --> S4[Explicit-tag route-channel seed]
     P --> S5[Conditional initial-anchored recurrent repair]
-    S0 --> E[Enforce the per-component contract,<br/>select the best hierarchy band,<br/>then break ties by proxy]
+    S0 --> E[Enforce the per-component contract,<br/>select the lowest exact-proxy<br/>contract-passing seed]
     S1 --> E
     S2 --> E
     S3 --> E
@@ -254,18 +175,21 @@ flowchart TD
     F --> F0[Small-leaf assembly]
     F0 --> F2[Freeze confidence-calibrated<br/>colour islands]
     F2 --> G[Region-locked relocation + soft cleanup<br/>hard containment prefilter before exact scoring]
-    G --> G2[Parent-bounded child relocation<br/>and sibling slot swaps]
-    G2 --> G3[Deepest-child footprint + graph/field margin boxes<br/>bounded internal relocation and hard swaps]
-    G3 --> H[Exact-gated cluster decompression]
+    G --> G1[Small-leaf consolidation replay]
+    G1 --> G2[Parent-bounded child relocation<br/>and sibling slot swaps]
+    G2 --> H[Exact-gated cluster decompression]
     H --> H1[Adjacent-cluster swaps and relocation<br/>transactional ownership transfer + same-leaf repair]
     H1 --> I[Region-bounded hard/soft swaps<br/>two stable exact prefixes]
     I --> I2[Explicit high-confidence soft-bundle relocation<br/>final-state exact acceptance]
     I2 --> J[Coldspot tightening<br/>congestion-driven local relief]
     J --> K[Topology-aware leaf survivor floorplanning:<br/>internal adjacency, boundary ports,<br/>owned-soft barycentres]
-    K --> L{Final legality,<br/>bounds, and<br/>hierarchy audit}
-    L -->|pass| M[Macro center coordinates]
+    K --> V[Whole-leaf void relocation<br/>and boundary expansion]
+    V --> L{Final legality,<br/>bounds, and<br/>hierarchy audit}
+    L -->|pass| Q[Bounded free-soft density relief]
     L -->|drift| N[Roll back to best<br/>audit-passing checkpoint]
-    N --> M
+    N --> Q
+    Q --> R[Joint cluster-tile rearrangement<br/>fresh float32 exact + complete hierarchy gate]
+    R --> M[Macro center coordinates]
 
     classDef seed fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
     classDef cand fill:#bbdefb,stroke:#1565c0,color:#0d47a1
@@ -273,7 +197,7 @@ flowchart TD
     classDef audit fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
     class A,B,C,D,P,E,F0 seed
     class S0,S1,S2,S3,S4,S5,S7 cand
-    class F,G,G2,G3,H,I,I2,J search
+    class F,G,G1,G2,H,H1,I,I2,J,K,V,Q,R search
     class L,M,N audit
 ```
 
@@ -287,13 +211,12 @@ the repaired state advances to exact scoring only when it is legal and retains
 at least 95% of the source displacement. Production legalizes
 `initial.plc` before it builds the reference limits. Non-mandatory candidates
 that already fail immutable hard components are removed before exact scoring;
-the remaining candidates are checked component-by-component; production keeps
-the best hierarchy-quality band and uses exact proxy as its tie-break. The six-part
+the remaining candidates are checked component-by-component; production selects
+the lowest exact proxy among passing candidates. The six-part
 hard/soft/graph hierarchy vector covers cluster compactness, worst spread,
 nearest-neighbor impurity, hierarchy-edge stretch, owned-soft distance, and
-bridge-soft corridor distance. Hierarchy-first selection is default-on after
-the explicit colour-cohesion direction change; the documented full sweep shows
-its material proxy cost.
+bridge-soft corridor distance. Hierarchy quality and headroom are diagnostics
+once the contract passes; their former ranking modes are removed.
 For single-component affinity refinement, an already legal raw `initial.plc`
 can remain the immutable reference when its legalized form satisfies the raw
 limits, preventing double slack. If the raw hard placement is illegal, grouped
@@ -317,17 +240,15 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
              recurrent repair, and an explicit-tag-only route-channel candidate
           -> exact-score all candidates, apply the per-component hierarchy
              contract relative to the topology-appropriate legal reference,
-             then select the best proxy band and break ties by contract headroom
+             then select the lowest exact proxy with stable candidate-name tie-breaking
           -> congestion-expanded hierarchy regions
           -> compact ordinary small leaves
           -> freeze confidence-calibrated
              per-colour hard/owned-soft island boxes and leaf-specific limits
           -> region-locked relocation + soft cleanup; reject hard candidates
              above the selected seed's containment limit before exact scoring
+          -> small-leaf consolidation replay
           -> parent-bounded child relocation and sibling slot swaps
-          -> build immutable deepest-child footprint-plus-margin boxes from
-             congestion, density, and graph pressure; run bounded internal
-             hard/owned-soft relocation and hard-hard swaps
           -> exact-gated cluster decompression
           -> derive live frontier, cut, capacity, heat, routing-attribution,
              and boundary-pressure state from the persistent hierarchy-ID graph
@@ -344,9 +265,13 @@ benchmark -> infer hierarchy (hard clusters, owned/bridge soft roles)
              hard macros adjacent, put external-demand macros on facing boundary
              ports with routing-channel insets, and move owned softs toward
              hard-affinity barycentres inside the frozen islands
+          -> exact-gated void relocation and boundary expansion
           -> final legality, bounds, hard-cluster audit, and per-component
              hierarchy-vector plus per-colour island audit using graph-derived
              boundary-to-interior legalization order
+          -> bounded free-soft density relief, freezing every hierarchy role
+          -> bounded joint cluster-tile rearrangement inside one leaf/child;
+             fresh float32 exact gain and complete hierarchy/legality gates
           -> macro center coordinates
 ```
 

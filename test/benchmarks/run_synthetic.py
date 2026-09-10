@@ -14,7 +14,7 @@ Usage:
     uv run python test/benchmarks/run_synthetic.py
     uv run python .../run_synthetic.py -b syn02_fixed
     uv run python .../run_synthetic.py --placer src/main.py
-    uv run python .../run_synthetic.py --budget 60 --skip-initial-vis
+    uv run python .../run_synthetic.py --skip-initial-vis
 """
 
 import argparse
@@ -195,14 +195,13 @@ def main():
     parser.add_argument(
         "--placer",
         default=str(ROOT / "src/main.py"),
-        help="placer .py file (default: v2 main.py)",
+        help="placer .py file (default: VivaPlace src/main.py)",
     )
     parser.add_argument("-b", "--benchmark", help="run a single benchmark by name")
     parser.add_argument(
         "--budget",
         type=float,
-        default=150.0,
-        help="per-benchmark placer time budget in seconds (default 150)",
+        help="override time_budget_s for an alternative placer that supports it",
     )
     parser.add_argument(
         "--skip-initial-vis",
@@ -245,7 +244,9 @@ def main():
     placer = None
     if not args.initial_only:
         placer = _load_placer(Path(args.placer))
-        if hasattr(placer, "time_budget_s"):
+        if args.budget is not None:
+            if not hasattr(placer, "time_budget_s"):
+                parser.error("the selected placer does not support --budget; VivaPlace uses per-pass limits")
             placer.time_budget_s = args.budget
 
     results = []

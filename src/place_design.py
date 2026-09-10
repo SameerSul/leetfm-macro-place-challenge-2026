@@ -1,7 +1,7 @@
 """Plug-and-play macro placement from standard EDA files.
 
 Reads any workable combination of LEF / DEF / Verilog / SDC / Liberty (or an
-ICCAD04 netlist.pb.txt directly), runs the v2 macro placer, and writes any
+ICCAD04 netlist.pb.txt directly), runs VivaPlace, and writes any
 combination of updated DEF, Tcl placement script, and QoR report.
 
 Usage:
@@ -57,8 +57,6 @@ def main():
     out.add_argument("--report", help="write the QoR .rpt here")
     out.add_argument("--vis", help="write a placement visualization .png here")
 
-    parser.add_argument("--budget", type=float, default=150.0,
-                        help="placer time budget in seconds (default 150)")
     parser.add_argument("--workdir",
                         help="keep converted ICCAD04 files here (default: temp)")
     args = parser.parse_args()
@@ -101,8 +99,6 @@ def main():
 
     from main import MacroPlacer
     placer = MacroPlacer()
-    if hasattr(placer, "time_budget_s"):
-        placer.time_budget_s = args.budget
     t = time.time()
     placement = placer.place(benchmark)
     runtime = time.time() - t
@@ -150,7 +146,7 @@ def main():
                          valid=valid, violations=violations,
                          inputs=inputs, outputs=outputs)
         else:
-            _challenge_report(args.report, benchmark, placement, runtime,
+            _challenge_report(args.report, benchmark, runtime,
                               initial_costs, final_costs, valid, violations)
         outputs["report"] = args.report
 
@@ -159,7 +155,7 @@ def main():
     print(f"total {time.time() - t0:.0f}s")
 
 
-def _challenge_report(path, benchmark, placement, runtime, initial_costs,
+def _challenge_report(path, benchmark, runtime, initial_costs,
                       final_costs, valid, violations):
     """Minimal QoR report for the --netlist-pb passthrough path."""
     lines = [

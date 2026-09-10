@@ -461,8 +461,8 @@ def main() -> None:
         benchmark_dir = Path("external/MacroPlacement/Testcases/ICCAD04") / name
         benchmark, plc = load_benchmark_from_dir(str(benchmark_dir))
         _patch_plc_wirelength(plc)
-        _patch_plc_congestion(plc, benchmark)
-        _patch_plc_density(plc, benchmark)
+        _patch_plc_congestion(plc)
+        _patch_plc_density(plc)
         hierarchy = HierarchyModel.build(
             plc,
             int(benchmark.num_hard_macros),
