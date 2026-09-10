@@ -250,7 +250,7 @@ def test_place_design_cli(tmp_path):
     cmd = [
         sys.executable, str(SRC / "place_design.py"),
         "--lef", str(LEF), "--def", str(DEF), "--sdc", str(SDC),
-        "--lib", str(LIB), "--budget", "20",
+        "--lib", str(LIB),
         "--out-def", str(out_def), "--out-tcl", str(out_tcl),
         "--report", str(out_rpt),
     ]

@@ -1,8 +1,8 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
-from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
@@ -15,6 +15,23 @@ from placer.local_search.adjacent_cluster_transfer import (
 )
 import placer.local_search.adjacent_cluster_transfer as transfer_module
 from test_location_graph import _fixture
+
+
+def test_transfer_heat_reads_preserve_density_occupancy():
+    scorer = SimpleNamespace(
+        grid_row=2,
+        grid_col=2,
+        dens_grid_area=4.0,
+        grid_occupied=np.array([4.0, 8.0, 12.0, 16.0]),
+        plc=SimpleNamespace(width=4.0, height=4.0),
+        congestion_field=lambda: np.ones((2, 2)),
+    )
+    before = scorer.grid_occupied.copy()
+    positions = np.array([[1.0, 1.0]])
+    first_heat = transfer_module._field_values(scorer, positions)
+    second_heat = transfer_module._field_values(scorer, positions)
+    np.testing.assert_array_equal(scorer.grid_occupied, before)
+    np.testing.assert_array_equal(first_heat, second_heat)
 
 
 def test_transfer_ownership_updates_hierarchy_and_persistent_graph_transactionally():
@@ -85,7 +102,7 @@ def test_adjacent_transfer_commits_proxy_and_density_congestion_winner(monkeypat
     monkeypatch.setattr(
         transfer_module,
         "_field_values",
-        lambda scorer, placement, hard: np.ones(placement.shape[0]),
+        lambda scorer, placement: np.ones(placement.shape[0]),
     )
     monkeypatch.setattr(
         transfer_module,

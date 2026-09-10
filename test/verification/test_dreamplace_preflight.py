@@ -30,7 +30,8 @@ def test_legacy_env_cannot_disable_iccad2023_bb_nesterov(monkeypatch):
     assert cfg["global_place_stages"][0]["optimizer"] == "nesterov"
 
 
-def test_legacy_env_cannot_disable_dreamplace_cache_reads(tmp_path, monkeypatch):
+@pytest.mark.parametrize("gpu", [False, True])
+def test_legacy_env_cannot_disable_dreamplace_cache_reads(tmp_path, monkeypatch, gpu):
     benchmark_dir = tmp_path / "benchmark"
     benchmark_dir.mkdir()
     scratch_root = tmp_path / "scratch"
@@ -44,11 +45,13 @@ def test_legacy_env_cannot_disable_dreamplace_cache_reads(tmp_path, monkeypatch)
         num_threads=4,
         soft_macros_movable=False,
         random_center_init=False,
+        gpu=gpu,
     )
     expected_hard = np.array([[1.0, 2.0]], dtype=np.float64)
     expected_soft = np.array([[3.0, 4.0]], dtype=np.float64)
     _write_cache(work_dir, key, expected_hard, expected_soft)
     monkeypatch.setenv("HIER_DREAMPLACE_CACHE", "0")
+    monkeypatch.setenv("DREAMPLACE_GPU", str(int(gpu)))
     monkeypatch.setattr(bridge, "is_available", lambda: True)
 
     hard, soft = run_dreamplace(
@@ -59,6 +62,30 @@ def test_legacy_env_cannot_disable_dreamplace_cache_reads(tmp_path, monkeypatch)
 
     np.testing.assert_array_equal(hard, expected_hard)
     np.testing.assert_array_equal(soft, expected_soft)
+
+
+def test_dreamplace_gpu_config_and_cache_are_separate(tmp_path):
+    common = dict(
+        benchmark_dir=tmp_path,
+        iterations=300,
+        random_seed=1000,
+        num_threads=2,
+        soft_macros_movable=True,
+        random_center_init=False,
+    )
+    cpu = _cache_key(**common)
+    assert cpu == _cache_key(**common, gpu=False)
+    assert cpu != _cache_key(**common, gpu=True)
+    for gpu in (False, True):
+        config = _default_dreamplace_config("design.aux", "results", gpu=gpu)
+        assert config["gpu"] == int(gpu)
+        assert config["deterministic_flag"] == config["use_bb"] == 1
+
+
+def test_dreamplace_rejects_invalid_gpu_setting(monkeypatch):
+    monkeypatch.setenv("DREAMPLACE_GPU", "auto")
+    with pytest.raises(ValueError, match="DREAMPLACE_GPU must be"):
+        run_dreamplace("unused")
 
 
 def test_recursive_prototype_cache_signature_covers_fixed_state_and_grouping():
@@ -81,9 +108,7 @@ def test_dreamplace_cache_key_covers_target_density(tmp_path):
         random_center_init=False,
     )
 
-    assert _cache_key(**common, target_density=0.70) != _cache_key(
-        **common, target_density=0.75
-    )
+    assert _cache_key(**common, target_density=0.70) != _cache_key(**common, target_density=0.75)
 
 
 def test_bookshelf_temporary_fixed_position_makes_movable_hard_a_terminal():
