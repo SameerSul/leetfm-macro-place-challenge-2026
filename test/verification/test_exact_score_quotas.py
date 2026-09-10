@@ -112,7 +112,6 @@ def test_hard_and_soft_relocation_stop_at_exact_score_quota():
         100.0,
         np.array([True]),
         1,
-        None,
         benchmark,
         scorer,
         1.0,
@@ -131,7 +130,6 @@ def test_hard_and_soft_relocation_stop_at_exact_score_quota():
         100.0,
         100.0,
         1,
-        None,
         benchmark,
         scorer,
         1.0,
@@ -231,7 +229,6 @@ def test_soft_swap_prefix_winner_avoids_only_the_untouched_suffix():
         0.0,
         stats,
         None,
-        "prefix_test",
         "density",
     )
 

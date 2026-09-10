@@ -49,7 +49,6 @@ def test_hard_relocation_hierarchy_gate_runs_before_exact_scoring():
         100.0,
         np.array([True]),
         1,
-        None,
         benchmark,
         scorer,
         1.0,

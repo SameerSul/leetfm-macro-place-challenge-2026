@@ -46,9 +46,9 @@ uv run python test/benchmarks/run_synthetic.py
 HIER_PLATEAU_TRACE_PATH=ml_data/plateau_telemetry/synthetic-contract.jsonl \
   uv run python test/benchmarks/run_synthetic.py --skip-vis
 
-# single benchmark, custom placer or budget
+# single benchmark or custom placer
 uv run python .../run_synthetic.py -b syn02_fixed
-uv run python .../run_synthetic.py --placer src/main.py --budget 60
+uv run python .../run_synthetic.py --placer src/main.py
 
 # just look at the benchmarks themselves (seed scoring + vis, no placer)
 uv run python .../run_synthetic.py --initial-only
@@ -65,6 +65,11 @@ uv run python .../analyze_impact.py --no-synthetic   # IBM only
 uv run python .../analyze_impact.py --no-ibm         # synthetic only
 ```
 
+VivaPlace uses per-pass time limits and exact-score quotas. `--budget` is an
+optional override only for alternative placers that expose `time_budget_s`;
+the runner rejects it when the selected placer cannot honor it. Without that
+option, an alternative placer's own default budget is left intact.
+
 Outputs:
 
 - `vis/<name>_initial.png` - the benchmark itself: seed placement, density
@@ -75,8 +80,8 @@ Outputs:
   inferred-versus-truth cluster agreement
 - `results_ibm.json` - same schema for `--ibm` runs
 
-These outputs are generated on demand and are intentionally not kept in the
-working tree after cleanup.
+These outputs are generated on demand and gitignored. Keep local benchmark
+inputs and validation outputs available when reproducing comparisons.
 
 Note: these scores are **not comparable to the IBM leaderboard numbers** -
 they are for relative comparison between placer versions and for spotting
@@ -91,31 +96,15 @@ reference; `reference_overlaps` identifies cases where that distinction
 matters. Use the truth audit to detect missing or merged hierarchy boundaries,
 not as a replacement production gate.
 
-The accepted spatial/structural one-level hierarchy revision completed the
-suite at `AVG 1.4195`, 10/10 valid, zero overlaps, and 10/10 truth-audit passes.
-The extra level is deliberately non-recursive. Its fallback requires structural
-connectivity plus placement, local density, and placed wire-pressure support;
-proximity alone cannot create a hierarchy. These truth labels continue to audit
-the active inferred partition independently rather than declaring every
-confidence-gated bisection to be a confirmed IP boundary.
+The latest 31-design algorithm validation includes all ten synthetic designs,
+with zero hard overlaps and all ten independent truth audits passing. Final
+cluster-tile replay leaves their mean proxy unchanged at 1.436273508. The
+retained parent/child level remains non-recursive and requires structural
+evidence; the separate deepest-child internal-box search was removed after
+its isolated ablation preserved every placement. Older scores belong to
+[the experiment ledger](../../docs/PROGRESS.md), not the current reference.
 
-The subsequent deepest-child bounded-relief revision completed the suite at
-`AVG 1.4193`, 10/10 valid, zero overlaps, and 10/10 truth-audit passes. The
-graph/field-derived boxes remained valid on every synthetic axis, including the
-seedless and scale-stress cases.
-
-Stable-prefix region-swap scoring and audited late-lane stopping then completed
-the suite at `AVG 1.4192`, 10/10 valid, zero overlaps, and 10/10 truth-audit
-passes. One syn05 late lane violated bridge-soft distance and was restored at
-the lane checkpoint before later search continued.
-
-Ranked-only hard legality, disabled-graph allocation removal, and the calibrated
-12-candidate soft-soft prefix then reproduced the suite at `AVG 1.4193`, 10/10
-valid, zero overlaps, and 10/10 truth-audit passes. Region-swap telemetry
-recorded 2,578 avoided exact evaluations; candidate and commit order remained
-unchanged.
-
-## How the runner wires into v2
+## How the runner loads VivaPlace
 
 Synthetic names do not resolve under the challenge benchmark tree. The runner
 therefore attaches both `benchmark._source_dir` for grouped DREAMPlace and
