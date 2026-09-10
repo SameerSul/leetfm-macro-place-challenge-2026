@@ -1,8 +1,5 @@
 """Accepted production constants for hierarchy placement."""
 
-# Per-benchmark placement time budget used by the MacroPlacer constructor default.
-TIME_BUDGET_S = 150.0
-
 # Maximum net fanout considered as hierarchy signal when forming hard clusters.
 CLUSTER_MAX_FANOUT = 8
 # Minimum shared low-fanout net count required to merge two hard macros.
@@ -69,20 +66,6 @@ HIER_SEED_ROUTE_CHANNEL_LANE_FRAC = 0.10
 HIER_SEED_ROUTE_CHANNEL_PUSH_FRAC = 0.35
 # Maximum route-channel push as a fraction of the cluster local span.
 HIER_SEED_ROUTE_CHANNEL_MAX_SHIFT_FRAC = 0.04
-# Hierarchy-first seed selection: proxy breaks ties only inside the best
-# hierarchy-quality band. The 2026-08-09 full sweep confirms the expected proxy
-# cost but materially improves colour-island structure, which is now primary.
-# Select from contract-passing seeds by proxy/headroom so an already-spread
-# legal canvas is not discarded merely because grouped DREAMPlace is more
-# compact.  The immutable six-component hierarchy contract still filters the
-# portfolio before this ranking is applied.
-HIER_SEED_HIERARCHY_SELECT = False
-HIER_SEED_HIERARCHY_ABS_SLACK = 0.002
-HIER_SEED_HIERARCHY_REL_SLACK = 0.15
-# Retained proxy-band constants support the proxy-first diagnostic control.
-HIER_SEED_HEADROOM_SELECT = True
-HIER_SEED_PROXY_BAND_ABS = 0.02
-HIER_SEED_PROXY_BAND_REL = 0.05
 # Repair only a single-component near miss that can retain almost all of the
 # lower-proxy candidate. Broader interpolation changed downstream search basins
 # even when the repaired seed itself had a lower exact proxy.
@@ -139,7 +122,7 @@ HIER_SOFT_ONLY_MAX_CUT_RATIO = 0.35
 HIER_SOFT_ONLY_MAX_SIZE = 16
 
 # Weak inferred parent models have produced no retained IBM moves. Skip their
-# rigid/deep exact search while retaining explicit and strong inferred models.
+# whole-child search while retaining explicit and strong inferred models.
 HIER_INFERRED_CHILD_SEARCH_MIN_CONFIDENCE = 0.65
 # Congestion-heavy proposal ranking. Exact proxy remains the accept gate.
 HIER_PROPOSAL_CONGESTION_WEIGHT = 2.5
@@ -257,34 +240,7 @@ HIER_SUBCLUSTER_RELOCATION_MIN_FIELD_DROP = 0.02
 # retaining the independently beneficial NG45 move.
 HIER_SUBCLUSTER_RELOCATION_MIN_GAIN = 0.0001
 
-# Deepest-child relief keeps each member inside a box equal to the child's
-# current footprint plus a graph/field-calibrated margin. Congestion and density
-# heat supply most of the margin signal; inter-child graph tension supplies the
-# structural term and target-anchor bias. The boxes are built once after rigid
-# child motion and remain immutable during the internal pass.
-HIER_DEEP_CLUSTER_BUDGET_S = 3.0
-HIER_DEEP_CLUSTER_MIN_SPARE_S = 8.0
-HIER_DEEP_CLUSTER_BASE_MARGIN = 0.01
-HIER_DEEP_CLUSTER_EXTRA_MARGIN = 0.025
-HIER_DEEP_CLUSTER_CONGESTION_WEIGHT = 0.45
-HIER_DEEP_CLUSTER_DENSITY_WEIGHT = 0.35
-HIER_DEEP_CLUSTER_GRAPH_WEIGHT = 0.20
-HIER_DEEP_CLUSTER_DIRECTIONAL_EXPAND_FRAC = 0.01
-HIER_DEEP_CLUSTER_EXPAND_HOT_PCT = 60.0
-HIER_DEEP_CLUSTER_GRAPH_COMPONENT_WEIGHT = 0.25
-HIER_DEEP_CLUSTER_TOP_CHILDREN = 4
-HIER_DEEP_CLUSTER_HARD_TARGETS = 4
-HIER_DEEP_CLUSTER_SOFT_TARGETS = 4
-HIER_DEEP_CLUSTER_RELOCATION_TARGETS = 3
-HIER_DEEP_CLUSTER_SWAP_K = 4
-HIER_DEEP_CLUSTER_GRAPH_ANCHOR_BLEND = 0.15
-HIER_DEEP_CLUSTER_GRAPH_DELTA_WEIGHT = 0.10
-# A deep move activates child/parent limits for every later pass. The first full
-# sweep showed that 0.00010--0.00039 local gains can displace much larger later
-# improvements, so require enough immediate headroom to pay for that tighter
-# downstream trajectory.
-HIER_DEEP_CLUSTER_MIN_GAIN = 0.0005
-HIER_DEEP_CLUSTER_MAX_SCORED_PER_CALL = 8
+HIER_SUBCLUSTER_GRAPH_PRIORITY_WEIGHT = 0.20
 
 # Final-only exact scoring for compound moves of related soft macros. Candidate
 # members preserve their relative layout and must remain inside their individual
@@ -395,20 +351,6 @@ HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS = 4
 # Bias component-aware region expansion toward cold components near hierarchy
 # graph edge corridors for graph-tension-enabled large designs.
 HIER_REGION_GRAPH_COMPONENT_WEIGHT = 0.0
-# Extra early region room for hot clusters with weak inferred hierarchy
-# confidence. This reshapes the hierarchy boxes before local relief instead of
-# waiting for post-survivor small-design release.
-HIER_REGION_WEAK_HOT_RESHAPE = False
-HIER_REGION_WEAK_CONFIDENCE_MAX = 0.92
-HIER_REGION_WEAK_HOT_MAX_CLUSTERS = 2
-HIER_REGION_WEAK_HOT_EXTRA_FRAC = 0.03
-HIER_REGION_WEAK_HOT_SIDE_FLOOR = 0.45
-# Candidate gate for weak/hot reshape. Keep the experiment scoped to the
-# small-design region where the full sweep showed useful wins and away from
-# larger region-relief cases that regressed.
-HIER_REGION_WEAK_HOT_HARD_MIN = 240
-HIER_REGION_WEAK_HOT_HARD_MAX = 420
-HIER_REGION_WEAK_HOT_MACRO_MAX = 1600
 # Weight favoring candidates that stay inside hierarchy regions.
 REGION_BIAS = 1.0
 # Minimum proxy improvement required for moves that escape their hierarchy region.
@@ -485,15 +427,6 @@ HIER_ADJACENT_TRANSFER_MAX_INTRA_SCORED = 8
 HIER_ADJACENT_TRANSFER_MAX_INTER_ACCEPTS = 2
 HIER_ADJACENT_TRANSFER_MIN_PROXY_GAIN = 0.00035
 HIER_ADJACENT_TRANSFER_MIN_DENSITY_CONGESTION_GAIN = 0.0005
-# Graph-guided decompression rescue. When a candidate improves graph-edge
-# geometry but fails cheap feasibility or hard legalization, try smaller and
-# slightly shifted variants before discarding it. Final acceptance still requires
-# hard legality, hierarchy quality, exact proxy gain, and final audit pass.
-HIER_DECOMPRESS_GRAPH_RESCUE = False
-HIER_DECOMPRESS_GRAPH_RESCUE_MAX_DELTA = 0.0
-HIER_DECOMPRESS_GRAPH_RESCUE_SHRINKS = (0.75, 0.55, 0.35)
-HIER_DECOMPRESS_GRAPH_RESCUE_SHIFT_MULTS = (1.35, 0.70)
-HIER_DECOMPRESS_GRAPH_RESCUE_MAX_VARIANTS = 5
 # Survivor for legal, hierarchy-safe decompression near misses with
 # strongly favorable graph-edge delta. It exact-scores a tiny local hard/soft
 # micro-shift pool around moved cluster members; final commit still requires a
@@ -514,12 +447,6 @@ HIER_GRAPH_TENSION_SWAP_WEIGHT = 0.0
 HIER_GRAPH_TENSION_HARD_MIN = 600
 HIER_GRAPH_TENSION_HARD_MAX = 1000000
 HIER_GRAPH_TENSION_CORRIDOR_SAMPLES = 9
-# Conservative graph-aware rejection prefilters. These only skip low graph-tension
-# candidates whose cheap local congestion estimate does not improve before exact
-# scoring/refinement; high-tension candidates still reach the normal exact gates.
-HIER_GRAPH_PREFILTER = False
-HIER_GRAPH_PREFILTER_LOW_TENSION = 0.05
-HIER_GRAPH_PREFILTER_MIN_RELIEF = 0.0
 # Region-bounded hard-hard, hard-soft, and soft-soft swap relief.
 # Number of region-bounded swap rounds to attempt.
 HIER_REGION_SWAP_ROUNDS = 2
@@ -557,9 +484,6 @@ HIER_SWAP_GRAPH_DELTA_WEIGHT = 0.0
 # Wall-clock budget reserved for the single-shot masked-pass fallback.
 HIER_SWAP_GRAPH_FALLBACK_BUDGET_S = 2.5
 
-# Optional bias for source-anchored coldspot expansion around graph/components.
-# Source points are used to prefer low-congestion windows near cluster anchors.
-HIER_COLDSPOT_SOURCE_POINT_WEIGHT = 0.20
 # Region-bounded swap relief uses hard-hard, hard-soft, soft-soft,
 # congestion-field, density-field, and batched exact scoring paths.
 
@@ -634,31 +558,6 @@ HIER_COLDSPOT_LOCAL_RELOC_TARGETS = 8
 HIER_COLDSPOT_WHOLE_VARIANTS = 5
 # Number of distinct low-congestion anchors considered by whole-cluster variants.
 HIER_COLDSPOT_ANCHOR_VARIANTS = 3
-# Component-derived anchor candidates are ranked by coldness, area, and source
-# proximity when source context is available.
-HIER_COLDSPOT_COMPONENT_ANCHORS = 2
-# Optional graph-aware coldspot anchor ranking. When positive, cold window
-# anchors are still cold-first, but ties and near-ties prefer locations closer
-# to the selected cluster's weighted graph-neighbor centroid.
-HIER_COLDSPOT_GRAPH_ANCHOR_WEIGHT = 0.0
-HIER_COLDSPOT_GRAPH_ANCHOR_CANDIDATE_MULT = 32
-# Default-off exact-candidate reordering by graph-edge delta. Positive deltas
-# stretch hierarchy graph edges or worsen graph corridors, so the opt-in ranker
-# adds a small proxy-equivalent penalty before the usual graph-score tie-break.
-HIER_COLDSPOT_GRAPH_DELTA_RANK = False
-HIER_COLDSPOT_GRAPH_DELTA_WEIGHT = 0.0
-# Default-off ego-net coldspot candidates. When enabled, the selected high
-# tension/hot cluster may co-move a small strongest-neighbor cluster set through
-# the same whole-candidate, local-refine, exact-proxy, and hierarchy gates.
-HIER_COLDSPOT_EGONET = False
-HIER_COLDSPOT_EGONET_MAX_NEIGHBORS = 1
-HIER_COLDSPOT_EGONET_MAX_HARD = 96
-HIER_COLDSPOT_EGONET_MAX_NEIGHBOR_HARD = 32
-HIER_COLDSPOT_EGONET_MIN_EDGE_WEIGHT = 0.0
-HIER_COLDSPOT_EGONET_CANDIDATES = 2
-HIER_COLDSPOT_EGONET_SOFT_MODE = "none"
-HIER_COLDSPOT_EGONET_LOW_DISP_BLEND = 0.75
-HIER_COLDSPOT_EGONET_MIN_GAIN = 0.001
 # Compacting scale used by shape-preserving whole-cluster layouts.
 HIER_COLDSPOT_COMPACT_SPREAD = 0.72
 # Blend toward the current cluster centroid for lower-displacement candidates.
@@ -668,50 +567,11 @@ HIER_COLDSPOT_LOW_DISP_BLEND = 0.45
 # accepted move.
 # Number of hot clusters considered by graph-local fallback.
 HIER_COLDSPOT_GRAPH_FALLBACK_TOP_K = 3
-# Default-off soft-only fallback for coldspot cleanup. When no hard coldspot
-# candidate commits, this tries exact-gated movable soft relocation into open
-# remembered cold cells while preserving hierarchy region boxes.
-HIER_COLDSPOT_SOFT_ONLY = False
-# Hot soft macros considered by the soft-only coldspot fallback.
-HIER_COLDSPOT_SOFT_ONLY_TOP_K = 96
-# Candidate cold cells considered per soft source in the soft-only fallback.
-HIER_COLDSPOT_SOFT_ONLY_TARGETS = 10
-# Minimum exact-proxy gain required by the soft-only coldspot fallback.
-HIER_COLDSPOT_SOFT_ONLY_MIN_GAIN = 0.00005
 # Remembered cold-cell graph expansion for local coldspot refinement.
 # Field percentile used to remember cold cells for adaptive local regions.
 HIER_COLDSPOT_MEMORY_COLD_PCT = 35.0
 # Maximum grid-cell distance flooded from a cluster box into adjacent cold cells.
 HIER_COLDSPOT_ADAPTIVE_MAX_CELLS = 5
-# Generates one default-off capacity-aware partial frontier candidate alongside
-# the normal whole-cluster coldspot kick. Exact proxy and hierarchy gates still
-# decide whether the candidate can commit.
-HIER_COLDSPOT_PARTIAL_FRONTIER = False
-# Maximum number of partial frontier candidates added to one coldspot pool.
-HIER_COLDSPOT_PARTIAL_CANDIDATES = 1
-# Fill fraction applied to the connected cold-area capacity estimate.
-HIER_COLDSPOT_PARTIAL_FILL_FRAC = 0.75
-# Maximum fraction of the source hard-cluster area a partial frontier candidate
-# may move. This keeps the mode distinct from the whole-cluster kick.
-HIER_COLDSPOT_PARTIAL_MAX_AREA_FRAC = 0.55
-# Minimum source hard-cluster size for partial frontier. Tiny clusters tend to
-# become far 2-of-3 splits that improve proxy but fail hierarchy quality.
-HIER_COLDSPOT_PARTIAL_MIN_CLUSTER_HARD = 6
-# Minimum hard macros moved by a partial frontier candidate.
-HIER_COLDSPOT_PARTIAL_MIN_HARD = 2
-# Minimum hard macros left behind in the source cluster.
-HIER_COLDSPOT_PARTIAL_MIN_REMAINING_HARD = 3
-# Maximum selected hard-macro fraction before rejecting majority splits.
-HIER_COLDSPOT_PARTIAL_MAX_MEMBER_FRAC = 0.50
-# Maximum selected-vs-remaining connectivity cut ratio before rejecting a split.
-HIER_COLDSPOT_PARTIAL_MAX_CUT_RATIO = 0.85
-# Selected hard macros must form one local low-fanout connectivity component
-# when such edges are available.
-# Cheap pre-exact split-shape guard. Reject partial candidates predicted to
-# stretch the source hierarchy cluster beyond these local shape ratios.
-HIER_COLDSPOT_PARTIAL_MAX_RADIUS_RATIO = 1.15
-HIER_COLDSPOT_PARTIAL_MAX_BBOX_RATIO = 1.20
-HIER_COLDSPOT_PARTIAL_MAX_SEPARATION_RATIO = 1.50
 
 # Extra exact-gated late polish for the SA-ratio primary struggle subset shape:
 # small hard-macro population, no fixed hard macros, and moderate total macro
