@@ -1349,7 +1349,6 @@ def compute_region_bbox(
     heat_expand_frac: float = 0.0,
     heat_hot_percentile: float = 70.0,
     heat_escape_min: float = 0.25,
-    cluster_margins=None,
 ) -> np.ndarray:
     """Per-macro CENTER-feasible region box [n,4] = (xlo, ylo, xhi, yhi).
 
@@ -1360,11 +1359,9 @@ def compute_region_bbox(
     `region_area = member_area / target_density`, at the cluster's current aspect
     ratio, never smaller than the current member footprint (so macros aren't
     trapped), centered on the cluster centroid, clipped to canvas by shifting.
-    `margin>0` uses the simpler footprint+margin sizing instead. A
-    `cluster_margins` mapping overrides that margin per cluster, which lets a
-    deeper hierarchy layer grant room from graph/field pressure without
-    changing the boxes of unrelated children. Singletons get a local window
-    (`singleton_window`; 0 => pinned at their current spot).
+    `margin>0` uses the simpler footprint+margin sizing instead.
+    Singletons get a local window (`singleton_window`; 0 => pinned at their
+    current spot).
     """
     region = np.empty((n, 4), dtype=np.float64)
     big = max(float(cw), float(ch))
@@ -1381,11 +1378,7 @@ def compute_region_bbox(
         mhw, mhh = float(hw[mem].max()), float(hh[mem].max())
         bw0 = max(float(xs.max() - xs.min()) + 2.0 * mhw, 1e-6)
         bh0 = max(float(ys.max() - ys.min()) + 2.0 * mhh, 1e-6)
-        local_margin = (
-            float(cluster_margins.get(int(cid), margin))
-            if cluster_margins is not None
-            else float(margin)
-        )
+        local_margin = float(margin)
         if local_margin > 0.0:
             rw, rh = bw0 + 2.0 * local_margin * big, bh0 + 2.0 * local_margin * big
         else:
@@ -1460,7 +1453,6 @@ def _cluster_outer_region(
     heat_max=None,
     heat_expand_frac: float = 0.0,
     heat_escape_min: float = 0.25,
-    cluster_margins=None,
 ) -> tuple[float, float, float, float]:
     """Return the unclipped-footprint cluster region as an outer canvas box."""
     mem = np.asarray(mem, dtype=np.int64)
@@ -1471,11 +1463,7 @@ def _cluster_outer_region(
     bw0 = max(float(xs.max() - xs.min()) + 2.0 * mhw, 1e-6)
     bh0 = max(float(ys.max() - ys.min()) + 2.0 * mhh, 1e-6)
     big = max(float(cw), float(ch))
-    local_margin = (
-        float(cluster_margins.get(int(cid), margin))
-        if cluster_margins is not None and cid is not None
-        else float(margin)
-    )
+    local_margin = float(margin)
     if local_margin > 0.0:
         rw, rh = bw0 + 2.0 * local_margin * big, bh0 + 2.0 * local_margin * big
     else:
@@ -1534,7 +1522,6 @@ def compute_soft_region_bbox(
     heat_expand_frac: float = 0.0,
     heat_hot_percentile: float = 70.0,
     heat_escape_min: float = 0.25,
-    cluster_margins=None,
 ) -> np.ndarray:
     """Per-soft center-feasible region box [num_soft,4]."""
     num_soft = int(soft_xy.shape[0])
@@ -1562,7 +1549,6 @@ def compute_soft_region_bbox(
             heat_max=heat_max,
             heat_expand_frac=heat_expand_frac,
             heat_escape_min=heat_escape_min,
-            cluster_margins=cluster_margins,
         )
         for p in np.asarray(soft_pidx, dtype=np.int64):
             k = int(p) - int(n)
@@ -1593,7 +1579,6 @@ def compute_soft_region_bbox(
                 heat_max=heat_max,
                 heat_expand_frac=heat_expand_frac,
                 heat_escape_min=heat_escape_min,
-                cluster_margins=cluster_margins,
             )
         big = max(float(cw), float(ch))
         pad = max(singleton_window * big, 0.02 * big)

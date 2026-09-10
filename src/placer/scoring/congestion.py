@@ -1,7 +1,6 @@
 """Vectorized congestion cost and PLC patching."""
 
 import numpy as np
-from macro_place.benchmark import Benchmark
 
 from placer.routing.apply import _build_cong_cache, _vectorized_get_routing
 from placer.scoring.wirelength import _build_wl_cache
@@ -33,12 +32,12 @@ def _vectorized_get_congestion_cost(plc) -> float:
     return float(top.sum() / cnt)
 
 
-def _patch_plc_congestion(plc, benchmark: Benchmark) -> None:
+def _patch_plc_congestion(plc) -> None:
     """Install vectorized congestion (get_routing + get_congestion_cost) on this plc."""
     if getattr(plc, "_cong_vec_installed", False):
         return
     _build_wl_cache(plc)
-    _build_cong_cache(plc, benchmark)
+    _build_cong_cache(plc)
     plc.get_routing = lambda _plc=plc: _vectorized_get_routing(_plc)
     plc.get_congestion_cost = lambda _plc=plc: _vectorized_get_congestion_cost(_plc)
     plc._cong_vec_installed = True

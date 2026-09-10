@@ -17,12 +17,10 @@ def run_hierarchy_floorplan(
     event_sink=None,
     dreamplace_sample_every: int = 10,
 ) -> "torch.Tensor | None":
-    """Non-proxy hierarchy-preserving placement.
+    """Optimize exact proxy within the hierarchy contract.
 
-    Grouped DREAMPlace derives a hierarchical global placement, cluster-
-    consecutive legalization keeps each subsystem together, and bounded
-    cleanup recovers some congestion without making proxy score the primary
-    objective.
+    Grouped DREAMPlace and cluster-consecutive legalization preserve subsystem
+    structure; exact proxy ranks eligible seeds and gates bounded local search.
     """
     floorplan_t0 = time.perf_counter()
     from dreamplace_bridge.run_bridge import (  # noqa: E402
@@ -39,7 +37,6 @@ def run_hierarchy_floorplan(
     from placer.local_search.compound_relocation import _compound_soft_relocation
     from placer.local_search.fields import (
         _congestion_field,
-        _density_field,
         weighted_congestion_field,
     )
     from placer.local_search.plateau_telemetry import log_plateau_event
@@ -59,9 +56,6 @@ def run_hierarchy_floorplan(
     )
     from placer.local_search.region_expand import expand_regions_by_congestion
     from placer.local_search.subcluster_relocation import (
-        _deep_cluster_field_heat,
-        _deep_cluster_internal_relief,
-        _deep_cluster_margin_fractions,
         _subcluster_relocation,
     )
     from placer.local_search.relocation import (
@@ -119,12 +113,6 @@ def run_hierarchy_floorplan(
             "congestion": float(plc.get_congestion_cost()),
         }
 
-    def _env_bool(name: str, default: bool) -> bool:
-        raw = os.environ.get(name)
-        if raw is None:
-            return bool(default)
-        return raw.strip() not in {"0", "false", "False", "no", "NO", "off", ""}
-
     def _env_float(name: str, default: float) -> float:
         raw = os.environ.get(name)
         if raw is None or not raw.strip():
@@ -166,7 +154,6 @@ def run_hierarchy_floorplan(
                 "candidates": 0,
             },
             "subcluster_relocation": {"exact": 24, "candidates": 0},
-            "deep_cluster_internal": {"exact": 48, "candidates": 0},
             "interleaved_soft_repair": {"exact": 4096, "candidates": 0},
             "region_swaps": {"exact": 72000, "candidates": 0},
             "region_swap_graph_fallback": {"exact": 100, "candidates": 0},
@@ -1250,30 +1237,6 @@ def run_hierarchy_floorplan(
         n,
     )
     expand_field = base_heat_field
-    weak_hot_enabled = bool(getattr(const, "HIER_REGION_WEAK_HOT_RESHAPE", False))
-    weak_hot_small_shape = bool(
-        int(n) >= int(const.HIER_REGION_WEAK_HOT_HARD_MIN)
-        and int(n) <= int(const.HIER_REGION_WEAK_HOT_HARD_MAX)
-        and int(n) + int(n_soft) <= int(const.HIER_REGION_WEAK_HOT_MACRO_MAX)
-        and bool(np.all(np.asarray(movable[:n], dtype=bool)))
-    )
-    weak_hot_candidate_clusters = None
-    if weak_hot_enabled and weak_hot_small_shape:
-        confidence = getattr(hierarchy, "cluster_confidence", None) or {}
-        weakest_k = max(0, int(const.HIER_SMALL_DESIGN_RELEASE_WEAKEST_K))
-        if weakest_k > 0:
-            weakest_rows = sorted(
-                (
-                    (float(conf), int(cid))
-                    for cid, conf in confidence.items()
-                    if int(cid) in clusters
-                    and float(conf) <= float(const.HIER_REGION_WEAK_CONFIDENCE_MAX)
-                ),
-                key=lambda item: (item[0], item[1]),
-            )[:weakest_k]
-            weak_hot_candidate_clusters = [int(cid) for _conf, cid in weakest_rows]
-    if weak_hot_enabled and not weak_hot_candidate_clusters:
-        weak_hot_enabled = False
     region, soft_region, n_expanded = expand_regions_by_congestion(
         region,
         soft_region,
@@ -1292,14 +1255,6 @@ def run_hierarchy_floorplan(
         hot_percentile=float(const.HIER_REGION_EXPAND_HOT_PCT),
         max_expand_frac=float(const.HIER_REGION_EXPAND_FRAC),
         side_band=max(1, int(const.HIER_REGION_EXPAND_BAND)),
-        cluster_confidence=(
-            hierarchy.cluster_confidence if weak_hot_enabled and weak_hot_small_shape else None
-        ),
-        weak_confidence_max=float(const.HIER_REGION_WEAK_CONFIDENCE_MAX),
-        weak_hot_extra_frac=float(const.HIER_REGION_WEAK_HOT_EXTRA_FRAC),
-        weak_hot_max_clusters=max(0, int(const.HIER_REGION_WEAK_HOT_MAX_CLUSTERS)),
-        weak_hot_side_floor=float(const.HIER_REGION_WEAK_HOT_SIDE_FLOOR),
-        weak_candidate_clusters=weak_hot_candidate_clusters,
         component_cold_percentile=float(getattr(const, "HIER_REGION_COMPONENT_COLD_PCT", 45.0)),
         component_min_cells=max(1, int(getattr(const, "HIER_REGION_COMPONENT_MIN_CELLS", 4))),
         component_max_distance_cells=max(
@@ -1323,11 +1278,8 @@ def run_hierarchy_floorplan(
     )
     region_expand_stats = getattr(expand_regions_by_congestion, "last_stats", {})
     if n_expanded:
-        weak_hot_reshaped = int(region_expand_stats.get("weak_hot_reshaped", 0))
         component_expanded = int(region_expand_stats.get("component_expanded", 0))
         suffix_parts = []
-        if weak_hot_reshaped:
-            suffix_parts.append(f"weak_hot={weak_hot_reshaped}")
         if component_expanded:
             suffix_parts.append(f"component={component_expanded}")
         graph_component_expanded = int(region_expand_stats.get("graph_component_expanded", 0))
@@ -1434,6 +1386,7 @@ def run_hierarchy_floorplan(
             cw,
             ch,
             cluster_ids=island_cluster_ids,
+            diagnostics=False,
         )
         island_limits = seed_island_limits
         if island_cluster_ids is not None:
@@ -1505,6 +1458,7 @@ def run_hierarchy_floorplan(
             cw,
             ch,
             cluster_ids=protected,
+            diagnostics=False,
         )
         limits = {cid: seed_island_limits[cid] for cid in protected}
         return bool(hierarchy_island_contract(metrics, limits)[0])
@@ -1871,7 +1825,6 @@ def run_hierarchy_floorplan(
                 movable[:n],
                 soft_mov,
                 n,
-                plc,
                 benchmark,
                 rscorer,
                 r_score,
@@ -1926,7 +1879,6 @@ def run_hierarchy_floorplan(
                     ch,
                     movable[:n],
                     n,
-                    plc,
                     benchmark,
                     rscorer,
                     r_score,
@@ -1987,7 +1939,6 @@ def run_hierarchy_floorplan(
                     cw,
                     ch,
                     n,
-                    plc,
                     benchmark,
                     rscorer,
                     r_score,
@@ -2179,7 +2130,7 @@ def run_hierarchy_floorplan(
             hard_parent_region=parent_region,
             soft_parent_region=parent_soft_region,
             child_graph_tension=child_graph_tension,
-            graph_priority_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_WEIGHT),
+            graph_priority_weight=float(const.HIER_SUBCLUSTER_GRAPH_PRIORITY_WEIGHT),
             candidate_allowed=_subcluster_candidate_allowed,
             deadline=subcluster_deadline,
             top_children=max(1, int(const.HIER_SUBCLUSTER_RELOCATION_TOP_CHILDREN)),
@@ -2250,272 +2201,6 @@ def run_hierarchy_floorplan(
         confidence_scheduled=bool(child_search_confident),
     )
 
-    deep_before = float(r_score)
-    deep_t0 = time.monotonic()
-    deep_acc = 0
-    deep_stats = _empty_pass_stats()
-    deep_stats.update(
-        {
-            "eligible_children": 0,
-            "selected_children": 0,
-            "graph_prioritized_children": 0,
-            "hard_accepts": 0,
-            "soft_accepts": 0,
-            "swap_accepts": 0,
-            "swap_scored": 0,
-            "expanded_regions": 0,
-            "graph_component_expanded": 0,
-        }
-    )
-    deep_margins: dict[int, float] = {}
-    deep_enforce = _empty_audit_report()
-    if (
-        hierarchy.subclusters
-        and parent_region is not None
-        and child_search_confident
-        and _has_spare(
-            rdeadline,
-            float(const.HIER_DEEP_CLUSTER_MIN_SPARE_S),
-            phase="deep_cluster_internal",
-        )
-    ):
-        deep_deadline = _deadline(float(const.HIER_DEEP_CLUSTER_BUDGET_S), rdeadline)
-        deep_congestion = _congestion_field(rscorer, nr, nc)
-        deep_density = _density_field(rscorer, nr, nc)
-        deep_congestion_heat = _deep_cluster_field_heat(
-            h_pos,
-            s_pos,
-            hierarchy.subclusters,
-            hierarchy.subcluster_softs,
-            deep_congestion,
-            n=n,
-            cw=cw,
-            ch=ch,
-        )
-        deep_density_heat = _deep_cluster_field_heat(
-            h_pos,
-            s_pos,
-            hierarchy.subclusters,
-            hierarchy.subcluster_softs,
-            deep_density,
-            n=n,
-            cw=cw,
-            ch=ch,
-        )
-        deep_graph_field = None
-        if deep_congestion is not None:
-            congestion_scale = max(float(np.max(deep_congestion)), 1.0e-12)
-            deep_graph_field = np.asarray(deep_congestion, dtype=np.float64) / congestion_scale
-        if deep_density is not None:
-            density_scale = max(float(np.max(deep_density)), 1.0e-12)
-            density_norm = np.asarray(deep_density, dtype=np.float64) / density_scale
-            deep_graph_field = (
-                density_norm
-                if deep_graph_field is None
-                else 0.60 * deep_graph_field + 0.40 * density_norm
-            )
-        deep_graph_tension = cluster_graph_tension(
-            h_pos,
-            hierarchy.subclusters,
-            hierarchy.subcluster_edges,
-            cw=float(cw),
-            ch=float(ch),
-            field=deep_graph_field,
-            seed_hard_xy=seed_hard_for_tension,
-            confidence=hierarchy.subcluster_confidence,
-            samples=max(2, int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9))),
-        )
-        deep_margins = _deep_cluster_margin_fractions(
-            hierarchy.subclusters,
-            deep_congestion_heat,
-            deep_density_heat,
-            deep_graph_tension,
-            base_margin=float(const.HIER_DEEP_CLUSTER_BASE_MARGIN),
-            extra_margin=float(const.HIER_DEEP_CLUSTER_EXTRA_MARGIN),
-            congestion_weight=float(const.HIER_DEEP_CLUSTER_CONGESTION_WEIGHT),
-            density_weight=float(const.HIER_DEEP_CLUSTER_DENSITY_WEIGHT),
-            graph_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_WEIGHT),
-        )
-        deep_region = hierarchy.subcluster_hard_regions(
-            h_pos,
-            sizes[:n],
-            hw,
-            hh,
-            cw,
-            ch,
-            n,
-            cluster_margins=deep_margins,
-        )
-        deep_soft_region = hierarchy.subcluster_soft_regions(
-            h_pos,
-            s_pos,
-            sizes[:n],
-            hw,
-            hh,
-            soft_hw,
-            soft_hh,
-            cw,
-            ch,
-            n,
-            cluster_margins=deep_margins,
-        )
-        if deep_region is not None and deep_soft_region is not None:
-            deep_region, deep_soft_region, deep_expanded = expand_regions_by_congestion(
-                deep_region,
-                deep_soft_region,
-                h_pos,
-                s_pos,
-                hierarchy.subclusters,
-                hierarchy.subcluster_softs,
-                {},
-                hw,
-                hh,
-                soft_hw,
-                soft_hh,
-                cw,
-                ch,
-                deep_graph_field,
-                hot_percentile=float(const.HIER_DEEP_CLUSTER_EXPAND_HOT_PCT),
-                max_expand_frac=float(const.HIER_DEEP_CLUSTER_DIRECTIONAL_EXPAND_FRAC),
-                side_band=max(1, int(const.HIER_REGION_EXPAND_BAND)),
-                component_cold_percentile=float(
-                    getattr(const, "HIER_REGION_COMPONENT_COLD_PCT", 45.0)
-                ),
-                component_min_cells=max(
-                    1, int(getattr(const, "HIER_REGION_COMPONENT_MIN_CELLS", 4))
-                ),
-                component_max_distance_cells=max(
-                    0,
-                    int(getattr(const, "HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS", 4)),
-                ),
-                graph_edges=hierarchy.subcluster_edges,
-                graph_component_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_COMPONENT_WEIGHT),
-            )
-            deep_expand_stats = dict(getattr(expand_regions_by_congestion, "last_stats", {}))
-            deep_stats["expanded_regions"] = int(deep_expanded)
-            deep_stats["graph_component_expanded"] = int(
-                deep_expand_stats.get("graph_component_expanded", 0)
-            )
-
-            def _clip_deep_region(child_box, parent_box, current):
-                if parent_box is None:
-                    return child_box
-                clipped = np.asarray(child_box, dtype=np.float64).copy()
-                clipped[:, 0] = np.maximum(clipped[:, 0], parent_box[:, 0])
-                clipped[:, 1] = np.maximum(clipped[:, 1], parent_box[:, 1])
-                clipped[:, 2] = np.minimum(clipped[:, 2], parent_box[:, 2])
-                clipped[:, 3] = np.minimum(clipped[:, 3], parent_box[:, 3])
-                invalid_x = clipped[:, 0] > clipped[:, 2]
-                invalid_y = clipped[:, 1] > clipped[:, 3]
-                clipped[invalid_x, 0] = current[invalid_x, 0]
-                clipped[invalid_x, 2] = current[invalid_x, 0]
-                clipped[invalid_y, 1] = current[invalid_y, 1]
-                clipped[invalid_y, 3] = current[invalid_y, 1]
-                clipped[:, 0] = np.minimum(clipped[:, 0], current[:, 0])
-                clipped[:, 1] = np.minimum(clipped[:, 1], current[:, 1])
-                clipped[:, 2] = np.maximum(clipped[:, 2], current[:, 0])
-                clipped[:, 3] = np.maximum(clipped[:, 3], current[:, 1])
-                return clipped
-
-            deep_region = _clip_deep_region(deep_region, parent_region, h_pos)
-            deep_soft_region = _clip_deep_region(
-                deep_soft_region,
-                parent_soft_region,
-                s_pos,
-            )
-
-            def _deep_candidate_allowed(trial_hard, trial_soft):
-                if hierarchy_quality_metric(trial_hard, clusters) > audit_limit + 1.0e-12:
-                    return False
-                return bool(_multilevel_vector_contract(trial_hard, trial_soft)[0])
-
-            h_pos, s_pos, deep_acc, r_score = _deep_cluster_internal_relief(
-                h_pos,
-                s_pos,
-                sizes[:n],
-                hw,
-                hh,
-                soft_hw,
-                soft_hh,
-                cw,
-                ch,
-                n,
-                plc,
-                benchmark,
-                rscorer,
-                r_score,
-                child_clusters=hierarchy.subclusters,
-                cluster_softs=hierarchy.subcluster_softs,
-                subcluster_labels=hierarchy.subcluster_labels,
-                graph_edges=hierarchy.subcluster_edges,
-                graph_confidence=hierarchy.subcluster_confidence,
-                graph_tension=deep_graph_tension,
-                seed_hard_xy=seed_hard_for_tension,
-                movable_h=movable[:n],
-                soft_movable=soft_mov,
-                hard_region=deep_region,
-                soft_region=deep_soft_region,
-                candidate_allowed=_deep_candidate_allowed,
-                deadline=deep_deadline,
-                top_children=max(1, int(const.HIER_DEEP_CLUSTER_TOP_CHILDREN)),
-                hard_targets=max(1, int(const.HIER_DEEP_CLUSTER_HARD_TARGETS)),
-                soft_targets=max(1, int(const.HIER_DEEP_CLUSTER_SOFT_TARGETS)),
-                relocation_targets=max(1, int(const.HIER_DEEP_CLUSTER_RELOCATION_TARGETS)),
-                swap_k=max(1, int(const.HIER_DEEP_CLUSTER_SWAP_K)),
-                graph_priority_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_WEIGHT),
-                graph_anchor_blend=float(const.HIER_DEEP_CLUSTER_GRAPH_ANCHOR_BLEND),
-                graph_delta_weight=float(const.HIER_DEEP_CLUSTER_GRAPH_DELTA_WEIGHT),
-                min_gain=max(
-                    float(const.HIER_DEEP_CLUSTER_MIN_GAIN),
-                    adaptive_floor_proxy_gain,
-                ),
-                max_scored_per_call=max(1, int(const.HIER_DEEP_CLUSTER_MAX_SCORED_PER_CALL)),
-                max_scored=_pass_budget_remaining("deep_cluster_internal", "exact"),
-            )
-            deep_stats.update(getattr(_deep_cluster_internal_relief, "last_stats", {}))
-            if deep_acc:
-                subhierarchy_contract_active = True
-            deep_enforce = _enforce_audit_checkpoint(
-                "deep_cluster_internal",
-                return_report=True,
-            )
-            if deep_enforce.get("restored"):
-                r_score = float(deep_enforce["proxy_after"])
-            if _hard_valid(h_pos) and r_score < best_score - 1.0e-9:
-                best_h, best_s, best_score = h_pos.copy(), s_pos.copy(), float(r_score)
-            _log(
-                f"  [hier] deep-cluster internal relief: {deep_acc} accepts, "
-                f"children={int(deep_stats.get('selected_children', 0))}/"
-                f"{int(deep_stats.get('eligible_children', 0))}, "
-                f"scored={int(deep_stats.get('scored', 0))}, "
-                f"proxy {deep_before:.4f}->{float(r_score):.4f}"
-            )
-    _record_plateau(
-        "deep_cluster_internal",
-        deep_before,
-        float(r_score),
-        int(deep_acc),
-        time.monotonic() - deep_t0,
-        candidates=int(deep_stats.get("candidates", 0)),
-        legal=int(deep_stats.get("legal", 0)),
-        scored=int(deep_stats.get("scored", 0)),
-        hierarchy_rejects=int(deep_stats.get("hierarchy_rejects", 0)),
-        rollback_report=deep_enforce,
-        eligible_children=int(deep_stats.get("eligible_children", 0)),
-        selected_children=int(deep_stats.get("selected_children", 0)),
-        graph_prioritized_children=int(deep_stats.get("graph_prioritized_children", 0)),
-        hard_accepts=int(deep_stats.get("hard_accepts", 0)),
-        soft_accepts=int(deep_stats.get("soft_accepts", 0)),
-        swap_accepts=int(deep_stats.get("swap_accepts", 0)),
-        swap_scored=int(deep_stats.get("swap_scored", 0)),
-        expanded_regions=int(deep_stats.get("expanded_regions", 0)),
-        graph_component_expanded=int(deep_stats.get("graph_component_expanded", 0)),
-        margin_mean=(float(np.mean(list(deep_margins.values()))) if deep_margins else 0.0),
-        margin_max=(float(np.max(list(deep_margins.values()))) if deep_margins else 0.0),
-        multilevel_contract_active=bool(subhierarchy_contract_active),
-        confidence_scheduled=bool(child_search_confident),
-        subhierarchy_source=hierarchy.subhierarchy_source,
-    )
     pre_decomp_score = r_score
     decomp_gap = float("inf")
     decomp_skip = False
@@ -2761,7 +2446,6 @@ def run_hierarchy_floorplan(
                 cw,
                 ch,
                 n,
-                plc,
                 benchmark,
                 rscorer,
                 r_score,
@@ -3060,7 +2744,6 @@ def run_hierarchy_floorplan(
                     movable[:n],
                     soft_mov,
                     n,
-                    plc,
                     benchmark,
                     rscorer,
                     r_score,
@@ -3197,7 +2880,6 @@ def run_hierarchy_floorplan(
                     cw,
                     ch,
                     n,
-                    plc,
                     benchmark,
                     rscorer,
                     r_score,
@@ -3290,7 +2972,6 @@ def run_hierarchy_floorplan(
             movable[:n],
             soft_mov,
             n,
-            plc,
             benchmark,
             rscorer,
             r_score,
@@ -3467,7 +3148,6 @@ def run_hierarchy_floorplan(
                     cw,
                     ch,
                     n,
-                    plc,
                     benchmark,
                     rscorer,
                     r_score,
@@ -3647,7 +3327,6 @@ def run_hierarchy_floorplan(
                         cw,
                         ch,
                         n,
-                        plc,
                         benchmark,
                         rscorer,
                         r_score,
@@ -3824,7 +3503,6 @@ def run_hierarchy_floorplan(
                         cw,
                         ch,
                         n,
-                        plc,
                         benchmark,
                         rscorer,
                         r_score,
@@ -4026,9 +3704,6 @@ def run_hierarchy_floorplan(
         hier_micro_shift_min_gain=float(hier_micro_shift_min_gain),
         graph_tension_fn=_graph_tension,
         graph_tension_weight=graph_tension_coldspot_weight,
-        graph_edges=hierarchy.edges,
-        seed_hard_xy=seed_hard_for_tension,
-        graph_confidence=hierarchy.cluster_confidence,
         placement_contract_allowed=_placement_contract_allowed,
     )
     _log_stage_timing(

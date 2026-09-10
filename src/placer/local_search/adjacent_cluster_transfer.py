@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from placer.local_search.fields import weighted_congestion_field
+from placer.local_search.fields import _density_field, weighted_congestion_field
 from placer.local_search.subcluster_relocation import _hard_group_is_legal
 from placer.scoring.exact import exact_proxy_components
 from placer.scoring.incremental import IncrementalScorer
@@ -140,11 +140,10 @@ def _transfer_ownership(hierarchy, assignments: dict[int, int], n_hard: int) -> 
     )
 
 
-def _field_values(scorer, positions, *, hard: bool) -> np.ndarray:
+def _field_values(scorer, positions) -> np.ndarray:
     nr, nc = int(scorer.grid_row), int(scorer.grid_col)
     field = np.asarray(weighted_congestion_field(scorer, nr, nc), dtype=np.float64)
-    density = np.asarray(scorer.grid_occupied, dtype=np.float64).reshape(nr, nc)
-    density /= max(float(scorer.dens_grid_area), 1.0e-12)
+    density = _density_field(scorer, nr, nc)
     combined = field + density
     cell_w, cell_h = float(scorer.plc.width) / nc, float(scorer.plc.height) / nr
     ci = np.clip((positions[:, 0] / cell_w).astype(np.int64), 0, nc - 1)
@@ -152,7 +151,7 @@ def _field_values(scorer, positions, *, hard: bool) -> np.ndarray:
     return combined[ri, ci]
 
 
-def _cold_targets(cluster, graph, field, nr, nc, cw, ch, *, count: int) -> list[np.ndarray]:
+def _cold_targets(cluster, field, nr, nc, cw, ch, *, count: int) -> list[np.ndarray]:
     x0, y0, x1, y1 = map(float, cluster.bbox)
     if x1 <= x0 or y1 <= y0:
         return []
@@ -182,7 +181,7 @@ def _candidate_layout(proposal, hard_pos, soft_pos, n_hard):
     return trial_hard, trial_soft
 
 
-def _legal_proposal(proposal, hard_pos, soft_pos, hw, hh, soft_hw, soft_hh, cw, ch, n_hard):
+def _legal_proposal(proposal, hard_pos, hw, hh, soft_hw, soft_hh, cw, ch, n_hard):
     hard_indices = np.asarray(
         [index for index, _target in proposal["moves"] if index < n_hard], dtype=np.int64
     )
@@ -211,7 +210,6 @@ def _legal_proposal(proposal, hard_pos, soft_pos, hw, hh, soft_hw, soft_hh, cw, 
 def _generate_intercluster_proposals(
     graph,
     hard_pos,
-    soft_pos,
     hard_heat,
     soft_heat,
     movable_h,
@@ -297,7 +295,6 @@ def _generate_intercluster_proposals(
         ):
             targets = _cold_targets(
                 graph.clusters[target_cluster],
-                graph,
                 field,
                 nr,
                 nc,
@@ -356,7 +353,6 @@ def _generate_intercluster_proposals(
 def _generate_intracluster_proposals(
     graph,
     hard_pos,
-    soft_pos,
     hard_heat,
     soft_heat,
     movable_h,
@@ -395,7 +391,7 @@ def _generate_intracluster_proposals(
                             ),
                         }
                     )
-        targets = _cold_targets(cluster, graph, field, nr, nc, cw, ch, count=3)
+        targets = _cold_targets(cluster, field, nr, nc, cw, ch, count=3)
         for source in [*hard[:2], *soft[:2]]:
             source_heat = hard_heat[source] if source < n_hard else soft_heat[source - n_hard]
             for target in targets:
@@ -466,8 +462,8 @@ def run_adjacent_cluster_transfer(
         nonlocal hard_pos, soft_pos, scorer, initial_score
         if deadline is not None and time.monotonic() >= deadline:
             return False
-        hard_heat = _field_values(scorer, hard_pos, hard=True)
-        soft_heat = _field_values(scorer, soft_pos, hard=False)
+        hard_heat = _field_values(scorer, hard_pos)
+        soft_heat = _field_values(scorer, soft_pos)
         nr, nc = int(scorer.grid_row), int(scorer.grid_col)
         field = np.asarray(weighted_congestion_field(scorer, nr, nc), dtype=np.float64)
         density = np.asarray(scorer.grid_occupied, dtype=np.float64).reshape(nr, nc)
@@ -477,7 +473,6 @@ def run_adjacent_cluster_transfer(
             _generate_intercluster_proposals(
                 graph,
                 hard_pos,
-                soft_pos,
                 hard_heat,
                 soft_heat,
                 np.asarray(movable_h, dtype=bool),
@@ -494,7 +489,6 @@ def run_adjacent_cluster_transfer(
             else _generate_intracluster_proposals(
                 graph,
                 hard_pos,
-                soft_pos,
                 hard_heat,
                 soft_heat,
                 np.asarray(movable_h, dtype=bool),
@@ -522,7 +516,7 @@ def run_adjacent_cluster_transfer(
             stats["attempts"] += 1
             phase_attempts += 1
             if not _legal_proposal(
-                proposal, hard_pos, soft_pos, hw, hh, soft_hw, soft_hh, cw, ch, hard_pos.shape[0]
+                proposal, hard_pos, hw, hh, soft_hw, soft_hh, cw, ch, hard_pos.shape[0]
             ):
                 continue
             stats[f"{prefix}_legal"] += 1

@@ -1,7 +1,25 @@
-"""Placement position-cache helpers."""
+"""Placement bounds and position-cache helpers."""
 
 import numpy as np
+import torch
 from macro_place.benchmark import Benchmark
+
+
+def clamp_in_bounds(pl: torch.Tensor, benchmark: Benchmark) -> torch.Tensor:
+    """Keep movable macro centers inside the canvas, using return-tensor precision."""
+    sizes = benchmark.macro_sizes
+    cw = float(benchmark.canvas_width)
+    ch = float(benchmark.canvas_height)
+    hw = sizes[:, 0] / 2.0
+    hh = sizes[:, 1] / 2.0
+    mov = benchmark.get_movable_mask().to(torch.bool)
+    out = pl.clone()
+    cx = torch.minimum(torch.maximum(out[:, 0], hw), cw - hw)
+    cy = torch.minimum(torch.maximum(out[:, 1], hh), ch - hh)
+    out[:, 0] = torch.where(mov, cx, out[:, 0])
+    out[:, 1] = torch.where(mov, cy, out[:, 1])
+    return out
+
 
 def _ensure_pos_cache(plc) -> np.ndarray:
     """Maintain a per-module (x, y) position cache for vectorized scoring.

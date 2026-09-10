@@ -1167,6 +1167,7 @@ if HAS_NUMBA:
         grid_h,
         grid_row,
         grid_col,
+        base_grid=None,
     ):
         """Accumulate one rectangle into a sparse density delta."""
         x_min = cx - half_w
@@ -1194,7 +1195,7 @@ if HAS_NUMBA:
                 cell = row * grid_col + col
                 if mark[cell] == 0:
                     mark[cell] = 1
-                    delta[cell] = 0.0
+                    delta[cell] = 0.0 if base_grid is None else base_grid[cell]
                     touched_cells[touched_count] = cell
                     touched_count += 1
                 delta[cell] += weight * overlap_x * overlap_y
@@ -1340,6 +1341,79 @@ if HAS_NUMBA:
 
             for touched_idx in range(touched_count):
                 mark[touched_cells[touched_idx]] = 0
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _changed_density_cost_jit(values, base, order, count, area, mark, candidates):
+        """Merge changed occupancy with the unchanged baseline density tail."""
+        nonzero = 0
+        candidate_count = 0
+        for cell in range(values.size):
+            value = values[cell]
+            nonzero += value != 0.0
+            mark[cell] = value != base[cell]
+            if mark[cell] and value != 0.0:
+                candidates[candidate_count] = value
+                candidate_count += 1
+        top_count = min(count, nonzero)
+        if top_count == 0:
+            mark[:] = 0
+            return 0.0
+        unchanged = 0
+        for cell in order:
+            if mark[cell] == 0 and base[cell] != 0.0:
+                candidates[candidate_count] = base[cell]
+                candidate_count += 1
+                unchanged += 1
+                if unchanged == top_count:
+                    break
+        partitioned = np.partition(candidates[:candidate_count], candidate_count - top_count)
+        total = 0.0
+        for index in range(candidate_count - top_count, candidate_count):
+            total += partitioned[index]
+        mark[:] = 0
+        return 0.5 * total / area / count
+
+    @_numba_njit(cache=True, fastmath=False)
+    def _group_density_cost_jit(
+        old_xy,
+        new_xy,
+        half_sizes,
+        occupied,
+        base,
+        order,
+        count,
+        area,
+        grid_w,
+        grid_h,
+        grid_row,
+        grid_col,
+        mark,
+        values,
+        touched,
+        candidates,
+    ):
+        """Apply the group's rectangles to reusable scratch, preserving update order."""
+        values[:] = occupied
+        touched_count = 0
+        for xy, weight in ((old_xy, -1.0), (new_xy, 1.0)):
+            for index in range(xy.shape[0]):
+                touched_count = _add_sparse_density_rect_jit(
+                    values,
+                    mark,
+                    touched,
+                    touched_count,
+                    xy[index, 0],
+                    xy[index, 1],
+                    half_sizes[index, 0],
+                    half_sizes[index, 1],
+                    weight,
+                    grid_w,
+                    grid_h,
+                    grid_row,
+                    grid_col,
+                    occupied,
+                )
+        return _changed_density_cost_jit(values, base, order, count, area, mark, candidates)
 
     @_numba_njit(cache=True, fastmath=False)
     def _batch_soft_density_grids_jit(
@@ -1560,7 +1634,7 @@ class IncrementalScorer:
         self._touched_cache_many: "dict[tuple[int, ...], np.ndarray]" = {}
 
         # Density state.
-        dens_cache = _build_density_cache(plc, benchmark)
+        dens_cache = _build_density_cache(plc)
         self.dens_grid_col = int(plc.grid_col)
         self.dens_grid_row = int(plc.grid_row)
         self.dens_grid_w = float(plc.width / self.dens_grid_col)
@@ -1610,6 +1684,7 @@ class IncrementalScorer:
         self._soft_congestion_prefix_h = np.empty(self.grid_row + 1, dtype=np.float64)
         self._soft_congestion_prefix_v = np.empty(self.grid_col + 1, dtype=np.float64)
         self._soft_density_packed = np.empty(self.dens_n_cells, dtype=np.float64)
+        self._group_grid_snapshot = np.empty((4, n_cells), dtype=np.float64)
 
     def visualizer_metrics(self) -> dict[str, float]:
         """Return exact metrics for the currently committed scorer state."""
@@ -1746,6 +1821,9 @@ class IncrementalScorer:
         bboxes: np.ndarray,
         h_macro: "np.ndarray | None" = None,
         v_macro: "np.ndarray | None" = None,
+        *,
+        base_h_macro: "np.ndarray | None" = None,
+        base_v_macro: "np.ndarray | None" = None,
     ) -> np.ndarray:
         """Return exact batch congestion without full candidate value grids."""
         baseline = self._swap_tail_baseline()
@@ -1760,8 +1838,8 @@ class IncrementalScorer:
             bboxes,
             np.ascontiguousarray(self.H_smoothed.ravel()),
             np.ascontiguousarray(self.V_smoothed.ravel()),
-            self.H_macro_flat,
-            self.V_macro_flat,
+            self.H_macro_flat if base_h_macro is None else base_h_macro,
+            self.V_macro_flat if base_v_macro is None else base_v_macro,
             h_macro if candidate_hard_macro else raw_h,
             v_macro if candidate_hard_macro else raw_v,
             candidate_hard_macro,
@@ -2444,21 +2522,27 @@ class IncrementalScorer:
 
         touched = self._touched_nets_many(modules)
         struct = self._route_struct_many(modules) if touched.size else None
-        H_snap = self.H_flat.copy() if touched.size else None
-        V_snap = self.V_flat.copy() if touched.size else None
-        Hm_snap = self.H_macro_flat.copy() if hard_slots.size else None
-        Vm_snap = self.V_macro_flat.copy() if hard_slots.size else None
+        sparse = HAS_NUMBA and self.dens_n_cells >= 10
+        baseline = self._swap_tail_baseline() if sparse else None
+        H_snap, V_snap, Hm_snap, Vm_snap = self._group_grid_snapshot
+        if touched.size:
+            H_snap[:] = self.H_flat
+            V_snap[:] = self.V_flat
+        if hard_slots.size:
+            Hm_snap[:] = self.H_macro_flat
+            Vm_snap[:] = self.V_macro_flat
         bb_old = _apply_net_routing_struct(self.plc, struct, -1.0, self.H_flat, self.V_flat)
         if hard_slots.size:
             _apply_macro_routing_subset(
                 self.plc, hard_slots, -1.0, self.V_macro_flat, self.H_macro_flat
             )
 
-        old_occ = [self._macro_occ(m, x, y) for m, (x, y) in zip(modules, old_xy)]
         go = self.grid_occupied
-        for idx, area in old_occ:
-            if idx.size:
-                np.subtract.at(go, idx, area)
+        if not sparse:
+            old_occ = [self._macro_occ(m, x, y) for m, (x, y) in zip(modules, old_xy)]
+            for idx, area in old_occ:
+                if idx.size:
+                    np.subtract.at(go, idx, area)
 
         for m, (x, y) in zip(modules, new_xy):
             self._apply_pos(m, x, y)
@@ -2471,7 +2555,7 @@ class IncrementalScorer:
 
         r_lo, r_hi, c_lo, c_hi = self._union_bbox(bb_old, bb_new)
         Hs_snap = Vs_snap = None
-        if c_lo is not None:
+        if c_lo is not None and not sparse:
             Hs_snap = self.H_smoothed[:, c_lo : c_hi + 1].copy()
             Vs_snap = self.V_smoothed[r_lo : r_hi + 1, :].copy()
             self._resmooth_bbox(r_lo, r_hi, c_lo, c_hi)
@@ -2485,31 +2569,68 @@ class IncrementalScorer:
         else:
             new_total_raw = self.total_wl_raw
         new_wl_normalized = new_total_raw / self.wl_normalizer
-        cong = self._compute_cong_cost()
+        if sparse:
+            bbox = (r_lo, r_hi, c_lo, c_hi) if r_lo is not None else (1, 0, 1, 0)
+            cong = float(
+                self._batch_sparse_swap_congestion_costs(
+                    self.H_flat[None, :],
+                    self.V_flat[None, :],
+                    np.asarray([bbox], dtype=np.int64),
+                    self.H_macro_flat[None, :] if hard_slots.size else None,
+                    self.V_macro_flat[None, :] if hard_slots.size else None,
+                    base_h_macro=Hm_snap if hard_slots.size else None,
+                    base_v_macro=Vm_snap if hard_slots.size else None,
+                )[0]
+            )
+        else:
+            cong = self._compute_cong_cost()
 
-        new_occ = [self._macro_occ(m, x, y) for m, (x, y) in zip(modules, new_xy)]
-        for idx, area in new_occ:
-            if idx.size:
-                np.add.at(go, idx, area)
-        dens = self._compute_density_cost()
+        if sparse:
+            dens = float(
+                _group_density_cost_jit(
+                    np.asarray(old_xy),
+                    np.asarray(new_xy),
+                    np.asarray([self._dens_half[m] for m in modules]),
+                    go,
+                    baseline["density"],
+                    baseline["density_order"],
+                    self.dens_density_cnt,
+                    self.dens_grid_area,
+                    self.dens_grid_w,
+                    self.dens_grid_h,
+                    self.dens_grid_row,
+                    self.dens_grid_col,
+                    self._swap_density_mark,
+                    self._swap_density_delta,
+                    self._swap_density_touched,
+                    self._swap_density_candidates,
+                )
+            )
+        else:
+            new_occ = [self._macro_occ(m, x, y) for m, (x, y) in zip(modules, new_xy)]
+            for idx, area in new_occ:
+                if idx.size:
+                    np.add.at(go, idx, area)
+            dens = self._compute_density_cost()
 
         score = float(new_wl_normalized + 0.5 * dens + 0.5 * cong)
 
-        for idx, area in new_occ:
-            if idx.size:
-                np.subtract.at(go, idx, area)
-        for idx, area in old_occ:
-            if idx.size:
-                np.add.at(go, idx, area)
+        if not sparse:
+            for idx, area in new_occ:
+                if idx.size:
+                    np.subtract.at(go, idx, area)
+            for idx, area in old_occ:
+                if idx.size:
+                    np.add.at(go, idx, area)
         for m, (x, y) in zip(modules, old_xy):
             self._apply_pos(m, x, y)
         if touched.size:
             self.H_flat[:] = H_snap
             self.V_flat[:] = V_snap
-        if Hm_snap is not None:
+        if hard_slots.size:
             self.H_macro_flat[:] = Hm_snap
             self.V_macro_flat[:] = Vm_snap
-        if c_lo is not None:
+        if c_lo is not None and not sparse:
             self.H_smoothed[:, c_lo : c_hi + 1] = Hs_snap
             self.V_smoothed[r_lo : r_hi + 1, :] = Vs_snap
         return score

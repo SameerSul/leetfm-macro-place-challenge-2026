@@ -98,6 +98,16 @@ def find_large_macro_voids(
     subtract_blockages: bool = True,
 ) -> list[dict[str, object]]:
     """Return hard-clear interior gaps and large-macro-to-canvas edge pockets."""
+    bases = _large_macro_void_bases(
+        hard_pos, hw, hh, canvas_width, canvas_height, large_area_percentile
+    )
+    return _select_macro_voids(
+        bases, hard_pos, hw, hh, min_width, min_height, max_voids, subtract_blockages
+    )
+
+
+def _large_macro_void_bases(hard_pos, hw, hh, canvas_width, canvas_height, large_area_percentile):
+    """Construct common interior/edge geometry before lane-specific filtering."""
     pos = np.asarray(hard_pos, dtype=np.float64)
     half_w = np.asarray(hw, dtype=np.float64)
     half_h = np.asarray(hh, dtype=np.float64)
@@ -171,12 +181,22 @@ def find_large_macro_voids(
                         }
                     )
 
-    bases.sort(
+    return bases
+
+
+def _select_macro_voids(
+    bases, hard_pos, hw, hh, min_width, min_height, max_voids, subtract_blockages
+):
+    pos = np.asarray(hard_pos, dtype=np.float64)
+    half_w = np.asarray(hw, dtype=np.float64)
+    half_h = np.asarray(hh, dtype=np.float64)
+    bases = sorted(
+        bases,
         key=lambda row: (
             -float((row["rect"][2] - row["rect"][0]) * (row["rect"][3] - row["rect"][1])),
             str(row["kind"]),
             tuple(row["boundary"]),
-        )
+        ),
     )
     bases = bases[: max(1, 4 * int(max_voids))]
     rows: list[dict[str, object]] = []
@@ -384,18 +404,14 @@ def _shelf_pack_soft(
     return packed + anchor - 0.5 * (lo + hi)
 
 
-def _routing_target(plc, hard_pos, soft_pos, indices) -> np.ndarray:
+def _routing_target(scorer, hard_pos, soft_pos, indices) -> np.ndarray:
     """Return the weighted external-pin centroid of one soft routing unit."""
+    plc = scorer.plc
     cache = _build_wl_cache(plc)
     hard_ref = {int(module): index for index, module in enumerate(plc.hard_macro_indices)}
     soft_ref = {int(module): index for index, module in enumerate(plc.soft_macro_indices)}
     member_refs = {int(plc.soft_macro_indices[int(index)]) for index in indices}
-    incident = set()
-    for net_index, start_raw in enumerate(cache["net_starts"]):
-        start = int(start_raw)
-        length = int(cache["net_lengths"][net_index])
-        if any(int(ref) in member_refs for ref in cache["ref_idx"][start : start + length]):
-            incident.add(net_index)
+    incident = scorer._touched_nets_many(member_refs)
     total = 0.0
     weighted = np.zeros(2, dtype=np.float64)
     for net_index in sorted(incident):
@@ -644,26 +660,28 @@ def _void_cluster_relocation(
             break
         if deadline is not None and time.monotonic() >= deadline:
             break
-        voids = find_large_macro_voids(
+        bases = _large_macro_void_bases(hard_pos, hw, hh, cw, ch, large_area_percentile)
+        min_width = max(1, int(min_gap_cells)) * cell_w
+        min_height = max(1, int(min_gap_cells)) * cell_h
+        voids = _select_macro_voids(
+            bases,
             hard_pos,
             hw,
             hh,
-            canvas_width=cw,
-            canvas_height=ch,
-            large_area_percentile=large_area_percentile,
-            min_width=max(1, int(min_gap_cells)) * cell_w,
-            min_height=max(1, int(min_gap_cells)) * cell_h,
-            max_voids=max_voids,
+            min_width,
+            min_height,
+            max_voids,
+            True,
         )
-        legacy_voids = find_large_macro_voids(
+        legacy_voids = _select_macro_voids(
+            [base for base in bases if base["kind"] == "interior"],
             hard_pos,
             hw,
             hh,
-            large_area_percentile=large_area_percentile,
-            min_width=max(1, int(min_gap_cells)) * cell_w,
-            min_height=max(1, int(min_gap_cells)) * cell_h,
-            max_voids=max_voids,
-            subtract_blockages=False,
+            min_width,
+            min_height,
+            max_voids,
+            False,
         )
         for void in voids:
             void["legacy"] = False
@@ -1138,7 +1156,7 @@ def _void_cluster_relocation(
                 break
             indices = np.asarray(unit["indices"], dtype=np.int64)
             old_xy = soft_pos[indices]
-            target = _routing_target(scorer_plc, hard_pos, soft_pos, indices)
+            target = _routing_target(incremental_scorer, hard_pos, soft_pos, indices)
             source_heat = float(np.mean(local_heat[indices]))
             canvas_diag = max(float(np.hypot(cw, ch)), 1.0e-12)
             ranked_voids = sorted(

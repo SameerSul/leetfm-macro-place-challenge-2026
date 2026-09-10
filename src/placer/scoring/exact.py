@@ -29,8 +29,8 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
     """Score placement with the fast wirelength, density, and congestion paths."""
     _t0 = time.perf_counter() if _PROFILE_EXACT else 0.0
     _patch_plc_wirelength(plc)
-    _patch_plc_congestion(plc, benchmark)
-    _patch_plc_density(plc, benchmark)
+    _patch_plc_congestion(plc)
+    _patch_plc_density(plc)
     placement_np = placement.cpu().numpy()
     # The placement tensor carries both hard and soft macro positions.
     _fast_set_placement(plc, placement_np, benchmark)
@@ -46,8 +46,8 @@ def _exact_proxy(placement: torch.Tensor, benchmark: Benchmark, plc) -> float:
 def exact_proxy_components(placement, benchmark: Benchmark, plc) -> dict[str, float]:
     """Set one placement on the PLC and return its exact proxy terms."""
     _patch_plc_wirelength(plc)
-    _patch_plc_congestion(plc, benchmark)
-    _patch_plc_density(plc, benchmark)
+    _patch_plc_congestion(plc)
+    _patch_plc_density(plc)
     placement_np = np.asarray(placement, dtype=np.float64)
     _fast_set_placement(plc, placement_np, benchmark)
     wirelength = float(plc.get_cost())
