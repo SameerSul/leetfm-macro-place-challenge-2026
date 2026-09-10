@@ -37,7 +37,9 @@ presented as VivaPlace measurements or forecasts.
    [extended TCAD paper](https://doi.org/10.1109/TCAD.2020.3003843).
    VivaPlace uses the pinned DREAMPlace global placer through
    `src/dreamplace_bridge/`; DREAMPlace legalization and detailed placement are
-   disabled.
+   disabled. The [September 9 backend trial](../ml_data/dreamplace_cuda/20260909/results.md)
+   exposes the existing CUDA implementation as an opt-in backend. CPU remains
+   the default; that trial's measured results are separate from paper speedups.
 
 2. **DREAMPlace 4.1 / second-order backbone — production / direct
    dependency.** Yifan Chen, Zaiwen Wen, Yun Liang, and Yibo Lin, “Stronger
