@@ -6,6 +6,44 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-09-11 — restore DREAMPlace seed cleanup):**
+> Removed one obsolete `plc` argument from the injected seed soft-relocation
+> call. The earlier signature cleanup missed this caller: it supplied
+> `deadline` twice and silently discarded DREAMPlace candidates needing soft
+> cleanup. The shared relocation API and all selection/contract gates remain.
+> An API-binding regression check covers the actual caller and callee.
+>
+> Normal-guard CPU validation returns legal, zero-overlap IBM10 and NVDLA
+> placements with complete final contracts: proxy **1.174197912 / 0.730595589**
+> in **105.482 / 45.655 s**. NVDLA retains the recurrent
+> `re2map_recursive_2` seed, confirming restored seed scoring through the
+> production backend. These are validation results, not a paired quality or
+> speed comparison. All **135 verification and 34 EDA/visualizer tests pass**.
+> The prior 31-design tile ablation remains the broader quality reference;
+> this correction has not received a new 31-design sweep.
+>
+> The ordered [GPU placement experiments](GPU_PLACEMENT_EXPERIMENTS.md)
+> use the corrected source and independent fresh seed caches. Physical-net
+> RUDY with native area adjustment leaves IBM10, IBM17, and NVDLA final
+> coordinates, exact proxy, and complete contracts identical to control.
+> All six outputs are valid with zero overlaps. Nine fresh seed calls take
+> **77.570 s control / 90.712 s RUDY**; this is a single quality comparison,
+> not an isolated speed benchmark. RUDY remains diagnostic-only.
+>
+> The resident soft-refinement replay improves all three captured inputs:
+> **1.173218182 -> 1.173139663**, **1.393703334 -> 1.392391389**, and
+> **0.815042601 -> 0.814817224** under fresh scalar checks on float32
+> coordinates promoted to float64. All 24 checkpoints pass legality and
+> complete saved contracts; three repetitions per backend are deterministic,
+> retained CPU/CUDA coordinates match exactly, and the NVDLA tag audit passes.
+> Warm proposal medians including packing/transfers are **2.020 / 3.302 /
+> 1.282 s CPU** versus **0.684 / 1.251 / 0.528 s CUDA** on the RTX 4050.
+> This compares identical PyTorch implementations, not production Numba or
+> complete placement runtime. Exact congestion rises on both IBM designs;
+> only NVDLA improves all three proxy terms. Refinement remains offline.
+> The existing warm CPU exact scorer takes **12.596 / 17.757 / 6.354 ms** per
+> state; four checkpoint calls do not justify a GPU exact-scoring port.
+>
 > **Status (2026-09-09 — maintenance cleanup):**
 > Removed 32 unused parameters from 21 internal search, scoring-cache, and EDA
 > helpers, updating all maintained callers and scalar verifiers. Removed the
@@ -32,6 +70,30 @@ Target: beat RePlAce avg of 1.4578.
 > 31-design cluster-tile result below remains the quality reference.
 > See `ml_data/algorithm_review/20260909/maintenance_results.md` for source
 > snapshots, caller changes, and validation controls. No speedup is claimed.
+>
+> **Research (2026-09-11 — offline GPU graph comparison; no production change):**
+> Added a reproducible Python/NumPy/Numba/CUDA diagnostic for hard/macro edge
+> construction, complete eligible frontier-affinity batches, and captured CPU
+> graph splits. Final-source IBM10/IBM17/NVDLA runs reject all nine CUDA
+> workload/design combinations under exact parity plus a 20% lifecycle time
+> reduction gate. Hard-edge Numba times are **0.363 / 0.400 / 0.329 ms** versus
+> CUDA **4.030 / 18.813 / 9.265 ms**, including packing and transfers. IBM10's
+> normalized macro-edge CUDA trial is faster (**9.453 -> 6.975 ms**) but changes
+> weights. Maximum normalized-edge and affinity errors are **3.979e-13** and
+> **2.842e-13**; tested frontier rankings remain equal, which is insufficient
+> for general search equivalence. Cached CPU answers also beat synthetic
+> repeated CUDA affinity queries.
+>
+> The compiled CPU split control reproduces every captured partition and cut
+> ratio. IBM17's three-call sum of warm medians falls **2787.261 -> 130.252 ms**;
+> IBM10's 20-call sum falls **69.221 -> 23.087 ms**, although individual small
+> splits can be slower. These are offline primitive measurements, not accepted
+> placement speedups. Production and proxy results remain unchanged. All
+> **24 focused tests pass**, including CUDA execution, ownership/rollback,
+> weighted parity, and complete frontier-order rejection. See the
+> [GPU graph report](../ml_data/gpu_graphs/20260911/results.md) for commands,
+> final-source raw samples, fingerprints, and limitations. No full placement
+> sweep was run because no CUDA candidate passed the prerequisite gates.
 >
 > **Status (2026-09-09 — algorithm cleanup and final cluster-tile search):**
 > Removed the overwritten coldspot anchor calculation and unused partial-frontier,

@@ -1093,6 +1093,24 @@ an isolation control because its active designs have too few graph edges for a
 viable batch kernel. Rejected exact-reduction, widened relocation-delta, and
 proposal-filter experiment code was removed. Details are in `PROGRESS.md`.
 
+The separate offline `test/diagnostic/profile_gpu_graphs.py` compares hard-edge
+and normalized macro-edge construction, batched frontier affinities, and CPU
+graph splitting. It uses the existing PyTorch/Numba stack and never installs a
+production backend. CUDA timings include packing, upload, sparse construction,
+and readback; resident-only timings are reported separately. Exact weight and
+rank checks precede a 20% time-reduction gate against the compiled CPU control.
+See the [GPU graph report](../ml_data/gpu_graphs/20260911/results.md) for commands,
+measurements, and the limits of initial-placement replay.
+
+The [GPU placement investigation](GPU_PLACEMENT_EXPERIMENTS.md) adds two
+offline diagnostics: a DREAMPlace subprocess wrapper with physical-net RUDY,
+benchmark routing capacities, and moving hard blockages; and a resident
+PyTorch CPU/CUDA soft-refinement replay with fresh exact final gating.
+Neither installs a production GPU operator or changes the backend default.
+Its prerequisite correction removes a stale extra `plc` positional argument
+from seed soft cleanup. DREAMPlace candidates now reach the intended scoring
+and hierarchy selection instead of being discarded by `TypeError`.
+
 Experiments that were tried and not promoted (full recursive bisection,
 cluster-room/bridge-corridor modeling, broad weak-hot region reshape, early
 strong-soft repair, early swap-lite, deterministic hot-cluster coldspot

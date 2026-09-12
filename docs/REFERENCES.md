@@ -304,6 +304,41 @@ related-work results are not confused with VivaPlace's measured results.
     upstream evolutionary packing implementation. See the
     [diagnostic report](../ml_data/re2map_packing_tree/20260811-results.md).
 
+29. **PyTorch sparse graph operations and reproducibility — research-only.**
+    PyTorch contributors, “torch.sparse.mm” and “Reproducibility,” PyTorch 2.10
+    online documentation, accessed 2026-09-11; no paginated venue or DOI.
+    [Sparse multiplication](https://docs.pytorch.org/docs/2.10/generated/torch.sparse.mm.html),
+    [reproducibility](https://docs.pytorch.org/docs/2.10/notes/randomness.html).
+    The offline [GPU graph comparison](../ml_data/gpu_graphs/20260911/results.md)
+    uses CSR sparse multiplication for batched ownership affinity. It checks
+    exact weights and frontier ordering separately because CPU/CUDA numerical
+    agreement is not guaranteed. These APIs do not replace the production
+    graph or exact scorer; all timings in that report are local measurements.
+
+30. **AutoDMP — research-only, independently adapted congestion surrogate.**
+    Anthony Agnesina, Puranjay Rajvanshi, Tian Yang, Geraldo Pradipta, Austin
+    Jiao, Ben Keller, Brucek Khailany, and Haoxing Ren, “AutoDMP: Automated
+    DREAMPlace-based Macro Placement,” ISPD 2023, pp. 149–157.
+    [DOI](https://doi.org/10.1145/3569052.3578923),
+    [NVIDIA author paper](https://d1qx31qr3h6wln.cloudfront.net/publications/AutoDMP.pdf).
+    The [GPU placement experiments](GPU_PLACEMENT_EXPERIMENTS.md) reuse
+    DREAMPlace's RUDY and area adjustment and independently add moving macro
+    blockage demand. They do not reproduce AutoDMP's capacity-denominator
+    formula, Bayesian search, RISA weighting, or commercial evaluation flow.
+    The soft-refinement prototype uses a separate differentiable rectangular
+    routing surrogate. Neither surrogate replaces VivaPlace's exact evaluator.
+    AutoDMP's reported quality and runtime are source results, not VivaPlace
+    measurements or forecasts.
+
+31. **PyTorch segmented reductions — research-only soft refinement.**
+    PyTorch contributors, “torch.segment_reduce,” PyTorch 2.10 online
+    documentation, accessed 2026-09-11; no paginated venue or DOI.
+    [API documentation](https://docs.pytorch.org/docs/2.10/generated/torch.segment_reduce.html).
+    The offline [soft-refinement experiment](GPU_PLACEMENT_EXPERIMENTS.md)
+    reuses segmented extrema and sums for differentiable physical-net
+    wirelength and routing demand. CPU/CUDA numerical and gradient checks
+    precede fresh exact output validation; this is not a production scorer.
+
 ## Project, Evaluator, Data, and Tool Links
 
 | Resource | Link | Use in this repository |

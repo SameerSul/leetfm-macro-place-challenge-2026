@@ -106,6 +106,16 @@ For per-stage technical detail (what each box below does, which file
 implements it, and the constants that control it), see
 [ARCHITECTURE.md](ARCHITECTURE.md). This document is the flow diagram only.
 
+The [offline GPU graph comparison](../ml_data/gpu_graphs/20260911/results.md)
+measures construction, affinity queries, and graph-split controls on captured
+initial hierarchy inputs. It does not enter this flow or change candidate
+order, ownership, score quotas, DREAMPlace selection, or acceptance gates.
+
+The separate [GPU placement experiments](GPU_PLACEMENT_EXPERIMENTS.md) test
+physical-net RUDY seeds and coordinated soft refinement. Both remain offline.
+Seed soft cleanup uses the current relocation signature; the stale extra
+`plc` argument that caused DREAMPlace seed scoring to raise is removed.
+
 ## Flow
 
 ```mermaid
