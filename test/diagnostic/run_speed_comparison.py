@@ -4,7 +4,6 @@ import argparse
 import ast
 import importlib.util
 import json
-import os
 from pathlib import Path
 import sys
 import time
@@ -208,8 +207,10 @@ def main():
     parser.add_argument("names", nargs="*")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    os.environ["HIER_PLATEAU_TRACE_PATH"] = str(args.out / "trace.jsonl")
-    os.environ["HIER_DIAGNOSTIC_NO_DEADLINES"] = str(int(args.no_deadlines))
+    from utils import constants as const
+
+    const.HIER_PLATEAU_TRACE_PATH = str(args.out / "trace.jsonl")
+    const.HIER_DIAGNOSTIC_NO_DEADLINES = bool(args.no_deadlines)
     if args.compare:
         compare_outputs(args.compare, args.out)
         return

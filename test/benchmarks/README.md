@@ -43,8 +43,8 @@ uv run python test/benchmarks/generate_benchmarks.py
 uv run python test/benchmarks/run_synthetic.py
 
 # calibration run without visualization overhead
-HIER_PLATEAU_TRACE_PATH=ml_data/plateau_telemetry/synthetic-contract.jsonl \
-  uv run python test/benchmarks/run_synthetic.py --skip-vis
+# Set HIER_PLATEAU_TRACE_PATH in src/utils/constants.py to redirect telemetry.
+uv run python test/benchmarks/run_synthetic.py --skip-vis
 
 # single benchmark or custom placer
 uv run python .../run_synthetic.py -b syn02_fixed

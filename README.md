@@ -91,12 +91,19 @@ scripts/dreamplace/bootstrap.sh preflight
 
 ## Commands
 
+Placement and diagnostic configuration uses `src/utils/constants.py`; environment
+overrides are ignored. CPU DREAMPlace and the existing search quotas remain the
+defaults. Diagnostic CLIs set constants directly for their isolated runs.
+Rejected GPU overlap, graph-construction/affinity, and RUDY seed experiments are
+retired. The CPU split study and GPU soft-refinement replay remain offline;
+fresh replay inputs use `run_dreamplace_cuda_comparison.py --capture-final`.
+
 ```bash
 # Single benchmark - fastest feedback loop
 uv run evaluate src/main.py -b ibm10
 
-# Experimental CUDA DREAMPlace seeds, with a separate cache (CPU is default)
-rtk proxy env DREAMPLACE_GPU=1 uv run evaluate src/main.py -b ibm10
+# Experimental CUDA seeds: first set DREAMPLACE_GPU = True in src/utils/constants.py
+uv run evaluate src/main.py -b ibm10
 
 # Full IBM ICCAD04 suite
 uv run evaluate src/main.py --all

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as mp
-import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -38,9 +37,10 @@ def _worker(queue, benchmark_name, benchmark_dir, sample_every, use_dreamplace_c
 
         # Deterministic score quotas remain authoritative while diagnostic event
         # serialization is excluded from wall-clock safety guards.
-        os.environ["HIER_DIAGNOSTIC_NO_DEADLINES"] = "1"
-        if use_dreamplace_cache:
-            os.environ["HIER_VISUALIZER_USE_CACHE"] = "1"
+        from utils import constants as const
+
+        const.HIER_DIAGNOSTIC_NO_DEADLINES = True
+        const.HIER_VISUALIZER_USE_CACHE = bool(use_dreamplace_cache)
         source = Path(benchmark_dir) if benchmark_dir else _benchmark_dir(benchmark_name)
         benchmark, _plc = load_benchmark_from_dir(source.as_posix())
         benchmark.name = benchmark_name or source.name
@@ -120,8 +120,7 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
-    from pyqtgraph.Qt import QtCore, QtWidgets
+    from PySide6 import QtCore, QtWidgets
     from visualizer.qt_dashboard import Dashboard
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])

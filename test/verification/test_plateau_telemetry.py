@@ -223,7 +223,7 @@ def test_learned_ranker_hooks_are_absent_from_production_source():
 def test_plateau_telemetry_always_records_even_with_legacy_disable_env(tmp_path, monkeypatch):
     path = tmp_path / "plateau.jsonl"
     monkeypatch.setenv("HIER_PLATEAU_TRACE", "0")
-    monkeypatch.setenv("HIER_PLATEAU_TRACE_PATH", str(path))
+    monkeypatch.setattr(constants, "HIER_PLATEAU_TRACE_PATH", str(path))
     plateau_telemetry._PLATEAU_BUFFER.clear()
     plateau_telemetry._PLATEAU_BUFFER_PATH = None
 
@@ -235,13 +235,19 @@ def test_plateau_telemetry_always_records_even_with_legacy_disable_env(tmp_path,
     assert row["benchmark"] == "test"
 
 
-def test_plateau_telemetry_records_worktree_fingerprint_override(tmp_path, monkeypatch):
+def test_plateau_telemetry_records_explicit_source_provenance(tmp_path, monkeypatch):
     path = tmp_path / "plateau.jsonl"
-    monkeypatch.setenv("HIER_PLATEAU_TRACE_PATH", str(path))
-    monkeypatch.setenv("VIVAPLACE_WORKTREE_FINGERPRINT", "test-dirty-state")
+    monkeypatch.setattr(constants, "HIER_PLATEAU_TRACE_PATH", str(path))
+    monkeypatch.setattr(
+        plateau_telemetry,
+        "_WORKTREE_PROVENANCE",
+        {
+            "worktree_dirty": True,
+            "worktree_fingerprint": "test-dirty-state",
+        },
+    )
     plateau_telemetry._PLATEAU_BUFFER.clear()
     plateau_telemetry._PLATEAU_BUFFER_PATH = None
-    plateau_telemetry._WORKTREE_PROVENANCE = None
 
     plateau_telemetry.log_plateau_event("hier_plateau_telemetry", benchmark="test")
     plateau_telemetry.flush_plateau_events()
@@ -249,4 +255,3 @@ def test_plateau_telemetry_records_worktree_fingerprint_override(tmp_path, monke
     row = json.loads(path.read_text())
     assert row["worktree_dirty"] is True
     assert row["worktree_fingerprint"] == "test-dirty-state"
-    plateau_telemetry._WORKTREE_PROVENANCE = None

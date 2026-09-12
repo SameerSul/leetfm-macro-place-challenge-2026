@@ -304,16 +304,18 @@ related-work results are not confused with VivaPlace's measured results.
     upstream evolutionary packing implementation. See the
     [diagnostic report](../ml_data/re2map_packing_tree/20260811-results.md).
 
-29. **PyTorch sparse graph operations and reproducibility — research-only.**
+29. **PyTorch sparse graph operations and reproducibility — rejected experiment, retired.**
     PyTorch contributors, “torch.sparse.mm” and “Reproducibility,” PyTorch 2.10
     online documentation, accessed 2026-09-11; no paginated venue or DOI.
     [Sparse multiplication](https://docs.pytorch.org/docs/2.10/generated/torch.sparse.mm.html),
     [reproducibility](https://docs.pytorch.org/docs/2.10/notes/randomness.html).
     The offline [GPU graph comparison](../ml_data/gpu_graphs/20260911/results.md)
-    uses CSR sparse multiplication for batched ownership affinity. It checks
+    tested CSR sparse multiplication for batched ownership affinity. It checked
     exact weights and frontier ordering separately because CPU/CUDA numerical
     agreement is not guaranteed. These APIs do not replace the production
     graph or exact scorer; all timings in that report are local measurements.
+    The failed CUDA kernels were removed on September 12; the independently
+    implemented CPU split control remains a separate research diagnostic.
 
 30. **AutoDMP — research-only, independently adapted congestion surrogate.**
     Anthony Agnesina, Puranjay Rajvanshi, Tian Yang, Geraldo Pradipta, Austin
@@ -321,9 +323,10 @@ related-work results are not confused with VivaPlace's measured results.
     DREAMPlace-based Macro Placement,” ISPD 2023, pp. 149–157.
     [DOI](https://doi.org/10.1145/3569052.3578923),
     [NVIDIA author paper](https://d1qx31qr3h6wln.cloudfront.net/publications/AutoDMP.pdf).
-    The [GPU placement experiments](GPU_PLACEMENT_EXPERIMENTS.md) reuse
-    DREAMPlace's RUDY and area adjustment and independently add moving macro
-    blockage demand. They do not reproduce AutoDMP's capacity-denominator
+    The [GPU placement experiments](GPU_PLACEMENT_EXPERIMENTS.md) reused
+    DREAMPlace's RUDY and area adjustment and independently added moving macro
+    blockage demand. That ineffective seed wrapper was retired on September 12;
+    the shared occupancy math remains in the promising soft-refinement replay. They do not reproduce AutoDMP's capacity-denominator
     formula, Bayesian search, RISA weighting, or commercial evaluation flow.
     The soft-refinement prototype uses a separate differentiable rectangular
     routing surrogate. Neither surrogate replaces VivaPlace's exact evaluator.
@@ -338,6 +341,11 @@ related-work results are not confused with VivaPlace's measured results.
     reuses segmented extrema and sums for differentiable physical-net
     wirelength and routing demand. CPU/CUDA numerical and gradient checks
     precede fresh exact output validation; this is not a production scorer.
+    The [September 12 follow-up](GPU_SOFT_REFINEMENT_20260912.md) compares
+    earlier checkpoints and weights the same differentiable route demand with
+    VivaPlace's existing exact baseline congestion-tail derivatives. That
+    guidance is an independent repository adaptation, not a PyTorch method or
+    a claim that rectangular-route gradients are exact.
 
 ## Project, Evaluator, Data, and Tool Links
 

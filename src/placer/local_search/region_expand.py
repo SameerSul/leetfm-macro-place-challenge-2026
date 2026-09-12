@@ -47,35 +47,11 @@ def _component_expansion(
     side_floor: float,
     side_band: int,
     max_distance_cells: int,
-    graph_corridors=None,
-    graph_component_weight: float = 0.0,
 ):
     """Return side expansion toward the best nearby cold component."""
     best = None
     max_dist = max(0, int(max_distance_cells))
     band = max(0, int(side_band))
-    graph_component_weight = max(0.0, float(graph_component_weight))
-
-    def _corridor_penalty(comp) -> float:
-        if graph_component_weight <= 0.0 or not graph_corridors:
-            return 0.0
-        point = np.array([float(comp["centroid_c"]), float(comp["centroid_r"])], dtype=np.float64)
-        best_penalty = None
-        for a, b, weight in graph_corridors:
-            a = np.asarray(a, dtype=np.float64)
-            b = np.asarray(b, dtype=np.float64)
-            vec = b - a
-            denom = float(np.dot(vec, vec))
-            if denom <= 1e-9:
-                dist = float(np.linalg.norm(point - a))
-            else:
-                t = float(np.clip(np.dot(point - a, vec) / denom, 0.0, 1.0))
-                dist = float(np.linalg.norm(point - (a + t * vec)))
-            penalty = dist / max(1e-6, float(weight))
-            if best_penalty is None or penalty < best_penalty:
-                best_penalty = penalty
-        return 0.0 if best_penalty is None else float(best_penalty)
-
     for comp in components:
         cr0 = int(comp["r0"])
         cr1 = int(comp["r1"])
@@ -107,15 +83,12 @@ def _component_expansion(
         if not sides:
             continue
         dist = min(row[0] for row in sides)
-        graph_penalty = _corridor_penalty(comp)
         row = (
             dist,
-            float(comp["avg"]) + graph_component_weight * graph_penalty,
             float(comp["avg"]),
             -int(comp["size"]),
             int(comp["r0"]),
             int(comp["c0"]),
-            float(graph_penalty),
             sides,
         )
         if best is None or row < best:
@@ -127,7 +100,7 @@ def _component_expansion(
     right = float(side_floor) * float(max_dx)
     down = float(side_floor) * float(max_dy)
     up = float(side_floor) * float(max_dy)
-    for _dist, side, amount in best[7]:
+    for _dist, side, amount in best[-1]:
         if side == "left":
             left = max(left, float(amount))
         elif side == "right":
@@ -136,7 +109,7 @@ def _component_expansion(
             down = max(down, float(amount))
         elif side == "up":
             up = max(up, float(amount))
-    return left, right, down, up, float(best[6])
+    return left, right, down, up
 
 
 def expand_regions_by_congestion(
@@ -160,14 +133,11 @@ def expand_regions_by_congestion(
     component_cold_percentile: float = 45.0,
     component_min_cells: int = 4,
     component_max_distance_cells: int = 4,
-    graph_edges=None,
-    graph_component_weight: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Expand hot cluster regions toward colder neighboring grid bands."""
     expand_regions_by_congestion.last_stats = {
         "expanded": 0,
         "component_expanded": 0,
-        "graph_component_expanded": 0,
     }
     if field is None or not clusters:
         return hard_region, soft_region, 0
@@ -189,7 +159,6 @@ def expand_regions_by_congestion(
     max_dy = max_expand_frac * float(ch)
     expanded = 0
     component_expanded = 0
-    graph_component_expanded = 0
     cold_components = cold_connected_components(
         field,
         cold_percentile=float(component_cold_percentile),
@@ -199,35 +168,6 @@ def expand_regions_by_congestion(
     for s, cids in (bridge_softs or {}).items():
         for cid in cids:
             bridge_by_cluster.setdefault(int(cid), []).append(int(s))
-
-    graph_corridors_by_cluster: dict[int, list[tuple[np.ndarray, np.ndarray, float]]] = {}
-    graph_component_weight = max(0.0, float(graph_component_weight))
-    if graph_component_weight > 0.0 and graph_edges:
-        centroids = {}
-        for cid, raw_mem in clusters.items():
-            mem = np.asarray(raw_mem, dtype=np.int64)
-            if mem.size:
-                centroids[int(cid)] = np.array(
-                    [
-                        float(np.mean(hard_xy[mem, 0] / cell_w)),
-                        float(np.mean(hard_xy[mem, 1] / cell_h)),
-                    ],
-                    dtype=np.float64,
-                )
-        for edge in graph_edges:
-            a = int(getattr(edge, "src", -1))
-            b = int(getattr(edge, "dst", -1))
-            if a not in centroids or b not in centroids:
-                continue
-            weight = max(0.0, float(getattr(edge, "weight", 1.0)))
-            if weight <= 0.0:
-                continue
-            graph_corridors_by_cluster.setdefault(a, []).append(
-                (centroids[a], centroids[b], weight)
-            )
-            graph_corridors_by_cluster.setdefault(b, []).append(
-                (centroids[b], centroids[a], weight)
-            )
 
     for cid, h in heat:
         if h < threshold:
@@ -261,23 +201,17 @@ def expand_regions_by_congestion(
                 side_floor=side_floor,
                 side_band=side_band,
                 max_distance_cells=component_max_distance_cells,
-                graph_corridors=graph_corridors_by_cluster.get(int(cid)),
-                graph_component_weight=graph_component_weight,
             )
         if component_sides is not None:
-            left, right, down, up, graph_penalty = component_sides
+            left, right, down, up = component_sides
             component_expanded += 1
-            if graph_component_weight > 0.0 and graph_penalty > 0.0:
-                graph_component_expanded += 1
         else:
             finite = [v for v in side_vals.values() if np.isfinite(v)]
             if not finite or min(finite) >= float(h) - 1e-12:
                 continue
             cold = min(finite)
             left = max_dx if side_vals["left"] <= cold + 1e-12 else side_floor * max_dx
-            right = (
-                max_dx if side_vals["right"] <= cold + 1e-12 else side_floor * max_dx
-            )
+            right = max_dx if side_vals["right"] <= cold + 1e-12 else side_floor * max_dx
             down = max_dy if side_vals["down"] <= cold + 1e-12 else side_floor * max_dy
             up = max_dy if side_vals["up"] <= cold + 1e-12 else side_floor * max_dy
 
@@ -300,6 +234,5 @@ def expand_regions_by_congestion(
     expand_regions_by_congestion.last_stats = {
         "expanded": int(expanded),
         "component_expanded": int(component_expanded),
-        "graph_component_expanded": int(graph_component_expanded),
     }
     return hard_region, soft_region, expanded

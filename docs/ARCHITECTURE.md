@@ -21,6 +21,24 @@ environment parser, and an always-true coldspot callback. The effective
 coldspot candidate counts, search order, scoring, and hierarchy gates remain
 the same. Current validation is recorded in [PROGRESS.md](PROGRESS.md).
 
+Placement and diagnostic settings are source constants in
+`src/utils/constants.py`; process environment variables cannot override the
+seed, backend, quotas, weights, diagnostic selection, or telemetry destination.
+The evaluator entrypoint keeps a local adapter class for class discovery and
+inherits the explicit `seed` constructor argument without reading `SEED`. Diagnostic CLIs assign constants in their own
+process; spawned audit workers receive the trace path explicitly. Defaults and
+all 16 per-pass quotas are unchanged. DREAMPlace progress sampling travels in
+its JSON input. Native subprocess paths/thread pools and the fixed cuBLAS
+workspace setting remain library setup, not placement configuration.
+
+The September 12 cleanup removes rejected CUDA overlap filtering and its
+selector, the regressing graph-corridor region-expansion bias, and three unused
+single-macro scorer methods (`score_move`, `score_move_soft`, `commit_move_soft`).
+Production keeps its existing NumPy/Numba legality filters, batched and group
+scoring, ordinary cold-component region ranking, deterministic quotas, and
+complete hierarchy gates. The test-only soft-role alias and completed
+ablation switches are removed; their callers use the canonical APIs.
+
 The optional live visualizer adds a dependency-free schema-v1 event sink at
 the placer/scorer boundary. With no sink (the evaluator default), no events,
 Qt imports, trace writes, DREAMPlace progress output, or cache changes occur.
@@ -326,7 +344,7 @@ HIER_SWAP_GRAPH_MASK_MAX_EDGES=0
 HIER_SWAP_GRAPH_MASK_PAD_CELLS=1
 HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT=0.30
 HIER_SWAP_GRAPH_DELTA_WEIGHT=0.0
-HIER_SWAP_GRAPH_DELTA_SAMPLES=9
+HIER_GRAPH_TENSION_CORRIDOR_SAMPLES=9
 HIER_SWAP_GRAPH_FALLBACK_BUDGET_S=2.5
 ```
 
@@ -337,10 +355,6 @@ Decompression uses graph-edge stretch, corridor congestion, and weighted
 edge-length deltas to identify its bounded graph-survivor polish candidates.
 Coldspot candidates retain exact-proxy ordering and the ordinary graph-score
 tie-break.
-The default-off `HIER_REGION_GRAPH_COMPONENT_WEIGHT` hook uses hierarchy graph
-edge corridors to bias which contiguous cold congestion component a hot region
-expands toward. It changes only region construction; local relief still uses
-the normal legality, exact-proxy, and hierarchy gates.
 Decompression always estimates the proposed bbox's free area and neighbor
 blockage before legalization and exact scoring, and logs `feasibility_blocked`
 rejects.
@@ -497,8 +511,8 @@ selection, without activating new downstream constraints.
 
 ### 2. Grouped DREAMPlace
 
-`DREAMPLACE_GPU=1` runs fresh DREAMPlace solves on the first visible CUDA GPU;
-`0` (the default) keeps CPU execution. The setting is independent of the main
+`utils.constants.DREAMPLACE_GPU = True` runs fresh DREAMPlace solves on the first
+visible CUDA GPU; `False` (the default) keeps CPU execution. The setting is independent of the main
 process's CUDA detection and applies to ordinary and recurrent seeds. CUDA
 cache keys add a backend suffix, while existing CPU cache keys remain valid.
 Cache hits report their backend and skip the subprocess on either setting.
@@ -837,7 +851,7 @@ candidates and the final placement also emit structured
 `hierarchy_contract_audit` events containing vectors, limits, margins,
 violations, coverage, and provenance. The default output is
 `ml_data/plateau_telemetry/plateau_telemetry.jsonl`;
-`HIER_PLATEAU_TRACE_PATH` can redirect it. Candidate-level trace logging and
+The `utils.constants.HIER_PLATEAU_TRACE_PATH` constant can redirect it. Candidate-level trace logging and
 learned ranking were removed because they added overhead and repeatedly failed
 to improve placement. `scripts/analyze_plateau_telemetry.py` filters the
 remaining scheduling telemetry by run, revision, worktree fingerprint, or
@@ -1074,46 +1088,53 @@ HIER_COLDSPOT_OPPORTUNITY_TOP_CLUSTERS=1
 HIER_COLDSPOT_WHOLE_VARIANTS=5      HIER_COLDSPOT_ANCHOR_VARIANTS=3
 ```
 
-**Plateau telemetry (runtime env vars, not constants)**
-```text
-HIER_PLATEAU_TRACE_DIR=ml_data/plateau_telemetry
-HIER_PLATEAU_TRACE_PATH=<optional output override>
-VIVAPLACE_RUN_ID=<optional attributable run id>
-VIVAPLACE_WORKTREE_FINGERPRINT=<optional provenance override for tests/tools>
-HIER_<PASS_NAME>_MAX_EXACT=<optional positive exact-score ceiling override>
-HIER_GPU_EXPERIMENT=<one isolated diagnostic CUDA hypothesis>
+**Runtime and diagnostic constants (`src/utils/constants.py`)**
+```python
+DREAMPLACE_GPU = False
+HIER_DIAGNOSTIC_NO_DEADLINES = False
+HIER_PLATEAU_TRACE_PATH = "ml_data/plateau_telemetry/plateau_telemetry.jsonl"
+HIER_PLATEAU_TRACE_RUN = ""
 ```
 
-The gate is diagnostic-only: it does not enable a new production operator.
-When set, it selects exactly one CUDA hypothesis and forces every other
-optional CUDA route onto its CPU fallback; leave it unset for production.
-Selections are `overlap_prefilter` and `graph_tension_batches`. The former
-retains the fp64 overlap/bounds prefilter for diagnostics, while the latter is
-an isolation control because its active designs have too few graph edges for a
-viable batch kernel. Rejected exact-reduction, widened relocation-delta, and
-proposal-filter experiment code was removed. Details are in `PROGRESS.md`.
+`HIER_PASS_BUDGETS` contains each pass's exact-score and candidate ceilings;
+zero means unlimited for that counter. Revision and worktree fingerprints are
+computed from source; archived-source diagnostics supply their fingerprint
+directly. No environment override is read.
 
-The separate offline `test/diagnostic/profile_gpu_graphs.py` compares hard-edge
-and normalized macro-edge construction, batched frontier affinities, and CPU
-graph splitting. It uses the existing PyTorch/Numba stack and never installs a
-production backend. CUDA timings include packing, upload, sparse construction,
-and readback; resident-only timings are reported separately. Exact weight and
-rank checks precede a 20% time-reduction gate against the compiled CPU control.
-See the [GPU graph report](../ml_data/gpu_graphs/20260911/results.md) for commands,
-measurements, and the limits of initial-placement replay.
+The rejected CUDA overlap/bounds prefilter and graph isolation selector are
+removed. The [GPU graph report](../ml_data/gpu_graphs/20260911/results.md)
+preserves the nine failed workload/design gates; GPU construction/affinity
+kernels, repeated-query probes, and duplicate comparison controls are retired.
+`test/diagnostic/profile_hierarchy_splits.py` retains the promising compiled
+CPU neighbor-sum experiment on captured production split inputs. It requires
+identical partitions and cut ratios and remains outside the production path.
 
-The [GPU placement investigation](GPU_PLACEMENT_EXPERIMENTS.md) adds two
-offline diagnostics: a DREAMPlace subprocess wrapper with physical-net RUDY,
-benchmark routing capacities, and moving hard blockages; and a resident
-PyTorch CPU/CUDA soft-refinement replay with fresh exact final gating.
-Neither installs a production GPU operator or changes the backend default.
+The physical-net RUDY DREAMPlace wrapper is also retired after adding seed
+runtime without improving the three tested final placements. Its measurements
+remain in the [GPU placement investigation](GPU_PLACEMENT_EXPERIMENTS.md).
+The shared rectangular occupancy helper now lives in the retained
+`replay_gpu_soft_refinement.py`. Fresh baseline capture and backend comparisons
+share `run_dreamplace_cuda_comparison.py --capture-final`; the duplicate
+experimental runner is removed. Soft refinement remains offline.
 Its prerequisite correction removes a stale extra `plc` positional argument
 from seed soft cleanup. DREAMPlace candidates now reach the intended scoring
 and hierarchy selection instead of being discarded by `TypeError`.
+
+The [September 12 refinement comparison](GPU_SOFT_REFINEMENT_20260912.md)
+adds eight-step replay with checkpoints 1/2/4/8 and an isolated guidance variant
+using the existing exact tile-search tail weights. Weights include directional
+capacity and boundary smoothing conversions and stay resident for the short
+block. All variants preserve the same eligible macros and exact/contract gates;
+none enters the production pipeline.
+Independent scalar/tag/truth checks run in spawned CPU processes after all
+timed proposals, and verified results are published only after those checks.
+The diagnostic acceptance path repairs return-precision canvas overhang using
+the existing float32 clamp on eligible soft coordinates only, then rechecks
+validity and the complete contract. Already-valid proposals are unchanged.
 
 Experiments that were tried and not promoted (full recursive bisection,
 cluster-room/bridge-corridor modeling, broad weak-hot region reshape, early
 strong-soft repair, early swap-lite, deterministic hot-cluster coldspot
 selection, learned candidate reordering at full-suite scale) are recorded in
-`ISSUES.md` and `PROGRESS.md`, not here — this document describes only the
+`PROGRESS.md`, not here — this document describes only the
 active system.

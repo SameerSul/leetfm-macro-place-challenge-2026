@@ -58,14 +58,16 @@ Current behavior and validation:
 - Telemetry records proposed versus retained work, source revision/fingerprint,
   stage timing, and complete seed/final contracts. It writes schema-v2 rows to
   `ml_data/plateau_telemetry/plateau_telemetry.jsonl`, or
-  `HIER_PLATEAU_TRACE_PATH`. Use `scripts/analyze_plateau_telemetry.py --quotas`
+  the `utils.constants.HIER_PLATEAU_TRACE_PATH` constant. Use `scripts/analyze_plateau_telemetry.py --quotas`
   and `scripts/analyze_hierarchy_contract.py`; do not relax contract limits to
   improve a score.
 - Do not restore the removed proxy restart/LSMC path or learned GNN ranking
   without an explicit user change in direction. Deleted coldspot variants,
   graph prefilter/rescue, and weak/hot region reshaping have rejected or inert
-  controls in the experiment ledger. Maintained optional structural ordering
-  and GPU diagnostics are separate from the removed stack.
+  controls in the experiment ledger. Rejected CUDA overlap filtering, graph
+  construction/affinity kernels, graph-corridor region bias, and RUDY seed wrappers
+  are removed. Retain the promising CPU split diagnostic and exact-gated GPU
+  soft-refinement replay; neither is a production promotion.
 - Constructor options are keyword-only: `seed`, `event_sink`, and
   `dreamplace_sample_every`. Ignored `n_restarts`, `noise_fracs`, and
   `time_budget_s` options are removed. Runtime is controlled by existing
@@ -73,7 +75,7 @@ Current behavior and validation:
 
 Historical scores and rejected experiments belong in `docs/PROGRESS.md`, not
 this onboarding guide. Its first status entry is current; later entries are
-historical. Current open work is in `docs/ISSUES.md`.
+historical. Current validation and limitations are in the first status entry.
 
 For the full problem statement see [`README.md`](README.md). For the API contract see [`SETUP.md`](SETUP.md). For experiment history and known-good numbers see [`PROGRESS.md`](docs/PROGRESS.md). For the placement objectives that should guide the hierarchy flow, see [`OBJECTIVES.md`](docs/OBJECTIVES.md). Do not duplicate that content here.
 
@@ -88,7 +90,7 @@ scripts/dreamplace/bootstrap.sh all
 scripts/dreamplace/bootstrap.sh preflight
 # Optional mirror install if the environment was not created by uv sync. Numba is
 # a first-class pyproject dependency; missing numba now raises unless
-# ALLOW_NUMBA_FALLBACK=1 is set for slow diagnostic-only runs.
+# utils.constants.ALLOW_NUMBA_FALLBACK is True for slow diagnostic-only runs.
 uv pip install -r requirements.txt
 
 # Single benchmark - fastest feedback loop, use this while iterating
@@ -174,6 +176,10 @@ This rule is documented here so agents follow it. If local tool settings are nee
 
 ## Submission contract (don't break these)
 
+The evaluator requires a placer class defined in the entrypoint module
+(`cls.__module__ == path.stem`); keep the local `MacroPlacer` adapter in
+`src/main.py` rather than replacing it with a plain import alias.
+
 A placer is a Python file exposing a class with `place(benchmark) -> torch.Tensor` of shape `[num_macros, 2]`, returning **center coordinates** (not corners) for both hard and soft macros. The class name does not need to be `MacroPlacer` - the harness instantiates the first placer-shaped class it finds - but callers in this repo may import by name, so prefer `MacroPlacer`.
 
 Hard requirements enforced by the evaluator:
@@ -231,7 +237,7 @@ src/utils/         Runtime config, logging shim, and accepted placement constant
 src/dreamplace_bridge/  pb.txt <-> Bookshelf converters + DREAMPlace launcher.
 src/eda_io/        Plug-and-play EDA I/O: LEF/DEF/Verilog/SDC/Liberty in, DEF/Tcl/QoR-report out.
 src/place_design.py CLI tying eda_io together - see src/eda_io/README.md.
-docs/              Current architecture/flow/issues plus the PROGRESS experiment ledger.
+docs/              Current architecture/flow plus the PROGRESS experiment ledger.
 test/benchmarks/   Synthetic anti-overfitting suite: generator, runner, impact analyzer.
 test/diagnostic/   Maintained smoke tests plus current profiling/recall probes.
 test/eda_io/       eda_io pytest suite + LEF/DEF/Verilog/SDC/Liberty fixture design.
@@ -248,8 +254,8 @@ scripts/                  Comparison + benchmark-conversion utilities.
   but reject extra hierarchy boosting that worsens proxy after the contract
   already passes. The isolation-first tradeoff is superseded.
 - **DREAMPlace is required for the current production path.** `_place_impl()` raises if `_hierarchy_floorplan()` cannot run; the old proxy fallback has been deleted.
-- **DREAMPlace backend selection is explicit.** `DREAMPLACE_GPU=1` selects CUDA;
-  the default `0` uses CPU even when the main process detects a GPU. CUDA cache
+- **DREAMPlace backend selection is explicit.** Set the source constant
+  `utils.constants.DREAMPLACE_GPU = True` for CUDA; the default `False` uses CPU even when the main process detects a GPU. CUDA cache
   entries are separate; existing CPU cache keys remain unchanged. See
   `ml_data/dreamplace_cuda/20260909/` for the focused backend comparison.
   The requested normal-guard CUDA IBM sweep is AVG 1.1806, 17/17 VALID, zero
@@ -278,6 +284,11 @@ scripts/                  Comparison + benchmark-conversion utilities.
   proxy acceptance.
 
 ## Code style
+
+- Placement and diagnostic settings use source constants in `src/utils/constants.py`.
+  Do not add environment-variable overrides. Diagnostic runners assign constants
+  directly; native library launch paths/thread pools and fixed cuBLAS workspace
+  setup are separate from placement configuration.
 
 - `black` line length 100 (configured in `pyproject.toml`).
 - Numpy `float64` for placement math; convert to `torch.float32` only at the API boundary.
