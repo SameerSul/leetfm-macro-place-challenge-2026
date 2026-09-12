@@ -20,7 +20,7 @@ TARGETS = (
 PROTOCOL_VERSION = 1
 BLOCK_START = "        # BEGIN VIVAPLACE_PROGRESS_PROTOCOL_V1\n"
 BLOCK_END = "        # END VIVAPLACE_PROGRESS_PROTOCOL_V1\n"
-LEGACY_START = '        vivaplace_sample_every = int(os.environ.get("VIVAPLACE_PROGRESS_EVERY"'
+LEGACY_START = "        vivaplace_sample_every = "
 CALL_MARKER = (
     "                            emit_vivaplace_progress("
     "model.data_collections.pos[0], placedb, iteration)\n"
@@ -29,7 +29,7 @@ ITERATION_MARKER = "                            iteration += 1\n"
 
 
 def _protocol_block() -> str:
-    return f'''{BLOCK_START}        vivaplace_sample_every = int(os.environ.get("VIVAPLACE_PROGRESS_EVERY", "0") or 0)
+    return f'''{BLOCK_START}        vivaplace_sample_every = int(getattr(params, "vivaplace_sample_every", 0))
 
         def emit_vivaplace_progress(pos, placedb, current_iteration):
             """Emit compact lower-left movable-node coordinates for diagnostics."""

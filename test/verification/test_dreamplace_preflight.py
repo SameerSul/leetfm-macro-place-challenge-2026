@@ -51,7 +51,8 @@ def test_legacy_env_cannot_disable_dreamplace_cache_reads(tmp_path, monkeypatch,
     expected_soft = np.array([[3.0, 4.0]], dtype=np.float64)
     _write_cache(work_dir, key, expected_hard, expected_soft)
     monkeypatch.setenv("HIER_DREAMPLACE_CACHE", "0")
-    monkeypatch.setenv("DREAMPLACE_GPU", str(int(gpu)))
+    monkeypatch.setenv("DREAMPLACE_GPU", str(int(not gpu)))
+    monkeypatch.setattr(bridge.const, "DREAMPLACE_GPU", gpu)
     monkeypatch.setattr(bridge, "is_available", lambda: True)
 
     hard, soft = run_dreamplace(
@@ -83,7 +84,7 @@ def test_dreamplace_gpu_config_and_cache_are_separate(tmp_path):
 
 
 def test_dreamplace_rejects_invalid_gpu_setting(monkeypatch):
-    monkeypatch.setenv("DREAMPLACE_GPU", "auto")
+    monkeypatch.setattr(bridge.const, "DREAMPLACE_GPU", "auto")
     with pytest.raises(ValueError, match="DREAMPLACE_GPU must be"):
         run_dreamplace("unused")
 

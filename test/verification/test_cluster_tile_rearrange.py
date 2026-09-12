@@ -35,7 +35,7 @@ def test_directional_tail_attribution_matches_evaluator_smoothing_at_edges():
 
 
 def test_incident_route_can_attribute_hotspot_away_from_macro(monkeypatch):
-    def route(plc, struct, multiplier, horizontal, vertical):
+    def route(_plc, _struct, _multiplier, horizontal, _vertical):
         horizontal[0] += 2
 
     monkeypatch.setattr(tiles, "_build_net_routing_struct", lambda plc, nets: nets)

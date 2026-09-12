@@ -4,6 +4,10 @@ The ordered investigation tests a congestion-aware grouped DREAMPlace seed,
 then coordinated soft refinement on captured final placements. Production GPU
 defaults, scoring, hierarchy inference, ownership, and acceptance gates remain
 unchanged. Results below distinguish experiments from accepted behavior.
+The [September 12 follow-up](GPU_SOFT_REFINEMENT_20260912.md) expands validation
+to all 31 designs, compares earlier checkpoints and exact hotspot guidance,
+and corrects float32 boundary projection in the diagnostic acceptance path.
+The measurements below describe the original September 11 implementation.
 
 ## Prerequisite correction
 
@@ -24,13 +28,19 @@ have zero overlaps, and pass all final contracts. NVDLA selects the recurrent
 `re2map_recursive_2` seed, exercising the restored scoring path. These are
 validation runs, not a paired comparison with the CUDA experiment arms.
 
-## Congestion-aware seed
+The September 12 cleanup retires the ineffective RUDY seed wrapper and its
+experiment-only metadata/test code. The soft-refinement replay remains active,
+and its shared occupancy helper is now local to that driver. Results below
+preserve the original source attribution; fresh baseline capture now uses
+`run_dreamplace_cuda_comparison.py --capture-final`.
 
-`test/diagnostic/run_gpu_placement_experiments.py` reuses the maintained
-evaluator runner and captures final hierarchy contracts for later replay.
-Both arms run CUDA with separate fresh caches. The RUDY arm changes only the
+## Congestion-aware seed (retired)
+
+The retired `test/diagnostic/run_gpu_placement_experiments.py` reused the
+evaluator runner and captured final hierarchy contracts for later replay.
+Both arms ran CUDA with separate fresh caches. The RUDY arm changed only the
 DREAMPlace subprocess entrypoint to `test/diagnostic/dreamplace_rudy.py`;
-the installed DREAMPlace tree is unchanged.
+the installed DREAMPlace tree was unchanged.
 
 The subprocess enables at most one native area-adjustment round per native
 stage, uses benchmark
@@ -61,11 +71,12 @@ seed preparation still retains its existing safety deadlines. Different
 seeds can change subsequent work, so these runs are quality comparisons, not
 kernel speedup measurements.
 
+The RUDY launcher commands were removed with the rejected experiment.
+Fresh control captures for the retained refinement replay use:
+
 ```bash
-rtk proxy uv run python test/diagnostic/run_gpu_placement_experiments.py \
-  --mode control --out ml_data/gpu_placement/new-control ibm10 ibm17 nvdla
-rtk proxy uv run python test/diagnostic/run_gpu_placement_experiments.py \
-  --mode rudy --out ml_data/gpu_placement/new-rudy ibm10 ibm17 nvdla
+rtk proxy uv run python test/diagnostic/run_dreamplace_cuda_comparison.py \
+  --gpu 1 --capture-final --out ml_data/gpu_placement/new-control ibm10 ibm17 nvdla
 # Add --normal to retain ordinary hierarchy-search deadlines.
 ```
 

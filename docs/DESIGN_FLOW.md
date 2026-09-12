@@ -23,6 +23,24 @@ exact-score quotas. Ignored restart/noise/overall-budget options, unused
 internal arguments, and the always-true coldspot callback are removed without
 changing the effective search order or acceptance gates.
 
+Placement and diagnostic settings are source constants in
+`src/utils/constants.py`; process environment variables cannot override the
+seed, backend, quotas, weights, diagnostic selection, or telemetry destination.
+The evaluator entrypoint keeps a local adapter class for class discovery and
+inherits the explicit `seed` constructor argument without reading `SEED`. Diagnostic CLIs assign constants in their own
+process; spawned audit workers receive the trace path explicitly. Defaults and
+all 16 per-pass quotas are unchanged. DREAMPlace progress sampling travels in
+its JSON input. Native subprocess paths/thread pools and the fixed cuBLAS
+workspace setting remain library setup, not placement configuration.
+
+The September 12 cleanup removes rejected CUDA overlap filtering and its
+selector, the regressing graph-corridor region-expansion bias, and three unused
+single-macro scorer methods (`score_move`, `score_move_soft`, `commit_move_soft`).
+Production keeps its existing NumPy/Numba legality filters, batched and group
+scoring, ordinary cold-component region ranking, deterministic quotas, and
+complete hierarchy gates. The test-only soft-role alias and completed
+ablation switches are removed; their callers use the canonical APIs.
+
 The live visualizer is an opt-in observation path, not a production flow
 branch. `MacroPlacer(event_sink=None)` remains the evaluator behavior. The
 launcher supplies a sink, records the initial state, hierarchy construction,
@@ -73,7 +91,7 @@ HIER_SWAP_GRAPH_MASK_MAX_EDGES   (default 0)
 HIER_SWAP_GRAPH_MASK_PAD_CELLS   (default 1)
 HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT (default 0.30)
 HIER_SWAP_GRAPH_DELTA_WEIGHT     (default 0.0)
-HIER_SWAP_GRAPH_DELTA_SAMPLES    (default 9)
+HIER_GRAPH_TENSION_CORRIDOR_SAMPLES    (default 9)
 HIER_SWAP_GRAPH_FALLBACK_BUDGET_S (default 2.5)
 ```
 
@@ -82,9 +100,6 @@ Graph swap guidance is off in score terms unless you set
 0.0`, so current runs remain equivalent when those are unset.
 Decompression computes graph-edge deltas to identify graph-survivor polish
 candidates. Coldspot retains exact-proxy ordering and ordinary graph tie-breaks.
-The default-off `HIER_REGION_GRAPH_COMPONENT_WEIGHT` hook uses graph edge
-corridors to choose among nearby contiguous cold components during early region
-expansion; it remains opt-in after focused `ibm10` regression.
 Every decompression candidate is screened by estimated free area and neighbor
 blockage before legalization and exact scoring.
 The graph-survivor path handles a narrower case: legal graph-favorable
@@ -106,15 +121,21 @@ For per-stage technical detail (what each box below does, which file
 implements it, and the constants that control it), see
 [ARCHITECTURE.md](ARCHITECTURE.md). This document is the flow diagram only.
 
-The [offline GPU graph comparison](../ml_data/gpu_graphs/20260911/results.md)
-measures construction, affinity queries, and graph-split controls on captured
-initial hierarchy inputs. It does not enter this flow or change candidate
-order, ownership, score quotas, DREAMPlace selection, or acceptance gates.
+The [GPU graph comparison](../ml_data/gpu_graphs/20260911/results.md) is retained
+as experiment history. Its failed CUDA kernels are removed; the promising CPU
+split control remains in `test/diagnostic/profile_hierarchy_splits.py` and does
+not enter this flow. Candidate order, ownership, quotas, and gates are preserved.
 
-The separate [GPU placement experiments](GPU_PLACEMENT_EXPERIMENTS.md) test
-physical-net RUDY seeds and coordinated soft refinement. Both remain offline.
+The [GPU placement experiments](GPU_PLACEMENT_EXPERIMENTS.md) retain coordinated
+soft refinement offline. The slower, ineffective physical-net RUDY seed wrapper
+is retired; baseline captures use `run_dreamplace_cuda_comparison.py --capture-final`.
 Seed soft cleanup uses the current relocation signature; the stale extra
 `plc` argument that caused DREAMPlace seed scoring to raise is removed.
+The [September 12 follow-up](GPU_SOFT_REFINEMENT_20260912.md) captures the
+corrected 31-design baseline and compares 24-step, eight-step, and exact-hotspot
+guided eight-step refinement offline, preserving the production flow.
+Its acceptance path corrects float32 canvas rounding for eligible softs before
+the fresh exact gate; this remains a diagnostic operation.
 
 ## Flow
 
@@ -534,7 +555,7 @@ offline training tools, and model/dataset artifacts were removed after
 repeatedly regressing quality or runtime. The remaining pass-level plateau
 telemetry is independent of ML and is written by default to
 `ml_data/plateau_telemetry/plateau_telemetry.jsonl`. It can be redirected with
-`HIER_PLATEAU_TRACE_PATH` and analyzed with
+the `utils.constants.HIER_PLATEAU_TRACE_PATH` constant and analyzed with
 `scripts/analyze_plateau_telemetry.py`. Rows include both the committed revision
 and a scoped dirty-worktree fingerprint. Proposed/retained pass outcomes and
 rollback details are distinct, stage timing can be printed with `--stages`,
@@ -563,7 +584,8 @@ uv run python test/verification/_verify_coldspot_kick.py ibm10  # coldspot verif
 
 ## GPU Status
 
-The DREAMPlace bridge defaults to CPU; `DREAMPLACE_GPU=1` explicitly selects
+The DREAMPlace bridge defaults to CPU; the source constant
+`utils.constants.DREAMPLACE_GPU = True` explicitly selects
 the first visible CUDA GPU for ordinary and recurrent seeds. CUDA availability
 in the main process does not select DREAMPlace's backend. CUDA seed caches are
 separate from the unchanged CPU caches; cache hits skip execution on both.
@@ -581,13 +603,10 @@ the rejected post-swap propose-all pass has been removed. Their per-source CUDA
 transfers were slower in the compound/graph control runs. Region swaps and
 cluster decompression remain sequential exact-gated CPU/NumPy passes.
 
-`HIER_GPU_EXPERIMENT=<feature>` retains only the diagnostic isolation harness:
-`overlap_prefilter` enables the fp64 overlap/bounds prefilter and
-`graph_tension_batches` provides a graph-tension control. All other CUDA
-hypothesis routes were removed after their full-suite regressions. The retained
-prefilter is default-off because per-source transfers and synchronization lose
-to the Numba loop; graph tension has only 14–75 edges on active IBM designs,
-too little work for a GPU batch kernel. See `PROGRESS.md` for measurements.
+The rejected CUDA overlap/bounds prefilter, inert graph-tension selector, and
+failed GPU graph construction/affinity diagnostics are removed. Production
+legality masks use the existing NumPy/Numba implementations. See `PROGRESS.md`
+for the retained rejection evidence and cleanup validation.
 
 Incremental CPU scoring uses cached Numba kernels for routing-grid
 re-smoothing over only the touched net bbox. Reusable prefix buffers avoid the

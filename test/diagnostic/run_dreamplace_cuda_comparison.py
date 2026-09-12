@@ -5,8 +5,8 @@ disabled by default, retaining deterministic quotas; --normal keeps deadlines.
 """
 
 import argparse
+import hashlib
 import json
-import os
 from pathlib import Path
 import sys
 import time
@@ -19,12 +19,38 @@ def main():
     parser.add_argument("--gpu", type=int, choices=(0, 1), required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--normal", action="store_true")
+    parser.add_argument(
+        "--capture-final", action="store_true", help="save hierarchy inputs for replay"
+    )
     parser.add_argument("names", nargs="+")
     args = parser.parse_args()
     args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=False)
-    os.environ["DREAMPLACE_GPU"] = str(args.gpu)
+    from utils import constants as const
+
+    const.DREAMPLACE_GPU = bool(args.gpu)
     from dreamplace_bridge import run_bridge as bridge
+
+    files = sorted((run.ROOT / "src").rglob("*.py")) + [Path(__file__)]
+    (args.out / "source.json").write_text(
+        json.dumps(
+            dict(
+                gpu=args.gpu,
+                normal=args.normal,
+                capture_final=args.capture_final,
+                files={
+                    str(p.relative_to(run.ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
+                    for p in files
+                },
+            ),
+            indent=2,
+        )
+        + "\n"
+    )
+    if args.capture_final:
+        from run_algorithm_comparison import capture_final_inputs
+
+        capture_final_inputs(args.out)
 
     original = bridge.run_dreamplace
     calls = []

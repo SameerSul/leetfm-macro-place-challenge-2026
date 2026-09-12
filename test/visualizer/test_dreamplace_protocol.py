@@ -50,7 +50,7 @@ def test_bootstrap_applies_tracked_progress_patch():
     assert "apply_visualizer_patch.py" in bootstrap
     assert "--check" in bootstrap
     assert "4c64c3f49eca86ccf5d5a050c92e030352cc8d62" in bootstrap
-    assert "VIVAPLACE_PROGRESS_EVERY" in patcher
+    assert 'getattr(params, "vivaplace_sample_every", 0)' in patcher
 
 
 def test_tracked_patcher_supports_current_dreamplace_source(tmp_path):

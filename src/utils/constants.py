@@ -1,4 +1,15 @@
-"""Accepted production constants for hierarchy placement."""
+"""Source constants for hierarchy placement and isolated diagnostics."""
+
+# Runtime choices are source constants; process environment overrides are ignored.
+CUDA_DEVICE = "cuda:0"
+REQUIRE_CUDA = False
+ALLOW_NUMBA_FALLBACK = False
+DREAMPLACE_GPU = False
+HIER_DIAGNOSTIC_NO_DEADLINES = False
+HIER_VISUALIZER_USE_CACHE = False
+RELOC_PROPOSE_LOG = False
+HIER_PLATEAU_TRACE_PATH = "ml_data/plateau_telemetry/plateau_telemetry.jsonl"
+HIER_PLATEAU_TRACE_RUN = ""
 
 # Maximum net fanout considered as hierarchy signal when forming hard clusters.
 CLUSTER_MAX_FANOUT = 8
@@ -348,9 +359,6 @@ HIER_REGION_EXPAND_BAND = 3
 HIER_REGION_COMPONENT_COLD_PCT = 45.0
 HIER_REGION_COMPONENT_MIN_CELLS = 4
 HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS = 4
-# Bias component-aware region expansion toward cold components near hierarchy
-# graph edge corridors for graph-tension-enabled large designs.
-HIER_REGION_GRAPH_COMPONENT_WEIGHT = 0.0
 # Weight favoring candidates that stay inside hierarchy regions.
 REGION_BIAS = 1.0
 # Minimum proxy improvement required for moves that escape their hierarchy region.
@@ -440,7 +448,6 @@ HIER_DECOMPRESS_GRAPH_SURVIVOR_MAX_TRIALS = 48
 # Advisory hierarchy-graph pressure ordering. These weights only reorder
 # existing candidates; exact proxy, hard legality, and hierarchy audit gates
 # still decide whether a candidate commits.
-HIER_GRAPH_TENSION_WEIGHT = 0.10
 HIER_GRAPH_TENSION_DECOMP_WEIGHT = 0.10
 HIER_GRAPH_TENSION_COLDSPOT_WEIGHT = 0.10
 HIER_GRAPH_TENSION_SWAP_WEIGHT = 0.0
@@ -486,10 +493,6 @@ HIER_SWAP_GRAPH_FALLBACK_BUDGET_S = 2.5
 
 # Region-bounded swap relief uses hard-hard, hard-soft, soft-soft,
 # congestion-field, density-field, and batched exact scoring paths.
-
-# Diagnostic-only CUDA hard-swap legality prefilter. It runs only with
-# HIER_GPU_EXPERIMENT=overlap_prefilter and is otherwise inactive.
-HIER_GPU_OVERLAP_PREFILTER_MIN_CANDIDATES = 256
 
 # Adds supplemental candidates after the deterministic prefix when local budget remains.
 # Extra hard propose-all relocation candidates exact-checked after the deterministic prefix.
@@ -636,3 +639,33 @@ HIER_NOTCH_WEIGHT = 0.6
 PROFILE_EXACT = False
 # Routing congestion uses numba strip application when available. Incremental
 # scoring reuses cached congestion fields when available.
+
+
+# Deterministic per-pass quotas; zero means no quota for that counter.
+HIER_PASS_BUDGETS = {
+    "region_hard_relocation": {"exact": 2600, "candidates": 0},
+    "region_soft_relocation": {"exact": 24000, "candidates": 0},
+    "small_cluster_consolidation": {
+        "exact": HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SCORED,
+        "candidates": 0,
+    },
+    "small_cluster_seed_assembly": {
+        "exact": HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SCORED,
+        "candidates": 0,
+    },
+    "internal_cluster_floorplan": {
+        "exact": HIER_INTERNAL_FLOORPLAN_MAX_SCORED,
+        "candidates": 0,
+    },
+    "subcluster_relocation": {"exact": 24, "candidates": 0},
+    "interleaved_soft_repair": {"exact": 4096, "candidates": 0},
+    "region_swaps": {"exact": 72000, "candidates": 0},
+    "region_swap_graph_fallback": {"exact": 100, "candidates": 0},
+    "plateau_escape_soft_relocation": {"exact": 5000, "candidates": 0},
+    "plateau_escape_post_soft_relocation": {"exact": 7000, "candidates": 0},
+    "compound_soft_relocation": {"exact": 60, "candidates": 0},
+    "strong_soft_repair": {"exact": 40000, "candidates": 0},
+    "medium_soft_continuation": {"exact": 2048, "candidates": 0},
+    "region_swaps_additive": {"exact": 0, "candidates": 1},
+    "final_audit": {"exact": 2, "candidates": 0},
+}
