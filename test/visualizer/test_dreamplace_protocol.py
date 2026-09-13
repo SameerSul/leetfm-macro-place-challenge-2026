@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 
 from dreamplace_bridge.run_bridge import _decode_progress_payload, _use_final_cache
-from scripts.dreamplace.apply_visualizer_patch import BLOCK_END, BLOCK_START, CALL_MARKER, patch
+from scripts.dreamplace.apply_visualizer_patch import (
+    BLOCK_END,
+    BLOCK_START,
+    CALL_MARKER,
+    main as patch_main,
+    patch,
+)
 
 
 def test_progress_payload_float32_round_trip():
@@ -43,14 +49,9 @@ def test_malformed_progress_and_cache_bypass_isolation():
     assert not _use_final_cache(lambda _event: None)
 
 
-def test_bootstrap_applies_tracked_progress_patch():
-    root = Path(__file__).resolve().parents[2]
-    bootstrap = (root / "scripts/dreamplace/bootstrap.sh").read_text()
-    patcher = (root / "scripts/dreamplace/apply_visualizer_patch.py").read_text()
-    assert "apply_visualizer_patch.py" in bootstrap
-    assert "--check" in bootstrap
-    assert "4c64c3f49eca86ccf5d5a050c92e030352cc8d62" in bootstrap
-    assert 'getattr(params, "vivaplace_sample_every", 0)' in patcher
+def test_progress_patch_requires_requested_files(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        patch_main(["--check", str(tmp_path / "missing.py")])
 
 
 def test_tracked_patcher_supports_current_dreamplace_source(tmp_path):
@@ -66,7 +67,12 @@ def test_tracked_patcher_supports_current_dreamplace_source(tmp_path):
     target.write_text(text)
     assert patch(target)
     assert not patch(target)
-    patch(target, check=True)
+    assert patch_main(["--check", str(target)]) == 0
     text = target.read_text()
     assert text.count(BLOCK_START) == 1
     assert text.count("emit_vivaplace_progress(model.data_collections.pos[0]") == 1
+    target.write_text(text.replace('"protocol": 1', '"protocol": 2'))
+    stale = target.read_text()
+    with pytest.raises(RuntimeError, match="stale"):
+        patch_main(["--check", str(target)])
+    assert target.read_text() == stale

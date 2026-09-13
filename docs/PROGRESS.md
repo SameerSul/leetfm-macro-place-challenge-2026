@@ -6,6 +6,34 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-09-12 — reproducible configured DREAMPlace build):**
+> The tracked runtime patch now captures the installed zero-filler area fixes,
+> optional-router construction guard, and RUDY logging. Explicit float/double
+> template instantiation fixes a greedy-legalizer import failure exposed by a
+> fresh native build, without changing the function body. The CUB and
+> JSON-configured progress patches remain in the bootstrap path.
+> Python **3.10.20**, PyTorch **2.4.1+cu121**, all **46 other Python packages**,
+> and **113 toolchain archives** are pinned to the configured installation.
+> The HeteroSTA archive is checked by SHA-256 before compilation.
+>
+> Bootstrap correctly initializes a nested, empty source repository, accepts
+> the recorded local revisions, and applies patches per file. Explicit CUDA
+> headers and link-time library paths remove dependencies on old local symlinks
+> and the host CUDA installation. Build paths propagate through patchers and
+> preflight. Verification rejects missing/stale patches, source/install drift,
+> dependency drift, ABI mismatches, and missing production native imports.
+> Placement and diagnostic settings remain source constants; build and launcher
+> environment settings remain supported.
+>
+> A fresh isolated source checkout, toolchain, Python environment, native build,
+> and production preflight pass. All **16 focused tests pass**. Four fresh
+> grouped IBM10 seed calls (installed/rebuilt × CPU/CUDA, **200 configured
+> iterations**, 75 groups) preserve every returned coordinate and all **40
+> progress frames per run** within each backend. Repeated patching and preflight
+> also pass from `/tmp` with custom paths. No placer/default change, proxy
+> improvement, or speedup is claimed. Reproduction commands are in `SETUP.md`;
+> validation is under `ml_data/dreamplace_repro/20260912/`.
+>
 > **Status (2026-09-12 — unused code and rejected experiment cleanup):**
 > Removed **1,349 net lines of active Python**, including **456 production
 > lines**, relative to the source captured immediately before this cleanup.

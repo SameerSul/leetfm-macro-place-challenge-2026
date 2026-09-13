@@ -90,8 +90,8 @@ def _replace_protocol_block(text: str, path: Path) -> str:
 
 
 def _normalize(text: str, path: Path) -> str:
-    text = _ensure_import(text, "base64")
     text = _ensure_import(text, "json")
+    text = _ensure_import(text, "base64")
     text = _replace_protocol_block(text, path)
     if CALL_MARKER not in text:
         if text.count(ITERATION_MARKER) != 1:
@@ -119,8 +119,6 @@ def _validate(text: str, path: Path) -> None:
 
 
 def patch(path: Path, *, check: bool = False) -> bool:
-    if not path.is_file():
-        return False
     original = path.read_text()
     normalized = _normalize(original, path)
     _validate(normalized, path)
@@ -135,9 +133,9 @@ def patch(path: Path, *, check: bool = False) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="validate without modifying files")
+    parser.add_argument("paths", nargs="*", type=Path, default=TARGETS)
     args = parser.parse_args(argv)
-    existing = [path for path in TARGETS if path.is_file()]
-    changed = [str(path) for path in existing if patch(path, check=args.check)]
+    changed = [str(path) for path in args.paths if patch(path, check=args.check)]
     mode = "verified" if args.check else f"{len(changed)} file(s) changed"
     print(f"[patch] DREAMPlace visualizer protocol v{PROTOCOL_VERSION}: {mode}")
     return 0

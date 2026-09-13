@@ -18,19 +18,69 @@ uv sync
 scripts/dreamplace/bootstrap.sh all
 ```
 
-The bootstrap pins DREAMPlace commit
-`37214b40fe3837cc7d392c7d6092ccd6ff04a02c`, CUDA 12.1, GCC 11.4,
-PyTorch 2.4.1+cu121, and the repository's CUDA-12 CUB compatibility patch.
+The Linux x86-64 bootstrap requires Git, `uv`, and `micromamba` on PATH.
+It pins DREAMPlace commit `37214b40fe3837cc7d392c7d6092ccd6ff04a02c`,
+Python 3.10.20, PyTorch 2.4.1+cu121, CUDA 12.1, GCC 11.4, and Boost 1.85.
+`scripts/dreamplace/environment-linux-64.lock` records all 113 toolchain packages
+with archive checksums; `environment.yml` describes the top-level dependencies.
+`requirements.txt` in the same directory pins all 46 remaining Python packages.
+Rerunning bootstrap completes an interrupted Python dependency installation.
+The HeteroSTA 1.1-20251211 archive is pinned by upstream and checked against
+the configured archive's SHA-256 before compilation. CUDA headers are located
+explicitly under the toolchain's `targets/x86_64-linux/include`; no local
+header symlinks are required.
+Link-time dependency lookup uses the pinned PyTorch/CUDA libraries, preventing
+a host CUDA installation from supplying incompatible transitive libraries.
+The build selects the locked Make executable and disables unused optional
+GUROBI, CPLEX, and LPSOLVE discovery, matching the configured runtime's absence
+of those solver integrations.
+
+Three tracked patches reproduce the configured runtime: `cuda12-cub.patch`,
+`runtime-fixes.patch`, and `apply_visualizer_patch.py`. They cover CUDA-12 CUB
+compatibility, zero-filler area handling, conditional optional-router creation,
+RUDY logging, and JSON-configured progress frames. The runtime fixes previously
+existed only in the ignored install tree. A fresh build also requires explicit
+greedy-legalizer template instantiation, now included in the tracked patch.
+Patches apply per file,
+so updating a tree that already contains earlier fixes remains idempotent.
+These changes do not enable congestion-driven
+area adjustment or change VivaPlace placement settings.
+
 Set `DREAMPLACE_CUDA_ARCH` when building for a GPU other than compute
-capability 8.9. To diagnose an existing install without rebuilding it:
+capability 8.9; this upstream build expects dotted capabilities such as `8.9`.
+`DREAMPLACE_BUILD_JOBS` defaults to 3. Build and launcher environment settings
+remain supported; placement and diagnostic controls use source constants.
+To apply missing source patches and diagnose an existing install without rebuilding:
 
 ```bash
+scripts/dreamplace/bootstrap.sh source
 scripts/dreamplace/bootstrap.sh preflight
 ```
 
-Production performs the same native-extension import probe before placement.
-An ABI-incompatible or incomplete build produces an actionable error instead
-of silently falling back to another placer.
+Bootstrap `preflight` verifies the source patches, progress protocol, portable
+imports, source/install agreement for patched runtime modules, exact Python
+package versions, toolchain archive metadata, CUDA build support, and
+production native-extension imports.
+Production performs a smaller native-extension/BB-Nesterov import probe before
+placement. An ABI-incompatible or incomplete build produces an actionable error
+instead of silently falling back to another placer.
+Optional HeteroSTA timing remains outside VivaPlace's placement configuration
+and requires its separate upstream CUDA-11 runtime dependencies.
+
+To reproduce into separate directories, pass absolute build paths to every
+bootstrap action. Patchers and preflight use those same paths:
+
+```bash
+DREAMPLACE_SOURCE_DIR=/absolute/path/to/dreamplace-source \
+DREAMPLACE_BUILD_ROOT=/absolute/path/to/dreamplace-build \
+  scripts/dreamplace/bootstrap.sh all
+```
+
+The production bridge uses the default repository install. Alternate directories
+are for isolated build verification. CMake build directories contain absolute
+paths: after moving a checkout, use a fresh build root instead of reusing an old
+`cmake-build` directory. Preserve the lock files when reproducing the validated
+runtime; dependency upgrades require a new build and validation.
 
 ## Project Structure
 

@@ -85,9 +85,13 @@ uv sync
 uv pip install -r requirements.txt   # numba is required, not optional
 # Required on a clean checkout: pinned DREAMPlace source/toolchain/build.
 scripts/dreamplace/bootstrap.sh all
-# Fast diagnosis for an existing build (native extensions and Python ABI).
+# Verify source patches, runtime parity, pinned packages, and native ABI.
 scripts/dreamplace/bootstrap.sh preflight
 ```
+
+The bootstrap reproduces the configured runtime using tracked source patches,
+an exact Linux toolchain lock, and pinned Python dependencies. See
+[SETUP.md](SETUP.md) for prerequisites and isolated build directories.
 
 ## Commands
 
