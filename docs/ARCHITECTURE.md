@@ -285,7 +285,8 @@ applies it before compilation and after installation and recognizes the pinned
 upstream commit plus the legacy and current local patch commits. Bootstrap
 `preflight` runs the patcher's `--check` mode before native import checks, so
 stale, partial, duplicated, or unsupported insertion state is reported without
-writing files.
+writing files. Explicit patch targets follow the bootstrap source/build paths;
+missing files fail verification.
 
 Real-net metadata is extracted from the scorer's global pin/net arrays after
 the PLC is loaded. The dashboard stable-ranks low-fanout/high-weight nets, adds
@@ -540,8 +541,22 @@ Barzilai-Borwein step
 approximation that scales the Nesterov step from observed curvature without
 forming or storing a Hessian. A non-positive BB step falls back to the predicted
 Lipschitz step. A clean checkout can reproduce the local CUDA 12.1 build with
-`scripts/dreamplace/bootstrap.sh all`; `scripts/dreamplace/bootstrap.sh preflight`
-checks an existing install and now rejects builds without BB-Nesterov support.
+`scripts/dreamplace/bootstrap.sh all`. The bootstrap pins Python 3.10.20 and
+all installed Python dependencies, plus 113 toolchain archives with checksums
+in `environment-linux-64.lock`. It initializes its own source repository even
+inside the parent checkout and supports fresh or recorded local source revisions.
+The CUDA-12 CUB patch, runtime-fixes patch, and progress patch are applied before
+building. The runtime patch captures existing zero-filler handling, the optional
+NCTUgr construction guard, and RUDY logging from the configured install; it does
+not enable area adjustment or restore the retired seed experiment. Native
+rebuild fixes explicitly instantiate the greedy-legalizer template. CUDA headers and link-time library
+search paths point to the pinned environments, avoiding local symlinks and host
+CUDA contamination. The HeteroSTA archive is checksum-verified before building.
+`scripts/dreamplace/bootstrap.sh preflight` checks patches, source/install
+agreement, exact Python dependencies, the ABI and CUDA build, native imports,
+and BB-Nesterov support. Custom source/build directories propagate through every
+patch and check. See [SETUP.md](../SETUP.md) for reproduction commands and the
+build-environment exceptions to constants-only placement settings.
 BB and cache reads are fixed production behavior rather than runtime-gated
 options. A bounded Zhang-Hager non-monotone Armijo trial was evaluated on
 ibm04 and ibm10, regressed DREAMPlace seed quality on both, and was removed;

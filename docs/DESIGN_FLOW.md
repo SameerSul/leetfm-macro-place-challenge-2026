@@ -73,8 +73,17 @@ are in [PROGRESS.md](PROGRESS.md), with detailed controls in the
 The required DREAMPlace runtime is reproducible from a clean checkout through
 `scripts/dreamplace/bootstrap.sh all`. Production probes representative native
 extensions and the DREAMPlace 4.1 BB-Nesterov optimizer in the build Python
-before placement; use `scripts/dreamplace/bootstrap.sh preflight` for the same
-standalone check. Grouped global placement already runs with
+before placement. Bootstrap `preflight` additionally checks source patches,
+source/install agreement, exact Python dependencies, and CUDA build support.
+The tracked runtime patch captures the installed zero-filler fixes, optional
+router guard, and RUDY logging alongside the CUB and progress patches.
+It also fixes native template emission exposed by a
+fresh build. Explicit CUDA header and linker paths avoid hidden host setup.
+The toolchain archive lock and complete Python pins reproduce the configured
+installation; custom build paths are honored by all patchers and checks.
+Build and launcher environment settings remain supported, while placement and
+diagnostic settings remain source constants. See [SETUP.md](../SETUP.md).
+Grouped global placement already runs with
 `macro_place_flag=1` and `use_bb=1`: the short Barzilai-Borwein update scales
 the Nesterov step using consecutive position and gradient differences as a
 scalar inverse-Hessian approximation. BB and cache reads are fixed production

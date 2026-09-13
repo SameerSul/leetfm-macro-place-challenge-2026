@@ -254,6 +254,11 @@ scripts/                  Comparison + benchmark-conversion utilities.
   but reject extra hierarchy boosting that worsens proxy after the contract
   already passes. The isolation-first tradeoff is superseded.
 - **DREAMPlace is required for the current production path.** `_place_impl()` raises if `_hierarchy_floorplan()` cannot run; the old proxy fallback has been deleted.
+- **DREAMPlace changes must survive a rebuild.** Keep native/source changes in
+  `scripts/dreamplace/` patches. Bootstrap uses the exact Linux toolchain lock
+  and complete Python pins; `preflight` checks patches, source/install agreement,
+  dependencies, and native imports. Build/launcher environment settings remain
+  allowed. See `SETUP.md`; do not rely on edits only in the ignored install tree.
 - **DREAMPlace backend selection is explicit.** Set the source constant
   `utils.constants.DREAMPLACE_GPU = True` for CUDA; the default `False` uses CPU even when the main process detects a GPU. CUDA cache
   entries are separate; existing CPU cache keys remain unchanged. See
