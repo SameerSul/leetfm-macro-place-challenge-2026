@@ -1,0 +1,178 @@
+diff --git a/dreamplace/NonLinearPlace.py b/dreamplace/NonLinearPlace.py
+index 8952fed..42b6519 100644
+--- a/dreamplace/NonLinearPlace.py
++++ b/dreamplace/NonLinearPlace.py
+@@ -766,6 +766,13 @@ class NonLinearPlace(BasicPlace.BasicPlace):
+                                     route_utilization_map = model.op_collections.nctugr_congestion_map_op(pos)
+                                 else:
+                                     route_utilization_map = model.op_collections.route_utilization_map_op(pos)
++                                logging.info(
++                                    "RUDY utilization map: mean %.6E, max %.6E"
++                                    % (
++                                        route_utilization_map.mean().data.item(),
++                                        route_utilization_map.max().data.item(),
++                                    )
++                                )
+                                 if params.plot_flag:
+                                     path = "%s/%s" % (params.result_dir, params.design_name())
+                                     figname = "%s/plot/route%d.png" % (path, num_area_adjust)
+diff --git a/dreamplace/PlaceObj.py b/dreamplace/PlaceObj.py
+index c1d45e2..ba04168 100644
+--- a/dreamplace/PlaceObj.py
++++ b/dreamplace/PlaceObj.py
+@@ -253,8 +253,9 @@ class PlaceObj(nn.Module):
+                 params, placedb, self.data_collections)
+             self.op_collections.pin_utilization_map_op = self.build_pin_utilization_map(
+                 params, placedb, self.data_collections)
+-            self.op_collections.nctugr_congestion_map_op = self.build_nctugr_congestion_map(
+-                params, placedb, self.data_collections)
++            if params.adjust_nctugr_area_flag:
++                self.op_collections.nctugr_congestion_map_op = self.build_nctugr_congestion_map(
++                    params, placedb, self.data_collections)
+             # adjust instance area with congestion map
+             self.op_collections.adjust_node_area_op = self.build_adjust_node_area(
+                 params, placedb, self.data_collections)
+@@ -1039,9 +1040,12 @@ class PlaceObj(nn.Module):
+         total_movable_area = (
+             data_collections.node_size_x[:placedb.num_movable_nodes] *
+             data_collections.node_size_y[:placedb.num_movable_nodes]).sum()
+-        total_filler_area = (
+-            data_collections.node_size_x[-placedb.num_filler_nodes:] *
+-            data_collections.node_size_y[-placedb.num_filler_nodes:]).sum()
++        if placedb.num_filler_nodes > 0:
++            total_filler_area = (
++                data_collections.node_size_x[-placedb.num_filler_nodes:] *
++                data_collections.node_size_y[-placedb.num_filler_nodes:]).sum()
++        else:
++            total_filler_area = total_movable_area.new_zeros(())
+         total_place_area = (total_movable_area + total_filler_area
+                             ) / data_collections.target_density
+         adjust_node_area_op = adjust_node_area.AdjustNodeArea(
+@@ -1148,6 +1152,3 @@ class PlaceObj(nn.Module):
+ 
+         self.op_collections.fence_region_density_overflow_merged_op = merged_density_overflow_op
+         return self.op_collections.fence_region_density_ops, self.op_collections.fence_region_density_merged_op, self.op_collections.fence_region_density_overflow_merged_op
+-
+-
+-
+diff --git a/dreamplace/ops/adjust_node_area/adjust_node_area.py b/dreamplace/ops/adjust_node_area/adjust_node_area.py
+index c126c97..17d2f1b 100644
+--- a/dreamplace/ops/adjust_node_area/adjust_node_area.py
++++ b/dreamplace/ops/adjust_node_area/adjust_node_area.py
+@@ -165,8 +165,12 @@ class AdjustNodeArea(nn.Module):
+             old_movable_area = node_size_x_movable * node_size_y_movable
+             old_movable_area_sum = old_movable_area.sum()
+             # compute old areas of filler nodes
+-            node_size_x_filler = node_size_x[-self.num_filler_nodes:]
+-            node_size_y_filler = node_size_y[-self.num_filler_nodes:]
++            if self.num_filler_nodes > 0:
++                node_size_x_filler = node_size_x[-self.num_filler_nodes:]
++                node_size_y_filler = node_size_y[-self.num_filler_nodes:]
++            else:
++                node_size_x_filler = node_size_x[:0]
++                node_size_y_filler = node_size_y[:0]
+             old_filler_area_sum = (node_size_x_filler *
+                                    node_size_y_filler).sum()
+ 
+@@ -284,7 +288,10 @@ class AdjustNodeArea(nn.Module):
+             # finally scale the filler instance areas to let the total area be self.total_place_area
+             # all the filler nodes share the same deflation ratio, filler_nodes_ratio is a scalar
+             # we keep the centers the same
+-            if new_movable_area_sum + old_filler_area_sum > self.total_place_area:
++            if (
++                self.num_filler_nodes > 0
++                and new_movable_area_sum + old_filler_area_sum > self.total_place_area
++            ):
+                 new_filler_area_sum = F.relu(self.total_place_area -
+                                              new_movable_area_sum)
+                 filler_nodes_ratio = new_filler_area_sum / old_filler_area_sum
+diff --git a/dreamplace/ops/greedy_legalize/src/legalize_bin_cpu.cpp b/dreamplace/ops/greedy_legalize/src/legalize_bin_cpu.cpp
+--- a/dreamplace/ops/greedy_legalize/src/legalize_bin_cpu.cpp
++++ b/dreamplace/ops/greedy_legalize/src/legalize_bin_cpu.cpp
+@@ -255,70 +255,21 @@
+     }
+ }
+ 
+-void instantiateLegalizeBinCPU(
+-        const float* init_x, const float* init_y, 
+-        const float* node_size_x, const float* node_size_y, 
+-        std::vector<std::vector<Blank<float> > >& bin_blanks, // blanks in each bin, sorted from low to high, left to right 
+-        std::vector<std::vector<int> >& bin_cells, // unplaced cells in each bin 
+-        float* x, float* y, 
+-        int num_bins_x, int num_bins_y, int blank_num_bins_y, 
+-        float bin_size_x, float bin_size_y, float blank_bin_size_y, 
+-        float site_width, float row_height, 
+-        float xl, float yl, float xh, float yh,
+-        float alpha, // a parameter to tune anchor initial locations and current locations 
+-        float beta, // a parameter to tune space reserving 
+-        bool lr_flag, // from left to right 
+-        int* num_unplaced_cells 
+-        ) 
+-{
+-    legalizeBinCPU(
+-            init_x, init_y, 
+-            node_size_x, node_size_y, 
+-            bin_blanks, // blanks in each bin, sorted from low to high, left to right 
+-            bin_cells, // unplaced cells in each bin 
+-            x, y, 
+-            num_bins_x, num_bins_y, blank_num_bins_y, 
+-            bin_size_x, bin_size_y, blank_bin_size_y, 
+-            site_width, row_height, 
+-            xl, yl, xh, yh,
+-            alpha, 
+-            beta, 
+-            lr_flag,  
+-            num_unplaced_cells 
+-            );
+-}
+-
+-void instantiateLegalizeBinCPU(
+-        const double* init_x, const double* init_y, 
+-        const double* node_size_x, const double* node_size_y, 
+-        std::vector<std::vector<Blank<double> > >& bin_blanks, // blanks in each bin, sorted from low to high, left to right 
+-        std::vector<std::vector<int> >& bin_cells, // unplaced cells in each bin 
+-        double* x, double* y, 
+-        int num_bins_x, int num_bins_y, int blank_num_bins_y, 
+-        double bin_size_x, double bin_size_y, double blank_bin_size_y, 
+-        double site_width, double row_height, 
+-        double xl, double yl, double xh, double yh,
+-        double alpha, // a parameter to tune anchor initial locations and current locations 
+-        double beta, // a parameter to tune space reserving 
+-        bool lr_flag, // from left to right 
+-        int* num_unplaced_cells 
+-        ) 
+-{
+-    legalizeBinCPU(
+-            init_x, init_y, 
+-            node_size_x, node_size_y, 
+-            bin_blanks, // blanks in each bin, sorted from low to high, left to right 
+-            bin_cells, // unplaced cells in each bin 
+-            x, y, 
+-            num_bins_x, num_bins_y, blank_num_bins_y, 
+-            bin_size_x, bin_size_y, blank_bin_size_y, 
+-            site_width, row_height, 
+-            xl, yl, xh, yh,
+-            alpha, 
+-            beta, 
+-            lr_flag, 
+-            num_unplaced_cells 
+-            );
+-}
++
++// Emit the template for calls from other translation units, even with inlining.
++template void legalizeBinCPU<float>(
++    const float*, const float*, const float*, const float*,
++    std::vector<std::vector<Blank<float> > >&, std::vector<std::vector<int> >&,
++    float*, float*, int, int, int,
++    float, float, float, float, float, float, float, float, float, float, float,
++    bool, int*);
++
++// Emit the template for calls from other translation units, even with inlining.
++template void legalizeBinCPU<double>(
++    const double*, const double*, const double*, const double*,
++    std::vector<std::vector<Blank<double> > >&, std::vector<std::vector<int> >&,
++    double*, double*, int, int, int,
++    double, double, double, double, double, double, double, double, double, double, double,
++    bool, int*);
+ 
+ DREAMPLACE_END_NAMESPACE

@@ -1,31 +1,13 @@
-"""Repair a stale import in the (gitignored) DREAMPlace install tree.
+"""Repair or verify the portable configure import in a DREAMPlace install."""
 
-The DREAMPlace install under `dreamplace_build/install/` is a build
-artifact and is gitignored, so fixes there are NOT captured by git and are lost
-on any rebuild. One such fix: after the 2026-06-11 repo restructure, a single op
-file kept an absolute import with the old `varrahan.` path prefix:
-
-    ops/move_boundary/move_boundary.py:
-      import varrahan.dreamplace_build.install.dreamplace.configure as configure
-
-That module path no longer resolves -> `ModuleNotFoundError: No module named
-'varrahan'` killed EVERY DREAMPlace subprocess ~4s after launch, masked by the
-bridge as a benign "not ready; killing subprocess" log line. Net effect: DP
-produced zero seeds (placer ran a basin short, ~+0.011 proxy). See ISSUES.md.
-
-This script idempotently rewrites that import to the convention every other op
-uses (`import dreamplace.configure as configure`). Run it once after building /
-reinstalling DREAMPlace:
-
-    uv run python scripts/patch_dreamplace_install.py
-"""
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-INSTALL = REPO_ROOT / "dreamplace_build" / "install" / "dreamplace"
+INSTALL = REPO_ROOT / "dreamplace_build" / "install"
 
 PATCHES = [
     # (relative path under install/dreamplace, bad line, good line)
@@ -37,25 +19,25 @@ PATCHES = [
 ]
 
 
-def main() -> int:
-    if not INSTALL.is_dir():
-        print(f"[patch] DREAMPlace install not found at {INSTALL}; nothing to do.")
-        return 0
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--install-dir", type=Path, default=INSTALL)
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args(argv)
     changed = 0
     for rel, bad, good in PATCHES:
-        f = INSTALL / rel
-        if not f.is_file():
-            print(f"[patch] {rel}: missing, skipped")
-            continue
+        f = args.install_dir / "dreamplace" / rel
         text = f.read_text()
         if bad in text:
+            if args.check:
+                raise RuntimeError(f"stale DREAMPlace configure import in {f}")
             f.write_text(text.replace(bad, good))
             print(f"[patch] {rel}: fixed stale import")
             changed += 1
         elif good in text:
             print(f"[patch] {rel}: already correct")
         else:
-            print(f"[patch] {rel}: neither bad nor good import found (manual check)")
+            raise RuntimeError(f"DREAMPlace configure import not found in {f}")
     print(f"[patch] done ({changed} file(s) changed)")
     return 0
 

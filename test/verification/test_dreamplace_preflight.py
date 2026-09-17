@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,59 @@ from dreamplace_bridge.run_bridge import (
     run_dreamplace,
 )
 from dreamplace_bridge.pb_to_bookshelf import extract_bookshelf_data
-from preflight import DEFAULT_BUILD_ROOT, probe
+from preflight import DEFAULT_BUILD_ROOT, RUNTIME_FILES, probe, verify_runtime, verify_toolchain
+
+
+def test_toolchain_archive_drift_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr("preflight.ROOT", tmp_path)
+    lock = tmp_path / "scripts/dreamplace/environment-linux-64.lock"
+    lock.parent.mkdir(parents=True)
+    package = {"url": "https://conda.anaconda.org/conda-forge/linux-64/example.conda", "md5": "abc"}
+    lock.write_text(f"@EXPLICIT\n{package['url']}#{package['md5']}\n")
+    build = tmp_path / "build"
+    metadata = build / "mamba/envs/dptool/conda-meta/example.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(json.dumps(package))
+    verify_toolchain(build)
+    package["md5"] = "changed"
+    metadata.write_text(json.dumps(package))
+    with pytest.raises(RuntimeError, match="toolchain differs"):
+        verify_toolchain(build)
+
+
+def test_preflight_rejects_install_only_runtime_changes(tmp_path):
+    source, build = tmp_path / "source", tmp_path / "build"
+    for rel in RUNTIME_FILES:
+        for root in (source, build / "install"):
+            path = root / "dreamplace" / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# matching runtime\n")
+    verify_runtime(source, build)
+    installed = build / "install/dreamplace/PlaceObj.py"
+    installed.write_text("# untracked install edit\n")
+    with pytest.raises(RuntimeError, match="source/install mismatch: PlaceObj.py"):
+        verify_runtime(source, build)
+    installed.unlink()
+    with pytest.raises(FileNotFoundError):
+        verify_runtime(source, build)
+
+
+def test_install_import_patch_uses_explicit_directory_and_checks_without_writing(tmp_path):
+    from scripts.patch_dreamplace_install import main, PATCHES
+
+    rel, bad, good = PATCHES[0]
+    path = tmp_path / "dreamplace" / rel
+    path.parent.mkdir(parents=True)
+    path.write_text(bad + "\n")
+    args = ["--install-dir", str(tmp_path)]
+    with pytest.raises(RuntimeError, match="stale"):
+        main([*args, "--check"])
+    assert path.read_text() == bad + "\n"
+    assert main(args) == main([*args, "--check"]) == 0
+    assert path.read_text() == good + "\n"
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        main([*args, "--check"])
 
 
 def test_legacy_env_cannot_disable_iccad2023_bb_nesterov(monkeypatch):
@@ -51,7 +104,8 @@ def test_legacy_env_cannot_disable_dreamplace_cache_reads(tmp_path, monkeypatch,
     expected_soft = np.array([[3.0, 4.0]], dtype=np.float64)
     _write_cache(work_dir, key, expected_hard, expected_soft)
     monkeypatch.setenv("HIER_DREAMPLACE_CACHE", "0")
-    monkeypatch.setenv("DREAMPLACE_GPU", str(int(gpu)))
+    monkeypatch.setenv("DREAMPLACE_GPU", str(int(not gpu)))
+    monkeypatch.setattr(bridge.const, "DREAMPLACE_GPU", gpu)
     monkeypatch.setattr(bridge, "is_available", lambda: True)
 
     hard, soft = run_dreamplace(
@@ -83,7 +137,7 @@ def test_dreamplace_gpu_config_and_cache_are_separate(tmp_path):
 
 
 def test_dreamplace_rejects_invalid_gpu_setting(monkeypatch):
-    monkeypatch.setenv("DREAMPLACE_GPU", "auto")
+    monkeypatch.setattr(bridge.const, "DREAMPLACE_GPU", "auto")
     with pytest.raises(ValueError, match="DREAMPLACE_GPU must be"):
         run_dreamplace("unused")
 

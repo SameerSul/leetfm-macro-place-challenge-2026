@@ -20,7 +20,7 @@ TARGETS = (
 PROTOCOL_VERSION = 1
 BLOCK_START = "        # BEGIN VIVAPLACE_PROGRESS_PROTOCOL_V1\n"
 BLOCK_END = "        # END VIVAPLACE_PROGRESS_PROTOCOL_V1\n"
-LEGACY_START = '        vivaplace_sample_every = int(os.environ.get("VIVAPLACE_PROGRESS_EVERY"'
+LEGACY_START = "        vivaplace_sample_every = "
 CALL_MARKER = (
     "                            emit_vivaplace_progress("
     "model.data_collections.pos[0], placedb, iteration)\n"
@@ -29,7 +29,7 @@ ITERATION_MARKER = "                            iteration += 1\n"
 
 
 def _protocol_block() -> str:
-    return f'''{BLOCK_START}        vivaplace_sample_every = int(os.environ.get("VIVAPLACE_PROGRESS_EVERY", "0") or 0)
+    return f'''{BLOCK_START}        vivaplace_sample_every = int(getattr(params, "vivaplace_sample_every", 0))
 
         def emit_vivaplace_progress(pos, placedb, current_iteration):
             """Emit compact lower-left movable-node coordinates for diagnostics."""
@@ -90,8 +90,8 @@ def _replace_protocol_block(text: str, path: Path) -> str:
 
 
 def _normalize(text: str, path: Path) -> str:
-    text = _ensure_import(text, "base64")
     text = _ensure_import(text, "json")
+    text = _ensure_import(text, "base64")
     text = _replace_protocol_block(text, path)
     if CALL_MARKER not in text:
         if text.count(ITERATION_MARKER) != 1:
@@ -119,8 +119,6 @@ def _validate(text: str, path: Path) -> None:
 
 
 def patch(path: Path, *, check: bool = False) -> bool:
-    if not path.is_file():
-        return False
     original = path.read_text()
     normalized = _normalize(original, path)
     _validate(normalized, path)
@@ -135,9 +133,9 @@ def patch(path: Path, *, check: bool = False) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="validate without modifying files")
+    parser.add_argument("paths", nargs="*", type=Path, default=TARGETS)
     args = parser.parse_args(argv)
-    existing = [path for path in TARGETS if path.is_file()]
-    changed = [str(path) for path in existing if patch(path, check=args.check)]
+    changed = [str(path) for path in args.paths if patch(path, check=args.check)]
     mode = "verified" if args.check else f"{len(changed)} file(s) changed"
     print(f"[patch] DREAMPlace visualizer protocol v{PROTOCOL_VERSION}: {mode}")
     return 0
