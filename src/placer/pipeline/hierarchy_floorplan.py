@@ -1,6 +1,5 @@
 """Hierarchy floorplan pipeline segment extracted from macro_placer."""
 
-import os
 import time
 
 import numpy as np
@@ -86,14 +85,7 @@ def run_hierarchy_floorplan(
     benchmark_trace_name = _trace_benchmark_name(str(benchmark.name), benchmark_dir)
     setattr(benchmark, "_hierarchy_trace_name", benchmark_trace_name)
 
-    diagnostic_no_deadlines = os.environ.get("HIER_DIAGNOSTIC_NO_DEADLINES", "0").strip() in {
-        "1",
-        "true",
-        "TRUE",
-        "yes",
-        "YES",
-        "on",
-    }
+    diagnostic_no_deadlines = const.HIER_DIAGNOSTIC_NO_DEADLINES
 
     def _deadline(seconds: float, outer: "float | None" = None) -> "float | None":
         if diagnostic_no_deadlines:
@@ -113,73 +105,10 @@ def run_hierarchy_floorplan(
             "congestion": float(plc.get_congestion_cost()),
         }
 
-    def _env_float(name: str, default: float) -> float:
-        raw = os.environ.get(name)
-        if raw is None or not raw.strip():
-            return float(default)
-        try:
-            return float(raw)
-        except ValueError:
-            _log(f"  [hier] env parse fallback: {name}={raw!r}, using {float(default)}")
-            return float(default)
-
-    def _env_int(name: str, default: int) -> int:
-        raw = os.environ.get(name)
-        if raw is None or not raw.strip():
-            return int(default)
-        try:
-            return int(raw)
-        except ValueError:
-            _log(f"  [hier] env parse fallback: {name}={raw!r}, using {int(default)}")
-            return int(default)
-
-    def _nonzero_int(value: int) -> int | None:
-        candidate = int(value)
-        return candidate if candidate > 0 else None
-
-    def _load_pass_budgets() -> dict[str, dict[str, int | None]]:
-        defaults = {
-            "region_hard_relocation": {"exact": 2600, "candidates": 0},
-            "region_soft_relocation": {"exact": 24000, "candidates": 0},
-            "small_cluster_consolidation": {
-                "exact": int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SCORED),
-                "candidates": 0,
-            },
-            "small_cluster_seed_assembly": {
-                "exact": int(const.HIER_SMALL_CLUSTER_CONSOLIDATION_MAX_SCORED),
-                "candidates": 0,
-            },
-            "internal_cluster_floorplan": {
-                "exact": int(const.HIER_INTERNAL_FLOORPLAN_MAX_SCORED),
-                "candidates": 0,
-            },
-            "subcluster_relocation": {"exact": 24, "candidates": 0},
-            "interleaved_soft_repair": {"exact": 4096, "candidates": 0},
-            "region_swaps": {"exact": 72000, "candidates": 0},
-            "region_swap_graph_fallback": {"exact": 100, "candidates": 0},
-            "plateau_escape_soft_relocation": {"exact": 5000, "candidates": 0},
-            "plateau_escape_post_soft_relocation": {"exact": 7000, "candidates": 0},
-            "compound_soft_relocation": {"exact": 60, "candidates": 0},
-            "strong_soft_repair": {"exact": 40000, "candidates": 0},
-            "medium_soft_continuation": {"exact": 2048, "candidates": 0},
-            "region_swaps_additive": {"exact": 0, "candidates": 1},
-            "final_audit": {"exact": 2, "candidates": 0},
-        }
-        budgets: dict[str, dict[str, int | None]] = {}
-        for name, cfg in defaults.items():
-            key = str(name).upper()
-            budgets[name] = {
-                "exact": _nonzero_int(_env_int(f"HIER_{key}_MAX_EXACT", int(cfg.get("exact", 0)))),
-                "candidates": _nonzero_int(
-                    _env_int(
-                        f"HIER_{key}_MAX_CANDIDATES",
-                        int(cfg.get("candidates", 0)),
-                    )
-                ),
-            }
-        return budgets
-
-    _pass_budgets = _load_pass_budgets()
+    _pass_budgets = {
+        name: {key: int(value) if value > 0 else None for key, value in limits.items()}
+        for name, limits in const.HIER_PASS_BUDGETS.items()
+    }
     _pass_budget_usage: dict[str, dict[str, int]] = {
         name: {"exact": 0, "candidates": 0} for name in _pass_budgets
     }
@@ -265,7 +194,7 @@ def run_hierarchy_floorplan(
 
     hier_soft_barrier_gain = max(
         0.0,
-        float(os.environ.get("HIER_SOFT_BARRIER_GAIN", const.HIER_SOFT_BARRIER_GAIN)),
+        float(const.HIER_SOFT_BARRIER_GAIN),
     )
     hier_region_heat_frac = float(const.HIER_REGION_HEAT_FRAC)
     hier_region_heat_pct = float(const.HIER_REGION_HEAT_HOT_PCT)
@@ -873,24 +802,10 @@ def run_hierarchy_floorplan(
     graph_tension_enabled = int(n) >= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MIN", 0)) and int(
         n
     ) <= int(getattr(const, "HIER_GRAPH_TENSION_HARD_MAX", 1000000))
-    graph_tension_weight = (
-        max(
-            0.0,
-            _env_float(
-                "HIER_GRAPH_TENSION_WEIGHT",
-                getattr(const, "HIER_GRAPH_TENSION_WEIGHT", 0.0),
-            ),
-        )
-        if graph_tension_enabled
-        else 0.0
-    )
     graph_tension_decomp_weight = (
         max(
             0.0,
-            _env_float(
-                "HIER_GRAPH_TENSION_DECOMP_WEIGHT",
-                float(getattr(const, "HIER_GRAPH_TENSION_DECOMP_WEIGHT", graph_tension_weight)),
-            ),
+            float(const.HIER_GRAPH_TENSION_DECOMP_WEIGHT),
         )
         if graph_tension_enabled
         else 0.0
@@ -898,10 +813,7 @@ def run_hierarchy_floorplan(
     graph_tension_coldspot_weight = (
         max(
             0.0,
-            _env_float(
-                "HIER_GRAPH_TENSION_COLDSPOT_WEIGHT",
-                float(getattr(const, "HIER_GRAPH_TENSION_COLDSPOT_WEIGHT", graph_tension_weight)),
-            ),
+            float(const.HIER_GRAPH_TENSION_COLDSPOT_WEIGHT),
         )
         if graph_tension_enabled
         else 0.0
@@ -909,10 +821,7 @@ def run_hierarchy_floorplan(
     graph_tension_swap_weight = (
         max(
             0.0,
-            _env_float(
-                "HIER_GRAPH_TENSION_SWAP_WEIGHT",
-                float(getattr(const, "HIER_GRAPH_TENSION_SWAP_WEIGHT", 0.0)),
-            ),
+            float(const.HIER_GRAPH_TENSION_SWAP_WEIGHT),
         )
         if graph_tension_enabled
         else 0.0
@@ -920,10 +829,7 @@ def run_hierarchy_floorplan(
     graph_swap_delta_weight = (
         max(
             0.0,
-            _env_float(
-                "HIER_SWAP_GRAPH_DELTA_WEIGHT",
-                float(getattr(const, "HIER_SWAP_GRAPH_DELTA_WEIGHT", 0.0)),
-            ),
+            float(const.HIER_SWAP_GRAPH_DELTA_WEIGHT),
         )
         if graph_tension_enabled
         else 0.0
@@ -931,29 +837,18 @@ def run_hierarchy_floorplan(
     graph_swap_mask_penalty_weight = (
         max(
             0.0,
-            _env_float(
-                "HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT",
-                float(getattr(const, "HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT", 0.0)),
-            ),
+            float(const.HIER_SWAP_GRAPH_MASK_PENALTY_WEIGHT),
         )
         if graph_tension_enabled
         else 0.0
     )
     graph_swap_delta_samples = max(
         2,
-        int(
-            _env_int(
-                "HIER_SWAP_GRAPH_DELTA_SAMPLES",
-                int(getattr(const, "HIER_GRAPH_TENSION_CORRIDOR_SAMPLES", 9)),
-            )
-        ),
+        int(const.HIER_GRAPH_TENSION_CORRIDOR_SAMPLES),
     )
     graph_swap_fallback_budget_s = max(
         0.0,
-        _env_float(
-            "HIER_SWAP_GRAPH_FALLBACK_BUDGET_S",
-            float(getattr(const, "HIER_SWAP_GRAPH_FALLBACK_BUDGET_S", 2.5)),
-        ),
+        float(const.HIER_SWAP_GRAPH_FALLBACK_BUDGET_S),
     )
     graph_tension_active = max(
         graph_tension_decomp_weight,
@@ -986,17 +881,11 @@ def run_hierarchy_floorplan(
     ) -> tuple[np.ndarray | None, dict[str, object]]:
         max_edges = max(
             0,
-            _env_int(
-                "HIER_SWAP_GRAPH_MASK_MAX_EDGES",
-                int(getattr(const, "HIER_SWAP_GRAPH_MASK_MAX_EDGES", 0)),
-            ),
+            int(const.HIER_SWAP_GRAPH_MASK_MAX_EDGES),
         )
         pad_cells = max(
             0,
-            _env_int(
-                "HIER_SWAP_GRAPH_MASK_PAD_CELLS",
-                int(getattr(const, "HIER_SWAP_GRAPH_MASK_PAD_CELLS", 1)),
-            ),
+            int(const.HIER_SWAP_GRAPH_MASK_PAD_CELLS),
         )
         if graph_weight <= 0.0:
             return None, {
@@ -1261,20 +1150,6 @@ def run_hierarchy_floorplan(
             0,
             int(getattr(const, "HIER_REGION_COMPONENT_MAX_DISTANCE_CELLS", 4)),
         ),
-        graph_edges=hierarchy.edges if graph_tension_enabled else None,
-        graph_component_weight=(
-            max(
-                0.0,
-                float(
-                    os.environ.get(
-                        "HIER_REGION_GRAPH_COMPONENT_WEIGHT",
-                        str(getattr(const, "HIER_REGION_GRAPH_COMPONENT_WEIGHT", 0.0)),
-                    )
-                ),
-            )
-            if graph_tension_enabled
-            else 0.0
-        ),
     )
     region_expand_stats = getattr(expand_regions_by_congestion, "last_stats", {})
     if n_expanded:
@@ -1282,9 +1157,6 @@ def run_hierarchy_floorplan(
         suffix_parts = []
         if component_expanded:
             suffix_parts.append(f"component={component_expanded}")
-        graph_component_expanded = int(region_expand_stats.get("graph_component_expanded", 0))
-        if graph_component_expanded:
-            suffix_parts.append(f"graph_component={graph_component_expanded}")
         suffix = f", {', '.join(suffix_parts)}" if suffix_parts else ""
         _log(f"  [hier] congestion-expanded regions: {n_expanded} clusters{suffix}")
     bias = float(const.REGION_BIAS)

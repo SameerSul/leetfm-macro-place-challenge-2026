@@ -6,6 +6,168 @@ Target: beat RePlAce avg of 1.4578.
 > Only the first status entry is current production state; all later entries are
 > historical experiment records.
 >
+> **Status (2026-09-12 — reproducible configured DREAMPlace build):**
+> The tracked runtime patch now captures the installed zero-filler area fixes,
+> optional-router construction guard, and RUDY logging. Explicit float/double
+> template instantiation fixes a greedy-legalizer import failure exposed by a
+> fresh native build, without changing the function body. The CUB and
+> JSON-configured progress patches remain in the bootstrap path.
+> Python **3.10.20**, PyTorch **2.4.1+cu121**, all **46 other Python packages**,
+> and **113 toolchain archives** are pinned to the configured installation.
+> The HeteroSTA archive is checked by SHA-256 before compilation.
+>
+> Bootstrap correctly initializes a nested, empty source repository, accepts
+> the recorded local revisions, and applies patches per file. Explicit CUDA
+> headers and link-time library paths remove dependencies on old local symlinks
+> and the host CUDA installation. Build paths propagate through patchers and
+> preflight. Verification rejects missing/stale patches, source/install drift,
+> dependency drift, ABI mismatches, and missing production native imports.
+> Placement and diagnostic settings remain source constants; build and launcher
+> environment settings remain supported.
+>
+> A fresh isolated source checkout, toolchain, Python environment, native build,
+> and production preflight pass. All **16 focused tests pass**. Four fresh
+> grouped IBM10 seed calls (installed/rebuilt × CPU/CUDA, **200 configured
+> iterations**, 75 groups) preserve every returned coordinate and all **40
+> progress frames per run** within each backend. Repeated patching and preflight
+> also pass from `/tmp` with custom paths. No placer/default change, proxy
+> improvement, or speedup is claimed. Reproduction commands are in `SETUP.md`;
+> validation is under `ml_data/dreamplace_repro/20260912/`.
+>
+> **Status (2026-09-12 — unused code and rejected experiment cleanup):**
+> Removed **1,349 net lines of active Python**, including **456 production
+> lines**, relative to the source captured immediately before this cleanup.
+> Deleted the rejected CUDA overlap prefilter and experiment selector, failed
+> GPU graph construction/affinity probes, ineffective physical-net RUDY seed
+> wrapper, and regressing graph-corridor region-expansion bias. Their rejection
+> measurements remain in this ledger and the linked experiment reports.
+> Three uncalled single-macro scorer methods, a test-only soft-role alias,
+> completed ablation switches, and duplicate baseline-launching code are gone.
+> Baseline capture now uses `run_dreamplace_cuda_comparison.py --capture-final`.
+>
+> The promising CPU split control remains in `profile_hierarchy_splits.py`;
+> all **20 IBM10 / 3 IBM17** captured partitions and cut ratios exactly match
+> production, and NVDLA correctly captures none. GPU soft-refinement variants
+> remain offline; their shared occupancy helper moves unchanged into the replay.
+> Existing production defaults, pass quotas, hierarchy contracts, legality,
+> and constants-only placement configuration remain unchanged.
+>
+> All **164 maintained verification, EDA, and visualizer tests pass**. All
+> **100 same-input region-expansion cases** preserve every coordinate and
+> retained counter; all **88 remaining scorer function bodies** are unchanged.
+> Fresh-cache, normal-guard IBM10/NVDLA outputs are coordinate-identical to
+> the September 12 baseline: evaluator proxy **1.173217535 / 0.730595589**,
+> zero overlaps, complete final audits passing, placer time **96.604 / 43.003 s**.
+> The guided IBM10 CPU/CUDA replay retains identical coordinates to the prior
+> experiment and passes fresh independent scalar checks at **1.172836221**,
+> from **1.173218182**. The updated coldspot verifier passes **50 kicks and
+> two candidate pools** on IBM10. No speed improvement is claimed.
+> Validation and the before-source manifest
+> are under `ml_data/code_cleanup/20260912/`; the preceding 31-design baseline
+> remains the broader placement-quality reference.
+>
+> **Status (2026-09-12 — constants-only placement configuration):**
+> Placement and diagnostic controls now come from `src/utils/constants.py`.
+> Removed environment overrides for seeds, device/backend selection, Numba
+> fallback, experiment selection, deadlines, graph/barrier weights, relocation,
+> pass quotas, and telemetry. All prior live constant values and all **16 pass
+> quotas** are unchanged. The obsolete graph-weight fallback is removed.
+> The evaluator keeps its required local adapter class and explicit `seed`
+> argument; a regression check exercises the real file-based class loader.
+>
+> Diagnostic CLIs assign constants directly. Spawned scalar workers receive
+> telemetry paths as arguments; source revision/fingerprint metadata is
+> computed directly. DREAMPlace progress sampling uses its JSON input, and a
+> fresh five-iteration smoke emits **10 valid frames**. Native subprocess
+> paths/thread pools and fixed cuBLAS workspace setup remain library requirements,
+> without placement tuning overrides. Build/toolchain setup is unchanged.
+>
+> All **174 verification, EDA, and visualizer tests pass**, followed by **32
+> focused checks** and the updated evaluator-loader regression. IBM10 and NVDLA
+> return coordinates identical to the September 12 baseline, with evaluator
+> proxy **1.173217535 / 0.730595589**, zero overlaps, and complete final audits
+> passing. Validation placer times are **66.360 / 26.646 s**, using existing
+> caches; no speed improvement is claimed. The guided IBM10 replay has identical
+> CPU/CUDA coordinates to the prior experiment and passes fresh independent
+> scalar scoring at **1.172836221**, from **1.173218182**. GPU refinement remains
+> offline. Records are under `ml_data/constants_only/20260912/`; the preceding
+> 31-design comparison remains the broader placement-quality reference.
+>
+> **Status (2026-09-12 — full baseline validation and offline GPU refinement):**
+> Production retains the corrected DREAMPlace seed-cleanup call and existing
+> operators. A fresh-cache, normal-guard baseline is **31/31 legal**, with zero
+> overlaps and all final hierarchy audits passing. Ordinary evaluator means
+> match the recorded reference: IBM **1.181128351**, NG45 **0.717060223**,
+> synthetic **1.436273508**. Placer times are **956.699 / 147.055 / 428.165 s**;
+> these validation runs include brief test activity, not an isolated speed A/B.
+>
+> The [GPU refinement comparison](GPU_SOFT_REFINEMENT_20260912.md) tests a
+> 24-step control, eight steps with checkpoints 1/2/4/8, and eight steps guided
+> by the existing exact directional congestion-tail weights. A diagnostic
+> float32 projection correction reuses the shared canvas clamp on eligible
+> softs after twenty boundary-rounding rejections on three IBM designs. All
+> three affected designs are rechecked; valid states on the other 28 designs
+> take the unchanged path. Ownership, bundles, frozen coordinates, hierarchy
+> limits, candidate order, and four-checkpoint quotas remain intact.
+>
+> Final retained gains improve **20 / 22 / 23 designs** for long / short /
+> guided, with zero baseline regressions. All **93 final outputs** pass legality,
+> complete contracts, fresh scalar scoring, and applicable NG45 tag/synthetic
+> truth audits. Paired scalar means on float32 coordinates promoted to float64:
+> IBM **1.181101299 -> 1.179760243 / 1.179836373 / 1.179806573**;
+> NG45 **0.717060425 -> 0.716155049 / 0.716313093 / 0.716363450**;
+> synthetic **1.436273508 -> 1.432496211 / 1.433350080 / 1.432574308**.
+> Long has the best mean in every family. Guided retains **96.3%** of long's
+> total gain with **43.0%** less proposal time; short uses **41.4%** less time.
+> Exact congestion improves on only **2 / 2 / 3 designs**; most gains trade
+> lower density/wirelength against higher congestion under the exact objective.
+>
+> Sum of warm GPU proposal medians is **14.680 / 8.608 / 8.362 s** for 31
+> designs, including packing/setup/readback but excluding parsing and acceptance.
+> Proposal functions are unchanged by the projection correction. All 18 focused
+> CPU/CUDA outputs are independently verified and have identical coordinates
+> across backends and the full replay. All **138 verification tests pass**.
+> The refinements remain offline; no production GPU operator, default change,
+> end-to-end speedup, or global rollback-cache repair is claimed.
+>
+> **Status (2026-09-11 — restore DREAMPlace seed cleanup):**
+> Removed one obsolete `plc` argument from the injected seed soft-relocation
+> call. The earlier signature cleanup missed this caller: it supplied
+> `deadline` twice and silently discarded DREAMPlace candidates needing soft
+> cleanup. The shared relocation API and all selection/contract gates remain.
+> An API-binding regression check covers the actual caller and callee.
+>
+> Normal-guard CPU validation returns legal, zero-overlap IBM10 and NVDLA
+> placements with complete final contracts: proxy **1.174197912 / 0.730595589**
+> in **105.482 / 45.655 s**. NVDLA retains the recurrent
+> `re2map_recursive_2` seed, confirming restored seed scoring through the
+> production backend. These are validation results, not a paired quality or
+> speed comparison. All **135 verification and 34 EDA/visualizer tests pass**.
+> The prior 31-design tile ablation remains the broader quality reference;
+> this correction has not received a new 31-design sweep.
+>
+> The ordered [GPU placement experiments](GPU_PLACEMENT_EXPERIMENTS.md)
+> use the corrected source and independent fresh seed caches. Physical-net
+> RUDY with native area adjustment leaves IBM10, IBM17, and NVDLA final
+> coordinates, exact proxy, and complete contracts identical to control.
+> All six outputs are valid with zero overlaps. Nine fresh seed calls take
+> **77.570 s control / 90.712 s RUDY**; this is a single quality comparison,
+> not an isolated speed benchmark. RUDY remains diagnostic-only.
+>
+> The resident soft-refinement replay improves all three captured inputs:
+> **1.173218182 -> 1.173139663**, **1.393703334 -> 1.392391389**, and
+> **0.815042601 -> 0.814817224** under fresh scalar checks on float32
+> coordinates promoted to float64. All 24 checkpoints pass legality and
+> complete saved contracts; three repetitions per backend are deterministic,
+> retained CPU/CUDA coordinates match exactly, and the NVDLA tag audit passes.
+> Warm proposal medians including packing/transfers are **2.020 / 3.302 /
+> 1.282 s CPU** versus **0.684 / 1.251 / 0.528 s CUDA** on the RTX 4050.
+> This compares identical PyTorch implementations, not production Numba or
+> complete placement runtime. Exact congestion rises on both IBM designs;
+> only NVDLA improves all three proxy terms. Refinement remains offline.
+> The existing warm CPU exact scorer takes **12.596 / 17.757 / 6.354 ms** per
+> state; four checkpoint calls do not justify a GPU exact-scoring port.
+>
 > **Status (2026-09-09 — maintenance cleanup):**
 > Removed 32 unused parameters from 21 internal search, scoring-cache, and EDA
 > helpers, updating all maintained callers and scalar verifiers. Removed the
@@ -32,6 +194,30 @@ Target: beat RePlAce avg of 1.4578.
 > 31-design cluster-tile result below remains the quality reference.
 > See `ml_data/algorithm_review/20260909/maintenance_results.md` for source
 > snapshots, caller changes, and validation controls. No speedup is claimed.
+>
+> **Research (2026-09-11 — offline GPU graph comparison; no production change):**
+> Added a reproducible Python/NumPy/Numba/CUDA diagnostic for hard/macro edge
+> construction, complete eligible frontier-affinity batches, and captured CPU
+> graph splits. Final-source IBM10/IBM17/NVDLA runs reject all nine CUDA
+> workload/design combinations under exact parity plus a 20% lifecycle time
+> reduction gate. Hard-edge Numba times are **0.363 / 0.400 / 0.329 ms** versus
+> CUDA **4.030 / 18.813 / 9.265 ms**, including packing and transfers. IBM10's
+> normalized macro-edge CUDA trial is faster (**9.453 -> 6.975 ms**) but changes
+> weights. Maximum normalized-edge and affinity errors are **3.979e-13** and
+> **2.842e-13**; tested frontier rankings remain equal, which is insufficient
+> for general search equivalence. Cached CPU answers also beat synthetic
+> repeated CUDA affinity queries.
+>
+> The compiled CPU split control reproduces every captured partition and cut
+> ratio. IBM17's three-call sum of warm medians falls **2787.261 -> 130.252 ms**;
+> IBM10's 20-call sum falls **69.221 -> 23.087 ms**, although individual small
+> splits can be slower. These are offline primitive measurements, not accepted
+> placement speedups. Production and proxy results remain unchanged. All
+> **24 focused tests pass**, including CUDA execution, ownership/rollback,
+> weighted parity, and complete frontier-order rejection. See the
+> [GPU graph report](../ml_data/gpu_graphs/20260911/results.md) for commands,
+> final-source raw samples, fingerprints, and limitations. No full placement
+> sweep was run because no CUDA candidate passed the prerequisite gates.
 >
 > **Status (2026-09-09 — algorithm cleanup and final cluster-tile search):**
 > Removed the overwritten coldspot anchor calculation and unused partial-frontier,

@@ -19,10 +19,12 @@ HERE = Path(__file__).resolve()
 REPO_ROOT = next(
     p for p in HERE.parents if (p / "pyproject.toml").exists() and (p / "macro_place").is_dir()
 )
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+for path in (REPO_ROOT, REPO_ROOT / "src"):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from macro_place._plc import PlacementCost  # noqa: E402
+from utils import constants as const  # noqa: E402
 
 # Disk cache keyed by input files and DREAMPlace settings.
 CACHE_VERSION = "v4"
@@ -151,7 +153,7 @@ _AVAILABILITY_CACHE: Optional[tuple[bool, str]] = None
 
 def _use_final_cache(event_sink) -> bool:
     """Use production cache normally, with an explicit visualizer replay override."""
-    return event_sink is None or os.environ.get("HIER_VISUALIZER_USE_CACHE", "0") == "1"
+    return event_sink is None or const.HIER_VISUALIZER_USE_CACHE
 
 
 def _decode_progress_payload(line: str) -> tuple[int, np.ndarray]:
@@ -306,10 +308,9 @@ def run_dreamplace(
     temporary_fixed_positions: "Optional[Mapping[str, tuple[float, float]]]" = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Run DREAMPlace and return hard-macro center positions."""
-    gpu_setting = os.environ.get("DREAMPLACE_GPU", "0").strip()
-    if gpu_setting not in {"0", "1"}:
-        raise ValueError("DREAMPLACE_GPU must be 0 (CPU) or 1 (CUDA)")
-    gpu = gpu_setting == "1"
+    if const.DREAMPLACE_GPU not in (False, True):
+        raise ValueError("DREAMPLACE_GPU must be False (CPU) or True (CUDA)")
+    gpu = bool(const.DREAMPLACE_GPU)
     backend = "cuda" if gpu else "cpu"
     if not is_available():
         raise RuntimeError(f"DREAMPlace unavailable: {availability_error()}")
@@ -372,6 +373,7 @@ def run_dreamplace(
         target_density=target_density,
         gpu=gpu,
     )
+    cfg["vivaplace_sample_every"] = max(1, int(sample_every)) if event_sink is not None else 0
     cfg_path = work_dir / f"{design}.json"
     cfg_path.write_text(json.dumps(cfg, indent=2))
 
@@ -450,7 +452,6 @@ def run_dreamplace(
                 timeout=timeout_s,
             )
         else:
-            env["VIVAPLACE_PROGRESS_EVERY"] = str(max(1, int(sample_every)))
             proc = subprocess.Popen(
                 [str(VENV_PYTHON), str(DREAMPLACE_PLACER), str(cfg_path)],
                 cwd=str(DREAMPLACE_INSTALL),

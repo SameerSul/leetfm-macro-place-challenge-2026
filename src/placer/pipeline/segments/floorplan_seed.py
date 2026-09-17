@@ -593,7 +593,6 @@ def run_seed_portfolio(
                     cw,
                     ch,
                     n,
-                    plc,
                     benchmark,
                     cand_scorer,
                     score,

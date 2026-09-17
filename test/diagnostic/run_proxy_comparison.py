@@ -1,13 +1,13 @@
 """Record full-precision evaluator results and placements for isolated trials.
 
-Example: HIER_DIAGNOSTIC_NO_DEADLINES=1 uv run python
+Example: uv run python
 test/diagnostic/run_proxy_comparison.py --out ml_data/trial ibm04 ibm09
 """
+
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -27,17 +27,22 @@ def main():
     args = parser.parse_args()
     control = (
         {row["benchmark"]: row for row in json.loads(args.control.read_text())}
-        if args.control else {}
+        if args.control
+        else {}
     )
     if args.control:
         assert set(args.names) <= control.keys(), "control is missing a requested benchmark"
     args.out.mkdir(parents=True, exist_ok=True)
-    os.environ["HIER_PLATEAU_TRACE_PATH"] = str(args.out / "trace.jsonl")
+    from utils import constants as const
+
+    const.HIER_PLATEAU_TRACE_PATH = str(args.out / "trace.jsonl")
     placer = MacroPlacer()
     rows = []
     for name in args.names:
         result = evaluate_benchmark(
-            placer, name, str(ROOT / "external/MacroPlacement/Testcases/ICCAD04"),
+            placer,
+            name,
+            str(ROOT / "external/MacroPlacement/Testcases/ICCAD04"),
             ng45_dir=NG45_BENCHMARKS.get(name),
         )
         row = {"benchmark": name}
@@ -51,8 +56,11 @@ def main():
         print("RESULT " + json.dumps(row), flush=True)
         assert row["valid"], name
         if name in control and row["proxy_cost"] > control[name]["proxy_cost"] + 1.0e-7:
-            print(f"REJECT {name}: proxy increased by "
-                  f"{row['proxy_cost'] - control[name]['proxy_cost']:.9f}", flush=True)
+            print(
+                f"REJECT {name}: proxy increased by "
+                f"{row['proxy_cost'] - control[name]['proxy_cost']:.9f}",
+                flush=True,
+            )
             raise SystemExit(1)
     print(f"MEAN {np.mean([r['proxy_cost'] for r in rows]):.9f}", flush=True)
 

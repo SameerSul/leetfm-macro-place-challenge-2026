@@ -5,16 +5,9 @@ from __future__ import annotations
 import time
 
 import numpy as np
-import torch
 
 from utils import constants as const
-from utils.config import (
-    HAS_NUMBA,
-    _GPU_BACKEND,
-    _GPU_DEVICE,
-    _numba_njit,
-    gpu_experiment_selected,
-)
+from utils.config import HAS_NUMBA, _numba_njit
 from placer.shared.geometry import separation_matrices
 from placer.local_search.fields import _congestion_field, _density_field, weighted_congestion_field
 from placer.local_search.graph_tension import candidate_graph_edge_delta
@@ -225,130 +218,6 @@ def _in_bounds(x: float, y: float, hw: float, hh: float, cw: float, ch: float) -
     return bool(hw <= x <= cw - hw and hh <= y <= ch - hh)
 
 
-def _gpu_overlap_prefilter_enabled(candidate_count: int) -> bool:
-    """Enable the retained CUDA legality prefilter only for its diagnostic gate."""
-    return bool(
-        gpu_experiment_selected("overlap_prefilter")
-        and _GPU_BACKEND == "cuda"
-        and int(candidate_count) >= int(const.HIER_GPU_OVERLAP_PREFILTER_MIN_CANDIDATES)
-    )
-
-
-def _gpu_legal_hard_hard_candidates(
-    h_pos: np.ndarray,
-    hw: np.ndarray,
-    hh: np.ndarray,
-    cw: float,
-    ch: float,
-    i: int,
-    cand: np.ndarray,
-    eps: float,
-) -> np.ndarray:
-    """CUDA batch equivalent of the hard-hard swap legality filter."""
-    with torch.inference_mode():
-        pos = torch.as_tensor(h_pos, dtype=torch.float64, device=_GPU_DEVICE)
-        half_w = torch.as_tensor(hw, dtype=torch.float64, device=_GPU_DEVICE)
-        half_h = torch.as_tensor(hh, dtype=torch.float64, device=_GPU_DEVICE)
-        targets = torch.as_tensor(cand, dtype=torch.long, device=_GPU_DEVICE)
-        target_pos = pos.index_select(0, targets)
-        target_hw = half_w.index_select(0, targets)
-        target_hh = half_h.index_select(0, targets)
-        source_pos = pos[int(i)]
-        source_hw = half_w[int(i)]
-        source_hh = half_h[int(i)]
-        in_bounds_source = (
-            (target_pos[:, 0] - source_hw >= 0.0)
-            & (target_pos[:, 0] + source_hw <= float(cw))
-            & (target_pos[:, 1] - source_hh >= 0.0)
-            & (target_pos[:, 1] + source_hh <= float(ch))
-        )
-        in_bounds_target = (
-            (source_pos[0] - target_hw >= 0.0)
-            & (source_pos[0] + target_hw <= float(cw))
-            & (source_pos[1] - target_hh >= 0.0)
-            & (source_pos[1] + target_hh <= float(ch))
-        )
-        source_overlaps = (
-            (target_pos[:, 0, None] - pos[None, :, 0]).abs()
-            < (source_hw + half_w[None, :] + float(eps))
-        ) & (
-            (target_pos[:, 1, None] - pos[None, :, 1]).abs()
-            < (source_hh + half_h[None, :] + float(eps))
-        )
-        source_overlaps[:, int(i)] = False
-        source_overlaps[torch.arange(targets.numel(), device=_GPU_DEVICE), targets] = False
-        target_overlaps = (
-            (source_pos[0] - pos[None, :, 0]).abs()
-            < (target_hw[:, None] + half_w[None, :] + float(eps))
-        ) & (
-            (source_pos[1] - pos[None, :, 1]).abs()
-            < (target_hh[:, None] + half_h[None, :] + float(eps))
-        )
-        target_overlaps[:, int(i)] = False
-        target_overlaps[torch.arange(targets.numel(), device=_GPU_DEVICE), targets] = False
-        return (
-            (
-                in_bounds_source
-                & in_bounds_target
-                & ~torch.any(source_overlaps, dim=1)
-                & ~torch.any(target_overlaps, dim=1)
-            )
-            .cpu()
-            .numpy()
-        )
-
-
-def _gpu_legal_hard_soft_candidates(
-    h_pos: np.ndarray,
-    s_pos: np.ndarray,
-    hw: np.ndarray,
-    hh: np.ndarray,
-    soft_hw: np.ndarray,
-    soft_hh: np.ndarray,
-    cw: float,
-    ch: float,
-    i: int,
-    cand: np.ndarray,
-    eps: float,
-) -> np.ndarray:
-    """CUDA batch equivalent of the hard-soft swap legality filter."""
-    with torch.inference_mode():
-        hard_pos = torch.as_tensor(h_pos, dtype=torch.float64, device=_GPU_DEVICE)
-        soft_pos = torch.as_tensor(s_pos, dtype=torch.float64, device=_GPU_DEVICE)
-        hard_half_w = torch.as_tensor(hw, dtype=torch.float64, device=_GPU_DEVICE)
-        hard_half_h = torch.as_tensor(hh, dtype=torch.float64, device=_GPU_DEVICE)
-        soft_half_w = torch.as_tensor(soft_hw, dtype=torch.float64, device=_GPU_DEVICE)
-        soft_half_h = torch.as_tensor(soft_hh, dtype=torch.float64, device=_GPU_DEVICE)
-        targets = torch.as_tensor(cand, dtype=torch.long, device=_GPU_DEVICE)
-        target_pos = soft_pos.index_select(0, targets)
-        target_hw = soft_half_w.index_select(0, targets)
-        target_hh = soft_half_h.index_select(0, targets)
-        source_pos = hard_pos[int(i)]
-        source_hw = hard_half_w[int(i)]
-        source_hh = hard_half_h[int(i)]
-        in_bounds_hard = (
-            (target_pos[:, 0] - source_hw >= 0.0)
-            & (target_pos[:, 0] + source_hw <= float(cw))
-            & (target_pos[:, 1] - source_hh >= 0.0)
-            & (target_pos[:, 1] + source_hh <= float(ch))
-        )
-        in_bounds_soft = (
-            (source_pos[0] - target_hw >= 0.0)
-            & (source_pos[0] + target_hw <= float(cw))
-            & (source_pos[1] - target_hh >= 0.0)
-            & (source_pos[1] + target_hh <= float(ch))
-        )
-        hard_overlaps = (
-            (target_pos[:, 0, None] - hard_pos[None, :, 0]).abs()
-            < (source_hw + hard_half_w[None, :] + float(eps))
-        ) & (
-            (target_pos[:, 1, None] - hard_pos[None, :, 1]).abs()
-            < (source_hh + hard_half_h[None, :] + float(eps))
-        )
-        hard_overlaps[:, int(i)] = False
-        return (in_bounds_hard & in_bounds_soft & ~torch.any(hard_overlaps, dim=1)).cpu().numpy()
-
-
 if HAS_NUMBA:
 
     @_numba_njit(cache=True, fastmath=False)
@@ -477,11 +346,6 @@ def _legal_hard_hard_candidates(
     cand = np.asarray(cand, dtype=np.int64)
     if cand.size == 0:
         return np.zeros(0, dtype=np.bool_)
-    if _gpu_overlap_prefilter_enabled(cand.size):
-        try:
-            return _gpu_legal_hard_hard_candidates(h_pos, hw, hh, cw, ch, i, cand, eps)
-        except Exception:
-            pass
     if HAS_NUMBA:
         return _legal_hard_hard_candidates_jit(
             h_pos,
@@ -564,23 +428,6 @@ def _legal_hard_soft_candidates(
     cand = np.asarray(cand, dtype=np.int64)
     if cand.size == 0:
         return np.zeros(0, dtype=np.bool_)
-    if _gpu_overlap_prefilter_enabled(cand.size):
-        try:
-            return _gpu_legal_hard_soft_candidates(
-                h_pos,
-                s_pos,
-                hw,
-                hh,
-                soft_hw,
-                soft_hh,
-                cw,
-                ch,
-                i,
-                cand,
-                eps,
-            )
-        except Exception:
-            pass
     if HAS_NUMBA:
         return _legal_hard_soft_candidates_jit(
             h_pos,

@@ -1,6 +1,5 @@
 """Relocation moves for local search."""
 
-import os
 import time
 from typing import TYPE_CHECKING, Callable
 
@@ -1052,15 +1051,7 @@ def _relocation_moves_propose_all(
             incremental_scorer._revert_prep(prep)
             raise
 
-    if os.environ.get("RELOC_PROPOSE_LOG", "").strip() in {
-        "1",
-        "true",
-        "TRUE",
-        "yes",
-        "YES",
-        "on",
-        "ON",
-    }:
+    if const.RELOC_PROPOSE_LOG:
         print(
             "  R2 propose-all[%s]: hot=%d legal=%d frozen_scores=%d "
             "selected=%d verify_scores=%d accepts=%d elapsed=%.3fs"
@@ -1412,10 +1403,6 @@ def _soft_relocation_moves(
     num_soft = incremental_scorer.num_soft
     if num_soft == 0:
         return soft_pos, 0, initial_score
-    # Skip full scoring when wirelength alone is already too costly.
-    _env_wl = os.environ.get("SOFT_RELOC_WL_PREFILTER")
-    if _env_wl not in (None, ""):
-        wl_prefilter = float(_env_wl)
     nr, nc = benchmark.grid_rows, benchmark.grid_cols
     weighted_rank = not use_density
     cell_field = (

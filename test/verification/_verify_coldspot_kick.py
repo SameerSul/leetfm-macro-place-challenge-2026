@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 from macro_place.loader import load_benchmark_from_dir
-from placer.local_search.clusters import derive_cluster_softs, derive_hard_clusters
+from placer.local_search.clusters import derive_soft_cluster_roles, derive_hard_clusters
 from placer.local_search.fields import _congestion_field
 from placer.local_search.lsmc_explore import (
     _coldspot_cluster_kick_candidates,
@@ -45,7 +45,7 @@ def _check(bench):
     assert field is not None, "no congestion field"
 
     labels, clusters = derive_hard_clusters(plc, n, n_soft=n_soft, min_edge=2)
-    csofts = derive_cluster_softs(plc, n, n_soft, labels)
+    csofts, _ = derive_soft_cluster_roles(plc, n, n_soft, labels)
     hard_xy = pos[:n]
     soft_xy = pos[n : n + n_soft]
     mv = np.flatnonzero(movable[:n])

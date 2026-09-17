@@ -13,13 +13,13 @@ from typing import Any
 
 import numpy as np
 
+from utils import constants as const
+
 PLATEAU_SCHEMA_VERSION = 2
 
 _PLATEAU_BUFFER: list[str] = []
 _PLATEAU_BUFFER_PATH: Path | None = None
-_PROCESS_RUN_ID = os.environ.get("VIVAPLACE_RUN_ID", "").strip() or (
-    f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-pid{os.getpid()}"
-)
+_PROCESS_RUN_ID = f"{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}-pid{os.getpid()}"
 _CODE_REVISION: str | None = None
 _WORKTREE_PROVENANCE: dict[str, Any] | None = None
 
@@ -27,10 +27,6 @@ _WORKTREE_PROVENANCE: dict[str, Any] | None = None
 def _code_revision() -> str:
     global _CODE_REVISION
     if _CODE_REVISION is not None:
-        return _CODE_REVISION
-    override = os.environ.get("VIVAPLACE_CODE_REVISION", "").strip()
-    if override:
-        _CODE_REVISION = override
         return _CODE_REVISION
     try:
         root = Path(__file__).resolve().parents[3]
@@ -52,14 +48,6 @@ def _worktree_provenance() -> dict[str, Any]:
     global _WORKTREE_PROVENANCE
     if _WORKTREE_PROVENANCE is not None:
         return _WORKTREE_PROVENANCE
-    override = os.environ.get("VIVAPLACE_WORKTREE_FINGERPRINT", "").strip()
-    if override:
-        _WORKTREE_PROVENANCE = {
-            "worktree_dirty": override != "clean",
-            "worktree_fingerprint": override,
-        }
-        return _WORKTREE_PROVENANCE
-
     root = Path(__file__).resolve().parents[3]
     scope = (
         "src",
@@ -118,7 +106,7 @@ def _worktree_provenance() -> dict[str, Any]:
 
 
 def _provenance() -> dict[str, Any]:
-    specific = os.environ.get("HIER_PLATEAU_TRACE_RUN", "").strip()
+    specific = const.HIER_PLATEAU_TRACE_RUN
     return {
         "run_id": specific or _PROCESS_RUN_ID,
         "code_revision": _code_revision(),
@@ -128,13 +116,7 @@ def _provenance() -> dict[str, Any]:
 
 
 def _plateau_trace_path() -> Path:
-    raw = os.environ.get("HIER_PLATEAU_TRACE_PATH", "").strip()
-    if raw:
-        return Path(raw)
-    root = Path(os.environ.get("HIER_PLATEAU_TRACE_DIR", "ml_data/plateau_telemetry"))
-    run_id = os.environ.get("HIER_PLATEAU_TRACE_RUN", "").strip()
-    name = f"{run_id}.jsonl" if run_id else "plateau_telemetry.jsonl"
-    return root / name
+    return Path(const.HIER_PLATEAU_TRACE_PATH)
 
 
 def _jsonable(value: Any) -> Any:
