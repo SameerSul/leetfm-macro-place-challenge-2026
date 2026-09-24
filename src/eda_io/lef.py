@@ -28,7 +28,20 @@ def parse_lef(path, masters: Dict[str, Master] = None) -> Dict[str, Master]:
     i = 0
     n = len(toks)
     while i < n:
-        if toks[i].upper() != "MACRO":
+        t = toks[i].upper()
+        if t == "PROPERTYDEFINITIONS":
+            # Skip the block: it may define properties named MACRO
+            # (e.g. "MACRO CatenaDesignType STRING" in the IHP PDKs),
+            # which would otherwise be mistaken for a cell.
+            while i < n and not (
+                toks[i].upper() == "END"
+                and i + 1 < n
+                and toks[i + 1].upper() == "PROPERTYDEFINITIONS"
+            ):
+                i += 1
+            i += 2
+            continue
+        if t != "MACRO":
             i += 1
             continue
         name = toks[i + 1]
