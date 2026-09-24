@@ -273,3 +273,32 @@ def test_read_design_validation():
         read_design(def_file=DEF)  # no geometry source
     with pytest.raises(ValueError):
         read_design(lef=[LEF])  # no instance source
+
+
+def test_lef_parser_skips_propertydefinitions(tmp_path):
+    # IHP-style LEF: a PROPERTYDEFINITIONS block defines a property whose
+    # first token is MACRO; the parser must not mistake it for a cell.
+    lef = tmp_path / "props.lef"
+    lef.write_text(
+        "VERSION 5.8 ;\n"
+        "PROPERTYDEFINITIONS\n"
+        "  MACRO CatenaDesignType STRING ;\n"
+        "END PROPERTYDEFINITIONS\n"
+        "MACRO BUFX1\n"
+        "  CLASS CORE ;\n"
+        "  SIZE 2.0 BY 6.0 ;\n"
+        "  PIN A\n"
+        "    DIRECTION INPUT ;\n"
+        "    PORT\n"
+        "      LAYER M1 ;\n"
+        "      RECT 0.2 2.8 0.4 3.2 ;\n"
+        "    END\n"
+        "  END A\n"
+        "END BUFX1\n"
+        "END LIBRARY\n"
+    )
+    masters = parse_lef(lef)
+    assert set(masters) == {"BUFX1"}
+    buf = masters["BUFX1"]
+    assert (buf.width, buf.height) == (2.0, 6.0)
+    assert buf.pins["A"].direction == "INPUT"
