@@ -244,6 +244,11 @@ def test_report_writer(tmp_path):
 
 @pytest.mark.slow
 def test_place_design_cli(tmp_path):
+    dreamplace = ROOT / "dreamplace_build" / "install" / "dreamplace" / "Placer.py"
+    if not dreamplace.exists():
+        pytest.skip(
+            "pinned DREAMPlace toolchain not built (the proxy fallback was "
+            "removed by design); run scripts/dreamplace/bootstrap.sh all")
     out_def = tmp_path / "placed.def"
     out_tcl = tmp_path / "place.tcl"
     out_rpt = tmp_path / "qor.rpt"
