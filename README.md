@@ -68,8 +68,7 @@ and the distinction between fixed-work and ordinary timed results.
 The ordinary-guard run returns exactly the same 31 placements as the
 independently audited replay. Its evaluator headline means are IBM
 **1.181128351**, NG45 **0.717060223**, and synthetic **1.436273508**. Earlier
-score histories and timing controls are in [PROGRESS.md](docs/PROGRESS.md) and
-[the algorithm review](ml_data/algorithm_review/20260909/results.md).
+score histories and timing controls are in [PROGRESS.md](docs/PROGRESS.md).
 
 `MacroPlacer` accepts keyword-only `seed`, `event_sink`, and
 `dreamplace_sample_every` options. The unused restart/noise settings and overall
